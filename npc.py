@@ -1,5 +1,3 @@
-"""Local movement and tree animation. No API calls or Pygame dependencies."""
-
 from dataclasses import dataclass, field
 from enum import Enum
 import math

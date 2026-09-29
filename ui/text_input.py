@@ -1,36 +1,7 @@
 import pygame
 import pyperclip
 
-# Color
-INK = (36, 57, 48)
-MUTED = (92, 110, 99)
-PAPER = (249, 247, 235)
-ACCENT = (52, 111, 78)
-
-# Radius
-BORDER_RADIUS = 0
-
-class Button:
-    def __init__(self, rect, label):
-        self.rect = pygame.Rect(rect)
-        self.label = label
-
-    def clicked(self, event, enabled=True):
-        return (
-            enabled
-            and event.type == pygame.MOUSEBUTTONDOWN
-            and event.button == 1
-            and self.rect.collidepoint(event.pos)
-        )
-
-    def draw(self, surface, font, enabled=True):
-        hovered = self.rect.collidepoint(pygame.mouse.get_pos())
-        color = (66, 130, 91) if hovered else ACCENT
-        if not enabled:
-            color = (152, 164, 151)
-        pygame.draw.rect(surface, color, self.rect, border_radius=BORDER_RADIUS)
-        label = font.render(self.label, True, PAPER)
-        surface.blit(label, label.get_rect(center=self.rect.center))
+from .theme import ACCENT, BORDER_RADIUS, INK, MUTED
 
 
 class TextInput:
@@ -140,35 +111,3 @@ class TextInput:
             caret_x = x + (rendered.get_width() if display else 0) + 1
             pygame.draw.line(surface, INK, (caret_x, inner.y), (caret_x, inner.bottom), 2)
         surface.set_clip(previous_clip)
-
-
-def draw_wrapped_text(surface, text, font, color, rect):
-    """Wrap words (and very long words), clipping all drawing to the rectangle."""
-    rect = pygame.Rect(rect)
-    lines = []
-    line = ""
-    for word in text.split():
-        candidate = f"{line} {word}" if line else word
-        if font.size(candidate)[0] <= rect.width:
-            line = candidate
-            continue
-        if line:
-            lines.append(line)
-            line = ""
-        # A single unbroken word must fit too.
-        for char in word:
-            if line and font.size(line + char)[0] > rect.width:
-                lines.append(line)
-                line = ""
-            line += char
-    if line:
-        lines.append(line)
-    previous_clip = surface.get_clip()
-    surface.set_clip(rect.clip(previous_clip))
-    y = rect.y
-    for line in lines:
-        if y + font.get_linesize() > rect.bottom:
-            break
-        surface.blit(font.render(line, True, color), (rect.x, y))
-        y += font.get_linesize()
-    surface.set_clip(previous_clip)
