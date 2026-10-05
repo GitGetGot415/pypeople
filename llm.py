@@ -7,6 +7,8 @@ import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 MODEL = "gemini-2.5-flash"
+OLLAMA_MODEL = "llama3"
+OLLAMA_URL = "http://localhost:11434/api/chat"
 
 
 class ActionResponse(BaseModel):
@@ -61,8 +63,7 @@ def _api_error_message(exc):
     return "Gemini could not process this request. Check model access or try another message."
 
 
-def request_action(api_key, message, snapshot):
-    """Called only by a worker. Does not read or mutate the world or interface."""
+def _request_gemini(api_key, message, snapshot):
     try:
         with genai.Client(
             api_key=api_key,
@@ -120,3 +121,62 @@ def request_action(api_key, message, snapshot):
         raise RequestError("Cannot reach Gemini. Check your connection and try again.") from None
     except Exception:
         raise RequestError("Could not get a reply from Gemini. Check your connection or try again.") from None
+
+
+def _request_ollama(message, snapshot):
+    try:
+        response = httpx.post(
+            OLLAMA_URL,
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": SYSTEM_INSTRUCTION + "\nReturn only JSON matching this schema: "
+                        + json.dumps(RESPONSE_SCHEMA),
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {"world_state": snapshot, "player_message": message},
+                            ensure_ascii=False,
+                        ),
+                    },
+                ],
+                "format": RESPONSE_SCHEMA,
+                "stream": False,
+                "options": {"num_predict": 512},
+            },
+            timeout=60.0,
+        )
+        if response.status_code == 404:
+            raise RequestError("Ollama could not find llama3. Run: ollama pull llama3")
+        if response.is_error:
+            raise RequestError("Ollama could not process this request. Check that llama3 is available.")
+        data = response.json()
+        if not data.get("done", False) or data.get("done_reason") not in (None, "stop"):
+            raise RequestError("Ollama returned an incomplete reply. Try again.")
+        content = data["message"]["content"]
+        result = ActionResponse.model_validate_json(content)
+        if not result.reply.strip():
+            raise RequestError("Ollama returned an empty reply. Try again.")
+        return result
+    except RequestError:
+        raise
+    except httpx.TimeoutException:
+        raise RequestError("Ollama timed out. Try again after llama3 finishes loading.") from None
+    except httpx.ConnectError:
+        raise RequestError("Cannot reach Ollama. Start Ollama and try again.") from None
+    except httpx.HTTPError:
+        raise RequestError("Cannot reach Ollama. Check that it is running and try again.") from None
+    except (ValidationError, ValueError, KeyError, TypeError, AttributeError):
+        raise RequestError("Ollama returned an invalid action or reply. Try again.") from None
+
+
+def request_action(provider, api_key, message, snapshot):
+    """Called only by a worker. Does not read or mutate the world or interface."""
+    if provider == "gemini":
+        return _request_gemini(api_key, message, snapshot)
+    if provider == "ollama":
+        return _request_ollama(message, snapshot)
+    raise RequestError("Choose an AI provider in Settings.")

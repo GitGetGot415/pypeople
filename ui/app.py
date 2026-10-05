@@ -21,6 +21,7 @@ class Application:
         self.running = True
         self.screen = "menu"
         self.api_key = ""
+        self.provider = "gemini"
         self.session_id = 0
         self.npc = None
         self.tree = None
@@ -44,16 +45,16 @@ class Application:
 
     def open_settings(self):
         self.screen = "settings"
-        self.settings.open(self.api_key)
+        self.settings.open(self.provider, self.api_key)
 
     def submit(self):
         message = self.game.prompt_input.text.strip()[:300]
         if self.screen != "game" or not self.game.dialogue_open or not message or self.requests.busy:
             return
-        if not self.api_key:
+        if self.provider == "gemini" and not self.api_key:
             self.game.set_reply("I think you forgot to add your Gemini API key in Settings...")
             return
-        if not self.requests.submit(self.session_id, self.api_key, message, self.npc.snapshot(self.tree)):
+        if not self.requests.submit(self.session_id, self.provider, self.api_key, message, self.npc.snapshot(self.tree)):
             self.game.set_reply("Could not start the request. Please try again.")
             return
         self.game.prompt_input.set_value("")

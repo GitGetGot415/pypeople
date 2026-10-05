@@ -6,15 +6,15 @@ from pydantic import ValidationError
 from llm import ActionResponse, RequestError, request_action
 
 
-def _request_worker(session_id, api_key, message, snapshot, results):
+def _request_worker(session_id, provider, api_key, message, snapshot, results):
     """Only communicate through the queue; never touch Pygame or live state."""
     try:
-        result = request_action(api_key, message, snapshot)
+        result = request_action(provider, api_key, message, snapshot)
         results.put((session_id, result.model_dump_json(), None))
     except RequestError as exc:
         results.put((session_id, None, str(exc)))
     except Exception:
-        results.put((session_id, None, "Could not get a reply from Gemini. Please try again."))
+        results.put((session_id, None, "Could not get a reply from the model. Please try again."))
 
 
 class RequestManager:
@@ -28,15 +28,15 @@ class RequestManager:
         # Keep the slot reserved until the queue is polled AND the thread exits.
         return self.worker is not None
 
-    def submit(self, session_id, api_key, message, snapshot):
+    def submit(self, session_id, provider, api_key, message, snapshot):
         if self.busy:
             return False
         self.pending_session = session_id
         self.worker = threading.Thread(
             target=_request_worker,
-            args=(session_id, api_key, message, snapshot, self.results),
+            args=(session_id, provider, api_key, message, snapshot, self.results),
             daemon=True,
-            name="Judy-Gemini-request",
+            name="Judy-model-request",
         )
         try:
             self.worker.start()
@@ -65,7 +65,7 @@ class RequestManager:
                 if not result.reply.strip():
                     raise ValueError("Empty reply")
             except (ValidationError, ValueError, TypeError):
-                replies.append((None, "Gemini returned an invalid action or reply. Try again."))
+                replies.append((None, "The model returned an invalid action or reply. Try again."))
                 continue
             replies.append((result, None))
         if self.worker is not None and not self.worker.is_alive():
