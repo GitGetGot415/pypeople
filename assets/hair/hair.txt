@@ -1,0 +1,8 @@
+S = South (pointing down)
+SE = South East (pointing down right)
+E = East (pointing right)
+NE = North East
+N = North
+
+tldr it's like eyes but with a north facing component
+west side stuff can be mirrored from east side stuff

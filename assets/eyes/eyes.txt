@@ -1,0 +1,5 @@
+S = South (pointing down)
+SE = South East (pointing down right)
+E = East (pointing right)
+the eyes pointing towards the west can be copied from the east facing eyes
+eyes pointing north don't have to be rendered since they can't be seen

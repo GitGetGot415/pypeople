@@ -1,0 +1,4 @@
+NS = North / South
+WE = West / East
+NSWE = 45 Degree Angles
+(by default this image should be pointed towards the bottom right, and can be rotated to acheive other angles)

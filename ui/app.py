@@ -3,6 +3,7 @@ import pygame
 from npc import NPC, Tree
 
 from .game import GameScreen
+from .character import CharacterScreen
 from .menu import MenuScreen
 from .requests import RequestManager
 from .settings import SettingsScreen
@@ -28,8 +29,14 @@ class Application:
         self.requests = RequestManager()
         self.menu = MenuScreen()
         self.settings = SettingsScreen()
+        self.character = CharacterScreen()
         self.game = GameScreen()
-        self.screens = {"menu": self.menu, "settings": self.settings, "game": self.game}
+        self.screens = {
+            "menu": self.menu,
+            "settings": self.settings,
+            "character": self.character,
+            "game": self.game,
+        }
 
     def start_game(self):
         self.session_id += 1
@@ -75,6 +82,7 @@ class Application:
                 self.game.set_reply(result.reply)
         self.game.prompt_input.update(dt)
         self.settings.key_input.update(dt)
+        self.character.update(dt)
         if self.screen == "game":
             self.npc.update(dt, self.tree)
 
