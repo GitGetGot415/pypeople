@@ -1,0 +1,212 @@
+"""Shared directional sprites for the character creator and the world."""
+
+from pathlib import Path
+
+import pygame
+
+from character_data import DEFAULT_COLORS, parse_color
+
+
+class CharacterRenderer:
+    """Load assets once and cache each facing for the current color palette."""
+
+    _parse_color = staticmethod(parse_color)
+
+    def __init__(self):
+        asset_dir = Path(__file__).resolve().parent.parent / "assets"
+        self.body = pygame.image.load(str(asset_dir / "Body.png")).convert_alpha()
+        # Both masks come from the original image, keeping the regions separate
+        # even when the chosen skin and shirt colors match the other region.
+        self.body_masks = {
+            "Skin Color": pygame.mask.from_threshold(self.body, (255, 0, 0, 255), (1, 1, 1, 1)),
+            "Shirt Color": pygame.mask.from_threshold(self.body, (0, 10, 255, 255), (1, 1, 1, 1)),
+        }
+        self.hands = {
+            direction: pygame.image.load(str(asset_dir / "hands" / f"Hands_{direction}.png")).convert_alpha()
+            for direction in ("NS", "WE", "NSWE")
+        }
+        self.hand_masks = {
+            direction: {"Skin Color": pygame.mask.from_threshold(asset, (255, 0, 0, 255), (1, 1, 1, 1))}
+            for direction, asset in self.hands.items()
+        }
+        self.eyes = {
+            direction: pygame.image.load(str(asset_dir / "eyes" / f"Eyes_{direction}.png")).convert_alpha()
+            for direction in ("S", "SE", "E")
+        }
+        self.eye_masks = {
+            direction: {"Eye Color": pygame.mask.from_threshold(asset, (5, 255, 0, 255), (1, 1, 1, 1))}
+            for direction, asset in self.eyes.items()
+        }
+        self.eye_anchors = {}
+        for direction, asset in self.eyes.items():
+            # Registration marks identify the head center even when the eye
+            # artwork is cropped asymmetrically for a diagonal or side view.
+            marks = [x for x in range(asset.get_width()) if asset.get_at((x, 0)).a]
+            self.eye_anchors[direction] = (min(marks) + max(marks) + 1) // 2 if marks else asset.get_width() // 2
+        self.hair = {
+            direction: pygame.image.load(str(asset_dir / "hair" / f"Hair_{direction}.png")).convert_alpha()
+            for direction in ("S", "SE", "E", "NE", "N")
+        }
+        self.hair_masks = {
+            direction: {"Hair Color": pygame.mask.from_threshold(asset, (255, 168, 0, 255), (1, 1, 1, 1))}
+            for direction, asset in self.hair.items()
+        }
+        # Every facing uses the same canvas, so taller hair fits without moving
+        # or resizing the standing body as the character turns.
+        self.character_size = (
+            max(96, *(asset.get_width() for asset in self.hair.values())),
+            max(self.body.get_height(), *(asset.get_height() for asset in self.hair.values())),
+        )
+        self.colored_body = None
+        self.colored_hands = {}
+        self.colored_eyes = {}
+        self.colored_hair = {}
+        self.values = {}
+        self.direction = 4
+        self._color_key = None
+        self._frames = {}
+        self._scaled_frames = {}
+
+    def render(self, values, direction, scale=1.0):
+        """Return a cached sprite; callers should not modify the surface."""
+        if type(direction) is not int or not 0 <= direction < 8:
+            raise ValueError("Facing must be one of the eight character directions.")
+        if scale <= 0:
+            raise ValueError("Sprite scale must be positive.")
+        colors = tuple(parse_color(values.get(name, default)) for name, default in DEFAULT_COLORS.items())
+        if colors != self._color_key:
+            self.values = {
+                name: "#" + "".join(f"{channel:02X}" for channel in rgb)
+                for name, rgb in zip(DEFAULT_COLORS, colors)
+            }
+            self.colored_body = self._recolor_asset(self.body, self.body_masks)
+            self.colored_hands = {
+                facing: self._recolor_asset(asset, self.hand_masks[facing])
+                for facing, asset in self.hands.items()
+            }
+            self.colored_eyes = {
+                facing: self._recolor_asset(asset, self.eye_masks[facing])
+                for facing, asset in self.eyes.items()
+            }
+            self.colored_hair = {
+                facing: self._recolor_asset(asset, self.hair_masks[facing])
+                for facing, asset in self.hair.items()
+            }
+            self._color_key = colors
+            self._frames.clear()
+            self._scaled_frames.clear()
+        if direction not in self._frames:
+            self.direction = direction
+            self._frames[direction] = self._compose_preview()
+        frame = self._frames[direction]
+        if scale == 1.0:
+            return frame
+        key = (direction, scale)
+        if key not in self._scaled_frames:
+            size = (max(1, round(frame.get_width() * scale)), max(1, round(frame.get_height() * scale)))
+            self._scaled_frames[key] = pygame.transform.scale(frame, size)
+        return self._scaled_frames[key]
+
+    def _compose_preview(self):
+        """Turn in the ground plane while keeping the standing body upright."""
+        frame = pygame.Surface((96, 144), pygame.SRCALPHA)
+        body_rect = self.colored_body.get_rect(midtop=(48, 0))
+
+        def draw_hands(hands):
+            # Ignore the tiny alignment marks on the first and last asset rows.
+            hand_rect = hands.get_rect(midtop=(48, 0))
+            frame.blit(hands, (hand_rect.x, 1), (0, 1, hands.get_width(), hands.get_height() - 2))
+
+        if self.direction in (0, 4):
+            # From the back, the body covers the inner edges of the hands.
+            if self.direction == 0:
+                draw_hands(self.colored_hands["NS"])
+            frame.blit(self.colored_body, body_rect)
+            if self.direction == 4:
+                draw_hands(self.colored_hands["NS"])
+        elif self.direction in (2, 6):
+            # The two hands overlap in a side view; the WE asset shows one.
+            frame.blit(self.colored_body, body_rect)
+            draw_hands(self.colored_hands["WE"])
+        else:
+            # The diagonal asset faces south east. Split its two hands so the
+            # far hand can sit behind the body and the near one in front.
+            hands = self.colored_hands["NSWE"]
+            full_hand = pygame.Surface(hands.get_size(), pygame.SRCALPHA)
+            half_hand = pygame.Surface(hands.get_size(), pygame.SRCALPHA)
+            split = hands.get_width() // 2
+            full_hand.blit(hands, (0, 1), (0, 1, split, hands.get_height() - 2))
+            half_hand.blit(hands, (split, 1), (split, 1, hands.get_width() - split, hands.get_height() - 2))
+            west = self.direction in (5, 7)
+            north = self.direction in (1, 7)
+            if north:
+                # The asset already cuts off the far hand. When it becomes the
+                # near hand, use its full counterpart at the same center.
+                half_hand.fill((0, 0, 0, 0))
+                half_hand.blit(hands, (46, 92), (0, 100, 24, 24))
+
+            def orient(hand):
+                hand = pygame.transform.flip(hand, west, north)
+                if north:
+                    # Reflect around the hands' ground-plane center (y=108),
+                    # rather than the image center, to keep them below the head.
+                    shifted = pygame.Surface(hand.get_size(), pygame.SRCALPHA)
+                    shifted.blit(hand, (0, 2 * 108 - hand.get_height()))
+                    hand = shifted
+                return hand
+
+            full_hand, half_hand = orient(full_hand), orient(half_hand)
+            behind, front = (full_hand, half_hand) if north else (half_hand, full_hand)
+            draw_hands(behind)
+            frame.blit(self.colored_body, body_rect)
+            draw_hands(front)
+        self._draw_eyes(frame)
+        return self._add_hair(frame)
+
+    def _add_hair(self, body_frame):
+        frame = pygame.Surface(self.character_size, pygame.SRCALPHA)
+        frame.blit(body_frame, body_frame.get_rect(midbottom=frame.get_rect().midbottom))
+        hair_direction = ("N", "NE", "E", "SE", "S", "SE", "E", "NE")[self.direction]
+        hair = self.colored_hair[hair_direction]
+        layer = pygame.Surface(frame.get_size(), pygame.SRCALPHA)
+        # Align the bottom centers, letting taller hair extend above the head.
+        hair_rect = hair.get_rect(midbottom=frame.get_rect().midbottom)
+        # The last row contains alignment marks rather than visible hair.
+        layer.blit(hair, hair_rect, (0, 0, hair.get_width(), hair.get_height() - 1))
+        if self.direction in (5, 6, 7):
+            layer = pygame.transform.flip(layer, True, False)
+        frame.blit(layer, (0, 0))
+        return frame
+
+    def _draw_eyes(self, frame):
+        # All three north-facing views show the back of the head.
+        eye_direction = {2: "E", 3: "SE", 4: "S", 5: "SE", 6: "E"}.get(self.direction)
+        if eye_direction is None:
+            return
+        eyes = self.colored_eyes[eye_direction]
+        layer = pygame.Surface(frame.get_size(), pygame.SRCALPHA)
+        layer.blit(
+            eyes, (48 - self.eye_anchors[eye_direction], 1),
+            (0, 1, eyes.get_width(), eyes.get_height() - 2),
+        )
+        if self.direction in (5, 6):
+            layer = pygame.transform.flip(layer, True, False)
+        # Keep the eye artwork inside the head without covering its outline.
+        head_clip = pygame.Surface(frame.get_size(), pygame.SRCALPHA)
+        head_mask = self.body_masks["Skin Color"].to_surface(
+            setcolor=(255, 255, 255, 255), unsetcolor=(0, 0, 0, 0),
+        )
+        head_clip.blit(head_mask, self.colored_body.get_rect(midtop=(48, 0)))
+        layer.blit(head_clip, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        frame.blit(layer, (0, 0))
+
+    def _recolor_asset(self, asset, masks):
+        colored = asset.copy()
+        for name, mask in masks.items():
+            overlay = mask.to_surface(
+                setcolor=(*self._parse_color(self.values[name]), 255),
+                unsetcolor=(0, 0, 0, 0),
+            )
+            colored.blit(overlay, (0, 0))
+        return colored
+

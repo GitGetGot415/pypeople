@@ -1,7 +1,7 @@
 import pygame
 
 from .button import Button
-from .text import draw_centered_text
+from .text import draw_centered_text, draw_wrapped_text
 from .theme import BORDER_RADIUS, GRASS, MUTED, PAPER
 
 
@@ -11,6 +11,7 @@ class MenuScreen:
         self.character_button = Button((340, 300, 280, 54), "Character Creator")
         self.settings_button = Button((340, 360, 280, 54), "Settings")
         self.exit_button = Button((340, 420, 280, 54), "Exit")
+        self.message = ""
 
     def handle_event(self, app, event):
         if self.start_button.clicked(event):
@@ -30,3 +31,5 @@ class MenuScreen:
         for button in (self.start_button, self.character_button, self.settings_button, self.exit_button):
             button.draw(app.window, app.font)
         draw_centered_text(app.window, "(no you can't flirt with the ai yet)", app.small_font, 510, MUTED)
+        if self.message:
+            draw_wrapped_text(app.window, self.message, app.small_font, MUTED, (260, 540, 440, 40))

@@ -1,5 +1,8 @@
+from pathlib import Path
+
 import pygame
 
+from character_data import load_character
 from npc import NPC, Tree
 
 from .game import GameScreen
@@ -8,6 +11,10 @@ from .menu import MenuScreen
 from .requests import RequestManager
 from .settings import SettingsScreen
 from .theme import FPS, WINDOW_SIZE
+from .world import CHARACTER_SCALE
+
+
+JUDY_CHARACTER_PATH = Path(__file__).resolve().parent.parent / "characters" / "judy.json"
 
 
 class Application:
@@ -39,8 +46,16 @@ class Application:
         }
 
     def start_game(self):
+        try:
+            character = load_character(JUDY_CHARACTER_PATH)
+        except (OSError, ValueError) as error:
+            self.menu.message = f"Could not load Judy: {error}"
+            return
+        self.menu.message = ""
         self.session_id += 1
-        self.npc = NPC()
+        self.npc = NPC(character=character)
+        sprite = self.character.renderer.render(character, self.npc.facing, CHARACTER_SCALE)
+        self.npc.sprite_size = sprite.get_size()
         self.tree = Tree()
         self.game.reset()
         self.screen = "game"

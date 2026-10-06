@@ -3,6 +3,8 @@ from enum import Enum
 import math
 import random
 
+from character_data import DIRECTIONS, normalize_character
+
 WORLD_WIDTH = 960
 WORLD_HEIGHT = 460
 NPC_RADIUS = 18
@@ -55,9 +57,32 @@ class NPC:
     destination: tuple[float, float] | None = None
     pause_remaining: float = 0.0
     rng: random.Random = field(default_factory=random.Random, repr=False)
+    character: dict = field(default_factory=lambda: normalize_character({"Name": "Judy"}))
+    facing: int = 4
+    sprite_size: tuple[int, int] | None = None
+    selected: bool = False
+
+    @property
+    def name(self):
+        return self.character["Name"].strip() or "Judy"
+
+    @property
+    def movement_bounds(self):
+        width, height = self.sprite_size or (NPC_RADIUS * 2, NPC_RADIUS)
+        horizontal_margin = max(NPC_RADIUS, width / 2)
+        return (
+            horizontal_margin, WORLD_WIDTH - horizontal_margin,
+            max(NPC_RADIUS, height), WORLD_HEIGHT - NPC_RADIUS,
+        )
+
+    @property
+    def wandering_paused(self):
+        return self.selected and self.behavior == Behavior.WANDER
 
     @property
     def status(self):
+        if self.wandering_paused:
+            return "Talking"
         return {
             Behavior.WANDER: "Wandering",
             Behavior.STOP: "Stopped",
@@ -67,17 +92,36 @@ class NPC:
         }[self.behavior]
 
     def contains(self, point):
+        if self.sprite_size is not None:
+            width, height = self.sprite_size
+            return (
+                self.x - width / 2 <= point[0] < self.x + width / 2
+                and self.y - height <= point[1] < self.y
+            )
         return math.hypot(point[0] - self.x, point[1] - self.y) <= NPC_RADIUS
 
     def snapshot(self, tree):
         return {
-            "npc_name": "Judy",
+            "npc_name": self.name,
+            "character": self.character.copy(),
+            "facing": DIRECTIONS[self.facing],
+            "selected": self.selected,
             "position": [round(self.x, 1), round(self.y, 1)],
             "behavior": self.behavior.value,
             "only_interactable_object": "tree",
             "tree_interaction_point": list(TREE_INTERACTION_POINT),
             "tree_is_shaking": tree.shaking,
         }
+
+    def _face_when_still(self):
+        at_tree = math.hypot(self.x - TREE_INTERACTION_POINT[0], self.y - TREE_INTERACTION_POINT[1]) <= 1e-6
+        self.facing = 2 if at_tree or self.behavior == Behavior.SHAKING else 4
+
+    def set_selected(self, selected):
+        """Pause wandering while explicit tasks keep running during dialogue."""
+        self.selected = selected
+        if selected and (self.wandering_paused or self.behavior in (Behavior.STOP, Behavior.SHAKING)):
+            self._face_when_still()
 
     def apply_action(self, action, tree):
         # Reject before changing anything. SAY preserves even an active shake.
@@ -93,6 +137,7 @@ class NPC:
         elif action == "STOP":
             self.behavior = Behavior.STOP
             self.destination = None
+            self._face_when_still()
         elif action == "GO_TO_TREE":
             self.behavior = Behavior.GO_TO_TREE
             self.destination = TREE_INTERACTION_POINT
@@ -114,12 +159,14 @@ class NPC:
         return False
 
     def update(self, dt, tree):
+        old_x, old_y = self.x, self.y
+        left, right, top, bottom = self.movement_bounds
         dt = max(0.0, dt)
         tree.update(dt)
         if self.behavior == Behavior.SHAKING:
             if not tree.shaking:
                 self.behavior = Behavior.STOP
-        elif self.behavior == Behavior.WANDER:
+        elif self.behavior == Behavior.WANDER and not self.wandering_paused:
             if self.pause_remaining > 0:
                 remaining = self.pause_remaining
                 self.pause_remaining = max(0.0, remaining - dt)
@@ -127,8 +174,8 @@ class NPC:
             if dt > 0:
                 if self.destination is None:
                     self.destination = (
-                        self.rng.uniform(NPC_RADIUS, WORLD_WIDTH - NPC_RADIUS),
-                        self.rng.uniform(NPC_RADIUS, WORLD_HEIGHT - NPC_RADIUS),
+                        self.rng.uniform(left, right),
+                        self.rng.uniform(top, bottom),
                     )
                 if self._move(dt):
                     self.destination = None
@@ -141,5 +188,17 @@ class NPC:
                     self.behavior = Behavior.SHAKING
                 else:
                     self.behavior = Behavior.STOP
-        self.x = min(WORLD_WIDTH - NPC_RADIUS, max(NPC_RADIUS, self.x))
-        self.y = min(WORLD_HEIGHT - NPC_RADIUS, max(NPC_RADIUS, self.y))
+        self.x = min(right, max(left, self.x))
+        self.y = min(bottom, max(top, self.y))
+        dx, dy = self.x - old_x, self.y - old_y
+        if dx or dy:
+            # Compass order: north=0, east=2, south=4, west=6. Screen y grows
+            # downward, so atan2(dx, -dy) measures clockwise from north.
+            angle = math.atan2(dx, -dy)
+            self.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
+        if (
+            self.wandering_paused
+            or self.behavior in (Behavior.STOP, Behavior.SHAKING)
+            or (self.behavior == Behavior.WANDER and (self.destination is None or self.pause_remaining > 0))
+        ):
+            self._face_when_still()

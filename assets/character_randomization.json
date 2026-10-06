@@ -1,0 +1,21 @@
+{
+  "first_names": [
+    "Alex", "Amelia", "Avery", "Benjamin", "Casey", "Charlotte",
+    "Daniel", "Eleanor", "Elliot", "Emma", "Ethan", "Grace",
+    "Harper", "Henry", "Isabella", "Jack", "Jamie", "Jordan",
+    "Leo", "Liam", "Lucas", "Maya", "Noah", "Olivia",
+    "Quinn", "Riley", "Sam", "Sofia", "Taylor", "Zoe"
+  ],
+  "last_names": [
+    "Adams", "Baker", "Bennett", "Brooks", "Carter", "Chen",
+    "Clark", "Collins", "Davis", "Evans", "Garcia", "Green",
+    "Harris", "Hill", "Jackson", "Kim", "Lee", "Lewis",
+    "Martin", "Mitchell", "Morgan", "Nguyen", "Parker", "Patel",
+    "Reed", "Rivera", "Scott", "Smith", "Taylor", "Wilson"
+  ],
+  "limits": {
+    "Age": {"min": 18, "max": 60, "unit": "years"},
+    "Weight": {"min": 45, "max": 130, "unit": "kg"},
+    "Height": {"min": 145, "max": 205, "unit": "cm"}
+  }
+}
