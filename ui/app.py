@@ -52,7 +52,7 @@ class Application:
         if self.screen != "game" or not self.game.dialogue_open or not message or self.requests.busy:
             return
         if self.provider == "gemini" and not self.api_key:
-            self.game.set_reply("I think you forgot to add your Gemini API key in Settings...")
+            self.game.set_reply("I think you forgot to add your API key in Settings...")
             return
         if not self.requests.submit(self.session_id, self.provider, self.api_key, message, self.npc.snapshot(self.tree)):
             self.game.set_reply("Could not start the request. Please try again.")
