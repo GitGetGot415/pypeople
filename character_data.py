@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 
-FIELDS = ("Name", "Age", "Weight", "Height", "Sex")
+FIELDS = ("Name", "Age", "Weight", "Height", "Sex", "Details")
 HAIR_STYLES = ("one", "two", "three", "four")
 DEFAULT_COLORS = {
     "Shirt Color": "#000AFF", "Skin Color": "#FF0000",
@@ -26,9 +26,11 @@ def normalize_character(data):
     """Validate the whole character before callers apply any of its values."""
     if not isinstance(data, dict):
         raise ValueError("The JSON must contain a character object.")
+    if "Details" not in data or not isinstance(data["Details"], str):
+        raise ValueError("Details must be text.")
     values = {}
     for name in FIELDS:
-        value = data.get(name, "")
+        value = data[name] if name == "Details" else data.get(name, "")
         if not isinstance(value, (str, int, float)):
             raise ValueError(f"{name} must be text.")
         values[name] = str(value)
