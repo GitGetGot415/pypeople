@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 FIELDS = ("Name", "Age", "Weight", "Height", "Sex")
+HAIR_STYLES = ("one", "two", "three", "four")
 DEFAULT_COLORS = {
     "Shirt Color": "#000AFF", "Skin Color": "#FF0000",
     "Eye Color": "#05FF00", "Hair Color": "#FFA800",
@@ -31,6 +32,9 @@ def normalize_character(data):
         if not isinstance(value, (str, int, float)):
             raise ValueError(f"{name} must be text.")
         values[name] = str(value)
+    if "Hair" not in data or data["Hair"] not in HAIR_STYLES:
+        raise ValueError("Hair must be one, two, three, or four.")
+    values["Hair"] = data["Hair"]
     for name, default in DEFAULT_COLORS.items():
         try:
             rgb = parse_color(data.get(name, default))

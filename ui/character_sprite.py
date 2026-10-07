@@ -4,11 +4,11 @@ from pathlib import Path
 
 import pygame
 
-from character_data import DEFAULT_COLORS, parse_color
+from character_data import DEFAULT_COLORS, HAIR_STYLES, parse_color
 
 
 class CharacterRenderer:
-    """Load assets once and cache each facing for the current color palette."""
+    """Load assets once and cache each hairstyle and facing for the palette."""
 
     _parse_color = staticmethod(parse_color)
 
@@ -44,18 +44,24 @@ class CharacterRenderer:
             marks = [x for x in range(asset.get_width()) if asset.get_at((x, 0)).a]
             self.eye_anchors[direction] = (min(marks) + max(marks) + 1) // 2 if marks else asset.get_width() // 2
         self.hair = {
-            direction: pygame.image.load(str(asset_dir / "hair" / f"Hair_{direction}.png")).convert_alpha()
-            for direction in ("S", "SE", "E", "NE", "N")
+            style: {
+                direction: pygame.image.load(str(asset_dir / "hair" / style / f"Hair_{direction}.png")).convert_alpha()
+                for direction in ("S", "SE", "E", "NE", "N")
+            }
+            for style in HAIR_STYLES
         }
         self.hair_masks = {
-            direction: {"Hair Color": pygame.mask.from_threshold(asset, (255, 168, 0, 255), (1, 1, 1, 1))}
-            for direction, asset in self.hair.items()
+            style: {
+                direction: {"Hair Color": pygame.mask.from_threshold(asset, (255, 168, 0, 255), (1, 1, 1, 1))}
+                for direction, asset in facings.items()
+            }
+            for style, facings in self.hair.items()
         }
         # Every facing uses the same canvas, so taller hair fits without moving
         # or resizing the standing body as the character turns.
         self.character_size = (
-            max(96, *(asset.get_width() for asset in self.hair.values())),
-            max(self.body.get_height(), *(asset.get_height() for asset in self.hair.values())),
+            max(96, *(asset.get_width() for facings in self.hair.values() for asset in facings.values())),
+            max(self.body.get_height(), *(asset.get_height() for facings in self.hair.values() for asset in facings.values())),
         )
         self.colored_body = None
         self.colored_hands = {}
@@ -73,6 +79,9 @@ class CharacterRenderer:
             raise ValueError("Facing must be one of the eight character directions.")
         if scale <= 0:
             raise ValueError("Sprite scale must be positive.")
+        style = values["Hair"]
+        if style not in HAIR_STYLES:
+            raise ValueError("Hair must be one, two, three, or four.")
         colors = tuple(parse_color(values.get(name, default)) for name, default in DEFAULT_COLORS.items())
         if colors != self._color_key:
             self.values = {
@@ -89,19 +98,24 @@ class CharacterRenderer:
                 for facing, asset in self.eyes.items()
             }
             self.colored_hair = {
-                facing: self._recolor_asset(asset, self.hair_masks[facing])
-                for facing, asset in self.hair.items()
+                style: {
+                    facing: self._recolor_asset(asset, self.hair_masks[style][facing])
+                    for facing, asset in facings.items()
+                }
+                for style, facings in self.hair.items()
             }
             self._color_key = colors
             self._frames.clear()
             self._scaled_frames.clear()
-        if direction not in self._frames:
+        frame_key = (style, direction)
+        if frame_key not in self._frames:
             self.direction = direction
-            self._frames[direction] = self._compose_preview()
-        frame = self._frames[direction]
+            self.hair_style = style
+            self._frames[frame_key] = self._compose_preview()
+        frame = self._frames[frame_key]
         if scale == 1.0:
             return frame
-        key = (direction, scale)
+        key = (style, direction, scale)
         if key not in self._scaled_frames:
             size = (max(1, round(frame.get_width() * scale)), max(1, round(frame.get_height() * scale)))
             self._scaled_frames[key] = pygame.transform.scale(frame, size)
@@ -167,7 +181,7 @@ class CharacterRenderer:
         frame = pygame.Surface(self.character_size, pygame.SRCALPHA)
         frame.blit(body_frame, body_frame.get_rect(midbottom=frame.get_rect().midbottom))
         hair_direction = ("N", "NE", "E", "SE", "S", "SE", "E", "NE")[self.direction]
-        hair = self.colored_hair[hair_direction]
+        hair = self.colored_hair[self.hair_style][hair_direction]
         layer = pygame.Surface(frame.get_size(), pygame.SRCALPHA)
         # Align the bottom centers, letting taller hair extend above the head.
         hair_rect = hair.get_rect(midbottom=frame.get_rect().midbottom)

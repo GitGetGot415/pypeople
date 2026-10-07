@@ -57,7 +57,7 @@ class NPC:
     destination: tuple[float, float] | None = None
     pause_remaining: float = 0.0
     rng: random.Random = field(default_factory=random.Random, repr=False)
-    character: dict = field(default_factory=lambda: normalize_character({"Name": "Judy"}))
+    character: dict = field(default_factory=lambda: normalize_character({"Name": "Judy", "Hair": "one"}))
     facing: int = 4
     sprite_size: tuple[int, int] | None = None
     selected: bool = False

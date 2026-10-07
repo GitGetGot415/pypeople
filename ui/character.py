@@ -6,14 +6,14 @@ import sys
 
 import pygame
 
-from character_data import DEFAULT_COLORS, DIRECTIONS, FIELDS, load_character, parse_color
+from character_data import DEFAULT_COLORS, DIRECTIONS, FIELDS, HAIR_STYLES, load_character, parse_color
 
 from .button import Button
 from .character_sprite import CharacterRenderer
 from .slider import ColorSlider
 from .text import draw_centered_text
 from .text_input import TextInput
-from .theme import BORDER_RADIUS, GRASS, INK, MUTED, PAPER
+from .theme import ACCENT, BORDER_RADIUS, GRASS, INK, MUTED, PAPER
 
 
 class CharacterScreen:
@@ -24,6 +24,7 @@ class CharacterScreen:
 
     def __init__(self):
         self.values = {name: "" for name in self.FIELDS}
+        self.values["Hair"] = "one"
         self.values.update(self.DEFAULT_COLORS)
         self.category = "Stats"
         self.inputs = {}
@@ -36,8 +37,13 @@ class CharacterScreen:
             )
             self.inputs[name].set_value(self.values[name])
         self.tab_buttons = {
-            "Stats": Button((430, 140, 200, 44), "Stats"),
-            "Color": Button((650, 140, 200, 44), "Color"),
+            "Stats": Button((430, 140, 130, 44), "Stats"),
+            "Hair": Button((575, 140, 130, 44), "Hair"),
+            "Color": Button((720, 140, 130, 44), "Color"),
+        }
+        self.hair_buttons = {
+            style: Button((430 + index % 2 * 220, 200 + index // 2 * 158, 200, 148), style.title())
+            for index, style in enumerate(HAIR_STYLES)
         }
         self.color_sliders = {}
         self.color_panels = {}
@@ -117,6 +123,7 @@ class CharacterScreen:
             for sliders in self.color_sliders.values():
                 for slider in sliders:
                     slider.value = random.randint(0, 255)
+            self.values["Hair"] = random.choice(HAIR_STYLES)
             self._sync_values()
             self.message = "Character randomized."
         except (OSError, ValueError) as error:
@@ -191,6 +198,7 @@ class CharacterScreen:
             for name, sliders in self.color_sliders.items():
                 for slider, value in zip(sliders, parse_color(values[name])):
                     slider.value = value
+            self.values["Hair"] = values["Hair"]
             self._sync_values()
             self.message = "Character imported."
         except (ImportError, OSError, json.JSONDecodeError, ValueError) as error:
@@ -217,7 +225,11 @@ class CharacterScreen:
         if self.category == "Stats":
             for text_input in self.inputs.values():
                 text_input.handle_event(event)
-        else:
+        elif self.category == "Hair":
+            for style, button in self.hair_buttons.items():
+                if button.clicked(event):
+                    self.values["Hair"] = style
+        elif self.category == "Color":
             for sliders in self.color_sliders.values():
                 for slider in sliders:
                     slider.handle_event(event)
@@ -275,7 +287,24 @@ class CharacterScreen:
                 label = app.font.render(name, True, INK)
                 surface.blit(label, label.get_rect(midleft=(430, text_input.rect.centery)))
                 text_input.draw(surface, app.font)
-        else:
+        elif self.category == "Hair":
+            for style, button in self.hair_buttons.items():
+                panel = button.rect
+                selected = self.values["Hair"] == style
+                if selected or panel.collidepoint(pygame.mouse.get_pos()):
+                    pygame.draw.rect(surface, GRASS, panel, border_radius=BORDER_RADIUS)
+                pygame.draw.rect(
+                    surface, ACCENT if selected else MUTED, panel,
+                    3 if selected else 1, border_radius=BORDER_RADIUS,
+                )
+                label = app.font.render(button.label, True, INK)
+                surface.blit(label, label.get_rect(midtop=(panel.centerx, panel.y + 12)))
+                values = {**self.values, "Hair": style}
+                frame = self.renderer.render(values, self.direction)
+                scale = min(1.0, (panel.width - 24) / frame.get_width(), (panel.height - 48) / frame.get_height())
+                preview = self.renderer.render(values, self.direction, scale)
+                surface.blit(preview, preview.get_rect(midbottom=(panel.centerx, panel.bottom - 8)))
+        elif self.category == "Color":
             for name, sliders in self.color_sliders.items():
                 panel = self.color_panels[name]
                 pygame.draw.rect(surface, GRASS, panel, 1, border_radius=BORDER_RADIUS)
