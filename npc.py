@@ -3,7 +3,7 @@ from enum import Enum
 import math
 import random
 
-from character_data import DIRECTIONS, normalize_character
+from character_data import DIRECTIONS
 
 WORLD_WIDTH = 960
 WORLD_HEIGHT = 460
@@ -25,6 +25,7 @@ class Tree:
     x: float = 720.0
     y: float = 230.0
     shake_elapsed: float | None = None
+    shaker: "NPC | None" = field(default=None, repr=False, compare=False)
 
     @property
     def shaking(self):
@@ -36,11 +37,13 @@ class Tree:
             return 0
         return round(5 * math.sin(self.shake_elapsed * math.tau * 8))
 
-    def start_shake(self):
+    def start_shake(self, npc):
         self.shake_elapsed = 0.0
+        self.shaker = npc
 
     def cancel_shake(self):
         self.shake_elapsed = None
+        self.shaker = None
 
     def update(self, dt):
         if self.shake_elapsed is not None:
@@ -51,20 +54,21 @@ class Tree:
 
 @dataclass
 class NPC:
+    character: dict
     x: float = 240.0
     y: float = 230.0
     behavior: Behavior = Behavior.WANDER
     destination: tuple[float, float] | None = None
     pause_remaining: float = 0.0
     rng: random.Random = field(default_factory=random.Random, repr=False)
-    character: dict = field(default_factory=lambda: normalize_character({"Name": "Judy", "Details": "", "Hair": "one"}))
     facing: int = 4
     sprite_size: tuple[int, int] | None = None
     selected: bool = False
+    reply: str = ""
 
     @property
     def name(self):
-        return self.character["Name"].strip() or "Judy"
+        return self.character["Name"].strip()
 
     @property
     def movement_bounds(self):
@@ -129,7 +133,8 @@ class NPC:
             return
         if action not in ("WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE"):
             raise ValueError("Unsupported NPC action")
-        tree.cancel_shake()
+        if tree.shaker is self:
+            tree.cancel_shake()
         self.pause_remaining = 0.0
         if action == "WANDER":
             self.behavior = Behavior.WANDER
@@ -162,9 +167,8 @@ class NPC:
         old_x, old_y = self.x, self.y
         left, right, top, bottom = self.movement_bounds
         dt = max(0.0, dt)
-        tree.update(dt)
         if self.behavior == Behavior.SHAKING:
-            if not tree.shaking:
+            if not tree.shaking or tree.shaker is not self:
                 self.behavior = Behavior.STOP
         elif self.behavior == Behavior.WANDER and not self.wandering_paused:
             if self.pause_remaining > 0:
@@ -184,7 +188,7 @@ class NPC:
             if self._move(dt):
                 self.destination = None
                 if self.behavior == Behavior.SHAKE_TREE:
-                    tree.start_shake()
+                    tree.start_shake(self)
                     self.behavior = Behavior.SHAKING
                 else:
                     self.behavior = Behavior.STOP

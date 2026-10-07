@@ -1,12 +1,11 @@
 import json
-import random
 from pathlib import Path
 import subprocess
 import sys
 
 import pygame
 
-from character_data import DEFAULT_COLORS, DIRECTIONS, FIELDS, HAIR_STYLES, load_character, parse_color
+from character_data import DEFAULT_COLORS, DIRECTIONS, FIELDS, HAIR_STYLES, load_character, parse_color, random_character
 
 from .button import Button
 from .character_sprite import CharacterRenderer
@@ -163,37 +162,13 @@ class CharacterScreen:
     def _randomize(self):
         self._clear_focus()
         try:
-            with self.random_config_path.open(encoding="utf-8") as config_file:
-                config = json.load(config_file)
-            if not isinstance(config, dict):
-                raise ValueError("Random settings must be a JSON object.")
-            for key in ("first_names", "last_names"):
-                names = config.get(key)
-                if not isinstance(names, list) or not names or any(
-                    not isinstance(name, str) or not name.strip() for name in names
-                ):
-                    raise ValueError(f"{key} must be a nonempty list of names.")
-            limits = config.get("limits")
-            if not isinstance(limits, dict):
-                raise ValueError("Random settings must include numeric limits.")
-            values = {}
-            for name in ("Age", "Weight", "Height"):
-                bounds = limits.get(name)
-                if not isinstance(bounds, dict):
-                    raise ValueError(f"{name} needs min and max limits.")
-                low, high = bounds.get("min"), bounds.get("max")
-                if type(low) is not int or type(high) is not int or low > high:
-                    raise ValueError(f"{name} needs integer limits with min <= max.")
-                values[name] = str(random.randint(low, high))
-            values["Name"] = f"{random.choice(config['first_names']).strip()} {random.choice(config['last_names']).strip()}"
-            values["Sex"] = random.choice(("M", "F"))
-            # Validate and generate the stats before replacing the current edit.
-            for name, value in values.items():
-                self.inputs[name].set_value(value)
-            for sliders in self.color_sliders.values():
-                for slider in sliders:
-                    slider.value = random.randint(0, 255)
-            self.values["Hair"] = random.choice(HAIR_STYLES)
+            values = random_character(self.random_config_path)
+            for name in self.FIELDS:
+                self.inputs[name].set_value(values[name])
+            for name, sliders in self.color_sliders.items():
+                for slider, value in zip(sliders, parse_color(values[name])):
+                    slider.value = value
+            self.values["Hair"] = values["Hair"]
             self._sync_values()
             self.message = "Character randomized."
         except (OSError, ValueError) as error:

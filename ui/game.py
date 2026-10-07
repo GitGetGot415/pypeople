@@ -17,7 +17,7 @@ class GameScreen:
             (24, 564, 778, 44), placeholder="[insert cool action here]"
         )
         self.dialogue_open = False
-        self._selected_npc = None
+        self.selected_npc = None
         self.reply = ""
 
     def reset(self):
@@ -26,9 +26,9 @@ class GameScreen:
         self.reply = ""
 
     def close_dialogue(self):
-        if self._selected_npc is not None:
-            self._selected_npc.set_selected(False)
-            self._selected_npc = None
+        if self.selected_npc is not None:
+            self.selected_npc.set_selected(False)
+            self.selected_npc = None
         self.dialogue_open = False
         self.prompt_input.active = False
         self.prompt_input.backspace_held = False
@@ -36,6 +36,8 @@ class GameScreen:
     def set_reply(self, text):
         normalized = " ".join(text.split())
         self.reply = "".join(char for char in normalized if char.isprintable())[:160]
+        if self.selected_npc is not None:
+            self.selected_npc.reply = self.reply
 
     def handle_event(self, app, event):
         if self.menu_button.clicked(event):
@@ -52,13 +54,16 @@ class GameScreen:
             and event.button == 1
             and event.pos[1] < WORLD_HEIGHT
         ):
-            if not app.npc.contains(event.pos) or self.dialogue_open:
+            npc = next((npc for npc in sorted(app.npcs, key=lambda npc: npc.y, reverse=True) if npc.contains(event.pos)), None)
+            if npc is None or npc is self.selected_npc:
                 self.close_dialogue()
             else:
+                self.close_dialogue()
                 self.dialogue_open = True
-                self._selected_npc = app.npc
-                app.npc.set_selected(True)
-                self.set_reply("Hi! What should I do today?")
+                self.selected_npc = npc
+                npc.set_selected(True)
+                self.prompt_input.set_value("")
+                self.set_reply(npc.reply or f"Hi, I'm {npc.name}! What should I do today?")
                 self.prompt_input.focus()
             return
         if self.dialogue_open:
@@ -69,24 +74,28 @@ class GameScreen:
                 app.submit()
 
     def draw(self, app):
-        draw_world(app.window, app.npc, app.tree, app.small_font, app.character.renderer)
+        draw_world(app.window, app.npcs, app.tree, app.small_font, app.character.renderer)
         app.window.blit(app.small_font.render("Pypeople", True, INK), (24, 26))
         self.menu_button.draw(app.window, app.small_font)
 
         pygame.draw.rect(app.window, PAPER, (0, WORLD_HEIGHT, 960, 180))
         pygame.draw.line(app.window, (129, 154, 110), (0, WORLD_HEIGHT), (960, WORLD_HEIGHT), 3)
-        status = app.npc.status
+        status = self.selected_npc.status if self.selected_npc is not None else f"{len(app.npcs)} NPCs"
         if app.requests.busy:
-            prefix = "Thinking..." if app.requests.pending_session == app.session_id else "Finishing earlier request..."
+            prefix = (
+                f"Thinking for {app.request_npc.name}..."
+                if app.requests.pending_session == app.session_id and app.request_npc is not None
+                else "Finishing earlier request..."
+            )
             status = f"{prefix} / {status}"
         rendered_status = app.small_font.render(status, True, MUTED)
         app.window.blit(rendered_status, rendered_status.get_rect(topright=(936, 478)))
         if not self.dialogue_open:
-            app.window.blit(app.heading_font.render("So far we have one AI", True, INK), (24, 494))
-            app.window.blit(app.font.render(f"Click {app.npc.name} to talk to her.", True, MUTED), (24, 538))
-            app.window.blit(app.small_font.render("Ask her to wander, stop, or shake the tree.", True, MUTED), (24, 602))
+            app.window.blit(app.heading_font.render("Meet the people in your world", True, INK), (24, 494))
+            app.window.blit(app.font.render("Click anyone to start a conversation.", True, MUTED), (24, 538))
+            app.window.blit(app.small_font.render("Ask them to wander, stop, or shake the tree.", True, MUTED), (24, 602))
             return
-        app.window.blit(app.font.render(app.npc.name, True, INK), (24, 477))
+        app.window.blit(app.font.render(self.selected_npc.name, True, INK), (24, 477))
         draw_wrapped_text(app.window, self.reply, app.font, INK, (24, 500, 912, 58))
         self.prompt_input.draw(app.window, app.font)
         self.send_button.draw(app.window, app.font, enabled=not app.requests.busy)

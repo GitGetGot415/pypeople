@@ -1,8 +1,9 @@
+import json
 from pathlib import Path
 
 import pygame
 
-from character_data import load_character
+from character_data import load_character, random_character
 from npc import NPC, Tree
 
 from .game import GameScreen
@@ -15,6 +16,7 @@ from .world import CHARACTER_SCALE
 
 
 JUDY_CHARACTER_PATH = Path(__file__).resolve().parent.parent / "characters" / "judy.json"
+RANDOM_CHARACTER_PATHS = tuple(JUDY_CHARACTER_PATH.parent / f"random_{index}.json" for index in (1, 2))
 
 
 class Application:
@@ -31,7 +33,8 @@ class Application:
         self.api_key = ""
         self.provider = "gemini"
         self.session_id = 0
-        self.npc = None
+        self.npcs = []
+        self.request_npc = None
         self.tree = None
         self.requests = RequestManager()
         self.menu = MenuScreen()
@@ -47,17 +50,26 @@ class Application:
 
     def start_game(self):
         try:
-            character = load_character(JUDY_CHARACTER_PATH)
+            characters = [load_character(JUDY_CHARACTER_PATH)]
+            generated = [random_character() for _ in RANDOM_CHARACTER_PATHS]
+            for path, character in zip(RANDOM_CHARACTER_PATHS, generated):
+                with path.open("w", encoding="utf-8") as character_file:
+                    json.dump(character, character_file, indent=2, ensure_ascii=False)
+                characters.append(load_character(path))
         except (OSError, ValueError) as error:
-            self.menu.message = f"Could not load Judy: {error}"
+            self.menu.message = f"Could not start game: {error}"
             return
         self.menu.message = ""
         self.session_id += 1
-        self.npc = NPC(character=character)
-        sprite = self.character.renderer.render(character, self.npc.facing, CHARACTER_SCALE)
-        self.npc.sprite_size = sprite.get_size()
-        self.tree = Tree()
         self.game.reset()
+        self.request_npc = None
+        self.npcs = []
+        for character, position in zip(characters, ((240, 230), (430, 230), (530, 330))):
+            npc = NPC(character=character, x=position[0], y=position[1])
+            sprite = self.character.renderer.render(character, npc.facing, CHARACTER_SCALE)
+            npc.sprite_size = sprite.get_size()
+            self.npcs.append(npc)
+        self.tree = Tree()
         self.screen = "game"
 
     def leave_game(self):
@@ -71,14 +83,16 @@ class Application:
 
     def submit(self):
         message = self.game.prompt_input.text.strip()[:300]
-        if self.screen != "game" or not self.game.dialogue_open or not message or self.requests.busy:
+        npc = self.game.selected_npc
+        if self.screen != "game" or npc is None or not message or self.requests.busy:
             return
         if self.provider == "gemini" and not self.api_key:
             self.game.set_reply("I think you forgot to add your API key in Settings...")
             return
-        if not self.requests.submit(self.session_id, self.provider, self.api_key, message, self.npc.snapshot(self.tree)):
+        if not self.requests.submit(self.session_id, self.provider, self.api_key, message, npc.snapshot(self.tree)):
             self.game.set_reply("Could not start the request. Please try again.")
             return
+        self.request_npc = npc
         self.game.prompt_input.set_value("")
 
     def handle_event(self, event):
@@ -90,16 +104,21 @@ class Application:
     def update(self, dt):
         active_session = self.session_id if self.screen == "game" else None
         for result, error in self.requests.poll(active_session):
-            if error:
-                self.game.set_reply(error)
-            else:
-                self.npc.apply_action(result.action, self.tree)
-                self.game.set_reply(result.reply)
+            npc = self.request_npc
+            if npc is None:
+                continue
+            if not error:
+                npc.apply_action(result.action, self.tree)
+            npc.reply = error or result.reply
+            if self.game.selected_npc is npc:
+                self.game.set_reply(npc.reply)
         self.game.prompt_input.update(dt)
         self.settings.key_input.update(dt)
         self.character.update(dt)
         if self.screen == "game":
-            self.npc.update(dt, self.tree)
+            self.tree.update(dt)
+            for npc in self.npcs:
+                npc.update(dt, self.tree)
 
     def draw(self):
         self.screens[self.screen].draw(self)

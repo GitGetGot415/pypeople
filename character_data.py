@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import random
 
 
 FIELDS = ("Name", "Age", "Weight", "Height", "Sex", "Details")
@@ -11,6 +12,7 @@ DEFAULT_COLORS = {
     "Eye Color": "#05FF00", "Hair Color": "#FFA800",
 }
 DIRECTIONS = ("North", "North east", "East", "South east", "South", "South west", "West", "North west")
+RANDOM_CONFIG_PATH = Path(__file__).resolve().parent / "assets" / "character_randomization.json"
 
 
 def parse_color(value):
@@ -49,3 +51,36 @@ def normalize_character(data):
 def load_character(path):
     with Path(path).open(encoding="utf-8") as character_file:
         return normalize_character(json.load(character_file))
+
+
+def random_character(config_path=RANDOM_CONFIG_PATH):
+    """Generate a complete character using the creator's random settings."""
+    with Path(config_path).open(encoding="utf-8") as config_file:
+        config = json.load(config_file)
+    if not isinstance(config, dict):
+        raise ValueError("Random settings must be a JSON object.")
+    for key in ("first_names", "last_names", "details"):
+        choices = config.get(key)
+        if not isinstance(choices, list) or not choices or any(
+            not isinstance(value, str) or not value.strip() for value in choices
+        ):
+            raise ValueError(f"{key} must be a nonempty list of text.")
+    limits = config.get("limits")
+    if not isinstance(limits, dict):
+        raise ValueError("Random settings must include numeric limits.")
+    values = {}
+    for name in ("Age", "Weight", "Height"):
+        bounds = limits.get(name)
+        if not isinstance(bounds, dict):
+            raise ValueError(f"{name} needs min and max limits.")
+        low, high = bounds.get("min"), bounds.get("max")
+        if type(low) is not int or type(high) is not int or low > high:
+            raise ValueError(f"{name} needs integer limits with min <= max.")
+        values[name] = str(random.randint(low, high))
+    values["Name"] = f"{random.choice(config['first_names']).strip()} {random.choice(config['last_names']).strip()}"
+    values["Sex"] = random.choice(("M", "F"))
+    values["Details"] = random.choice(config["details"]).strip()
+    values["Hair"] = random.choice(HAIR_STYLES)
+    for name in DEFAULT_COLORS:
+        values[name] = "#" + "".join(f"{random.randint(0, 255):02X}" for _ in range(3))
+    return normalize_character(values)

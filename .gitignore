@@ -1,3 +1,5 @@
 __pycache__
 .venv/
 .env
+characters/random_1.json
+characters/random_2.json

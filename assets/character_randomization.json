@@ -13,6 +13,16 @@
     "Martin", "Mitchell", "Morgan", "Nguyen", "Parker", "Patel",
     "Reed", "Rivera", "Scott", "Smith", "Taylor", "Wilson"
   ],
+  "details": [
+    "Friendly and curious. You enjoy exploring the world, meeting people, and asking thoughtful questions. Speak warmly and enthusiastically.",
+    "Quiet and observant. You enjoy peaceful walks and spending time near the tree. Give calm, thoughtful replies.",
+    "Playful and optimistic. You like making people smile and finding small adventures. Speak with light humor.",
+    "Practical and direct. You prefer clear plans and useful answers. Keep your replies straightforward.",
+    "Gentle and caring. You enjoy listening to others and helping them feel welcome. Speak kindly and patiently.",
+    "Confident and adventurous. You enjoy trying new things and exploring your surroundings. Speak with energy.",
+    "Reflective and imaginative. You enjoy nature and thinking about unusual ideas. Speak thoughtfully and creatively.",
+    "Sociable and easygoing. You enjoy conversations and relaxing outdoors. Speak casually and warmly."
+  ],
   "limits": {
     "Age": {"min": 18, "max": 60, "unit": "years"},
     "Weight": {"min": 45, "max": 130, "unit": "kg"},

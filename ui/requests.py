@@ -36,7 +36,7 @@ class RequestManager:
             target=_request_worker,
             args=(session_id, provider, api_key, message, snapshot, self.results),
             daemon=True,
-            name="Judy-model-request",
+            name="NPC-model-request",
         )
         try:
             self.worker.start()
