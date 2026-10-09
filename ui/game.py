@@ -1,6 +1,6 @@
 import pygame
 
-from npc import WORLD_HEIGHT
+from npc import WORLD_HEIGHT, WORLD_WIDTH
 
 from .button import Button
 from .text import draw_wrapped_text
@@ -19,11 +19,19 @@ class GameScreen:
         self.dialogue_open = False
         self.selected_npc = None
         self.reply = ""
+        self.camera_offset = [0.0, 0.0]
+        self.pan_start = None
+        self.pan_last = None
+        self.panning = False
 
     def reset(self):
         self.close_dialogue()
         self.prompt_input.set_value("")
         self.reply = ""
+        self.camera_offset[:] = (0.0, 0.0)
+        self.pan_start = None
+        self.pan_last = None
+        self.panning = False
 
     def close_dialogue(self):
         if self.selected_npc is not None:
@@ -40,6 +48,31 @@ class GameScreen:
             self.selected_npc.reply = self.reply
 
     def handle_event(self, app, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if event.pos[1] < WORLD_HEIGHT and not self.menu_button.rect.collidepoint(event.pos):
+                self.pan_start = event.pos
+                self.pan_last = event.pos
+                self.panning = False
+            else:
+                self.pan_start = None
+                self.pan_last = None
+                self.panning = False
+        elif event.type == pygame.MOUSEMOTION and self.pan_start is not None:
+            dx = event.pos[0] - self.pan_start[0]
+            dy = event.pos[1] - self.pan_start[1]
+            if self.panning or dx * dx + dy * dy >= 16:
+                self.panning = True
+                self.camera_offset[0] += event.pos[0] - self.pan_last[0]
+                self.camera_offset[1] += event.pos[1] - self.pan_last[1]
+            self.pan_last = event.pos
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1 and self.pan_start is not None:
+            if not self.panning and 0 <= event.pos[0] < WORLD_WIDTH and event.pos[1] < WORLD_HEIGHT:
+                self.select_at(app, event.pos)
+            self.pan_start = None
+            self.pan_last = None
+            self.panning = False
+            return
+
         if self.menu_button.clicked(event):
             app.leave_game()
             return
@@ -49,23 +82,6 @@ class GameScreen:
             else:
                 app.leave_game()
             return
-        if (
-            event.type == pygame.MOUSEBUTTONDOWN
-            and event.button == 1
-            and event.pos[1] < WORLD_HEIGHT
-        ):
-            npc = next((npc for npc in sorted(app.npcs, key=lambda npc: npc.y, reverse=True) if npc.contains(event.pos)), None)
-            if npc is None or npc is self.selected_npc:
-                self.close_dialogue()
-            else:
-                self.close_dialogue()
-                self.dialogue_open = True
-                self.selected_npc = npc
-                npc.set_selected(True)
-                self.prompt_input.set_value("")
-                self.set_reply(npc.reply or f"Hi, I'm {npc.name}! What should I do today?")
-                self.prompt_input.focus()
-            return
         if self.dialogue_open:
             if self.send_button.clicked(event):
                 app.submit()
@@ -73,8 +89,22 @@ class GameScreen:
             elif self.prompt_input.handle_event(event):
                 app.submit()
 
+    def select_at(self, app, screen_pos):
+        world_pos = (screen_pos[0] - self.camera_offset[0], screen_pos[1] - self.camera_offset[1])
+        npc = next((npc for npc in sorted(app.npcs, key=lambda npc: npc.y, reverse=True) if npc.contains(world_pos)), None)
+        if npc is None or npc is self.selected_npc:
+            self.close_dialogue()
+        else:
+            self.close_dialogue()
+            self.dialogue_open = True
+            self.selected_npc = npc
+            npc.set_selected(True)
+            self.prompt_input.set_value("")
+            self.set_reply(npc.reply or f"Hi, I'm {npc.name}! What should I do today?")
+            self.prompt_input.focus()
+
     def draw(self, app):
-        draw_world(app.window, app.npcs, app.tree, app.small_font, app.character.renderer)
+        draw_world(app.window, app.npcs, app.tree, app.small_font, app.character.renderer, self.camera_offset)
         app.window.blit(app.small_font.render("Pypeople", True, INK), (24, 26))
         self.menu_button.draw(app.window, app.small_font)
 
@@ -93,7 +123,7 @@ class GameScreen:
         if not self.dialogue_open:
             app.window.blit(app.heading_font.render("Meet the people in your world", True, INK), (24, 494))
             app.window.blit(app.font.render("Click anyone to start a conversation.", True, MUTED), (24, 538))
-            app.window.blit(app.small_font.render("Ask them to wander, stop, or shake the tree.", True, MUTED), (24, 602))
+            app.window.blit(app.small_font.render("Drag the world to move the camera. Ask people to wander, stop, or shake the tree.", True, MUTED), (24, 602))
             return
         app.window.blit(app.font.render(self.selected_npc.name, True, INK), (24, 477))
         draw_wrapped_text(app.window, self.reply, app.font, INK, (24, 500, 912, 58))
