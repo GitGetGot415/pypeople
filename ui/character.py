@@ -25,6 +25,7 @@ class CharacterScreen:
         self.values = {name: "" for name in self.FIELDS}
         self.values["Hair"] = "one"
         self.values.update(self.DEFAULT_COLORS)
+        self.values["Opinions"] = {}
         self.category = "Stats"
         self.inputs = {}
         for index, name in enumerate(self.FIELDS):
@@ -169,6 +170,7 @@ class CharacterScreen:
                 for slider, value in zip(sliders, parse_color(values[name])):
                     slider.value = value
             self.values["Hair"] = values["Hair"]
+            self.values["Opinions"] = values["Opinions"]
             self._sync_values()
             self.message = "Character randomized."
         except (OSError, ValueError) as error:
@@ -244,6 +246,8 @@ class CharacterScreen:
                 for slider, value in zip(sliders, parse_color(values[name])):
                     slider.value = value
             self.values["Hair"] = values["Hair"]
+            # Preserve opinions on import/export without exposing an editor.
+            self.values["Opinions"] = values["Opinions"]
             self._sync_values()
             self.message = "Character imported."
         except (ImportError, OSError, json.JSONDecodeError, ValueError) as error:

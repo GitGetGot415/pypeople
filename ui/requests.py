@@ -3,18 +3,18 @@ import threading
 
 from pydantic import ValidationError
 
-from llm import ActionResponse, RequestError, request_action
+from llm import RequestError, request_response, validate_response
 
 
 def _request_worker(session_id, provider, api_key, message, snapshot, results):
     """Only communicate through the queue; never touch Pygame or live state."""
     try:
-        result = request_action(provider, api_key, message, snapshot)
-        results.put((session_id, result.model_dump_json(), None))
+        result = request_response(provider, api_key, message, snapshot)
+        results.put((session_id, result.model_dump_json(), None, snapshot))
     except RequestError as exc:
-        results.put((session_id, None, str(exc)))
+        results.put((session_id, None, str(exc), snapshot))
     except Exception:
-        results.put((session_id, None, "Could not get a reply from the model. Please try again."))
+        results.put((session_id, None, "Could not get a reply from the model. Please try again.", snapshot))
 
 
 class RequestManager:
@@ -51,7 +51,7 @@ class RequestManager:
         replies = []
         while True:
             try:
-                session_id, raw, error = self.results.get_nowait()
+                session_id, raw, error, snapshot = self.results.get_nowait()
             except queue.Empty:
                 break
             if session_id != active_session:
@@ -61,9 +61,7 @@ class RequestManager:
                 continue
             try:
                 # Revalidate at the main-thread boundary before touching the world.
-                result = ActionResponse.model_validate_json(raw)
-                if not result.reply.strip():
-                    raise ValueError("Empty reply")
+                result = validate_response(raw, snapshot)
             except (ValidationError, ValueError, TypeError):
                 replies.append((None, "The model returned an invalid action or reply. Try again."))
                 continue

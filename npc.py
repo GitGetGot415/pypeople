@@ -2,8 +2,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 import math
 import random
+import json
+from pathlib import Path
 
-from character_data import DIRECTIONS
+from character_data import DIRECTIONS, normalize_opinions
 
 WORLD_WIDTH = 960
 WORLD_HEIGHT = 460
@@ -65,6 +67,8 @@ class NPC:
     sprite_size: tuple[int, int] | None = None
     selected: bool = False
     reply: str = ""
+    conversation: "Conversation | None" = field(default=None, repr=False, compare=False)
+    character_path: Path | None = field(default=None, repr=False, compare=False)
 
     @property
     def name(self):
@@ -85,6 +89,12 @@ class NPC:
 
     @property
     def status(self):
+        if self.conversation is not None:
+            if self.conversation.arrived:
+                return f"Talking with {self.conversation.other(self).name}"
+            if self.conversation.initiator is self:
+                return f"Walking to {self.conversation.recipient.name}"
+            return f"Waiting for {self.conversation.initiator.name}"
         if self.wandering_paused:
             return "Talking"
         return {
@@ -107,7 +117,7 @@ class NPC:
     def snapshot(self, tree):
         return {
             "npc_name": self.name,
-            "character": self.character.copy(),
+            "character": {**self.character, "Opinions": self.opinions},
             "facing": DIRECTIONS[self.facing],
             "selected": self.selected,
             "position": [round(self.x, 1), round(self.y, 1)],
@@ -115,7 +125,26 @@ class NPC:
             "only_interactable_object": "tree",
             "tree_interaction_point": list(TREE_INTERACTION_POINT),
             "tree_is_shaking": tree.shaking,
+            "last_reply": self.reply,
         }
+
+    @property
+    def opinions(self):
+        # Copy nested entries so worker snapshots cannot modify live opinions.
+        return {person: entry.copy() for person, entry in self.character.get("Opinions", {}).items()}
+
+    def remember_opinions(self, updates):
+        opinions = normalize_opinions({**self.opinions, **updates})
+        if opinions == self.opinions:
+            return
+        if self.character_path is not None:
+            # Preserve profile edits made on disk while the game is running.
+            data = json.loads(self.character_path.read_text(encoding="utf-8"))
+            data["Opinions"] = opinions
+            temporary = self.character_path.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            temporary.replace(self.character_path)
+        self.character["Opinions"] = opinions
 
     def _face_when_still(self):
         at_tree = math.hypot(self.x - TREE_INTERACTION_POINT[0], self.y - TREE_INTERACTION_POINT[1]) <= 1e-6
@@ -124,7 +153,7 @@ class NPC:
     def set_selected(self, selected):
         """Pause wandering while explicit tasks keep running during dialogue."""
         self.selected = selected
-        if selected and (self.wandering_paused or self.behavior in (Behavior.STOP, Behavior.SHAKING)):
+        if self.conversation is None and selected and (self.wandering_paused or self.behavior in (Behavior.STOP, Behavior.SHAKING)):
             self._face_when_still()
 
     def apply_action(self, action, tree):
@@ -164,6 +193,8 @@ class NPC:
         return False
 
     def update(self, dt, tree):
+        if self.conversation is not None:
+            return
         old_x, old_y = self.x, self.y
         left, right, top, bottom = self.movement_bounds
         dt = max(0.0, dt)
@@ -206,3 +237,92 @@ class NPC:
             or (self.behavior == Behavior.WANDER and (self.destination is None or self.pause_remaining > 0))
         ):
             self._face_when_still()
+
+
+class Conversation:
+    """Temporarily reserve two NPCs, then restore their interrupted activities."""
+
+    def __init__(self, initiator, recipient, topic, tree, spacing=0):
+        if initiator is recipient or initiator.conversation or recipient.conversation:
+            raise ValueError("Choose another NPC who is free to talk.")
+        self.initiator = initiator
+        self.recipient = recipient
+        self.topic = topic
+        self.arrived = False
+        self.active = True
+        self.turns = []
+        self.error = ""
+        self.saved_states = []
+        self.shake_elapsed = None
+        # Stand side by side with a visible gap, using the side with room.
+        gap = (initiator.sprite_size or (NPC_RADIUS * 2, NPC_RADIUS))[0] / 2
+        gap += (recipient.sprite_size or (NPC_RADIUS * 2, NPC_RADIUS))[0] / 2 + 12
+        gap = max(gap, spacing)
+        left, right, top, bottom = initiator.movement_bounds
+        candidates = [
+            (recipient.x - gap, recipient.y),
+            (recipient.x + gap, recipient.y),
+        ]
+        candidates = [point for point in candidates if left <= point[0] <= right and top <= point[1] <= bottom]
+        if not candidates:
+            # Unusually wide sprites can require separation along the y axis.
+            height = max((npc.sprite_size or (NPC_RADIUS * 2, NPC_RADIUS))[1] for npc in (initiator, recipient)) + 12
+            candidates = [(recipient.x, recipient.y - height), (recipient.x, recipient.y + height)]
+            candidates = [point for point in candidates if left <= point[0] <= right and top <= point[1] <= bottom]
+        if not candidates:
+            raise ValueError("There isn't enough room here for a conversation.")
+        for npc in (initiator, recipient):
+            self.saved_states.append((npc.behavior, npc.destination, npc.pause_remaining, npc.facing))
+            if tree.shaker is npc:
+                self.shake_elapsed = (npc, tree.shake_elapsed)
+                tree.cancel_shake()
+            npc.conversation = self
+        initiator.destination = min(candidates, key=lambda point: math.hypot(point[0] - initiator.x, point[1] - initiator.y))
+
+    def other(self, npc):
+        return self.recipient if npc is self.initiator else self.initiator
+
+    def update(self, dt):
+        if not self.active or self.arrived:
+            return
+        npc = self.initiator
+        old_x, old_y = npc.x, npc.y
+        self.arrived = npc._move(max(0.0, dt))
+        if self.arrived:
+            npc.destination = None
+            for participant in (self.initiator, self.recipient):
+                other = self.other(participant)
+                angle = math.atan2(other.x - participant.x, participant.y - other.y)
+                participant.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
+        elif npc.x != old_x or npc.y != old_y:
+            angle = math.atan2(npc.x - old_x, old_y - npc.y)
+            npc.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
+
+    def snapshot(self, tree, npcs):
+        return {
+            "request_kind": "conversation",
+            "initiator": self.initiator.snapshot(tree),
+            "recipient": self.recipient.snapshot(tree),
+            "player_request": self.topic,
+            "initiator_opinion_of_recipient": self.initiator.opinions.get(self.recipient.name),
+            "recipient_opinion_of_initiator": self.recipient.opinions.get(self.initiator.name),
+            "nearby_npcs": [npc.snapshot(tree) for npc in npcs if npc is not self.initiator and npc is not self.recipient],
+        }
+
+    def finish(self, tree):
+        if not self.active:
+            return
+        self.active = False
+        for npc, state in zip((self.initiator, self.recipient), self.saved_states):
+            npc.conversation = None
+            npc.behavior, npc.destination, npc.pause_remaining, npc.facing = state
+        if self.shake_elapsed is not None:
+            npc, elapsed = self.shake_elapsed
+            at_tree = math.hypot(npc.x - TREE_INTERACTION_POINT[0], npc.y - TREE_INTERACTION_POINT[1]) <= 1e-6
+            if not tree.shaking and at_tree:
+                tree.start_shake(npc)
+                tree.shake_elapsed = elapsed
+            else:
+                # Return to the tree if the initiator walked away during the chat.
+                npc.behavior = Behavior.SHAKE_TREE
+                npc.destination = TREE_INTERACTION_POINT

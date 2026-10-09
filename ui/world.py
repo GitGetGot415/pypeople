@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pygame
 
 from npc import WORLD_WIDTH, WORLD_HEIGHT
@@ -6,6 +8,15 @@ from .theme import GRASS, INK, MUTED, WALKABLE_GRASS
 
 
 CHARACTER_SCALE = 0.5
+_talking_bubble = None
+
+
+def talking_bubble():
+    global _talking_bubble
+    if _talking_bubble is None:
+        path = Path(__file__).resolve().parent.parent / "assets" / "Talking.png"
+        _talking_bubble = pygame.image.load(str(path)).convert_alpha()
+    return _talking_bubble
 
 
 def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0)):
@@ -37,3 +48,10 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
         name_rect = name.get_rect(midtop=(position[0], position[1] + 6))
         name_rect.clamp_ip(pygame.Rect(0, 0, WORLD_WIDTH, WORLD_HEIGHT))
         surface.blit(name, name_rect)
+    # Draw above every character, anchored to the initiator's top right.
+    for npc in npcs:
+        if npc.conversation is not None and npc.conversation.arrived and npc.conversation.initiator is npc:
+            width, height = npc.sprite_size or character_renderer.render(npc.character, npc.facing, CHARACTER_SCALE).get_size()
+            bubble = talking_bubble()
+            rect = bubble.get_rect(bottomleft=(round(npc.x + offset_x + width / 2 - 6), round(npc.y + offset_y - height + 8)))
+            surface.blit(bubble, rect)

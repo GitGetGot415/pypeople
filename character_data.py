@@ -45,6 +45,25 @@ def normalize_character(data):
         except ValueError as error:
             raise ValueError(f"{name}: {error}") from error
         values[name] = "#" + "".join(f"{channel:02X}" for channel in rgb)
+    values["Opinions"] = normalize_opinions(data.get("Opinions", {}))
+    return values
+
+
+def normalize_opinions(opinions):
+    """Opinions belong to game state and are deliberately excluded from FIELDS."""
+    if not isinstance(opinions, dict):
+        raise ValueError("Opinions must map person names to an opinion and reason.")
+    values = {}
+    for person, entry in opinions.items():
+        if not isinstance(person, str) or not person.strip() or not isinstance(entry, dict):
+            raise ValueError("Each opinion needs a person name, numeric opinion, and reason.")
+        score = entry.get("opinion")
+        reason = entry.get("reason")
+        if type(score) is not int or not -100 <= score <= 100:
+            raise ValueError("Opinion scores must be integers from -100 to 100.")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("Each opinion needs a nonempty reason.")
+        values[person.strip()] = {"opinion": score, "reason": reason.strip()}
     return values
 
 

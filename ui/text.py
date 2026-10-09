@@ -8,14 +8,13 @@ def draw_centered_text(surface, text, font, y, color=INK):
     surface.blit(rendered, rendered.get_rect(midtop=(surface.get_width() // 2, y)))
 
 
-def draw_wrapped_text(surface, text, font, color, rect):
-    """Wrap words (and very long words), clipping all drawing to the rectangle."""
-    rect = pygame.Rect(rect)
+def wrap_text(text, font, width):
+    """Wrap words, including words longer than the available width."""
     lines = []
     line = ""
     for word in text.split():
         candidate = f"{line} {word}" if line else word
-        if font.size(candidate)[0] <= rect.width:
+        if font.size(candidate)[0] <= width:
             line = candidate
             continue
         if line:
@@ -23,12 +22,19 @@ def draw_wrapped_text(surface, text, font, color, rect):
             line = ""
         # A single unbroken word must fit too.
         for char in word:
-            if line and font.size(line + char)[0] > rect.width:
+            if line and font.size(line + char)[0] > width:
                 lines.append(line)
                 line = ""
             line += char
     if line:
         lines.append(line)
+    return lines
+
+
+def draw_wrapped_text(surface, text, font, color, rect):
+    """Wrap words (and very long words), clipping all drawing to the rectangle."""
+    rect = pygame.Rect(rect)
+    lines = wrap_text(text, font, rect.width)
     previous_clip = surface.get_clip()
     surface.set_clip(rect.clip(previous_clip))
     y = rect.y
