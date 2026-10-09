@@ -11,9 +11,11 @@
   - character_sprite.py - shares character sprites between the character creator and game
   - character.py - the character creator screen
   - game.py - game screen
+  - file_dialog.py - shared character JSON file picker
   - menu.py - menu screen
   - requests.py - background requests and response handling
   - settings.py - settings screen
+  - setup.py - NPC count and character selection before a game
   - slider.py - handles sliders
   - text_input.py - controls how text input works
   - text.py - displays the text

@@ -1,13 +1,12 @@
 import json
 from pathlib import Path
-import subprocess
-import sys
 
 import pygame
 
 from character_data import DEFAULT_COLORS, DIRECTIONS, FIELDS, HAIR_STYLES, load_character, parse_color, random_character
 
 from .button import Button
+from .file_dialog import character_file_dialog
 from .character_sprite import CharacterRenderer
 from .slider import ColorSlider
 from .text import draw_centered_text
@@ -176,51 +175,7 @@ class CharacterScreen:
         except (OSError, ValueError) as error:
             self.message = f"Could not randomize character: {error}"
 
-    def _file_dialog(self, save):
-        if sys.platform == "darwin":
-            # Creating even a hidden Tk root can abort Python in some macOS
-            # Tcl/Tk builds. Use macOS's native picker instead.
-            if save:
-                script = 'POSIX path of (choose file name with prompt "Export character" default name "character.json")'
-            else:
-                script = 'POSIX path of (choose file with prompt "Import character" of type {"public.json"})'
-            result = subprocess.run(
-                ("/usr/bin/osascript", "-e", script),
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            # AppleScript returns a nonzero status when the user cancels.
-            return result.stdout.strip() if result.returncode == 0 else ""
-
-        import tkinter as tk
-        from tkinter import filedialog
-
-        try:
-            root = tk.Tk()
-        except tk.TclError as error:
-            raise OSError("File dialog is unavailable.") from error
-        root.withdraw()
-        root.attributes("-topmost", True)
-        try:
-            try:
-                if save:
-                    return filedialog.asksaveasfilename(
-                        parent=root,
-                        title="Export character",
-                        defaultextension=".json",
-                        filetypes=(("JSON files", "*.json"), ("All files", "*.*")),
-                        initialfile="character.json",
-                    )
-                return filedialog.askopenfilename(
-                    parent=root,
-                    title="Import character",
-                    filetypes=(("JSON files", "*.json"), ("All files", "*.*")),
-                )
-            except tk.TclError as error:
-                raise OSError("File dialog is unavailable.") from error
-        finally:
-            root.destroy()
+    _file_dialog = staticmethod(character_file_dialog)
 
     def _export(self):
         self._sync_values()

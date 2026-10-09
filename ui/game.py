@@ -24,6 +24,7 @@ class GameScreen:
         self.viewed_conversation = None
         self.conversation_tree = None
         self.dialogue_scroll = 0
+        self.reply_rect = pygame.Rect(24, 500, 912, 58)
         self.camera_offset = [0.0, 0.0]
         self.pan_start = None
         self.pan_last = None
@@ -47,12 +48,14 @@ class GameScreen:
             self.selected_npc.set_selected(False)
             self.selected_npc = None
         self.dialogue_open = False
+        self.dialogue_scroll = 0
         self.prompt_input.active = False
         self.prompt_input.backspace_held = False
 
     def set_reply(self, text):
         normalized = " ".join(text.split())
-        self.reply = "".join(char for char in normalized if char.isprintable())[:160]
+        self.reply = "".join(char for char in normalized if char.isprintable())
+        self.dialogue_scroll = 0
         if self.selected_npc is not None:
             self.selected_npc.reply = self.reply
 
@@ -92,24 +95,36 @@ class GameScreen:
                 app.leave_game()
             return
         if self.dialogue_open:
+            if self.handle_dialogue_scroll(app, event):
+                return
             if self.viewed_conversation is not None:
                 if self.done_button.clicked(event):
                     self.close_dialogue()
                 elif self.retry_button.clicked(event, enabled=bool(self.viewed_conversation.error) and not app.requests.busy):
                     app.request_conversation_dialogue(self.viewed_conversation)
-                elif event.type == pygame.MOUSEWHEEL:
-                    self.dialogue_scroll = max(0, self.dialogue_scroll - event.y * app.small_font.get_linesize() * 3)
-                elif event.type == pygame.KEYDOWN:
-                    if event.key in (pygame.K_DOWN, pygame.K_PAGEDOWN):
-                        self.dialogue_scroll += 80
-                    elif event.key in (pygame.K_UP, pygame.K_PAGEUP):
-                        self.dialogue_scroll = max(0, self.dialogue_scroll - 80)
                 return
             if self.send_button.clicked(event):
                 app.submit()
                 self.prompt_input.focus()
             elif self.prompt_input.handle_event(event):
                 app.submit()
+
+    def handle_dialogue_scroll(self, app, event):
+        font = app.small_font if self.viewed_conversation is not None else app.font
+        if event.type == pygame.MOUSEWHEEL:
+            pos = getattr(event, "pos", pygame.mouse.get_pos())
+            if self.viewed_conversation is None and not self.reply_rect.collidepoint(pos):
+                return False
+            self.dialogue_scroll = max(0, self.dialogue_scroll - event.y * font.get_linesize() * 3)
+            return True
+        if event.type == pygame.KEYDOWN:
+            if event.key in (pygame.K_DOWN, pygame.K_PAGEDOWN):
+                self.dialogue_scroll += font.get_linesize() if event.key == pygame.K_DOWN else 80
+                return True
+            if event.key in (pygame.K_UP, pygame.K_PAGEUP):
+                self.dialogue_scroll = max(0, self.dialogue_scroll - (font.get_linesize() if event.key == pygame.K_UP else 80))
+                return True
+        return False
 
     def select_at(self, app, screen_pos):
         world_pos = (screen_pos[0] - self.camera_offset[0], screen_pos[1] - self.camera_offset[1])
@@ -163,10 +178,10 @@ class GameScreen:
             app.window.blit(app.small_font.render("Drag to move the camera. Ask people to wander, stop, shake the tree, or talk to another NPC.", True, MUTED), (24, 602))
             return
         app.window.blit(app.font.render(self.selected_npc.name, True, INK), (24, 477))
-        draw_wrapped_text(app.window, self.reply, app.font, INK, (24, 500, 912, 58))
+        self.draw_dialogue_lines(app.window, wrap_text(self.reply, app.font, self.reply_rect.width - 12), app.font, self.reply_rect)
         self.prompt_input.draw(app.window, app.font)
         self.send_button.draw(app.window, app.font, enabled=not app.requests.busy)
-        hint = self.prompt_input.error or "Enter to send. Ctrl+V to paste. Escape or click the world to deselect."
+        hint = self.prompt_input.error or "Scroll or use Up/Down to read. Enter to send. Ctrl+V to paste. Escape to deselect."
         app.window.blit(app.small_font.render(hint, True, MUTED), (24, 616))
         count = app.small_font.render(f"{len(self.prompt_input.text)}/300", True, MUTED)
         app.window.blit(count, count.get_rect(topright=(936, 616)))
@@ -188,23 +203,33 @@ class GameScreen:
             lines = []
             for turn in conversation.turns:
                 npc = conversation.initiator if turn.speaker == "initiator" else conversation.recipient
-                lines.extend(wrap_text(f"{npc.name}: {turn.text}", app.small_font, rect.width))
+                lines.extend(wrap_text(f"{npc.name}: {turn.text}", app.small_font, rect.width - 12))
                 lines.append("")
-            line_height = app.small_font.get_linesize()
-            total_height = max(0, (len(lines) - 1) * line_height)
-            self.dialogue_scroll = min(self.dialogue_scroll, max(0, total_height - rect.height))
-            previous_clip = app.window.get_clip()
-            app.window.set_clip(rect)
-            for index, line in enumerate(lines):
-                y = rect.y + index * line_height - self.dialogue_scroll
-                if rect.top - line_height < y < rect.bottom:
-                    app.window.blit(app.small_font.render(line, True, INK), (rect.x, y))
-            app.window.set_clip(previous_clip)
+            self.draw_dialogue_lines(app.window, lines[:-1], app.small_font, rect)
             text = ""
         if text:
             draw_wrapped_text(app.window, text, app.font, INK, rect)
         hint = "Scroll or use arrow keys to read. Done or Escape ends the conversation and resumes their activities."
         app.window.blit(app.small_font.render(hint, True, MUTED), (24, 616))
+
+    def draw_dialogue_lines(self, surface, lines, font, rect):
+        line_height = font.get_linesize()
+        total_height = len(lines) * line_height
+        scroll_limit = max(0, total_height - rect.height)
+        self.dialogue_scroll = max(0, min(self.dialogue_scroll, scroll_limit))
+        previous_clip = surface.get_clip()
+        surface.set_clip(rect.clip(previous_clip))
+        for index, line in enumerate(lines):
+            y = rect.y + index * line_height - self.dialogue_scroll
+            if rect.top - line_height < y < rect.bottom:
+                surface.blit(font.render(line, True, INK), (rect.x, y))
+        if scroll_limit:
+            track = pygame.Rect(rect.right - 5, rect.top, 4, rect.height)
+            height = max(12, round(rect.height * rect.height / total_height))
+            top = rect.top + round((rect.height - height) * self.dialogue_scroll / scroll_limit)
+            pygame.draw.rect(surface, (181, 191, 174), track)
+            pygame.draw.rect(surface, MUTED, (track.x, top, track.width, height))
+        surface.set_clip(previous_clip)
 
     def request_is_current(self, app):
         return app.requests.busy and app.request_conversation is self.viewed_conversation

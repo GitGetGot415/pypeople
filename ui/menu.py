@@ -15,7 +15,7 @@ class MenuScreen:
 
     def handle_event(self, app, event):
         if self.start_button.clicked(event):
-            app.start_game()
+            app.screen = "setup"
         elif self.character_button.clicked(event):
             app.screen = "character"
         elif self.settings_button.clicked(event):

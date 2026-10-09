@@ -1,5 +1,7 @@
 import json
+import math
 from pathlib import Path
+from uuid import uuid4
 
 import pygame
 
@@ -12,12 +14,12 @@ from .character import CharacterScreen
 from .menu import MenuScreen
 from .requests import RequestManager
 from .settings import SettingsScreen
+from .setup import SetupScreen
 from .theme import FPS, WINDOW_SIZE
 from .world import CHARACTER_SCALE
 
 
 JUDY_CHARACTER_PATH = Path(__file__).resolve().parent.parent / "characters" / "judy.json"
-RANDOM_CHARACTER_PATHS = tuple(JUDY_CHARACTER_PATH.parent / f"random_{index}.json" for index in (1, 2))
 
 
 class Application:
@@ -42,11 +44,13 @@ class Application:
         self.requests = RequestManager()
         self.menu = MenuScreen()
         self.settings = SettingsScreen()
+        self.setup = SetupScreen()
         self.character = CharacterScreen()
         self.game = GameScreen()
         self.screens = {
             "menu": self.menu,
             "settings": self.settings,
+            "setup": self.setup,
             "character": self.character,
             "game": self.game,
         }
@@ -54,21 +58,40 @@ class Application:
     def start_game(self):
         try:
             characters = [load_character(JUDY_CHARACTER_PATH)]
-            generated = [random_character() for _ in RANDOM_CHARACTER_PATHS]
-            for path, character in zip(RANDOM_CHARACTER_PATHS, generated):
+            paths = [JUDY_CHARACTER_PATH]
+            generated_dir = JUDY_CHARACTER_PATH.parent / "generated" / uuid4().hex
+            for index, source in enumerate(self.setup.sources, start=1):
+                try:
+                    characters.append(random_character() if source is None else load_character(source))
+                except (OSError, ValueError) as error:
+                    raise ValueError(f"NPC {index + 1}: {error}") from error
+                paths.append(generated_dir / f"random_{index}.json" if source is None else source)
+            # Validate all profiles before saving any generated characters.
+            for source, path, character in zip(self.setup.sources, paths[1:], characters[1:]):
+                if source is not None:
+                    continue
+                generated_dir.mkdir(parents=True, exist_ok=True)
                 with path.open("w", encoding="utf-8") as character_file:
                     json.dump(character, character_file, indent=2, ensure_ascii=False)
-                characters.append(load_character(path))
         except (OSError, ValueError) as error:
-            self.menu.message = f"Could not start game: {error}"
+            self.setup.message = f"Could not start game: {error}"
             return
-        self.menu.message = ""
+        self.setup.message = ""
+        self.setup.count_input.active = False
         self.session_id += 1
         self.game.reset()
         self.request_npc = None
         self.request_conversation = None
         self.npcs = []
-        for character, position, path in zip(characters, ((240, 230), (430, 230), (530, 330)), (JUDY_CHARACTER_PATH, *RANDOM_CHARACTER_PATHS)):
+        columns = max(1, math.ceil(math.sqrt(len(characters) - 1)))
+        rows = max(1, math.ceil((len(characters) - 1) / columns))
+        for index, (character, path) in enumerate(zip(characters, paths)):
+            if index == 0:
+                position = (240, 230)
+            else:
+                # Arrange additional NPCs beside Judy, clear of the tree.
+                column, row = (index - 1) % columns, (index - 1) // columns
+                position = (350 + column * 220 / max(1, columns - 1), 150 + row * 260 / max(1, rows - 1))
             npc = NPC(character=character, x=position[0], y=position[1], character_path=path)
             sprite = self.character.renderer.render(character, npc.facing, CHARACTER_SCALE)
             npc.sprite_size = sprite.get_size()
@@ -186,6 +209,8 @@ class Application:
         self.game.prompt_input.update(dt)
         self.settings.key_input.update(dt)
         self.character.update(dt)
+        if self.screen == "setup":
+            self.setup.update(dt)
         if self.screen == "game":
             self.tree.update(dt)
             for npc in self.npcs:

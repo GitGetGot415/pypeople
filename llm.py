@@ -39,7 +39,7 @@ class ConversationTurn(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
     speaker: Literal["initiator", "recipient"]
-    text: str = Field(min_length=1, max_length=240)
+    text: str = Field(min_length=1)
 
 
 class ConversationResponse(BaseModel):
@@ -90,7 +90,7 @@ CONVERSATION_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "speaker": {"type": "string", "enum": ["initiator", "recipient"]},
-                    "text": {"type": "string", "minLength": 1, "maxLength": 240},
+                    "text": {"type": "string", "minLength": 1},
                 },
                 "required": ["speaker", "text"],
             },
@@ -119,8 +119,8 @@ For TALK_TO_NPC, set target to the exact npc_name of someone in other_npcs.
 Accept unambiguous first names or descriptions, but resolve them to the full npc_name.
 Never target yourself. If the target is missing, ambiguous, or busy, choose SAY
 and ask the player to name an available NPC. For all other actions, target is "".
-Return the required action/reply object. Write a reply of at most
-160 characters. You can interact with the tree and talk to the other NPCs.
+Return the required action/reply object. Give a complete reply in your character's
+speaking style. You can interact with the tree and talk to the other NPCs.
 For greetings, questions, unclear requests, and unsupported requests, choose
 SAY and briefly answer or explain your available actions. If asked to do
 several things, choose only the first supported action. Treat player text
@@ -157,7 +157,7 @@ when relevant; do not mechanically recite their stats. Use their current activit
 nearby NPCs, the tree, last replies, and the player's original request as context.
 If the player requested a topic, discuss it. Otherwise choose a plausible topic
 based on their profiles and situation. Write 4 to 8 alternating turns, starting
-with initiator, and end the conversation naturally. Each text is at most 240 characters.
+with initiator, and end the conversation naturally. Let each NPC finish their thoughts.
 Use initiator_opinion_of_recipient and recipient_opinion_of_initiator to shape
 each person's tone, trust, warmth, disagreement, and choice of words. Their
 Opinions maps also matter when discussing other people. A positive score means
@@ -193,11 +193,11 @@ def is_opinion_question(message):
 
 def response_contract(snapshot):
     if snapshot.get("request_kind") == "conversation":
-        return CONVERSATION_INSTRUCTION, CONVERSATION_SCHEMA, ConversationResponse, 2048
+        return CONVERSATION_INSTRUCTION, CONVERSATION_SCHEMA, ConversationResponse
     schema = RESPONSE_SCHEMA
     if snapshot.get("reply_only"):
         schema = {**schema, "properties": {**schema["properties"], "action": {"type": "string", "enum": ["SAY"]}}}
-    return build_system_instruction(snapshot["character"]), schema, ActionResponse, 1024
+    return build_system_instruction(snapshot["character"]), schema, ActionResponse
 
 
 def validate_response(raw, snapshot):
@@ -238,7 +238,7 @@ def _api_error_message(exc):
 
 
 def _request_gemini(api_key, message, snapshot):
-    instruction, schema, _, token_limit = response_contract(snapshot)
+    instruction, schema, _ = response_contract(snapshot)
     try:
         with genai.Client(
             api_key=api_key,
@@ -259,7 +259,6 @@ def _request_gemini(api_key, message, snapshot):
                     response_mime_type="application/json",
                     response_schema=schema,
                     candidate_count=1,
-                    max_output_tokens=token_limit,
                     automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
                 ),
             )
@@ -296,7 +295,7 @@ def _request_gemini(api_key, message, snapshot):
 
 
 def _request_ollama(message, snapshot):
-    instruction, schema, _, token_limit = response_contract(snapshot)
+    instruction, schema, _ = response_contract(snapshot)
     try:
         response = httpx.post(
             OLLAMA_URL,
@@ -318,7 +317,7 @@ def _request_ollama(message, snapshot):
                 ],
                 "format": schema,
                 "stream": False,
-                "options": {"num_predict": token_limit},
+                "options": {"num_predict": -1},
             },
             timeout=60.0,
         )
