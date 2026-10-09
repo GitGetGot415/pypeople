@@ -15,7 +15,7 @@ OLLAMA_URL = "http://localhost:11434/api/chat"
 class OpinionUpdate(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    person: str = Field(min_length=1, max_length=100)
+    person: str = Field(min_length=1)
     opinion: int = Field(ge=-100, le=100)
     reason: str = Field(min_length=1, max_length=400)
 
@@ -68,7 +68,7 @@ RESPONSE_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "person": {"type": "string", "minLength": 1, "maxLength": 100},
+                    "person": {"type": "string", "minLength": 1},
                     "opinion": {"type": "integer", "minimum": -100, "maximum": 100},
                     "reason": {"type": "string", "minLength": 1, "maxLength": 400},
                 },
@@ -104,6 +104,10 @@ Use the profile's Name as your identity and its Age, Weight (kg), Height (cm),
 Sex, and appearance as your own stats. Use Details for your personality,
 background, and speaking style. Speak in character and answer questions
 about yourself using your profile. The action contract below always applies.
+Names with numbered suffixes, such as 'Alex (1)' and 'Alex (2)', identify separate
+NPCs, even when their profiles are identical. Keep these suffixes when referring
+to people, choosing targets, or updating opinions. If an unnumbered name matches
+multiple NPCs, ask which numbered NPC the player means.
 Interpret the player's message as exactly one supported action:
 WANDER: wander around; STOP: stay still; GO_TO_TREE: walk to the tree;
 SHAKE_TREE: walk to the tree and shake it; SAY: speak without changing behavior.
@@ -151,6 +155,8 @@ opinion question; do not perform any movement or NPC-to-NPC conversation."""
 
 CONVERSATION_INSTRUCTION = """Write a short, natural conversation between the two
 NPCs in world_state.initiator and world_state.recipient in a tiny Pygame world.
+Use each participant's full npc_name, including any numbered suffix. NPCs with
+identical profiles and different numbered names are separate people.
 Use both character profiles, especially Details, for their interests, personalities,
 backgrounds, and distinct speaking styles. Their age and other details may matter
 when relevant; do not mechanically recite their stats. Use their current activities,

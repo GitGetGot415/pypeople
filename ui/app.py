@@ -7,7 +7,7 @@ import pygame
 
 from character_data import load_character, random_character
 from llm import is_opinion_question
-from npc import Conversation, NPC, Tree
+from npc import Conversation, NPC, Tree, assign_npc_names
 
 from .game import GameScreen
 from .character import CharacterScreen
@@ -96,6 +96,7 @@ class Application:
             sprite = self.character.renderer.render(character, npc.facing, CHARACTER_SCALE)
             npc.sprite_size = sprite.get_size()
             self.npcs.append(npc)
+        assign_npc_names(self.npcs)
         self.tree = Tree()
         self.screen = "game"
 
