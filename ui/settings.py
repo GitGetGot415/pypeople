@@ -11,6 +11,7 @@ class SettingsScreen:
         self.gemini_button = Button((180, 210, 280, 48), "Gemini")
         self.ollama_button = Button((500, 210, 280, 48), "Ollama (llama3)")
         self.save_button = Button((340, 410, 280, 54), "Save & Back")
+        self.setup_button = Button((340, 470, 280, 48), "Setup Ollama")
         self.key_input = TextInput(
             (180, 310, 600, 52),
             max_length=512,
@@ -39,6 +40,9 @@ class SettingsScreen:
         elif self.ollama_button.clicked(event):
             self.provider = "ollama"
             self.key_input.active = False
+        elif self.provider == "ollama" and self.setup_button.clicked(event):
+            app.ollama_setup.open()
+            app.screen = "ollama_setup"
         elif self.save_button.clicked(event):
             app.provider = self.provider
             app.api_key = self.key_input.text.strip()
@@ -61,11 +65,11 @@ class SettingsScreen:
         else:
             app.window.blit(app.font.render("Local Ollama model: llama3", True, INK), (180, 310))
             app.window.blit(app.small_font.render("No API key needed!", True, MUTED), (180, 375))
+            self.setup_button.draw(app.window, app.font)
         self.save_button.draw(app.window, app.font)
         if self.provider == "gemini":
             draw_centered_text(app.window, "Get a key at Google AI Studio: aistudio.google.com/apikey", app.small_font, 475, MUTED)
             hint = self.key_input.error or "Ctrl+V to paste. Escape discards your edits."
         else:
-            draw_centered_text(app.window, "Install Ollama, then run: ollama pull llama3", app.small_font, 475, MUTED)
             hint = "Ctrl+V to paste. Escape discards your edits."
         draw_centered_text(app.window, hint, app.small_font, 553)

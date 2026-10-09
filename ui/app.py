@@ -15,6 +15,7 @@ from .menu import MenuScreen
 from .requests import RequestManager
 from .settings import SettingsScreen
 from .setup import SetupScreen
+from .ollama_setup import OllamaSetupScreen
 from .theme import FPS, WINDOW_SIZE
 from .world import CHARACTER_SCALE
 
@@ -47,12 +48,14 @@ class Application:
         self.setup = SetupScreen()
         self.character = CharacterScreen()
         self.game = GameScreen()
+        self.ollama_setup = OllamaSetupScreen()
         self.screens = {
             "menu": self.menu,
             "settings": self.settings,
             "setup": self.setup,
             "character": self.character,
             "game": self.game,
+            "ollama_setup": self.ollama_setup,
         }
 
     def start_game(self):
