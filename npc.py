@@ -1,3 +1,4 @@
+from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
 import math
@@ -69,10 +70,11 @@ class NPC:
     reply: str = ""
     conversation: "Conversation | None" = field(default=None, repr=False, compare=False)
     character_path: Path | None = field(default=None, repr=False, compare=False)
+    display_name: str | None = None
 
     @property
     def name(self):
-        return self.character["Name"].strip()
+        return self.display_name if self.display_name is not None else self.character["Name"].strip()
 
     @property
     def movement_bounds(self):
@@ -117,7 +119,7 @@ class NPC:
     def snapshot(self, tree):
         return {
             "npc_name": self.name,
-            "character": {**self.character, "Opinions": self.opinions},
+            "character": {**self.character, "Name": self.name, "Opinions": self.opinions},
             "facing": DIRECTIONS[self.facing],
             "selected": self.selected,
             "position": [round(self.x, 1), round(self.y, 1)],
@@ -237,6 +239,28 @@ class NPC:
             or (self.behavior == Behavior.WANDER and (self.destination is None or self.pause_remaining > 0))
         ):
             self._face_when_still()
+
+
+def assign_npc_names(npcs):
+    """Give duplicate names distinct labels without editing character profiles."""
+    names = [npc.character["Name"].strip() for npc in npcs]
+    counts = Counter(name.casefold() for name in names)
+    # Reserve original names so a generated label cannot hide another NPC
+    # whose profile already has a name such as "Alex (1)".
+    used_names = set(counts)
+    numbers = Counter()
+    for npc, name in zip(npcs, names):
+        key = name.casefold()
+        npc.display_name = None
+        if counts[key] < 2:
+            continue
+        while True:
+            numbers[key] += 1
+            label = f"{name} ({numbers[key]})"
+            if label.casefold() not in used_names:
+                break
+        npc.display_name = label
+        used_names.add(label.casefold())
 
 
 class Conversation:
