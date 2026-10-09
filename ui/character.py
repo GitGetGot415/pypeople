@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pygame
 
-from character_data import DEFAULT_COLORS, DIRECTIONS, FIELDS, HAIR_STYLES, load_character, parse_color, random_character
+from character_data import DEFAULT_COLORS, DIRECTIONS, EYE_STYLES, FIELDS, HAIR_STYLES, load_character, parse_color, random_character
 
 from .button import Button
 from .file_dialog import character_file_dialog
@@ -23,6 +23,7 @@ class CharacterScreen:
     def __init__(self):
         self.values = {name: "" for name in self.FIELDS}
         self.values["Hair"] = "one"
+        self.values["Eyes"] = "one"
         self.values.update(self.DEFAULT_COLORS)
         self.values["Opinions"] = {}
         self.category = "Stats"
@@ -45,9 +46,12 @@ class CharacterScreen:
         self.stats_dragging = False
         self._stats_drag_offset = 0
         self.tab_buttons = {
-            "Stats": Button((430, 140, 130, 44), "Stats"),
-            "Hair": Button((575, 140, 130, 44), "Hair"),
-            "Color": Button((720, 140, 130, 44), "Color"),
+            name: Button((430 + index * 110, 140, 90, 44), name)
+            for index, name in enumerate(("Stats", "Color", "Eyes", "Hair"))
+        }
+        self.eye_buttons = {
+            style: Button((430 + index % 2 * 220, 200 + index // 2 * 158, 200, 148), style.title())
+            for index, style in enumerate(EYE_STYLES)
         }
         self.hair_buttons = {
             style: Button((430 + index % 2 * 220, 200 + index // 2 * 158, 200, 148), style.title())
@@ -169,6 +173,7 @@ class CharacterScreen:
                 for slider, value in zip(sliders, parse_color(values[name])):
                     slider.value = value
             self.values["Hair"] = values["Hair"]
+            self.values["Eyes"] = values["Eyes"]
             self.values["Opinions"] = values["Opinions"]
             self._sync_values()
             self.message = "Character randomized."
@@ -201,6 +206,7 @@ class CharacterScreen:
                 for slider, value in zip(sliders, parse_color(values[name])):
                     slider.value = value
             self.values["Hair"] = values["Hair"]
+            self.values["Eyes"] = values["Eyes"]
             # Preserve opinions on import/export without exposing an editor.
             self.values["Opinions"] = values["Opinions"]
             self._sync_values()
@@ -229,10 +235,11 @@ class CharacterScreen:
         if self.category == "Stats":
             if self._handle_stats_event(event):
                 return
-        elif self.category == "Hair":
-            for style, button in self.hair_buttons.items():
+        elif self.category in ("Eyes", "Hair"):
+            buttons = self.eye_buttons if self.category == "Eyes" else self.hair_buttons
+            for style, button in buttons.items():
                 if button.clicked(event):
-                    self.values["Hair"] = style
+                    self.values[self.category] = style
         elif self.category == "Color":
             for sliders in self.color_sliders.values():
                 for slider in sliders:
@@ -299,10 +306,11 @@ class CharacterScreen:
             surface.set_clip(previous_clip)
             pygame.draw.rect(surface, GRASS, self.stats_scrollbar)
             pygame.draw.rect(surface, ACCENT, self._stats_scroll_thumb())
-        elif self.category == "Hair":
-            for style, button in self.hair_buttons.items():
+        elif self.category in ("Eyes", "Hair"):
+            buttons = self.eye_buttons if self.category == "Eyes" else self.hair_buttons
+            for style, button in buttons.items():
                 panel = button.rect
-                selected = self.values["Hair"] == style
+                selected = self.values[self.category] == style
                 if selected or panel.collidepoint(pygame.mouse.get_pos()):
                     pygame.draw.rect(surface, GRASS, panel, border_radius=BORDER_RADIUS)
                 pygame.draw.rect(
@@ -311,11 +319,19 @@ class CharacterScreen:
                 )
                 label = app.font.render(button.label, True, INK)
                 surface.blit(label, label.get_rect(midtop=(panel.centerx, panel.y + 12)))
-                values = {**self.values, "Hair": style}
-                frame = self.renderer.render(values, self.direction)
-                scale = min(1.0, (panel.width - 24) / frame.get_width(), (panel.height - 48) / frame.get_height())
-                preview = self.renderer.render(values, self.direction, scale)
-                surface.blit(preview, preview.get_rect(midbottom=(panel.centerx, panel.bottom - 8)))
+                values = {**self.values, self.category: style}
+                if self.category == "Eyes":
+                    eyes = self.renderer.render_eye_preview(values)
+                    preview_area = pygame.Rect(panel.x + 12, panel.y + 40, panel.width - 24, panel.height - 52)
+                    scale = min(preview_area.width / eyes.get_width(), preview_area.height / eyes.get_height())
+                    size = (max(1, round(eyes.get_width() * scale)), max(1, round(eyes.get_height() * scale)))
+                    preview = pygame.transform.scale(eyes, size)
+                    surface.blit(preview, preview.get_rect(center=preview_area.center))
+                else:
+                    frame = self.renderer.render(values, self.direction)
+                    scale = min(1.0, (panel.width - 24) / frame.get_width(), (panel.height - 48) / frame.get_height())
+                    preview = self.renderer.render(values, self.direction, scale)
+                    surface.blit(preview, preview.get_rect(midbottom=(panel.centerx, panel.bottom - 8)))
         elif self.category == "Color":
             for name, sliders in self.color_sliders.items():
                 panel = self.color_panels[name]

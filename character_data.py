@@ -6,6 +6,7 @@ import random
 
 
 FIELDS = ("Name", "Age", "Weight", "Height", "Sex", "Details")
+EYE_STYLES = ("one", "two")
 HAIR_STYLES = ("one", "two", "three", "four")
 DEFAULT_COLORS = {
     "Shirt Color": "#000AFF", "Skin Color": "#FF0000",
@@ -39,6 +40,9 @@ def normalize_character(data):
     if "Hair" not in data or data["Hair"] not in HAIR_STYLES:
         raise ValueError("Hair must be one, two, three, or four.")
     values["Hair"] = data["Hair"]
+    if "Eyes" not in data or data["Eyes"] not in EYE_STYLES:
+        raise ValueError("Eyes must be one or two.")
+    values["Eyes"] = data["Eyes"]
     for name, default in DEFAULT_COLORS.items():
         try:
             rgb = parse_color(data.get(name, default))
@@ -100,6 +104,7 @@ def random_character(config_path=RANDOM_CONFIG_PATH):
     values["Sex"] = random.choice(("M", "F"))
     values["Details"] = random.choice(config["details"]).strip()
     values["Hair"] = random.choice(HAIR_STYLES)
+    values["Eyes"] = random.choice(EYE_STYLES)
     for name in DEFAULT_COLORS:
         values[name] = "#" + "".join(f"{random.randint(0, 255):02X}" for _ in range(3))
     return normalize_character(values)

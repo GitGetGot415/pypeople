@@ -4,11 +4,11 @@ from pathlib import Path
 
 import pygame
 
-from character_data import DEFAULT_COLORS, HAIR_STYLES, parse_color
+from character_data import DEFAULT_COLORS, EYE_STYLES, HAIR_STYLES, parse_color
 
 
 class CharacterRenderer:
-    """Load assets once and cache each hairstyle and facing for the palette."""
+    """Load assets once and cache each eye style, hairstyle, and facing."""
 
     _parse_color = staticmethod(parse_color)
 
@@ -30,19 +30,27 @@ class CharacterRenderer:
             for direction, asset in self.hands.items()
         }
         self.eyes = {
-            direction: pygame.image.load(str(asset_dir / "eyes" / f"Eyes_{direction}.png")).convert_alpha()
-            for direction in ("S", "SE", "E")
+            style: {
+                direction: pygame.image.load(str(asset_dir / "eyes" / style / f"Eyes_{direction}.png")).convert_alpha()
+                for direction in ("S", "SE", "E")
+            }
+            for style in EYE_STYLES
         }
         self.eye_masks = {
-            direction: {"Eye Color": pygame.mask.from_threshold(asset, (5, 255, 0, 255), (1, 1, 1, 1))}
-            for direction, asset in self.eyes.items()
+            style: {
+                direction: {"Eye Color": pygame.mask.from_threshold(asset, (5, 255, 0, 255), (1, 1, 1, 1))}
+                for direction, asset in facings.items()
+            }
+            for style, facings in self.eyes.items()
         }
         self.eye_anchors = {}
-        for direction, asset in self.eyes.items():
-            # Registration marks identify the head center even when the eye
-            # artwork is cropped asymmetrically for a diagonal or side view.
-            marks = [x for x in range(asset.get_width()) if asset.get_at((x, 0)).a]
-            self.eye_anchors[direction] = (min(marks) + max(marks) + 1) // 2 if marks else asset.get_width() // 2
+        for style, facings in self.eyes.items():
+            self.eye_anchors[style] = {}
+            for direction, asset in facings.items():
+                # Registration marks identify the head center even when the eye
+                # artwork is cropped asymmetrically for a diagonal or side view.
+                marks = [x for x in range(asset.get_width()) if asset.get_at((x, 0)).a]
+                self.eye_anchors[style][direction] = (min(marks) + max(marks) + 1) // 2 if marks else asset.get_width() // 2
         self.hair = {
             style: {
                 direction: pygame.image.load(str(asset_dir / "hair" / style / f"Hair_{direction}.png")).convert_alpha()
@@ -82,6 +90,9 @@ class CharacterRenderer:
         style = values["Hair"]
         if style not in HAIR_STYLES:
             raise ValueError("Hair must be one, two, three, or four.")
+        eye_style = values["Eyes"]
+        if eye_style not in EYE_STYLES:
+            raise ValueError("Eyes must be one or two.")
         colors = tuple(parse_color(values.get(name, default)) for name, default in DEFAULT_COLORS.items())
         if colors != self._color_key:
             self.values = {
@@ -94,8 +105,11 @@ class CharacterRenderer:
                 for facing, asset in self.hands.items()
             }
             self.colored_eyes = {
-                facing: self._recolor_asset(asset, self.eye_masks[facing])
-                for facing, asset in self.eyes.items()
+                style: {
+                    facing: self._recolor_asset(asset, self.eye_masks[style][facing])
+                    for facing, asset in facings.items()
+                }
+                for style, facings in self.eyes.items()
             }
             self.colored_hair = {
                 style: {
@@ -107,19 +121,28 @@ class CharacterRenderer:
             self._color_key = colors
             self._frames.clear()
             self._scaled_frames.clear()
-        frame_key = (style, direction)
+        frame_key = (style, eye_style, direction)
         if frame_key not in self._frames:
             self.direction = direction
             self.hair_style = style
+            self.eye_style = eye_style
             self._frames[frame_key] = self._compose_preview()
         frame = self._frames[frame_key]
         if scale == 1.0:
             return frame
-        key = (style, direction, scale)
+        key = (style, eye_style, direction, scale)
         if key not in self._scaled_frames:
             size = (max(1, round(frame.get_width() * scale)), max(1, round(frame.get_height() * scale)))
             self._scaled_frames[key] = pygame.transform.scale(frame, size)
         return self._scaled_frames[key]
+
+    def render_eye_preview(self, values):
+        """Return just the colored, front-facing eyes for a style option."""
+        self.render(values, 4)
+        eyes = self.colored_eyes[values["Eyes"]]["S"]
+        # Remove registration marks before cropping to the visible artwork.
+        artwork = eyes.subsurface((0, 1, eyes.get_width(), eyes.get_height() - 2))
+        return artwork.subsurface(artwork.get_bounding_rect()).copy()
 
     def _compose_preview(self):
         """Turn in the ground plane while keeping the standing body upright."""
@@ -197,10 +220,10 @@ class CharacterRenderer:
         eye_direction = {2: "E", 3: "SE", 4: "S", 5: "SE", 6: "E"}.get(self.direction)
         if eye_direction is None:
             return
-        eyes = self.colored_eyes[eye_direction]
+        eyes = self.colored_eyes[self.eye_style][eye_direction]
         layer = pygame.Surface(frame.get_size(), pygame.SRCALPHA)
         layer.blit(
-            eyes, (48 - self.eye_anchors[eye_direction], 1),
+            eyes, (48 - self.eye_anchors[self.eye_style][eye_direction], 1),
             (0, 1, eyes.get_width(), eyes.get_height() - 2),
         )
         if self.direction in (5, 6):
