@@ -136,6 +136,18 @@ class CharacterRenderer:
             self._scaled_frames[key] = pygame.transform.scale(frame, size)
         return self._scaled_frames[key]
 
+    def render_portrait(self, values, size):
+        """Fit the character's south-facing head inside a portrait box."""
+        frame = self.render(values, 4)
+        head_bottom = max(rect.bottom for rect in self.body_masks["Skin Color"].get_bounding_rects())
+        head_bottom += frame.get_height() - self.body.get_height()
+        head = frame.subsurface((0, 0, frame.get_width(), head_bottom))
+        head = head.subsurface(head.get_bounding_rect())
+        scale = min(size[0] / head.get_width(), size[1] / head.get_height())
+        return pygame.transform.scale(
+            head, (max(1, round(head.get_width() * scale)), max(1, round(head.get_height() * scale)))
+        )
+
     def render_eye_preview(self, values):
         """Return just the colored, front-facing eyes for a style option."""
         self.render(values, 4)

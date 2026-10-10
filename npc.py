@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from character_data import DIRECTIONS, normalize_opinions
+from conversation_history import ConversationRecord, describe_opinion_change
 
 WORLD_WIDTH = 960
 WORLD_HEIGHT = 460
@@ -274,6 +275,7 @@ class Conversation:
         self.topic = topic
         self.arrived = False
         self.active = True
+        self.record = ConversationRecord((initiator.name, recipient.name), topic, "Walking to meet")
         self.turns = []
         self.pending_opinions = []
         self.error = ""
@@ -307,8 +309,30 @@ class Conversation:
     def other(self, npc):
         return self.recipient if npc is self.initiator else self.initiator
 
+    @property
+    def error(self):
+        return self.record.error
+
+    @error.setter
+    def error(self, message):
+        self.record.error = message
+
     def set_response(self, response):
         self.turns = response.turns
+        self.record.turns = [
+            (self.initiator.name if turn.speaker == "initiator" else self.recipient.name, turn.text)
+            for turn in response.turns
+        ]
+        self.record.outcomes = [
+            describe_opinion_change(
+                npc.name, partner.name, npc.opinions.get(partner.name, {}).get("opinion"), entry.opinion, entry.reason
+            )
+            for npc, partner, entry in (
+                (self.initiator, self.recipient, response.initiator_opinion),
+                (self.recipient, self.initiator, response.recipient_opinion),
+            )
+        ]
+        self.record.status = "Dialogue ready"
         self.pending_opinions = [
             (npc, {partner.name: {"opinion": entry.opinion, "reason": entry.reason}})
             for npc, partner, entry in (
@@ -337,6 +361,7 @@ class Conversation:
         old_x, old_y = npc.x, npc.y
         self.arrived = npc._move(max(0.0, dt))
         if self.arrived:
+            self.record.status = "Waiting for dialogue"
             npc.destination = None
             for participant in (self.initiator, self.recipient):
                 other = self.other(participant)
@@ -361,6 +386,9 @@ class Conversation:
         if not self.active:
             return
         self.active = False
+        self.record.status = "Finished" if self.turns else "Ended before dialogue was generated"
+        if not self.turns:
+            self.record.outcomes = ["The conversation ended before anyone spoke."]
         for npc, state in zip((self.initiator, self.recipient), self.saved_states):
             npc.conversation = None
             npc.behavior, npc.destination, npc.pause_remaining, npc.facing = state

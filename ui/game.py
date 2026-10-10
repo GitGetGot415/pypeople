@@ -14,18 +14,22 @@ class GameScreen:
         self.menu_button = Button((824, 16, 112, 38), "Menu")
         self.stats_button = Button((704, 16, 112, 38), "Stats")
         self.send_button = Button((816, 564, 120, 44), "Send")
-        self.done_button = Button((824, 472, 112, 32), "Done")
-        self.retry_button = Button((704, 472, 112, 32), "Retry")
+        self.next_button = Button((824, 472, 112, 32), "Next")
+        self.back_button = Button((self.next_button.rect.left - 116, 472, 112, 32), "Back")
+        self.retry_button = Button((584, 472, 112, 32), "Retry")
+        self.portrait_rect = pygame.Rect(24, 472, 148, 148)
+        dialogue_x = self.portrait_rect.right + 16
         self.prompt_input = TextInput(
-            (24, 564, 778, 44), placeholder="[insert cool action here]"
+            (dialogue_x, 564, 802 - dialogue_x, 44), placeholder="[insert cool action here]"
         )
         self.dialogue_open = False
         self.selected_npc = None
         self.reply = ""
         self.viewed_conversation = None
         self.conversation_tree = None
+        self.conversation_turn_index = 0
         self.dialogue_scroll = 0
-        self.reply_rect = pygame.Rect(24, 500, 912, 58)
+        self.reply_rect = pygame.Rect(dialogue_x, 500, 936 - dialogue_x, 58)
         self.camera_offset = [0.0, 0.0]
         self.pan_start = None
         self.pan_last = None
@@ -49,6 +53,7 @@ class GameScreen:
             self.selected_npc.set_selected(False)
             self.selected_npc = None
         self.dialogue_open = False
+        self.conversation_turn_index = 0
         self.dialogue_scroll = 0
         self.prompt_input.active = False
         self.prompt_input.backspace_held = False
@@ -104,8 +109,14 @@ class GameScreen:
             if self.handle_dialogue_scroll(app, event):
                 return
             if self.viewed_conversation is not None:
-                if self.done_button.clicked(event):
-                    self.close_dialogue()
+                if self.next_button.clicked(event, enabled=bool(self.viewed_conversation.turns)):
+                    self.advance_conversation()
+                elif self.back_button.clicked(event, enabled=self.conversation_turn_index > 0):
+                    self.rewind_conversation()
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_LEFT:
+                    self.rewind_conversation()
+                elif event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE, pygame.K_RIGHT):
+                    self.advance_conversation()
                 elif self.retry_button.clicked(event, enabled=bool(self.viewed_conversation.error) and not app.requests.busy):
                     app.request_conversation_dialogue(self.viewed_conversation)
                 return
@@ -115,8 +126,23 @@ class GameScreen:
             elif self.prompt_input.handle_event(event):
                 app.submit()
 
+    def advance_conversation(self):
+        conversation = self.viewed_conversation
+        if conversation is None or not conversation.turns:
+            return
+        if self.conversation_turn_index == len(conversation.turns) - 1:
+            self.close_dialogue()
+        else:
+            self.conversation_turn_index += 1
+            self.dialogue_scroll = 0
+
+    def rewind_conversation(self):
+        if self.viewed_conversation is not None and self.conversation_turn_index > 0:
+            self.conversation_turn_index -= 1
+            self.dialogue_scroll = 0
+
     def handle_dialogue_scroll(self, app, event):
-        font = app.small_font if self.viewed_conversation is not None else app.font
+        font = app.font
         if event.type == pygame.MOUSEWHEEL:
             pos = getattr(event, "pos", pygame.mouse.get_pos())
             if self.viewed_conversation is None and not self.reply_rect.collidepoint(pos):
@@ -169,6 +195,8 @@ class GameScreen:
         if self.viewed_conversation is not None:
             self.draw_conversation(app)
             return
+        if self.dialogue_open:
+            self.draw_portrait(app, self.selected_npc)
         status = self.selected_npc.status if self.selected_npc is not None else f"{len(app.npcs)} NPCs"
         if app.requests.busy:
             prefix = (
@@ -184,44 +212,55 @@ class GameScreen:
             app.window.blit(app.font.render("Click anyone to start a conversation.", True, MUTED), (24, 538))
             app.window.blit(app.small_font.render("Drag to move the camera. Ask people to wander, stop, shake the tree, or talk to another NPC.", True, MUTED), (24, 602))
             return
-        app.window.blit(app.font.render(self.selected_npc.name, True, INK), (24, 477))
+        app.window.blit(app.font.render(self.selected_npc.name, True, INK), (self.reply_rect.x, 477))
         self.draw_dialogue_lines(app.window, wrap_text(self.reply, app.font, self.reply_rect.width - 12), app.font, self.reply_rect)
         self.prompt_input.draw(app.window, app.font)
         self.send_button.draw(app.window, app.font, enabled=not app.requests.busy)
-        hint = self.prompt_input.error or "Scroll or use Up/Down to read. Enter to send. Ctrl+V to paste. Escape to deselect."
-        app.window.blit(app.small_font.render(hint, True, MUTED), (24, 616))
+        if self.prompt_input.error:
+            app.window.blit(app.small_font.render(self.prompt_input.error, True, MUTED), (self.reply_rect.x, 616))
         count = app.small_font.render(f"{len(self.prompt_input.text)}/300", True, MUTED)
         app.window.blit(count, count.get_rect(topright=(936, 616)))
 
+    def draw_portrait(self, app, npc):
+        pygame.draw.rect(app.window, (255, 254, 248), self.portrait_rect)
+        pygame.draw.rect(app.window, INK, self.portrait_rect, width=2)
+        portrait = app.character.renderer.render_portrait(
+            npc.character, self.portrait_rect.inflate(-12, -12).size
+        )
+        app.window.blit(portrait, portrait.get_rect(center=self.portrait_rect.center))
+
     def draw_conversation(self, app):
         conversation = self.viewed_conversation
-        title = f"{conversation.initiator.name} & {conversation.recipient.name}"
-        draw_wrapped_text(app.window, title, app.font, INK, (24, 477, 664, 30))
-        self.done_button.draw(app.window, app.small_font)
-        rect = pygame.Rect(24, 514, 912, 96)
+        turn = conversation.turns[self.conversation_turn_index] if conversation.turns else None
+        if turn is not None:
+            speaker = conversation.initiator if turn.speaker == "initiator" else conversation.recipient
+            title = speaker.name
+        else:
+            speaker = self.selected_npc
+            title = f"{conversation.initiator.name} & {conversation.recipient.name}"
+        self.draw_portrait(app, speaker)
+        draw_wrapped_text(app.window, title, app.font, INK, (self.reply_rect.x, 477, self.retry_button.rect.x - self.reply_rect.x - 16, 30))
+        self.back_button.draw(app.window, app.small_font, enabled=self.conversation_turn_index > 0)
+        last_turn = bool(conversation.turns) and self.conversation_turn_index == len(conversation.turns) - 1
+        self.next_button.label = "Done" if last_turn else "Next"
+        self.next_button.draw(app.window, app.small_font, enabled=bool(conversation.turns))
+        if conversation.error:
+            self.retry_button.draw(app.window, app.small_font, enabled=not app.requests.busy)
+        rect = pygame.Rect(self.reply_rect.x, 514, self.reply_rect.width, 96)
         if not conversation.arrived:
             text = f"{conversation.initiator.name} is walking over to {conversation.recipient.name}..."
         elif conversation.error and not conversation.turns:
             text = conversation.error
-            self.retry_button.draw(app.window, app.small_font, enabled=not app.requests.busy)
         elif not conversation.turns:
             text = "Generating their conversation..." if self.request_is_current(app) else "Waiting to hear their conversation..."
         else:
-            lines = []
+            text = turn.text
+        self.draw_dialogue_lines(app.window, wrap_text(text, app.font, rect.width - 12), app.font, rect)
+        if conversation.turns:
             if conversation.error:
-                lines.extend(wrap_text(conversation.error, app.small_font, rect.width - 12))
-                lines.append("")
-                self.retry_button.draw(app.window, app.small_font, enabled=not app.requests.busy)
-            for turn in conversation.turns:
-                npc = conversation.initiator if turn.speaker == "initiator" else conversation.recipient
-                lines.extend(wrap_text(f"{npc.name}: {turn.text}", app.small_font, rect.width - 12))
-                lines.append("")
-            self.draw_dialogue_lines(app.window, lines[:-1], app.small_font, rect)
-            text = ""
-        if text:
-            draw_wrapped_text(app.window, text, app.font, INK, rect)
-        hint = "Scroll or use arrow keys to read. Done or Escape ends the conversation and resumes their activities."
-        app.window.blit(app.small_font.render(hint, True, MUTED), (24, 616))
+                draw_wrapped_text(app.window, conversation.error, app.small_font, MUTED, (rect.x, 616, rect.width - 80, 24))
+            progress = app.small_font.render(f"{self.conversation_turn_index + 1}/{len(conversation.turns)}", True, MUTED)
+            app.window.blit(progress, progress.get_rect(topright=(936, 616)))
 
     def draw_dialogue_lines(self, surface, lines, font, rect):
         line_height = font.get_linesize()

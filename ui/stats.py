@@ -8,13 +8,13 @@ from .theme import ACCENT, GRASS, INK, MUTED, PAPER
 
 
 class StatsScreen:
-    """Browse live NPC profiles without editing them or leaving the simulation."""
+    """Browse live NPC profiles and the current game's conversation history."""
 
     def __init__(self):
         self.back_button = Button((24, 16, 170, 38), "Back to game")
         self.tabs = {
             name: Button((352 + index * 176, 106, 160, 36), name)
-            for index, name in enumerate(("Statistics", "Opinions"))
+            for index, name in enumerate(("Statistics", "Opinions", "Conversations"))
         }
         self.list_rect = pygame.Rect(40, 144, 264, 440)
         self.detail_rect = pygame.Rect(352, 160, 568, 424)
@@ -22,18 +22,26 @@ class StatsScreen:
 
     def open(self):
         self.selected_npc = None
+        self.selected_conversation = None
         self.tab = "Statistics"
         self.list_scroll = 0
         self.detail_scroll = 0
         self.scroll_focus = "list"
 
-    def _npc_rows(self, app):
+    def _list_rows(self, app):
         rows = []
         top = 0
-        for npc in app.npcs:
-            lines = wrap_text(npc.name, app.font, self.list_rect.width - 30)
+        if self.tab == "Conversations":
+            entries = [
+                (record, f"{index}. {' & '.join(record.participants)}")
+                for index, record in reversed(list(enumerate(app.conversation_history, start=1)))
+            ]
+        else:
+            entries = [(npc, npc.name) for npc in app.npcs]
+        for entry, label in entries:
+            lines = wrap_text(label, app.font, self.list_rect.width - 30)
             height = max(48, len(lines) * app.font.get_linesize() + 20)
-            rows.append((npc, top, height, lines))
+            rows.append((entry, top, height, lines))
             top += height + 8
         return rows, max(0, top - 8)
 
@@ -47,6 +55,39 @@ class StatsScreen:
 
         def gap():
             lines.append(("", app.small_font, MUTED))
+
+        if self.tab == "Conversations":
+            record = self.selected_conversation
+            if record is None:
+                add(
+                    "Select a conversation to view the participants, outcome, and dialogue."
+                    if app.conversation_history else "No conversations have happened in this game yet.",
+                    color=MUTED,
+                )
+                return lines
+            add(" & ".join(record.participants), app.heading_font)
+            add(f"Status: {record.status}", app.small_font, MUTED)
+            gap()
+            add(f"Topic / request: {record.topic}")
+            gap()
+            add("Outcome", app.heading_font)
+            if record.error:
+                add(record.error, color=MUTED)
+            for outcome in record.outcomes:
+                add(outcome)
+                gap()
+            if not record.outcomes:
+                add("No outcome recorded yet.", color=MUTED)
+                gap()
+            add("Dialogue", app.heading_font)
+            gap()
+            if not record.turns:
+                add("No dialogue generated yet.", color=MUTED)
+            for speaker, text in record.turns:
+                add(speaker, color=ACCENT)
+                add(text)
+                gap()
+            return lines
 
         npc = self.selected_npc
         if npc is None:
@@ -79,7 +120,7 @@ class StatsScreen:
         return lines
 
     def _scroll_limits(self, app):
-        _, list_height = self._npc_rows(app)
+        _, list_height = self._list_rows(app)
         detail_height = sum(font.get_linesize() for _, font, _ in self._detail_lines(app))
         return {
             "list": max(0, list_height - self.list_rect.height),
@@ -104,7 +145,11 @@ class StatsScreen:
             return
         for name, button in self.tabs.items():
             if button.clicked(event):
+                if (self.tab == "Conversations") != (name == "Conversations"):
+                    self.list_scroll = 0
                 self.tab = name
+                if name == "Conversations" and self.selected_conversation is None and app.conversation_history:
+                    self.selected_conversation = app.conversation_history[-1]
                 self.detail_scroll = 0
                 self.scroll_focus = "detail"
                 return
@@ -130,10 +175,13 @@ class StatsScreen:
                     self._scroll(pane, offset * limits[pane] / (track.height - thumb.height), limits)
                     return
                 if pane == "list":
-                    rows, _ = self._npc_rows(app)
-                    for npc, top, height, _ in rows:
+                    rows, _ = self._list_rows(app)
+                    for entry, top, height, _ in rows:
                         if top <= pos[1] - rect.top + scroll < top + height:
-                            self.selected_npc = npc
+                            if self.tab == "Conversations":
+                                self.selected_conversation = entry
+                            else:
+                                self.selected_npc = entry
                             self.detail_scroll = 0
                             self.scroll_focus = "detail"
                             return
@@ -153,11 +201,12 @@ class StatsScreen:
         surface = app.window
         surface.fill(GRASS)
         self.back_button.draw(surface, app.small_font)
-        surface.blit(app.heading_font.render("NPC Stats", True, INK), (220, 21))
-        surface.blit(app.small_font.render("Read only. Select anyone to browse their profile.", True, MUTED), (24, 68))
+        surface.blit(app.heading_font.render("World Stats", True, INK), (220, 21))
+        surface.blit(app.small_font.render("Select a person or conversation to view the details.", True, MUTED), (24, 68))
         pygame.draw.rect(surface, PAPER, (24, 94, 296, 506))
         pygame.draw.rect(surface, PAPER, (336, 94, 600, 506))
-        surface.blit(app.font.render(f"NPCs ({len(app.npcs)})", True, INK), (40, 110))
+        list_title = f"Conversations ({len(app.conversation_history)})" if self.tab == "Conversations" else f"NPCs ({len(app.npcs)})"
+        surface.blit(app.font.render(list_title, True, INK), (40, 110))
         for name, button in self.tabs.items():
             button.draw(surface, app.small_font)
             if self.tab == name:
@@ -168,12 +217,15 @@ class StatsScreen:
             self._scroll(pane, getattr(self, f"{pane}_scroll"), limits)
         previous_clip = surface.get_clip()
         surface.set_clip(self.list_rect.clip(previous_clip))
-        rows, _ = self._npc_rows(app)
-        for npc, top, height, lines in rows:
+        rows, _ = self._list_rows(app)
+        if not rows and self.tab == "Conversations":
+            surface.blit(app.small_font.render("No conversations yet.", True, MUTED), (self.list_rect.x, self.list_rect.y + 12))
+        for entry, top, height, lines in rows:
             row = pygame.Rect(self.list_rect.x, self.list_rect.y + top - self.list_scroll, self.list_rect.width - 14, height)
             if not row.colliderect(self.list_rect):
                 continue
-            selected = npc is self.selected_npc
+            selected_entry = self.selected_conversation if self.tab == "Conversations" else self.selected_npc
+            selected = entry is selected_entry
             pygame.draw.rect(surface, ACCENT if selected else GRASS, row)
             for index, line in enumerate(lines):
                 surface.blit(app.font.render(line, True, PAPER if selected else INK), (row.x + 8, row.y + 10 + index * app.font.get_linesize()))

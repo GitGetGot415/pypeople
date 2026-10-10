@@ -6,6 +6,7 @@ from uuid import uuid4
 import pygame
 
 from character_data import load_character, random_character
+from conversation_history import ConversationRecord, describe_opinion_change
 from llm import is_opinion_question
 from npc import Conversation, NPC, Tree, assign_npc_names
 
@@ -42,6 +43,8 @@ class Application:
         self.request_npc = None
         self.request_conversation = None
         self.request_message = ""
+        self.request_history = None
+        self.conversation_history = []
         self.tree = None
         self.requests = RequestManager()
         self.menu = MenuScreen()
@@ -96,6 +99,8 @@ class Application:
         self.game.reset()
         self.request_npc = None
         self.request_conversation = None
+        self.request_history = None
+        self.conversation_history = []
         self.npcs = []
         columns = max(1, math.ceil(math.sqrt(len(characters) - 1)))
         rows = max(1, math.ceil((len(characters) - 1) / columns))
@@ -115,6 +120,10 @@ class Application:
         self.screen = "game"
 
     def leave_game(self):
+        if self.request_history is not None:
+            self.request_history.status = "Ended before the reply arrived"
+            self.request_history.outcomes = ["Left the game before a reply was received."]
+            self.request_history = None
         self.session_id += 1
         self.screen = "menu"
         self.game.close_dialogue()
@@ -152,6 +161,10 @@ class Application:
         self.request_npc = npc
         self.request_conversation = None
         self.request_message = message
+        self.request_history = ConversationRecord(
+            ("You", npc.name), message, "Waiting for reply", turns=[("You", message)]
+        )
+        self.conversation_history.append(self.request_history)
         self.game.prompt_input.set_value("")
 
     def remember_response_opinions(self, npc, response):
@@ -176,9 +189,10 @@ class Application:
         try:
             # Leave enough space for both sprites and their name labels.
             spacing = (self.small_font.size(npc.name)[0] + self.small_font.size(target.name)[0]) / 2 + 12
-            Conversation(npc, target, topic, self.tree, spacing=spacing)
+            conversation = Conversation(npc, target, topic, self.tree, spacing=spacing)
         except ValueError as error:
             return str(error)
+        self.conversation_history.append(conversation.record)
         if self.game.selected_npc is npc or self.game.selected_npc is target:
             self.game.close_dialogue()
         return None
@@ -199,6 +213,7 @@ class Application:
             return
         conversation.error = ""
         self.request_conversation = conversation
+        self.request_history = None
         self.request_npc = conversation.initiator
 
     def handle_event(self, event):
@@ -222,6 +237,14 @@ class Application:
             npc = self.request_npc
             if npc is None:
                 continue
+            record = self.request_history
+            if record is not None and not error:
+                record.outcomes = [
+                    describe_opinion_change(
+                        npc.name, entry.person, npc.opinions.get(entry.person, {}).get("opinion"), entry.opinion, entry.reason
+                    )
+                    for entry in result.opinion_updates
+                ]
             if not error:
                 error = self.remember_response_opinions(npc, result)
             if not error:
@@ -230,6 +253,22 @@ class Application:
                 else:
                     npc.apply_action(result.action, self.tree)
             npc.reply = error or result.reply
+            if record is not None:
+                record.turns.append((npc.name, npc.reply))
+                record.error = error or ""
+                record.status = "Failed" if error else "Completed"
+                if error:
+                    record.outcomes = [f"The request could not be completed: {error}"]
+                else:
+                    actions = {
+                        "WANDER": "Started wandering.", "STOP": "Stopped moving.",
+                        "GO_TO_TREE": "Started walking to the tree.",
+                        "SHAKE_TREE": "Started the task of shaking the tree.",
+                        "TALK_TO_NPC": f"Started a conversation with {result.target}.",
+                        "SAY": "Replied without changing their activity.",
+                    }
+                    record.outcomes.insert(0, actions[result.action])
+                self.request_history = None
             if self.game.selected_npc is npc and self.game.viewed_conversation is None:
                 self.game.set_reply(npc.reply)
         self.game.prompt_input.update(dt)
