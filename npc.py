@@ -275,6 +275,7 @@ class Conversation:
         self.arrived = False
         self.active = True
         self.turns = []
+        self.pending_opinions = []
         self.error = ""
         self.saved_states = []
         self.shake_elapsed = None
@@ -305,6 +306,29 @@ class Conversation:
 
     def other(self, npc):
         return self.recipient if npc is self.initiator else self.initiator
+
+    def set_response(self, response):
+        self.turns = response.turns
+        self.pending_opinions = [
+            (npc, {partner.name: {"opinion": entry.opinion, "reason": entry.reason}})
+            for npc, partner, entry in (
+                (self.initiator, self.recipient, response.initiator_opinion),
+                (self.recipient, self.initiator, response.recipient_opinion),
+            )
+        ]
+        self.remember_opinions()
+
+    def remember_opinions(self):
+        """Retry unsaved opinions without regenerating or hiding the dialogue."""
+        while self.pending_opinions:
+            npc, updates = self.pending_opinions[0]
+            try:
+                npc.remember_opinions(updates)
+            except (OSError, ValueError):
+                self.error = f"Could not save {npc.name}'s opinion. Click Retry to save it again."
+                return
+            self.pending_opinions.pop(0)
+        self.error = ""
 
     def update(self, dt):
         if not self.active or self.arrived:

@@ -176,7 +176,11 @@ class Application:
         return None
 
     def request_conversation_dialogue(self, conversation):
-        if not conversation.active or not conversation.arrived or conversation.turns or self.requests.busy:
+        if not conversation.active or not conversation.arrived or self.requests.busy:
+            return
+        if conversation.turns:
+            if conversation.pending_opinions:
+                conversation.remember_opinions()
             return
         if self.provider == "gemini" and not self.api_key:
             conversation.error = "Add your API key in Settings to hear their conversation."
@@ -205,7 +209,7 @@ class Application:
                     if error:
                         conversation.error = error
                     else:
-                        conversation.turns = result.turns
+                        conversation.set_response(result)
                 continue
             npc = self.request_npc
             if npc is None:
@@ -231,9 +235,11 @@ class Application:
                 npc.update(dt, self.tree)
                 if npc.conversation is not None and npc.conversation.initiator is npc:
                     npc.conversation.update(dt)
-            conversation = self.game.viewed_conversation
-            if conversation is not None and conversation.active and not conversation.turns and not conversation.error:
-                self.request_conversation_dialogue(conversation)
+            for npc in self.npcs:
+                conversation = npc.conversation
+                if conversation is not None and conversation.initiator is npc:
+                    if conversation.active and not conversation.turns and not conversation.error:
+                        self.request_conversation_dialogue(conversation)
 
     def draw(self):
         self.screens[self.screen].draw(self)

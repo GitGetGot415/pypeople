@@ -201,13 +201,17 @@ class GameScreen:
         rect = pygame.Rect(24, 514, 912, 96)
         if not conversation.arrived:
             text = f"{conversation.initiator.name} is walking over to {conversation.recipient.name}..."
-        elif conversation.error:
+        elif conversation.error and not conversation.turns:
             text = conversation.error
             self.retry_button.draw(app.window, app.small_font, enabled=not app.requests.busy)
         elif not conversation.turns:
             text = "Generating their conversation..." if self.request_is_current(app) else "Waiting to hear their conversation..."
         else:
             lines = []
+            if conversation.error:
+                lines.extend(wrap_text(conversation.error, app.small_font, rect.width - 12))
+                lines.append("")
+                self.retry_button.draw(app.window, app.small_font, enabled=not app.requests.busy)
             for turn in conversation.turns:
                 npc = conversation.initiator if turn.speaker == "initiator" else conversation.recipient
                 lines.extend(wrap_text(f"{npc.name}: {turn.text}", app.small_font, rect.width - 12))
