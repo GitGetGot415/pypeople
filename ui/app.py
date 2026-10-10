@@ -64,17 +64,25 @@ class Application:
     def start_game(self):
         try:
             characters = [load_character(JUDY_CHARACTER_PATH)]
-            paths = [JUDY_CHARACTER_PATH]
+            characters[0]["Opinions"] = {}
             generated_dir = JUDY_CHARACTER_PATH.parent / "generated" / uuid4().hex
+            # Judy's template stays clean; each game owns its opinion history.
+            paths = [generated_dir / "judy.json"]
             for index, source in enumerate(self.setup.sources, start=1):
                 try:
                     characters.append(random_character() if source is None else load_character(source))
                 except (OSError, ValueError) as error:
                     raise ValueError(f"NPC {index + 1}: {error}") from error
-                paths.append(generated_dir / f"random_{index}.json" if source is None else source)
-            # Validate all profiles before saving any generated characters.
-            for source, path, character in zip(self.setup.sources, paths[1:], characters[1:]):
-                if source is not None:
+                if source is None:
+                    paths.append(generated_dir / f"random_{index}.json")
+                elif Path(source).resolve() == JUDY_CHARACTER_PATH.resolve():
+                    characters[-1]["Opinions"] = {}
+                    paths.append(generated_dir / f"judy_{index}.json")
+                else:
+                    paths.append(source)
+            # Validate all profiles before saving any session copies.
+            for path, character in zip(paths, characters):
+                if path.parent != generated_dir:
                     continue
                 generated_dir.mkdir(parents=True, exist_ok=True)
                 with path.open("w", encoding="utf-8") as character_file:

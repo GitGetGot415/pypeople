@@ -11,10 +11,5 @@
   "Skin Color": "#FFD2B4",
   "Eye Color": "#00C8FF",
   "Hair Color": "#805000",
-  "Opinions": {
-    "Emma Reed": {
-      "opinion": 0,
-      "reason": "Emma's bossy nature caught me off guard, but I'm willing to give her a chance."
-    }
-  }
+  "Opinions": {}
 }
