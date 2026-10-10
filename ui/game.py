@@ -12,6 +12,7 @@ from .world import draw_world
 class GameScreen:
     def __init__(self):
         self.menu_button = Button((824, 16, 112, 38), "Menu")
+        self.stats_button = Button((704, 16, 112, 38), "Stats")
         self.send_button = Button((816, 564, 120, 44), "Send")
         self.done_button = Button((824, 472, 112, 32), "Done")
         self.retry_button = Button((704, 472, 112, 32), "Retry")
@@ -61,7 +62,9 @@ class GameScreen:
 
     def handle_event(self, app, event):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            if event.pos[1] < WORLD_HEIGHT and not self.menu_button.rect.collidepoint(event.pos):
+            if event.pos[1] < WORLD_HEIGHT and not any(
+                button.rect.collidepoint(event.pos) for button in (self.menu_button, self.stats_button)
+            ):
                 self.pan_start = event.pos
                 self.pan_last = event.pos
                 self.panning = False
@@ -85,6 +88,9 @@ class GameScreen:
             self.panning = False
             return
 
+        if self.stats_button.clicked(event):
+            app.open_stats()
+            return
         if self.menu_button.clicked(event):
             app.leave_game()
             return
@@ -156,6 +162,7 @@ class GameScreen:
         draw_world(app.window, app.npcs, app.tree, app.small_font, app.character.renderer, self.camera_offset)
         app.window.blit(app.small_font.render("Pypeople", True, INK), (24, 26))
         self.menu_button.draw(app.window, app.small_font)
+        self.stats_button.draw(app.window, app.small_font)
 
         pygame.draw.rect(app.window, PAPER, (0, WORLD_HEIGHT, 960, 180))
         pygame.draw.line(app.window, (129, 154, 110), (0, WORLD_HEIGHT), (960, WORLD_HEIGHT), 3)

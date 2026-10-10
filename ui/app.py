@@ -15,6 +15,7 @@ from .menu import MenuScreen
 from .requests import RequestManager
 from .settings import SettingsScreen
 from .setup import SetupScreen
+from .stats import StatsScreen
 from .ollama_setup import OllamaSetupScreen
 from .theme import FPS, WINDOW_SIZE
 from .world import CHARACTER_SCALE
@@ -48,6 +49,7 @@ class Application:
         self.setup = SetupScreen()
         self.character = CharacterScreen()
         self.game = GameScreen()
+        self.stats = StatsScreen()
         self.ollama_setup = OllamaSetupScreen()
         self.screens = {
             "menu": self.menu,
@@ -55,6 +57,7 @@ class Application:
             "setup": self.setup,
             "character": self.character,
             "game": self.game,
+            "stats": self.stats,
             "ollama_setup": self.ollama_setup,
         }
 
@@ -114,6 +117,12 @@ class Application:
     def open_settings(self):
         self.screen = "settings"
         self.settings.open(self.provider, self.api_key)
+
+    def open_stats(self):
+        self.game.prompt_input.active = False
+        self.game.prompt_input.backspace_held = False
+        self.stats.open()
+        self.screen = "stats"
 
     def submit(self):
         message = self.game.prompt_input.text.strip()[:300]
@@ -187,7 +196,8 @@ class Application:
         self.screens[self.screen].handle_event(self, event)
 
     def update(self, dt):
-        active_session = self.session_id if self.screen == "game" else None
+        simulation_active = self.screen in ("game", "stats")
+        active_session = self.session_id if simulation_active else None
         for result, error in self.requests.poll(active_session):
             conversation = self.request_conversation
             if conversation is not None:
@@ -215,7 +225,7 @@ class Application:
         self.character.update(dt)
         if self.screen == "setup":
             self.setup.update(dt)
-        if self.screen == "game":
+        if simulation_active:
             self.tree.update(dt)
             for npc in self.npcs:
                 npc.update(dt, self.tree)
