@@ -7,7 +7,7 @@ import pygame
 
 from character_data import load_character, random_character
 from conversation_history import ConversationRecord, describe_opinion_change
-from llm import is_opinion_question
+from llm import is_opinion_question, resolve_conversation_target
 from npc import Conversation, NPC, Tree, assign_npc_names
 
 from .game import GameScreen
@@ -155,6 +155,9 @@ class Application:
             {**other.snapshot(self.tree), "available_to_talk": other.conversation is None}
             for other in self.npcs if other is not npc
         ]
+        target = resolve_conversation_target(message, snapshot)
+        if target is not None:
+            snapshot["conversation_target"] = target
         if not self.requests.submit(self.session_id, self.provider, self.api_key, message, snapshot):
             self.game.set_reply("Could not start the request. Please try again.")
             return

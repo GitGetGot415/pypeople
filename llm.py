@@ -228,6 +228,11 @@ SAY, with target "", and never walk over or relay the player's question.
 Asking 'have you talked to Judy?' is also a question, not an instruction to talk.
 For TALK_TO_NPC, set target to the exact npc_name of someone in other_npcs.
 Accept unambiguous first names or descriptions, but resolve them to the full npc_name.
+Choose the recipient from the CURRENT player_message. last_reply and stored
+opinions are background context, never instructions to repeat a previous target.
+If world_state.conversation_target is present, it identifies the recipient named
+in the current command. For TALK_TO_NPC, use exactly that target; keep your reply
+and any opinion updates consistent with the current request.
 Never target yourself. If the target is missing, ambiguous, or busy, choose SAY
 and ask the player to name an available NPC. For all other actions, target is "".
 Return the required action/reply object. Give a complete reply in your character's
@@ -325,15 +330,58 @@ def is_opinion_question(message):
     ))
 
 
+def resolve_conversation_target(message, snapshot):
+    """Resolve a named recipient in a clear command, independently of old replies."""
+    if snapshot.get("reply_only"):
+        return None
+    text = " ".join(message.casefold().split())
+    text = re.sub(r"^(?:(?:please|(?:can|could|would|will) you)\s+)+", "", text)
+    command = re.match(
+        r"^(?:go\s+(?:and\s+)?)?(?:(?:talk|speak|chat)\s+(?:to|with)|"
+        r"have\s+a\s+conversation\s+with|tell|ask)\s+(.+)$",
+        text,
+    )
+    if command is None:
+        return None
+    recipient_text = command.group(1).lstrip("\"'")
+    people = [snapshot["npc_name"], *(other["npc_name"] for other in snapshot.get("other_npcs", []))]
+
+    def matches(name):
+        return re.match(
+            re.escape(" ".join(name.casefold().split()))
+            + r"(?=$|[\"'.,!?;:]|\s+(?:about|regarding|on|and|to|please|for|then)\b)",
+            recipient_text,
+        ) is not None
+
+    # Prefer full labels, so numbered names and names sharing a prefix stay distinct.
+    full_matches = [name for name in people if matches(name)]
+    if full_matches:
+        longest = max(len(name) for name in full_matches)
+        candidates = [name for name in full_matches if len(name) == longest]
+    else:
+        candidates = [
+            name for name in people
+            if matches(re.sub(r"\s+\(\d+\)$", "", name).split()[0])
+        ]
+    if len(candidates) == 1 and candidates[0] != snapshot["npc_name"]:
+        return candidates[0]
+    return None
+
+
 def response_contract(snapshot):
     if snapshot.get("request_kind") == "conversation":
         instruction = CONVERSATION_INSTRUCTION + "\n\n" + EMOTION_INSTRUCTION
         instruction += "\nInclude emotion separately on every part for that turn's speaker."
         return instruction, CONVERSATION_SCHEMA, ConversationResponse
     schema = RESPONSE_SCHEMA
+    instruction = build_system_instruction(snapshot["character"])
+    if snapshot.get("conversation_target"):
+        target = snapshot["conversation_target"]
+        schema = {**schema, "properties": {**schema["properties"], "target": {"type": "string", "enum": ["", target]}}}
+        instruction += "\n\nThe current command's conversation recipient is " + json.dumps(target, ensure_ascii=False) + "."
     if snapshot.get("reply_only"):
         schema = {**schema, "properties": {**schema["properties"], "action": {"type": "string", "enum": ["SAY"]}}}
-    return build_system_instruction(snapshot["character"]), schema, ActionResponse
+    return instruction, schema, ActionResponse
 
 
 def validate_response(raw, snapshot):
@@ -344,8 +392,17 @@ def validate_response(raw, snapshot):
             raise ValueError("Opinion questions cannot trigger NPC actions.")
         if not result.reply.strip():
             raise ValueError("Empty reply")
-        if result.action == "TALK_TO_NPC" and not result.target.strip():
-            raise ValueError("Missing conversation target")
+        if result.action == "TALK_TO_NPC":
+            target = result.target.strip().casefold()
+            if not target:
+                raise ValueError("Missing conversation target")
+            expected = snapshot.get("conversation_target")
+            if expected and target != expected.casefold():
+                raise ValueError("Conversation target does not match the current request.")
+            matches = [other for other in snapshot.get("other_npcs", []) if other["npc_name"].casefold() == target]
+            if len(matches) != 1 or not matches[0].get("available_to_talk", True):
+                raise ValueError("Conversation target must be another available NPC.")
+            result.target = matches[0]["npc_name"]
     elif isinstance(result, ConversationResponse):
         for entry, partner in (
             (result.initiator_opinion, snapshot["recipient"]),
