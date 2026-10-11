@@ -51,6 +51,26 @@ class CharacterRenderer:
                 # artwork is cropped asymmetrically for a diagonal or side view.
                 marks = [x for x in range(asset.get_width()) if asset.get_at((x, 0)).a]
                 self.eye_anchors[style][direction] = (min(marks) + max(marks) + 1) // 2 if marks else asset.get_width() // 2
+        self.eye_emotions = {
+            name: pygame.image.load(str(asset_dir / "eyes" / "emotions" / filename)).convert_alpha()
+            for name, filename in {
+                "angry": "Angry.png",
+                "disappointed": "Dissapointed.png",
+                "shocked": "Shock.png",
+                "suspicious": "Suspicious.png",
+            }.items()
+        }
+        self.emotion_masks = {
+            name: {
+                "Skin Color": pygame.mask.from_threshold(asset, (255, 0, 0, 255), (1, 1, 1, 1)),
+                "Eye Color": pygame.mask.from_threshold(asset, (5, 255, 0, 255), (1, 1, 1, 1)),
+            }
+            for name, asset in self.eye_emotions.items()
+        }
+        self.emotion_anchors = {}
+        for name, asset in self.eye_emotions.items():
+            marks = [x for x in range(asset.get_width()) if asset.get_at((x, 0)).a]
+            self.emotion_anchors[name] = (min(marks) + max(marks) + 1) // 2 if marks else asset.get_width() // 2
         self.hair = {
             style: {
                 direction: pygame.image.load(str(asset_dir / "hair" / style / f"Hair_{direction}.png")).convert_alpha()
@@ -74,6 +94,7 @@ class CharacterRenderer:
         self.colored_body = None
         self.colored_hands = {}
         self.colored_eyes = {}
+        self.colored_emotions = {}
         self.colored_hair = {}
         self.values = {}
         self.direction = 4
@@ -118,6 +139,10 @@ class CharacterRenderer:
                 }
                 for style, facings in self.hair.items()
             }
+            self.colored_emotions = {
+                name: self._recolor_asset(asset, self.emotion_masks[name])
+                for name, asset in self.eye_emotions.items()
+            }
             self._color_key = colors
             self._frames.clear()
             self._scaled_frames.clear()
@@ -136,9 +161,31 @@ class CharacterRenderer:
             self._scaled_frames[key] = pygame.transform.scale(frame, size)
         return self._scaled_frames[key]
 
-    def render_portrait(self, values, size):
+    def render_portrait(self, values, size, emotion=None):
         """Fit the character's south-facing head inside a portrait box."""
         frame = self.render(values, 4)
+        if emotion in self.colored_emotions:
+            # Work on a copy: the cached sprite is also used in the world and
+            # character creator, where portrait expressions must never appear.
+            frame = frame.copy()
+            overlay = self.colored_emotions[emotion]
+            layer = pygame.Surface(frame.get_size(), pygame.SRCALPHA)
+            body_top = frame.get_height() - self.body.get_height()
+            layer.blit(
+                overlay, (frame.get_width() // 2 - self.emotion_anchors[emotion], body_top + 1),
+                (0, 1, overlay.get_width(), overlay.get_height() - 2),
+            )
+            head_clip = pygame.Surface(frame.get_size(), pygame.SRCALPHA)
+            head_clip.blit(
+                self.body_masks["Skin Color"].to_surface(
+                    setcolor=(255, 255, 255, 255), unsetcolor=(0, 0, 0, 0),
+                ),
+                self.colored_body.get_rect(midbottom=frame.get_rect().midbottom),
+            )
+            layer.blit(head_clip, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+            frame.blit(layer, (0, 0))
+            # Hair still belongs in front of the eyes and eyelids.
+            self._draw_hair(frame, values["Hair"], 4)
         head_bottom = max(rect.bottom for rect in self.body_masks["Skin Color"].get_bounding_rects())
         head_bottom += frame.get_height() - self.body.get_height()
         head = frame.subsurface((0, 0, frame.get_width(), head_bottom))
@@ -215,17 +262,20 @@ class CharacterRenderer:
     def _add_hair(self, body_frame):
         frame = pygame.Surface(self.character_size, pygame.SRCALPHA)
         frame.blit(body_frame, body_frame.get_rect(midbottom=frame.get_rect().midbottom))
-        hair_direction = ("N", "NE", "E", "SE", "S", "SE", "E", "NE")[self.direction]
-        hair = self.colored_hair[self.hair_style][hair_direction]
+        self._draw_hair(frame, self.hair_style, self.direction)
+        return frame
+
+    def _draw_hair(self, frame, style, direction):
+        hair_direction = ("N", "NE", "E", "SE", "S", "SE", "E", "NE")[direction]
+        hair = self.colored_hair[style][hair_direction]
         layer = pygame.Surface(frame.get_size(), pygame.SRCALPHA)
         # Align the bottom centers, letting taller hair extend above the head.
         hair_rect = hair.get_rect(midbottom=frame.get_rect().midbottom)
         # The last row contains alignment marks rather than visible hair.
         layer.blit(hair, hair_rect, (0, 0, hair.get_width(), hair.get_height() - 1))
-        if self.direction in (5, 6, 7):
+        if direction in (5, 6, 7):
             layer = pygame.transform.flip(layer, True, False)
         frame.blit(layer, (0, 0))
-        return frame
 
     def _draw_eyes(self, frame):
         # All three north-facing views show the back of the head.

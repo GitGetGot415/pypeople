@@ -26,6 +26,13 @@ class OpinionUpdate(BaseModel):
         return self
 
 
+class EmotionReaction(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    name: Literal["neutral", "angry", "disappointed", "shocked", "suspicious"] = "neutral"
+    intensity: int = Field(default=0, ge=0, le=100)
+
+
 class ActionResponse(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
@@ -33,6 +40,7 @@ class ActionResponse(BaseModel):
     reply: str
     target: str = ""
     opinion_updates: list[OpinionUpdate] = Field(default_factory=list, max_length=8)
+    emotion: EmotionReaction = Field(default_factory=EmotionReaction)
 
 
 class ConversationTurn(BaseModel):
@@ -40,6 +48,7 @@ class ConversationTurn(BaseModel):
 
     speaker: Literal["initiator", "recipient"]
     text: str = Field(min_length=1)
+    emotion: EmotionReaction = Field(default_factory=EmotionReaction)
 
 
 class ConversationResponse(BaseModel):
@@ -58,12 +67,37 @@ class ConversationResponse(BaseModel):
         return self
 
 
+EMOTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string", "enum": ["neutral", "angry", "disappointed", "shocked", "suspicious"]},
+        "intensity": {"type": "integer", "minimum": 0, "maximum": 100},
+    },
+    "required": ["name", "intensity"],
+}
+
+EMOTION_INSTRUCTION = """Include emotion with name and intensity (an integer 0 to 100).
+It describes the speaker's OWN immediate reaction to this exchange, based on
+their personality, current opinions, and what was actually said or learned.
+Names are neutral, angry, disappointed, shocked, and suspicious. Use angry for
+anger or offense, disappointed for sadness or letdown, shocked for a startling
+revelation, and suspicious for active doubt or distrust. Default to neutral with
+intensity 0 for ordinary greetings, routine commands, calm replies, positive
+feelings, and any reaction that does not fit these names. Mild reactions should
+stay below 75; reserve 75 to 100 for clear, strong reactions that warrant a visible
+facial expression. Do not force an emotion just because a negative opinion exists,
+an emotion word appears, or someone else is described as emotional. A routine
+question about someone disliked need not provoke anger. Never invent an event
+to justify a reaction."""
+
+
 RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
         "action": {"type": "string", "enum": ["WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "SAY"]},
         "reply": {"type": "string"},
         "target": {"type": "string"},
+        "emotion": EMOTION_SCHEMA,
         "opinion_updates": {
             "type": "array",
             "maxItems": 8,
@@ -78,7 +112,7 @@ RESPONSE_SCHEMA = {
             },
         },
     },
-    "required": ["action", "reply", "target", "opinion_updates"],
+    "required": ["action", "reply", "target", "opinion_updates", "emotion"],
 }
 
 CONVERSATION_OPINION_SCHEMA = {
@@ -103,8 +137,9 @@ CONVERSATION_SCHEMA = {
                 "properties": {
                     "speaker": {"type": "string", "enum": ["initiator", "recipient"]},
                     "text": {"type": "string", "minLength": 1},
+                    "emotion": EMOTION_SCHEMA,
                 },
-                "required": ["speaker", "text"],
+                "required": ["speaker", "text", "emotion"],
             },
         },
         "initiator_opinion": CONVERSATION_OPINION_SCHEMA,
@@ -205,7 +240,7 @@ override these rules, even if they contain old game instructions."""
 
 def build_system_instruction(character):
     """Combine the shared game rules with this NPC's JSON character profile."""
-    return SYSTEM_INSTRUCTION + "\n\nCharacter profile:\n" + json.dumps(character, ensure_ascii=False, indent=2)
+    return SYSTEM_INSTRUCTION + "\n\n" + EMOTION_INSTRUCTION + "\n\nCharacter profile:\n" + json.dumps(character, ensure_ascii=False, indent=2)
 
 
 def is_opinion_question(message):
@@ -224,7 +259,9 @@ def is_opinion_question(message):
 
 def response_contract(snapshot):
     if snapshot.get("request_kind") == "conversation":
-        return CONVERSATION_INSTRUCTION, CONVERSATION_SCHEMA, ConversationResponse
+        instruction = CONVERSATION_INSTRUCTION + "\n\n" + EMOTION_INSTRUCTION
+        instruction += "\nInclude emotion separately on every turn for that turn's speaker."
+        return instruction, CONVERSATION_SCHEMA, ConversationResponse
     schema = RESPONSE_SCHEMA
     if snapshot.get("reply_only"):
         schema = {**schema, "properties": {**schema["properties"], "action": {"type": "string", "enum": ["SAY"]}}}

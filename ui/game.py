@@ -1,6 +1,6 @@
 import pygame
 
-from npc import WORLD_HEIGHT, WORLD_WIDTH
+from npc import EMOTION_THRESHOLD, WORLD_HEIGHT, WORLD_WIDTH
 
 from .button import Button
 from .text import draw_wrapped_text, wrap_text
@@ -59,6 +59,9 @@ class GameScreen:
         self.prompt_input.backspace_held = False
 
     def set_reply(self, text):
+        if self.selected_npc is not None and text != self.selected_npc.reply:
+            # Interface messages replacing a reply have no emotional reaction.
+            self.selected_npc.set_emotion("neutral", 0)
         normalized = " ".join(text.split())
         self.reply = "".join(char for char in normalized if char.isprintable())
         self.dialogue_scroll = 0
@@ -196,7 +199,7 @@ class GameScreen:
             self.draw_conversation(app)
             return
         if self.dialogue_open:
-            self.draw_portrait(app, self.selected_npc)
+            self.draw_portrait(app, self.selected_npc, self.selected_npc.portrait_emotion)
         status = self.selected_npc.status if self.selected_npc is not None else f"{len(app.npcs)} NPCs"
         if app.requests.busy:
             prefix = (
@@ -221,11 +224,11 @@ class GameScreen:
         count = app.small_font.render(f"{len(self.prompt_input.text)}/300", True, MUTED)
         app.window.blit(count, count.get_rect(topright=(936, 616)))
 
-    def draw_portrait(self, app, npc):
+    def draw_portrait(self, app, npc, emotion=None):
         pygame.draw.rect(app.window, (255, 254, 248), self.portrait_rect)
         pygame.draw.rect(app.window, INK, self.portrait_rect, width=2)
         portrait = app.character.renderer.render_portrait(
-            npc.character, self.portrait_rect.inflate(-12, -12).size
+            npc.character, self.portrait_rect.inflate(-12, -12).size, emotion=emotion
         )
         app.window.blit(portrait, portrait.get_rect(center=self.portrait_rect.center))
 
@@ -238,7 +241,8 @@ class GameScreen:
         else:
             speaker = self.selected_npc
             title = f"{conversation.initiator.name} & {conversation.recipient.name}"
-        self.draw_portrait(app, speaker)
+        emotion = turn.emotion.name if turn is not None and turn.emotion.intensity >= EMOTION_THRESHOLD else None
+        self.draw_portrait(app, speaker, emotion)
         draw_wrapped_text(app.window, title, app.font, INK, (self.reply_rect.x, 477, self.retry_button.rect.x - self.reply_rect.x - 16, 30))
         self.back_button.draw(app.window, app.small_font, enabled=self.conversation_turn_index > 0)
         last_turn = bool(conversation.turns) and self.conversation_turn_index == len(conversation.turns) - 1

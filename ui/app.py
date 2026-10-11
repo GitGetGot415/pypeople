@@ -253,6 +253,10 @@ class Application:
                 else:
                     npc.apply_action(result.action, self.tree)
             npc.reply = error or result.reply
+            if error:
+                npc.set_emotion("neutral", 0)
+            else:
+                npc.set_emotion(result.emotion.name, result.emotion.intensity)
             if record is not None:
                 record.turns.append((npc.name, npc.reply))
                 record.error = error or ""

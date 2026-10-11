@@ -14,6 +14,7 @@ WORLD_HEIGHT = 460
 NPC_RADIUS = 18
 SPEED = 90.0
 TREE_INTERACTION_POINT = (660.0, 280.0)
+EMOTION_THRESHOLD = 75
 
 
 class Behavior(str, Enum):
@@ -72,6 +73,19 @@ class NPC:
     conversation: "Conversation | None" = field(default=None, repr=False, compare=False)
     character_path: Path | None = field(default=None, repr=False, compare=False)
     display_name: str | None = None
+    emotion: str = "neutral"
+    emotion_intensity: int = 0
+
+    @property
+    def portrait_emotion(self):
+        if self.emotion_intensity >= EMOTION_THRESHOLD:
+            return self.emotion if self.emotion != "neutral" else None
+        return None
+
+    def set_emotion(self, name, intensity):
+        """Keep the reaction with its reply until new dialogue replaces it."""
+        self.emotion = name
+        self.emotion_intensity = intensity
 
     @property
     def name(self):
