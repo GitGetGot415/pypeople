@@ -112,7 +112,9 @@ Names are neutral, angry, disappointed, shocked, and suspicious. Use angry for
 anger or offense, disappointed for sadness or letdown, shocked for a startling
 revelation, and suspicious for active doubt or distrust. Default to neutral with
 intensity 0 for ordinary greetings, routine commands, calm replies, positive
-feelings, and any reaction that does not fit these names. Mild reactions should
+feelings, and any reaction that does not fit these names."""
+
+"""Mild reactions should
 stay below 75; reserve 75 to 100 for clear, strong reactions that warrant a visible
 facial expression. Do not force an emotion just because a negative opinion exists,
 an emotion word appears, or someone else is described as emotional. A routine
