@@ -43,12 +43,41 @@ class ActionResponse(BaseModel):
     emotion: EmotionReaction = Field(default_factory=EmotionReaction)
 
 
+class ConversationPart(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    text: str = Field(min_length=1)
+    emotion: EmotionReaction = Field(default_factory=EmotionReaction)
+
+    @model_validator(mode="after")
+    def validate_text(self):
+        if not self.text.strip():
+            raise ValueError("Conversation parts must contain text.")
+        return self
+
+
 class ConversationTurn(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
     speaker: Literal["initiator", "recipient"]
-    text: str = Field(min_length=1)
-    emotion: EmotionReaction = Field(default_factory=EmotionReaction)
+    parts: list[ConversationPart] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_unsplit_turn(cls, data):
+        # Older responses still display through the same paginated interface.
+        if isinstance(data, dict) and "parts" not in data and "text" in data:
+            data = data.copy()
+            part = {"text": data.pop("text")}
+            if "emotion" in data:
+                part["emotion"] = data.pop("emotion")
+            data["parts"] = [part]
+        return data
+
+    @property
+    def text(self):
+        """Keep the complete spoken turn available to conversation history."""
+        return " ".join(part.text.strip() for part in self.parts)
 
 
 class ConversationResponse(BaseModel):
@@ -136,10 +165,21 @@ CONVERSATION_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "speaker": {"type": "string", "enum": ["initiator", "recipient"]},
-                    "text": {"type": "string", "minLength": 1},
-                    "emotion": EMOTION_SCHEMA,
+                    "parts": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 8,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string", "minLength": 1, "maxLength": 240},
+                                "emotion": EMOTION_SCHEMA,
+                            },
+                            "required": ["text", "emotion"],
+                        },
+                    },
                 },
-                "required": ["speaker", "text", "emotion"],
+                "required": ["speaker", "parts"],
             },
         },
         "initiator_opinion": CONVERSATION_OPINION_SCHEMA,
@@ -222,7 +262,17 @@ are directional and can differ greatly. A missing opinion means no established
 view yet; use a tentative first impression from their profiles. Never invent a
 shared past. Do not recite numeric scores unless the requested topic requires it.
 Return the required object with turns, initiator_opinion, and recipient_opinion.
-Each turn's speaker is 'initiator' or 'recipient'. After writing the dialogue,
+Each turn's speaker is 'initiator' or 'recipient'. Each turn contains a parts
+array, with 1 to 8 short parts in spoken order. Each part contains text and its
+own emotion. Keep each part to one or two short sentences, ideally under 180
+characters and always at most 240 characters. Split longer thoughts at natural
+sentence or clause boundaries without cutting content or making the NPC stop
+mid-thought. Start a new part whenever the speaker's emotional reaction changes,
+so a startled or angry sentence can be followed by a calm, neutral part in the
+same turn. Only assign a reaction to the part whose words warrant it; do not
+copy it across the entire turn. Short turns need only one part. The next turn
+belongs to the other NPC, even when the current speaker has multiple parts.
+After writing the dialogue,
 record BOTH participants' own opinions of their conversation partner:
 initiator_opinion.person is the recipient's exact npc_name;
 recipient_opinion.person is the initiator's exact npc_name.
@@ -260,7 +310,7 @@ def is_opinion_question(message):
 def response_contract(snapshot):
     if snapshot.get("request_kind") == "conversation":
         instruction = CONVERSATION_INSTRUCTION + "\n\n" + EMOTION_INSTRUCTION
-        instruction += "\nInclude emotion separately on every turn for that turn's speaker."
+        instruction += "\nInclude emotion separately on every part for that turn's speaker."
         return instruction, CONVERSATION_SCHEMA, ConversationResponse
     schema = RESPONSE_SCHEMA
     if snapshot.get("reply_only"):

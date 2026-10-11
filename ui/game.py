@@ -3,7 +3,7 @@ import pygame
 from npc import EMOTION_THRESHOLD, WORLD_HEIGHT, WORLD_WIDTH
 
 from .button import Button
-from .text import draw_wrapped_text, wrap_text
+from .text import draw_wrapped_text, paginate_text, wrap_text
 from .text_input import TextInput
 from .theme import INK, MUTED, PAPER
 from .world import draw_world
@@ -27,7 +27,9 @@ class GameScreen:
         self.reply = ""
         self.viewed_conversation = None
         self.conversation_tree = None
-        self.conversation_turn_index = 0
+        self.conversation_page_index = 0
+        self.conversation_pages = []
+        self._conversation_page_turns = None
         self.dialogue_scroll = 0
         self.reply_rect = pygame.Rect(dialogue_x, 500, 936 - dialogue_x, 58)
         self.camera_offset = [0.0, 0.0]
@@ -53,7 +55,9 @@ class GameScreen:
             self.selected_npc.set_selected(False)
             self.selected_npc = None
         self.dialogue_open = False
-        self.conversation_turn_index = 0
+        self.conversation_page_index = 0
+        self.conversation_pages = []
+        self._conversation_page_turns = None
         self.dialogue_scroll = 0
         self.prompt_input.active = False
         self.prompt_input.backspace_held = False
@@ -114,7 +118,7 @@ class GameScreen:
             if self.viewed_conversation is not None:
                 if self.next_button.clicked(event, enabled=bool(self.viewed_conversation.turns)):
                     self.advance_conversation()
-                elif self.back_button.clicked(event, enabled=self.conversation_turn_index > 0):
+                elif self.back_button.clicked(event, enabled=self.conversation_page_index > 0):
                     self.rewind_conversation()
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_LEFT:
                     self.rewind_conversation()
@@ -131,17 +135,17 @@ class GameScreen:
 
     def advance_conversation(self):
         conversation = self.viewed_conversation
-        if conversation is None or not conversation.turns:
+        if conversation is None or not self.conversation_pages:
             return
-        if self.conversation_turn_index == len(conversation.turns) - 1:
+        if self.conversation_page_index == len(self.conversation_pages) - 1:
             self.close_dialogue()
         else:
-            self.conversation_turn_index += 1
+            self.conversation_page_index += 1
             self.dialogue_scroll = 0
 
     def rewind_conversation(self):
-        if self.viewed_conversation is not None and self.conversation_turn_index > 0:
-            self.conversation_turn_index -= 1
+        if self.viewed_conversation is not None and self.conversation_page_index > 0:
+            self.conversation_page_index -= 1
             self.dialogue_scroll = 0
 
     def handle_dialogue_scroll(self, app, event):
@@ -234,36 +238,48 @@ class GameScreen:
 
     def draw_conversation(self, app):
         conversation = self.viewed_conversation
-        turn = conversation.turns[self.conversation_turn_index] if conversation.turns else None
+        rect = pygame.Rect(self.reply_rect.x, 514, self.reply_rect.width, 96)
+        if self._conversation_page_turns is not conversation.turns:
+            # Model parts carry distinct reactions; oversized parts are split
+            # again to fit the actual font and dialogue box without scrolling.
+            max_lines = max(1, min(3, rect.height // app.font.get_linesize()))
+            self.conversation_pages = [
+                (turn, part, text)
+                for turn in conversation.turns
+                for part in turn.parts
+                for text in paginate_text(part.text, app.font, rect.width - 12, max_lines)
+            ]
+            self._conversation_page_turns = conversation.turns
+            self.conversation_page_index = 0
+            self.dialogue_scroll = 0
+        page = self.conversation_pages[self.conversation_page_index] if self.conversation_pages else None
+        turn, part, text = page if page is not None else (None, None, "")
         if turn is not None:
             speaker = conversation.initiator if turn.speaker == "initiator" else conversation.recipient
             title = speaker.name
         else:
             speaker = self.selected_npc
             title = f"{conversation.initiator.name} & {conversation.recipient.name}"
-        emotion = turn.emotion.name if turn is not None and turn.emotion.intensity >= EMOTION_THRESHOLD else None
+        emotion = part.emotion.name if part is not None and part.emotion.intensity >= EMOTION_THRESHOLD else None
         self.draw_portrait(app, speaker, emotion)
         draw_wrapped_text(app.window, title, app.font, INK, (self.reply_rect.x, 477, self.retry_button.rect.x - self.reply_rect.x - 16, 30))
-        self.back_button.draw(app.window, app.small_font, enabled=self.conversation_turn_index > 0)
-        last_turn = bool(conversation.turns) and self.conversation_turn_index == len(conversation.turns) - 1
-        self.next_button.label = "Done" if last_turn else "Next"
-        self.next_button.draw(app.window, app.small_font, enabled=bool(conversation.turns))
+        self.back_button.draw(app.window, app.small_font, enabled=self.conversation_page_index > 0)
+        last_page = bool(self.conversation_pages) and self.conversation_page_index == len(self.conversation_pages) - 1
+        self.next_button.label = "Done" if last_page else "Next"
+        self.next_button.draw(app.window, app.small_font, enabled=bool(self.conversation_pages))
         if conversation.error:
             self.retry_button.draw(app.window, app.small_font, enabled=not app.requests.busy)
-        rect = pygame.Rect(self.reply_rect.x, 514, self.reply_rect.width, 96)
         if not conversation.arrived:
             text = f"{conversation.initiator.name} is walking over to {conversation.recipient.name}..."
         elif conversation.error and not conversation.turns:
             text = conversation.error
         elif not conversation.turns:
             text = "Generating their conversation..." if self.request_is_current(app) else "Waiting to hear their conversation..."
-        else:
-            text = turn.text
         self.draw_dialogue_lines(app.window, wrap_text(text, app.font, rect.width - 12), app.font, rect)
         if conversation.turns:
             if conversation.error:
                 draw_wrapped_text(app.window, conversation.error, app.small_font, MUTED, (rect.x, 616, rect.width - 80, 24))
-            progress = app.small_font.render(f"{self.conversation_turn_index + 1}/{len(conversation.turns)}", True, MUTED)
+            progress = app.small_font.render(f"{self.conversation_page_index + 1}/{len(self.conversation_pages)}", True, MUTED)
             app.window.blit(progress, progress.get_rect(topright=(936, 616)))
 
     def draw_dialogue_lines(self, surface, lines, font, rect):

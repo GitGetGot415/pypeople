@@ -1,3 +1,5 @@
+import re
+
 import pygame
 
 from .theme import INK
@@ -29,6 +31,37 @@ def wrap_text(text, font, width):
     if line:
         lines.append(line)
     return lines
+
+
+def paginate_text(text, font, width, max_lines):
+    """Fit dialogue pages, preferring sentence breaks and preserving all words."""
+    pages = []
+    page = ""
+    for sentence in re.split(r"(?<=[.!?])\s+", " ".join(text.split())):
+        candidate = f"{page} {sentence}" if page else sentence
+        if len(wrap_text(candidate, font, width)) <= max_lines:
+            page = candidate
+            continue
+        if page:
+            pages.append(page)
+            page = ""
+        for word in sentence.split():
+            candidate = f"{page} {word}" if page else word
+            if len(wrap_text(candidate, font, width)) <= max_lines:
+                page = candidate
+                continue
+            if page:
+                pages.append(page)
+                page = ""
+            # A very long unbroken word also needs to fit a single page.
+            for char in word:
+                if page and len(wrap_text(page + char, font, width)) > max_lines:
+                    pages.append(page)
+                    page = ""
+                page += char
+    if page:
+        pages.append(page)
+    return pages
 
 
 def draw_wrapped_text(surface, text, font, color, rect):
