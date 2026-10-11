@@ -29,7 +29,10 @@ class OpinionUpdate(BaseModel):
 class EmotionReaction(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    name: Literal["neutral", "angry", "disappointed", "shocked", "suspicious"] = "neutral"
+    name: Literal[
+        "neutral", "angry", "confused", "disappointed", "flustered",
+        "happy", "shocked", "suspicious", "unyuu",
+    ] = "neutral"
     intensity: int = Field(default=0, ge=0, le=100)
 
 
@@ -99,7 +102,10 @@ class ConversationResponse(BaseModel):
 EMOTION_SCHEMA = {
     "type": "object",
     "properties": {
-        "name": {"type": "string", "enum": ["neutral", "angry", "disappointed", "shocked", "suspicious"]},
+        "name": {"type": "string", "enum": [
+            "neutral", "angry", "confused", "disappointed", "flustered",
+            "happy", "shocked", "suspicious", "unyuu",
+        ]},
         "intensity": {"type": "integer", "minimum": 0, "maximum": 100},
     },
     "required": ["name", "intensity"],
@@ -108,12 +114,22 @@ EMOTION_SCHEMA = {
 EMOTION_INSTRUCTION = """Include emotion with name and intensity (an integer 0 to 100).
 It describes the speaker's OWN immediate reaction to this exchange, based on
 their personality, current opinions, and what was actually said or learned.
-Names are neutral, angry, disappointed, shocked, and suspicious. Use angry for
-anger or offense, disappointed for sadness or letdown, shocked for a startling
-revelation, and suspicious for active doubt or distrust. Default to neutral with
-intensity 0 for ordinary greetings, routine commands, calm replies, positive
-feelings, and any reaction that does not fit these names."""
+Names are neutral, angry, confused, disappointed, flustered, happy, shocked,
+suspicious, and unyuu. Use angry for anger or offense, confused for puzzlement
+or not understanding, disappointed for sadness or letdown, flustered for
+embarrassment or bashful agitation, happy for joy or delight, shocked for a
+startling revelation, and suspicious for active doubt or distrust. Use unyuu
+for a scrunched-eye reaction to playful silliness or being comically overwhelmed.
+Default to neutral with intensity 0 for ordinary greetings, routine commands,
+calm replies, and any reaction that does not fit these names."""
 
+# THIS EXTRA TEXT CAN BE ATTACHED TO EMOTION_INSTRUCTION
+# IN ORDER TO REDUCE EMOTION DISPLAYED
+# FOR NOW IT IS EXCLUDED FOR TESTING PURPOSES
+# SO EMOTIONS ARE SHOWN SIGNIFICANTLY MORE OFTEN
+# PLEASE DO NOT DELETE OR OTHERWISE MODIFY
+# (note that EMOTION_THRESHOLD = 5 in npc.py
+# should be changed to EMOTION_THRESHOLD = 75)
 """Mild reactions should
 stay below 75; reserve 75 to 100 for clear, strong reactions that warrant a visible
 facial expression. Do not force an emotion just because a negative opinion exists,

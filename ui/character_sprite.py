@@ -55,9 +55,13 @@ class CharacterRenderer:
             name: pygame.image.load(str(asset_dir / "eyes" / "emotions" / filename)).convert_alpha()
             for name, filename in {
                 "angry": "Angry.png",
+                "confused": "Confused.png",
                 "disappointed": "Dissapointed.png",
+                "flustered": "Flustered.png",
+                "happy": "Happy.png",
                 "shocked": "Shock.png",
                 "suspicious": "Suspicious.png",
+                "unyuu": "Unyuu (Emotion).png",
             }.items()
         }
         self.emotion_masks = {
@@ -183,6 +187,13 @@ class CharacterRenderer:
                 self.colored_body.get_rect(midbottom=frame.get_rect().midbottom),
             )
             layer.blit(head_clip, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+            # Restore bare skin so transparent expressions replace the normal
+            # eyes too, rather than leaving them visible behind the new lines.
+            bare_skin = self.body_masks["Skin Color"].to_surface(
+                setcolor=(*self._parse_color(self.values["Skin Color"]), 255),
+                unsetcolor=(0, 0, 0, 0),
+            )
+            frame.blit(bare_skin, self.colored_body.get_rect(midbottom=frame.get_rect().midbottom))
             frame.blit(layer, (0, 0))
             # Hair still belongs in front of the eyes and eyelids.
             self._draw_hair(frame, values["Hair"], 4)
