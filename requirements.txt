@@ -3,3 +3,4 @@ google-genai>=1.73.1
 httpx>=0.28,<1
 pydantic>=2.0,<3
 pyperclip>=1.9
+python-dotenv>=1.0,<2

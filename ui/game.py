@@ -1,5 +1,5 @@
 import pygame
-
+from llm import MODEL, OLLAMA_MODEL
 from npc import EMOTION_THRESHOLD, WORLD_HEIGHT, WORLD_WIDTH
 
 from .button import Button
@@ -193,7 +193,38 @@ class GameScreen:
 
     def draw(self, app):
         draw_world(app.window, app.npcs, app.tree, app.small_font, app.character.renderer, self.camera_offset)
-        app.window.blit(app.small_font.render("Pypeople", True, INK), (24, 26))
+        if app.provider == "gemini":
+            model_name = f"Gemini ({MODEL})"
+        elif app.provider == "ollama":
+            model_name = f"Ollama ({OLLAMA_MODEL})"
+        else:
+            model_name = "No AI selected"
+
+        title_surface = app.font.render(
+            "Pypeople",
+            True,
+            INK
+        )
+
+        title_rect = title_surface.get_rect(
+            topleft=(24, 24)
+        )
+
+        app.window.blit(title_surface, title_rect)
+
+        model_surface = app.small_font.render(
+            model_name,
+            True,
+            MUTED
+        )
+
+        model_rect = model_surface.get_rect(
+            left=title_rect.right + 12,
+            centery=title_rect.centery
+        )
+
+        app.window.blit(model_surface, model_rect)
+
         self.menu_button.draw(app.window, app.small_font)
         self.stats_button.draw(app.window, app.small_font)
 

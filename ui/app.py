@@ -1,3 +1,6 @@
+import os
+from dotenv import load_dotenv
+
 import json
 import math
 from pathlib import Path
@@ -35,7 +38,13 @@ class Application:
         self.small_font = pygame.font.Font(None, 22)
         self.running = True
         self.screen = "menu"
-        self.api_key = ""
+
+        # Load the Gemini API key from the project's .env
+        load_dotenv(
+            Path(__file__).resolve().parent.parent / ".env"
+        )
+
+        self.api_key = os.getenv("GEMINI_API_KEY", "").strip()
         self.provider = "gemini"
         self.session_id = 0
         self.npcs = []
