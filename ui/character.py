@@ -46,8 +46,8 @@ class CharacterScreen:
         self.stats_dragging = False
         self._stats_drag_offset = 0
         self.tab_buttons = {
-            name: Button((430 + index * 110, 140, 90, 44), name)
-            for index, name in enumerate(("Stats", "Color", "Eyes", "Hair"))
+            name: Button((430 + index * 80, 140, 100 if name == "Emotions" else 70, 44), name)
+            for index, name in enumerate(("Stats", "Color", "Eyes", "Hair", "Emotions"))
         }
         self.eye_buttons = {
             style: Button((430 + index % 2 * 220, 200 + index // 2 * 158, 200, 148), style.title())
@@ -83,6 +83,11 @@ class CharacterScreen:
         asset_dir = Path(__file__).resolve().parent.parent / "assets"
         self.random_config_path = asset_dir / "character_randomization.json"
         self.renderer = CharacterRenderer()
+        self.selected_emotion = "neutral"
+        self.emotion_buttons = {
+            emotion: Button((430 + index % 3 * 144, 200 + index // 3 * 104, 132, 96), emotion.title())
+            for index, emotion in enumerate(("neutral", *self.renderer.eye_emotions))
+        }
         self.preview = None
 
     _parse_color = staticmethod(parse_color)
@@ -226,7 +231,7 @@ class CharacterScreen:
                 self.category = name
                 return
 
-        if self.turn_left_button.clicked(event) or self.turn_right_button.clicked(event):
+        if self.category != "Emotions" and (self.turn_left_button.clicked(event) or self.turn_right_button.clicked(event)):
             step = -1 if self.turn_left_button.clicked(event) else 1
             self._clear_focus()
             self.direction = (self.direction + step) % len(self.DIRECTIONS)
@@ -244,6 +249,10 @@ class CharacterScreen:
             for sliders in self.color_sliders.values():
                 for slider in sliders:
                     slider.handle_event(event)
+        elif self.category == "Emotions":
+            for emotion, button in self.emotion_buttons.items():
+                if button.clicked(event):
+                    self.selected_emotion = emotion
 
         self._sync_values()
         if self.back_button.clicked(event):
@@ -264,10 +273,32 @@ class CharacterScreen:
                 text_input.update(dt)
 
     def _draw_preview(self, surface):
+        if self.category == "Emotions":
+            self.preview = self.renderer.render_portrait(
+                self.values, self.preview_area.size, emotion=self.selected_emotion,
+            )
+            surface.blit(self.preview, self.preview.get_rect(center=self.preview_area.center))
+            return
         frame = self.renderer.render(self.values, self.direction)
         scale = min(1.75, self.preview_area.width / frame.get_width(), self.preview_area.height / frame.get_height())
         self.preview = self.renderer.render(self.values, self.direction, scale)
         surface.blit(self.preview, self.preview.get_rect(midbottom=self.preview_area.midbottom))
+
+    def _draw_emotions(self, surface, font):
+        for emotion, button in self.emotion_buttons.items():
+            panel = button.rect
+            selected = emotion == self.selected_emotion
+            if selected or panel.collidepoint(pygame.mouse.get_pos()):
+                pygame.draw.rect(surface, GRASS, panel, border_radius=BORDER_RADIUS)
+            pygame.draw.rect(
+                surface, ACCENT if selected else MUTED, panel,
+                3 if selected else 1, border_radius=BORDER_RADIUS,
+            )
+            preview_area = pygame.Rect(panel.x + 8, panel.y + 6, panel.width - 16, panel.height - 32)
+            portrait = self.renderer.render_portrait(self.values, preview_area.size, emotion=emotion)
+            surface.blit(portrait, portrait.get_rect(center=preview_area.center))
+            label = font.render(button.label, True, INK)
+            surface.blit(label, label.get_rect(midbottom=(panel.centerx, panel.bottom - 6)))
 
     def draw(self, app):
         self._sync_values()
@@ -277,13 +308,15 @@ class CharacterScreen:
         draw_centered_text(surface, "Character Creator", app.heading_font, 88)
         pygame.draw.rect(surface, GRASS, (80, 140, 300, 375), border_radius=BORDER_RADIUS)
 
-        label = app.font.render("Preview", True, INK)
+        label = app.font.render("Face preview" if self.category == "Emotions" else "Preview", True, INK)
         surface.blit(label, label.get_rect(center=(230, 170)))
         self._draw_preview(surface)
-        direction_label = app.small_font.render(self.DIRECTIONS[self.direction], True, MUTED)
+        preview_label = self.selected_emotion.title() if self.category == "Emotions" else self.DIRECTIONS[self.direction]
+        direction_label = app.small_font.render(preview_label, True, MUTED)
         surface.blit(direction_label, direction_label.get_rect(center=(230, 194)))
-        self.turn_left_button.draw(surface, app.small_font)
-        self.turn_right_button.draw(surface, app.small_font)
+        if self.category != "Emotions":
+            self.turn_left_button.draw(surface, app.small_font)
+            self.turn_right_button.draw(surface, app.small_font)
         for name, button in self.tab_buttons.items():
             button.draw(surface, app.font)
             if self.category == name:
@@ -346,6 +379,8 @@ class CharacterScreen:
                     slider.draw(surface, app.small_font)
                 value = app.small_font.render(self.values[name], True, MUTED)
                 surface.blit(value, (panel.x + 12, panel.y + 41))
+        elif self.category == "Emotions":
+            self._draw_emotions(surface, app.small_font)
 
         self.back_button.draw(surface, app.font)
         self.random_button.draw(surface, app.font)

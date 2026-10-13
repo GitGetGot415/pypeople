@@ -187,13 +187,8 @@ class CharacterRenderer:
                 self.colored_body.get_rect(midbottom=frame.get_rect().midbottom),
             )
             layer.blit(head_clip, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-            # Restore bare skin so transparent expressions replace the normal
-            # eyes too, rather than leaving them visible behind the new lines.
-            bare_skin = self.body_masks["Skin Color"].to_surface(
-                setcolor=(*self._parse_color(self.values["Skin Color"]), 255),
-                unsetcolor=(0, 0, 0, 0),
-            )
-            frame.blit(bare_skin, self.colored_body.get_rect(midbottom=frame.get_rect().midbottom))
+            # Layer the expression over the regular eyes, preserving them
+            # wherever the expression artwork is transparent.
             frame.blit(layer, (0, 0))
             # Hair still belongs in front of the eyes and eyelids.
             self._draw_hair(frame, values["Hair"], 4)
