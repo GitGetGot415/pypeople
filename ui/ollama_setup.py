@@ -26,7 +26,7 @@ class OllamaSetupScreen:
             open_ollama_download()
 
         elif self.continue_button.clicked(event):
-            self.ollama_ready = check_ollama()
+            self.ollama_ready = check_ollama(force_refresh=True)
 
             if self.ollama_ready:
                 self.message = "Ollama is running! You can download Llama 3."

@@ -4,14 +4,24 @@ import subprocess
 import platform
 import shutil
 
-def check_ollama():
+_ollama_ready = False
+
+
+def check_ollama(*, force_refresh=False):
+    """Reuse a successful check for this app session unless explicitly refreshed."""
+    global _ollama_ready
+    if _ollama_ready and not force_refresh:
+        return True
+
+    _ollama_ready = False
     try:
         print("Checking if your Ollama is running...")
         response = httpx.get(
             "http://localhost:11434/api/tags",
             timeout=2.0
         )
-        return response.status_code == 200
+        _ollama_ready = response.status_code == 200
+        return _ollama_ready
 
     except httpx.RequestError:
         return False
