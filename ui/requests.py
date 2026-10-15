@@ -4,12 +4,13 @@ import threading
 from pydantic import ValidationError
 
 from llm import RequestError, request_response, validate_response
+from ollama_manager import DEFAULT_OLLAMA_MODEL
 
 
-def _request_worker(session_id, provider, api_key, message, snapshot, results):
+def _request_worker(session_id, provider, api_key, message, snapshot, results, ollama_model):
     """Only communicate through the queue; never touch Pygame or live state."""
     try:
-        result = request_response(provider, api_key, message, snapshot)
+        result = request_response(provider, api_key, message, snapshot, ollama_model=ollama_model)
         results.put((session_id, result.model_dump_json(), None, snapshot))
     except RequestError as exc:
         results.put((session_id, None, str(exc), snapshot))
@@ -28,13 +29,13 @@ class RequestManager:
         # Keep the slot reserved until the queue is polled AND the thread exits.
         return self.worker is not None
 
-    def submit(self, session_id, provider, api_key, message, snapshot):
+    def submit(self, session_id, provider, api_key, message, snapshot, *, ollama_model=DEFAULT_OLLAMA_MODEL):
         if self.busy:
             return False
         self.pending_session = session_id
         self.worker = threading.Thread(
             target=_request_worker,
-            args=(session_id, provider, api_key, message, snapshot, self.results),
+            args=(session_id, provider, api_key, message, snapshot, self.results, ollama_model),
             daemon=True,
             name="NPC-model-request",
         )

@@ -1,5 +1,5 @@
 import pygame
-from llm import MODEL, OLLAMA_MODEL
+from llm import MODEL
 from npc import EMOTION_THRESHOLD, WORLD_HEIGHT, WORLD_WIDTH
 
 from .button import Button
@@ -196,7 +196,7 @@ class GameScreen:
         if app.provider == "gemini":
             model_name = f"Gemini ({MODEL})"
         elif app.provider == "ollama":
-            model_name = f"Ollama ({OLLAMA_MODEL})"
+            model_name = f"Ollama ({app.ollama_model})"
         else:
             model_name = "No AI selected"
 

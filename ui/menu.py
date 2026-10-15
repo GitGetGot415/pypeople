@@ -1,5 +1,5 @@
 import pygame
-from llm import MODEL, OLLAMA_MODEL
+from llm import MODEL
 from .button import Button
 from .text import draw_centered_text, draw_wrapped_text
 from .theme import BORDER_RADIUS, GRASS, MUTED, PAPER, INK
@@ -77,7 +77,7 @@ class MenuScreen:
         if app.provider == "gemini":
             model_name = f"Gemini ({MODEL})"
         elif app.provider == "ollama":
-            model_name = f"Ollama ({OLLAMA_MODEL})"
+            model_name = f"Ollama ({app.ollama_model})"
         else:
             model_name = "No AI selected"
 

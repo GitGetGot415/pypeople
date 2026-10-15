@@ -3,8 +3,56 @@ import webbrowser
 import subprocess
 import platform
 import shutil
+import json
+from pathlib import Path
+
+DEFAULT_OLLAMA_MODEL = "llama3"
+SETTINGS_PATH = Path(__file__).resolve().parent / "ollama_settings.json"
 
 _ollama_ready = False
+
+
+def load_model():
+    """Keep the default when preferences are missing or invalid."""
+    try:
+        data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        model = data.get("model") if isinstance(data, dict) else None
+        if isinstance(model, str) and model.strip():
+            return model.strip()
+    except (OSError, ValueError):
+        pass
+    return DEFAULT_OLLAMA_MODEL
+
+
+def save_model(model):
+    """Replace preferences atomically so an interrupted save keeps the old choice."""
+    temporary = SETTINGS_PATH.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps({"model": model}, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(SETTINGS_PATH)
+
+
+def list_models():
+    """Return installed model names, including their tags, from the local server."""
+    global _ollama_ready
+    _ollama_ready = False
+    try:
+        response = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
+        response.raise_for_status()
+        models = response.json()["models"]
+        if not isinstance(models, list):
+            raise ValueError
+        names = set()
+        for model in models:
+            name = model["name"]
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError
+            names.add(name.strip())
+    except httpx.HTTPError:
+        raise ValueError("Cannot list models. Make sure Ollama is running, then Refresh.") from None
+    except (ValueError, KeyError, TypeError):
+        raise ValueError("Ollama returned an invalid model list. Try Refresh again.") from None
+    _ollama_ready = True
+    return sorted(names, key=str.casefold)
 
 
 def check_ollama(*, force_refresh=False):

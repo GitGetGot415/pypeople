@@ -40,6 +40,7 @@ class OllamaSetupScreen:
                 self.message = "Could not launch download. Try restarting PyPeople."
 
         elif self.back_button.clicked(event):
+            app.settings.refresh_models()
             app.screen = "settings"
 
     def draw(self, app):

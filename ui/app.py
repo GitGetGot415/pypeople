@@ -11,6 +11,7 @@ import pygame
 from character_data import load_character, random_character
 from conversation_history import ConversationRecord, describe_opinion_change
 from npc import Conversation, NPC, Tree, assign_npc_names
+from ollama_manager import load_model
 
 from .game import GameScreen
 from .character import CharacterScreen
@@ -46,6 +47,7 @@ class Application:
 
         self.api_key = os.getenv("GEMINI_API_KEY", "").strip()
         self.provider = "gemini"
+        self.ollama_model = load_model()
         self.session_id = 0
         self.npcs = []
         self.request_npc = None
@@ -141,7 +143,7 @@ class Application:
 
     def open_settings(self):
         self.screen = "settings"
-        self.settings.open(self.provider, self.api_key)
+        self.settings.open(self.provider, self.api_key, self.ollama_model)
 
     def open_stats(self):
         self.game.prompt_input.active = False
@@ -162,7 +164,10 @@ class Application:
             {**other.snapshot(self.tree), "available_to_talk": other.conversation is None}
             for other in self.npcs if other is not npc
         ]
-        if not self.requests.submit(self.session_id, self.provider, self.api_key, message, snapshot):
+        if not self.requests.submit(
+            self.session_id, self.provider, self.api_key, message, snapshot,
+            ollama_model=self.ollama_model,
+        ):
             self.game.set_reply("Could not start the request. Please try again.")
             return
         self.request_npc = npc
@@ -215,7 +220,10 @@ class Application:
             conversation.error = "Add your API key in Settings to hear their conversation."
             return
         snapshot = conversation.snapshot(self.tree, self.npcs)
-        if not self.requests.submit(self.session_id, self.provider, self.api_key, "Let me hear their conversation.", snapshot):
+        if not self.requests.submit(
+            self.session_id, self.provider, self.api_key, "Let me hear their conversation.", snapshot,
+            ollama_model=self.ollama_model,
+        ):
             conversation.error = "Could not start the request. Please try again."
             return
         conversation.error = ""
@@ -284,6 +292,7 @@ class Application:
                 self.game.set_reply(npc.reply)
         self.game.prompt_input.update(dt)
         self.settings.key_input.update(dt)
+        self.settings.update()
         self.character.update(dt)
         if self.screen == "setup":
             self.setup.update(dt)
