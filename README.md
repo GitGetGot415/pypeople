@@ -13,6 +13,7 @@
   - game.py - game screen
   - file_dialog.py - shared character JSON file picker
   - menu.py - menu screen
+  - load_sim.py - saved simulation browser, renaming, and deletion
   - requests.py - background requests and response handling
   - settings.py - settings screen
   - setup.py - NPC count and character selection before a game
@@ -26,3 +27,4 @@
 - llm.py - makes the llm calls required for the ai to function
 - main.py - starts the code
 - npc.py - backend
+- simulation_data.py - validates, saves, and restores complete simulations

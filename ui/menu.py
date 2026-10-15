@@ -7,10 +7,11 @@ from ollama_manager import check_ollama
 
 class MenuScreen:
     def __init__(self):
-        self.start_button = Button((340, 240, 280, 54), "Start")
-        self.character_button = Button((340, 300, 280, 54), "Character Creator")
-        self.settings_button = Button((340, 360, 280, 54), "Settings")
-        self.exit_button = Button((340, 420, 280, 54), "Exit")
+        self.start_button = Button((250, 250, 220, 54), "New Sim")
+        self.load_button = Button((490, 250, 220, 54), "Load Sim")
+        self.character_button = Button((250, 320, 460, 54), "Character Creator")
+        self.settings_button = Button((250, 390, 220, 54), "Settings")
+        self.exit_button = Button((490, 390, 220, 54), "Exit")
         self.message = ""
 
         self.confirm_start = False
@@ -62,6 +63,9 @@ class MenuScreen:
                 # No configured AI: ask for confirmation
                 self.confirm_start = True
 
+        elif self.load_button.clicked(event):
+            app.open_load_simulations()
+
         elif self.character_button.clicked(event):
             app.screen = "character"
 
@@ -73,7 +77,7 @@ class MenuScreen:
 
     def draw(self, app):
         app.window.fill(GRASS)
-        pygame.draw.rect(app.window, PAPER, (240, 55, 480, 530), border_radius=BORDER_RADIUS)
+        pygame.draw.rect(app.window, PAPER, (210, 55, 540, 530), border_radius=BORDER_RADIUS)
         if app.provider == "gemini":
             model_name = f"Gemini ({MODEL})"
         elif app.provider == "ollama":
@@ -97,7 +101,7 @@ class MenuScreen:
             MUTED,
         )
         draw_centered_text(app.window, "say whatever you want", app.font, 185, MUTED)
-        for button in (self.start_button, self.character_button, self.settings_button, self.exit_button):
+        for button in (self.start_button, self.load_button, self.character_button, self.settings_button, self.exit_button):
             button.draw(app.window, app.font)
         draw_centered_text(app.window, "(no you can't flirt with the ai yet)", app.small_font, 510, MUTED)
         if self.message:
@@ -129,7 +133,7 @@ class MenuScreen:
             # Popup text
             draw_centered_text(
                 app.window,
-                "API keys not configured,",
+                "AI is not configured,",
                 app.heading_font,
                 285,
                 INK,

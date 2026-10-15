@@ -1,10 +1,8 @@
 import os
 from dotenv import load_dotenv
 
-import json
 import math
 from pathlib import Path
-from uuid import uuid4
 
 import pygame
 
@@ -12,10 +10,12 @@ from character_data import load_character, random_character
 from conversation_history import ConversationRecord, describe_opinion_change
 from npc import Conversation, NPC, Tree, assign_npc_names
 from ollama_manager import load_model
+from simulation_data import SaveStore, capture_simulation, restore_simulation
 
 from .game import GameScreen
 from .character import CharacterScreen
 from .menu import MenuScreen
+from .load_sim import LoadSimScreen
 from .requests import RequestManager
 from .settings import SettingsScreen
 from .setup import SetupScreen
@@ -56,8 +56,12 @@ class Application:
         self.request_history = None
         self.conversation_history = []
         self.tree = None
+        self.save_store = SaveStore()
+        self.save_id = None
+        self.simulation_name = "Untitled simulation"
         self.requests = RequestManager()
         self.menu = MenuScreen()
+        self.load_sim = LoadSimScreen()
         self.settings = SettingsScreen()
         self.setup = SetupScreen()
         self.character = CharacterScreen()
@@ -66,6 +70,7 @@ class Application:
         self.ollama_setup = OllamaSetupScreen()
         self.screens = {
             "menu": self.menu,
+            "load_sim": self.load_sim,
             "settings": self.settings,
             "setup": self.setup,
             "character": self.character,
@@ -78,28 +83,14 @@ class Application:
         try:
             characters = [load_character(JUDY_CHARACTER_PATH)]
             characters[0]["Opinions"] = {}
-            generated_dir = JUDY_CHARACTER_PATH.parent / "generated" / uuid4().hex
-            # Judy's template stays clean; each game owns its opinion history.
-            paths = [generated_dir / "judy.json"]
+            # Each simulation owns its profiles and opinions inside its save file.
             for index, source in enumerate(self.setup.sources, start=1):
                 try:
                     characters.append(random_character() if source is None else load_character(source))
                 except (OSError, ValueError) as error:
                     raise ValueError(f"NPC {index + 1}: {error}") from error
-                if source is None:
-                    paths.append(generated_dir / f"random_{index}.json")
-                elif Path(source).resolve() == JUDY_CHARACTER_PATH.resolve():
+                if source is not None and Path(source).resolve() == JUDY_CHARACTER_PATH.resolve():
                     characters[-1]["Opinions"] = {}
-                    paths.append(generated_dir / f"judy_{index}.json")
-                else:
-                    paths.append(source)
-            # Validate all profiles before saving any session copies.
-            for path, character in zip(paths, characters):
-                if path.parent != generated_dir:
-                    continue
-                generated_dir.mkdir(parents=True, exist_ok=True)
-                with path.open("w", encoding="utf-8") as character_file:
-                    json.dump(character, character_file, indent=2, ensure_ascii=False)
         except (OSError, ValueError) as error:
             self.setup.message = f"Could not start game: {error}"
             return
@@ -114,28 +105,73 @@ class Application:
         self.npcs = []
         columns = max(1, math.ceil(math.sqrt(len(characters) - 1)))
         rows = max(1, math.ceil((len(characters) - 1) / columns))
-        for index, (character, path) in enumerate(zip(characters, paths)):
+        for index, character in enumerate(characters):
             if index == 0:
                 position = (240, 230)
             else:
                 # Arrange additional NPCs beside Judy, clear of the tree.
                 column, row = (index - 1) % columns, (index - 1) // columns
                 position = (350 + column * 220 / max(1, columns - 1), 150 + row * 260 / max(1, rows - 1))
-            npc = NPC(character=character, x=position[0], y=position[1], character_path=path)
+            npc = NPC(character=character, x=position[0], y=position[1])
             sprite = self.character.renderer.render(character, npc.facing, CHARACTER_SCALE)
             npc.sprite_size = sprite.get_size()
             self.npcs.append(npc)
         assign_npc_names(self.npcs)
         self.tree = Tree()
+        self.save_id = None
+        self.simulation_name = "Untitled simulation"
         self.screen = "game"
+        self.save_current_simulation()
+
+    def save_current_simulation(self):
+        try:
+            state = capture_simulation(self)
+            self.save_id = self.save_store.save(state, save_id=self.save_id, name=self.simulation_name)
+        except (OSError, ValueError):
+            self.game.show_save_message("Could not save simulation. Check folder permissions and try Save again.")
+            return False
+        self.game.show_save_message(f"Saved {self.simulation_name}.")
+        return True
+
+    def open_load_simulations(self):
+        self.load_sim.open(self.save_store)
+        self.screen = "load_sim"
+
+    def load_simulation(self, save_id):
+        try:
+            saved = self.save_store.load(save_id)
+            npcs, tree, history = restore_simulation(saved.state)
+            for npc in npcs:
+                sprite = self.character.renderer.render(npc.character, npc.facing, CHARACTER_SCALE)
+                npc.sprite_size = sprite.get_size()
+        except (OSError, ValueError):
+            self.load_sim.message = "Could not load this simulation. The save may be damaged or unavailable."
+            return False
+        self.session_id += 1
+        self.game.reset()
+        self.stats.open()
+        self.request_npc = None
+        self.request_conversation = None
+        self.request_history = None
+        self.request_message = ""
+        self.npcs, self.tree, self.conversation_history = npcs, tree, history
+        self.save_id, self.simulation_name = save_id, saved.name
+        self.game.camera_offset[:] = saved.state.camera_offset
+        self.screen = "game"
+        self.game.show_save_message(f"Loaded {saved.name}.")
+        return True
 
     def leave_game(self):
+        # Save before closing dialogue, which finishes active NPC conversations.
+        if not self.save_current_simulation():
+            return
         if self.request_history is not None:
             self.request_history.status = "Ended before the reply arrived"
             self.request_history.outcomes = ["Left the game before a reply was received."]
             self.request_history = None
         self.session_id += 1
         self.screen = "menu"
+        self.menu.message = f"Saved {self.simulation_name}."
         self.game.close_dialogue()
         for npc in self.npcs:
             if npc.conversation is not None:
@@ -233,6 +269,9 @@ class Application:
 
     def handle_event(self, event):
         if event.type == pygame.QUIT:
+            if self.screen in ("game", "stats") and not self.save_current_simulation():
+                self.screen = "game"
+                return
             self.running = False
             return
         self.screens[self.screen].handle_event(self, event)
@@ -293,6 +332,9 @@ class Application:
         self.game.prompt_input.update(dt)
         self.settings.key_input.update(dt)
         self.settings.update()
+        if self.screen == "load_sim":
+            self.load_sim.name_input.update(dt)
+        self.game.save_message_remaining = max(0, self.game.save_message_remaining - dt)
         self.character.update(dt)
         if self.screen == "setup":
             self.setup.update(dt)

@@ -13,6 +13,9 @@ class GameScreen:
     def __init__(self):
         self.menu_button = Button((824, 16, 112, 38), "Menu")
         self.stats_button = Button((704, 16, 112, 38), "Stats")
+        self.save_button = Button((584, 16, 108, 38), "Save")
+        self.save_message = ""
+        self.save_message_remaining = 0
         self.send_button = Button((816, 564, 120, 44), "Send")
         self.next_button = Button((824, 472, 112, 32), "Next")
         self.back_button = Button((self.next_button.rect.left - 116, 472, 112, 32), "Back")
@@ -45,6 +48,12 @@ class GameScreen:
         self.pan_start = None
         self.pan_last = None
         self.panning = False
+        self.save_message = ""
+        self.save_message_remaining = 0
+
+    def show_save_message(self, message):
+        self.save_message = message
+        self.save_message_remaining = 8
 
     def close_dialogue(self):
         if self.viewed_conversation is not None:
@@ -75,7 +84,7 @@ class GameScreen:
     def handle_event(self, app, event):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if event.pos[1] < WORLD_HEIGHT and not any(
-                button.rect.collidepoint(event.pos) for button in (self.menu_button, self.stats_button)
+                button.rect.collidepoint(event.pos) for button in (self.menu_button, self.stats_button, self.save_button)
             ):
                 self.pan_start = event.pos
                 self.pan_last = event.pos
@@ -100,6 +109,11 @@ class GameScreen:
             self.panning = False
             return
 
+        if self.save_button.clicked(event) or (
+            event.type == pygame.KEYDOWN and event.key == pygame.K_s and event.mod & pygame.KMOD_CTRL
+        ):
+            app.save_current_simulation()
+            return
         if self.stats_button.clicked(event):
             app.open_stats()
             return
@@ -227,6 +241,9 @@ class GameScreen:
 
         self.menu_button.draw(app.window, app.small_font)
         self.stats_button.draw(app.window, app.small_font)
+        self.save_button.draw(app.window, app.small_font)
+        if self.save_message_remaining:
+            draw_wrapped_text(app.window, self.save_message, app.small_font, INK, (24, 65, 912, 44))
 
         pygame.draw.rect(app.window, PAPER, (0, WORLD_HEIGHT, 960, 180))
         pygame.draw.line(app.window, (129, 154, 110), (0, WORLD_HEIGHT), (960, WORLD_HEIGHT), 3)
