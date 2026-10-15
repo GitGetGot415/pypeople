@@ -96,6 +96,15 @@ class StatsScreen:
         add(npc.name, app.heading_font)
         gap()
         if self.tab == "Statistics":
+            add(f"Activity: {npc.status}")
+            add(f"Why: {npc.decision_reason}")
+            add(f"Control: {npc.owner.replace('_', ' ')}", app.small_font, MUTED)
+            if npc.request_pending:
+                add("Player request pending; new decisions are deferred.", app.small_font, MUTED)
+            gap()
+            add(f"Social: {npc.social:.0f}/100 (higher = more satisfied)")
+            add(f"Carrying: {npc.inventory.get('fruit', 0)} fruit / {npc.inventory_capacity} items")
+            gap()
             fields = tuple(field for field in FIELDS if field != "Details")
             for field in (*fields, "Hair", "Eyes", *DEFAULT_COLORS, "Details"):
                 value = npc.name if field == "Name" else npc.character.get(field, "")
@@ -138,6 +147,8 @@ class StatsScreen:
         return track, pygame.Rect(track.x, top, track.width, height)
 
     def handle_event(self, app, event):
+        if app.game.handle_clock_event(app, event):
+            return
         if self.back_button.clicked(event) or (
             event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
         ):
@@ -202,7 +213,8 @@ class StatsScreen:
         surface.fill(GRASS)
         self.back_button.draw(surface, app.small_font)
         surface.blit(app.heading_font.render("World Stats", True, INK), (220, 21))
-        surface.blit(app.small_font.render("Select a person or conversation to view the details.", True, MUTED), (24, 68))
+        surface.blit(app.small_font.render("People, items, and conversations.", True, MUTED), (24, 68))
+        app.game.draw_clock(app)
         pygame.draw.rect(surface, PAPER, (24, 94, 296, 506))
         pygame.draw.rect(surface, PAPER, (336, 94, 600, 506))
         list_title = f"Conversations ({len(app.conversation_history)})" if self.tab == "Conversations" else f"NPCs ({len(app.npcs)})"

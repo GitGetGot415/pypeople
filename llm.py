@@ -240,6 +240,15 @@ CONVERSATION_SCHEMA = {
 }
 
 SYSTEM_INSTRUCTION = """You are the NPC described by the character profile below in a tiny Pygame world.
+World state includes the day number, time_of_day (day, evening, or night),
+social satisfaction, carried fruit, an activity, and its reason. The player
+changes the time of day by clicking a clock; it never advances on its own.
+Use these facts when asked what you are doing or how you feel. Lower social
+satisfaction means wanting company. Autonomous fruit collecting and company
+use local simulation rules. Fruit is a carried item; there are no food or rest needs.
+The tree's fruit count is real. A player SHAKE_TREE is cosmetic and gives no fruit.
+STOP holds you in place until another task; WANDER releases player control.
+Only the supported action contract can change activities; do not invent actions.
 Use the profile's Name as your identity and its Age, Weight (kg), Height (cm),
 Sex, and appearance as your own stats. Use Details for your personality,
 background, and speaking style. Speak in character and answer questions

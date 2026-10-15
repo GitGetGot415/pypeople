@@ -4,7 +4,7 @@ import pygame
 
 from npc import WORLD_WIDTH, WORLD_HEIGHT
 
-from .theme import GRASS, INK, MUTED, WALKABLE_GRASS
+from .theme import GRASS, INK, MUTED, PAPER, WALKABLE_GRASS
 
 
 CHARACTER_SCALE = 0.5
@@ -19,8 +19,14 @@ def talking_bubble():
     return _talking_bubble
 
 
-def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0)):
-    surface.fill(GRASS)
+def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), phase="day"):
+    grass, walkable = {
+        "day": (GRASS, WALKABLE_GRASS),
+        "evening": ((190, 156, 120), (204, 176, 134)),
+        "night": ((64, 77, 98), (77, 92, 111)),
+    }[phase]
+    label_color = PAPER if phase == "night" else INK
+    surface.fill(grass)
     offset_x, offset_y = camera_offset
     if npcs:
         left, right, top, bottom = npcs[0].movement_bounds
@@ -30,7 +36,7 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
             round(right - left),
             round(bottom - top),
         )
-        pygame.draw.rect(surface, WALKABLE_GRASS, walkable_rect)
+        pygame.draw.rect(surface, walkable, walkable_rect)
 
     tree_x = round(tree.x + offset_x) + tree.offset
     tree_y = round(tree.y + offset_y)
@@ -38,13 +44,18 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     pygame.draw.rect(surface, (134, 89, 55), (tree_x - 13, tree_y - 12, 26, 76))
     pygame.draw.circle(surface, (68, 124, 66), (tree_x, tree_y - 38), 53)
     pygame.draw.circle(surface, (83, 141, 72), (tree_x - 11, tree_y - 49), 31)
+    fruit_points = [(-30, -43), (5, -65), (28, -40), (-10, -27), (10, -12), (-32, -13), (28, -66), (-20, -72)]
+    for dx, dy in fruit_points[:tree.fruit]:
+        pygame.draw.circle(surface, (205, 65, 48), (tree_x + dx, tree_y + dy), 6)
+    label = font.render(f"Fruit {tree.fruit}/{tree.capacity}", True, label_color)
+    surface.blit(label, label.get_rect(midtop=(tree_x, tree_y + 76)))
     for npc in sorted(npcs, key=lambda npc: npc.y):
         position = (round(npc.x + offset_x), round(npc.y + offset_y))
         sprite = character_renderer.render(npc.character, npc.facing, CHARACTER_SCALE)
         sprite_rect = sprite.get_rect(midbottom=position)
         pygame.draw.ellipse(surface, MUTED, (position[0] - 16, position[1] - 4, 32, 8))
         surface.blit(sprite, sprite_rect)
-        name = font.render(npc.name, True, INK)
+        name = font.render(npc.name, True, label_color)
         name_rect = name.get_rect(midtop=(position[0], position[1] + 6))
         name_rect.clamp_ip(pygame.Rect(0, 0, WORLD_WIDTH, WORLD_HEIGHT))
         surface.blit(name, name_rect)

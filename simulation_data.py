@@ -1,4 +1,4 @@
-"""Versioned, self-contained simulation saves. No character file paths are loaded."""
+"""Self-contained simulation saves. No character file paths are loaded."""
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -11,7 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from character_data import normalize_character, normalize_opinions
 from conversation_history import ConversationRecord
 from llm import ConversationTurn, EmotionReaction
-from npc import Behavior, Conversation, NPC, Tree, WORLD_HEIGHT, WORLD_WIDTH
+from npc import ACTIVITY_FIELDS, Behavior, Conversation, NPC, Tree, WORLD_HEIGHT, WORLD_WIDTH
+from simulation import PendingAction, SHAKE_SECONDS, Simulation
 
 SAVE_DIRECTORY = Path(__file__).resolve().parent / "saves"
 
@@ -25,20 +26,56 @@ class ActivityState(SaveModel):
     destination: tuple[float, float] | None
     pause_remaining: float = Field(ge=0)
     facing: int = Field(ge=0, le=7)
+    owner: Literal["autonomous", "player_task", "player_hold"]
+    target_id: str | None
+    activity_elapsed: float = Field(ge=0)
+    reason: str
+    decision_remaining: float = Field(ge=0)
+    cooldowns: dict[str, float]
+    resume_pending: bool
+
+    @model_validator(mode="after")
+    def validate_activity(self):
+        if any(value < 0 for value in self.cooldowns.values()):
+            raise ValueError("Invalid cooldown duration.")
+        if self.destination is not None and not (0 <= self.destination[0] <= WORLD_WIDTH and 0 <= self.destination[1] <= WORLD_HEIGHT):
+            raise ValueError("Invalid destination.")
+        if (self.owner == "player_hold") != (self.behavior == Behavior.STOP):
+            raise ValueError("A player hold must be stopped.")
+        player_behaviors = (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING)
+        if (self.owner == "player_task") != (self.behavior in player_behaviors):
+            raise ValueError("Invalid player task.")
+        return self
+
+
+class PreferencesState(SaveModel):
+    sociability: float = Field(ge=0, le=1)
 
 
 class NPCState(ActivityState):
+    id: str = Field(min_length=1)
     character: dict
     display_name: str | None
     x: float = Field(ge=0, le=WORLD_WIDTH)
     y: float = Field(ge=0, le=WORLD_HEIGHT)
     reply: str
     emotion: EmotionReaction
+    social: float = Field(ge=0, le=100)
+    inventory: dict[Literal["fruit"], int]
+    inventory_capacity: int = Field(ge=1)
+    preferences: PreferencesState
+    command_revision: int = Field(ge=0)
 
     @field_validator("character")
     @classmethod
     def validate_character(cls, value):
         return normalize_character(value)
+
+    @model_validator(mode="after")
+    def validate_inventory(self):
+        if any(value < 0 for value in self.inventory.values()) or sum(self.inventory.values()) > self.inventory_capacity:
+            raise ValueError("Invalid inventory.")
+        return self
 
 
 class HistoryState(SaveModel):
@@ -58,7 +95,6 @@ class ConversationState(SaveModel):
     arrived: bool
     turns: list[ConversationTurn] = Field(max_length=8)
     saved_states: tuple[ActivityState, ActivityState]
-    shake_elapsed: tuple[int, float] | None
     pending_opinions: list[tuple[int, dict]]
 
     @field_validator("pending_opinions")
@@ -68,15 +104,31 @@ class ConversationState(SaveModel):
 
 
 class TreeState(SaveModel):
-    x: float = Field(ge=0, le=WORLD_WIDTH)
-    y: float = Field(ge=0, le=WORLD_HEIGHT)
-    shake_elapsed: float | None = Field(default=None, ge=0, le=1)
-    shaker: int | None = Field(default=None, ge=0)
+    id: str = Field(min_length=1)
+    x: float = Field(ge=60, le=WORLD_WIDTH)
+    y: float = Field(ge=0, le=WORLD_HEIGHT - 50)
+    fruit: int = Field(ge=0)
+    capacity: int = Field(ge=1)
+    shake_elapsed: float | None = Field(ge=0, le=SHAKE_SECONDS)
+    shaker: str | None
+    reserved_by: str | None
+
+
+class PendingActionState(SaveModel):
+    npc_id: str
+    action: Literal["WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC"]
+    revision: int = Field(ge=0)
+    target_id: str | None
+    topic: str
+    record: int | None = Field(ge=0)
 
 
 class SimulationState(SaveModel):
+    day: int = Field(ge=1)
+    phase: Literal["day", "evening", "night"]
     npcs: list[NPCState] = Field(min_length=1)
     tree: TreeState
+    pending_actions: list[PendingActionState]
     history: list[HistoryState]
     conversations: list[ConversationState]
     camera_offset: tuple[float, float]
@@ -85,13 +137,40 @@ class SimulationState(SaveModel):
     def validate_references(self):
         count = len(self.npcs)
         names = [(npc.display_name or npc.character["Name"]).casefold() for npc in self.npcs]
-        if len(set(names)) != count:
-            raise ValueError("NPC display names must be unique.")
+        ids = [npc.id for npc in self.npcs]
+        all_ids = ids + [self.tree.id]
+        if len(set(names)) != count or len(set(all_ids)) != len(all_ids):
+            raise ValueError("Names and object IDs must be unique.")
+        if self.tree.fruit > self.tree.capacity:
+            raise ValueError("Invalid fruit resource.")
         if (self.tree.shaker is None) != (self.tree.shake_elapsed is None):
             raise ValueError("A shaking tree needs a shaker and elapsed time.")
-        if self.tree.shaker is not None and self.tree.shaker >= count:
-            raise ValueError("Invalid tree shaker.")
+        if self.tree.reserved_by is not None and self.tree.reserved_by not in ids:
+            raise ValueError("Invalid tree reservation.")
+        if self.tree.shaker is not None and self.tree.shaker != self.tree.reserved_by:
+            raise ValueError("The shaker must own the tree slot.")
         reserved, records = set(), set()
+
+        def validate_target(activity, npc):
+            if any(target not in all_ids or target == npc.id for target in activity.cooldowns):
+                raise ValueError("Invalid cooldown target.")
+            target = activity.target_id
+            if activity.behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING):
+                if target != self.tree.id:
+                    raise ValueError("Invalid tree target.")
+                point = (self.tree.x - 60, self.tree.y + 50)
+                if activity.destination is not None and activity.destination != point:
+                    raise ValueError("Invalid tree destination.")
+                if activity.behavior in (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE) and activity.destination is None:
+                    raise ValueError("A walking task needs a destination.")
+                if activity.behavior in (Behavior.HARVEST, Behavior.SHAKING) and activity.activity_elapsed > SHAKE_SECONDS:
+                    raise ValueError("Invalid shake progress.")
+            elif activity.behavior == Behavior.COMPANY:
+                if target not in ids or target == npc.id:
+                    raise ValueError("Invalid companion.")
+            elif target is not None:
+                raise ValueError("Unexpected activity target.")
+
         for conversation in self.conversations:
             pair = (conversation.initiator, conversation.recipient)
             if pair[0] == pair[1] or any(index >= count or index in reserved for index in pair):
@@ -102,24 +181,48 @@ class SimulationState(SaveModel):
                 raise ValueError("A meeting in progress needs a destination.")
             if any(index not in pair for index, _ in conversation.pending_opinions):
                 raise ValueError("Invalid pending opinion participant.")
-            if conversation.shake_elapsed is not None:
-                index, elapsed = conversation.shake_elapsed
-                if index not in pair or not 0 <= elapsed <= 1:
-                    raise ValueError("Invalid paused tree shake.")
+            for index, activity in zip(pair, conversation.saved_states):
+                validate_target(activity, self.npcs[index])
             reserved.update(pair)
             records.add(conversation.record)
-            for activity in conversation.saved_states:
-                if activity.behavior in (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE) and activity.destination is None:
-                    raise ValueError("An interrupted walking activity needs a destination.")
         for index, npc in enumerate(self.npcs):
-            if index not in reserved and npc.behavior in (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE) and npc.destination is None:
-                raise ValueError("A walking NPC needs a destination.")
+            if index in reserved:
+                if npc.behavior != Behavior.WAIT or npc.owner != "autonomous" or npc.target_id is not None or npc.resume_pending:
+                    raise ValueError("Invalid activity during a conversation.")
+                if npc.id == self.tree.reserved_by:
+                    raise ValueError("Conversation participants cannot reserve the tree.")
+                continue
+            validate_target(npc, npc)
+            if npc.resume_pending:
+                if npc.id == self.tree.reserved_by:
+                    raise ValueError("A suspended activity cannot reserve the tree.")
+                continue
+            if npc.behavior in (Behavior.HARVEST, Behavior.SHAKING) and self.tree.reserved_by != npc.id:
+                raise ValueError("An active harvest or shake must reserve the tree.")
+            if npc.behavior == Behavior.HARVEST and (self.tree.fruit == 0 or sum(npc.inventory.values()) >= npc.inventory_capacity):
+                raise ValueError("An active harvest needs available fruit and inventory space.")
+            if self.tree.reserved_by == npc.id:
+                if npc.target_id != self.tree.id or npc.behavior not in (Behavior.HARVEST, Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING):
+                    raise ValueError("Invalid tree owner activity.")
+            if self.tree.shaker == npc.id:
+                if npc.destination is not None or npc.behavior not in (Behavior.HARVEST, Behavior.SHAKING):
+                    raise ValueError("Invalid shaker activity.")
+        pending = set()
+        for action in self.pending_actions:
+            if action.npc_id not in ids or action.npc_id in pending:
+                raise ValueError("Invalid pending action participant.")
+            if action.action == "TALK_TO_NPC":
+                if action.target_id not in ids or action.target_id == action.npc_id:
+                    raise ValueError("Invalid pending conversation target.")
+            elif action.target_id is not None:
+                raise ValueError("Unexpected pending action target.")
+            if action.record is not None and action.record >= len(self.history):
+                raise ValueError("Invalid pending action history.")
+            pending.add(action.npc_id)
         return self
 
 
 class SimulationSave(SaveModel):
-    version: Literal[1] = 1
-    # Retained for compatibility; the filename is always the displayed name.
     name: str = ""
     created_at: datetime
     updated_at: datetime
@@ -242,8 +345,8 @@ class SaveStore:
 
 
 def capture_simulation(app):
-    """Capture only main-thread world state; running model requests are not persisted."""
-    npc_ids = {id(npc): index for index, npc in enumerate(app.npcs)}
+    """Capture main-thread state, including accepted actions awaiting a tick."""
+    npc_indices = {id(npc): index for index, npc in enumerate(app.npcs)}
     records = {id(record): index for index, record in enumerate(app.conversation_history)}
     history = [asdict(record) for record in app.conversation_history]
     if app.request_history is not None and id(app.request_history) in records:
@@ -253,55 +356,71 @@ def capture_simulation(app):
     npcs, conversations = [], []
     for npc in app.npcs:
         npcs.append(NPCState(
+            **npc.activity_state(), id=npc.id,
             character=npc.character, display_name=npc.display_name, x=npc.x, y=npc.y,
-            behavior=npc.behavior, destination=npc.destination, pause_remaining=npc.pause_remaining,
-            facing=npc.facing, reply=npc.reply,
-            emotion=EmotionReaction(name=npc.emotion, intensity=npc.emotion_intensity),
+            reply=npc.reply, emotion=EmotionReaction(name=npc.emotion, intensity=npc.emotion_intensity),
+            social=npc.social,
+            inventory=npc.inventory.copy(), inventory_capacity=npc.inventory_capacity,
+            preferences=npc.preferences.copy(), command_revision=npc.command_revision,
         ))
         conversation = npc.conversation
         if conversation is None or conversation.initiator is not npc:
             continue
         conversations.append(ConversationState(
-            initiator=npc_ids[id(npc)], recipient=npc_ids[id(conversation.recipient)],
+            initiator=npc_indices[id(npc)], recipient=npc_indices[id(conversation.recipient)],
             record=records[id(conversation.record)], topic=conversation.topic,
             arrived=conversation.arrived, turns=conversation.turns,
-            saved_states=[ActivityState(behavior=behavior, destination=destination,
-                                        pause_remaining=pause, facing=facing)
-                          for behavior, destination, pause, facing in conversation.saved_states],
-            shake_elapsed=(npc_ids[id(conversation.shake_elapsed[0])], conversation.shake_elapsed[1])
-                          if conversation.shake_elapsed is not None else None,
-            pending_opinions=[(npc_ids[id(person)], opinions) for person, opinions in conversation.pending_opinions],
+            saved_states=[ActivityState(**activity) for activity in conversation.saved_states],
+            pending_opinions=[(npc_indices[id(person)], opinions) for person, opinions in conversation.pending_opinions],
         ))
+    world = app.simulation
     return SimulationState(
+        day=world.day, phase=world.phase,
         npcs=npcs, history=history, conversations=conversations,
-        tree=TreeState(x=app.tree.x, y=app.tree.y, shake_elapsed=app.tree.shake_elapsed,
-                       shaker=npc_ids[id(app.tree.shaker)] if app.tree.shaker is not None else None),
+        tree=TreeState(id=app.tree.id, x=app.tree.x, y=app.tree.y, fruit=app.tree.fruit,
+                       capacity=app.tree.capacity,
+                       shake_elapsed=app.tree.shake_elapsed,
+                       shaker=app.tree.shaker.id if app.tree.shaker is not None else None,
+                       reserved_by=app.tree.reserved_by.id if app.tree.reserved_by is not None else None),
+        pending_actions=[asdict(action) for action in world.pending_actions],
         camera_offset=tuple(app.game.camera_offset),
     )
 
 
 def restore_simulation(state):
-    """Build a complete world before replacing the current simulation."""
-    npcs = [NPC(
-        character=saved.character, display_name=saved.display_name, x=saved.x, y=saved.y,
-        behavior=saved.behavior, destination=saved.destination, pause_remaining=saved.pause_remaining,
-        facing=saved.facing, reply=saved.reply,
-        emotion=saved.emotion.name, emotion_intensity=saved.emotion.intensity,
-    ) for saved in state.npcs]
-    tree = Tree(x=state.tree.x, y=state.tree.y, shake_elapsed=state.tree.shake_elapsed,
-                shaker=npcs[state.tree.shaker] if state.tree.shaker is not None else None)
+    """Build and validate a complete world before replacing the current simulation."""
+    state = SimulationState.model_validate(state.model_dump())
+    npcs = []
+    for saved in state.npcs:
+        npc = NPC(
+            id=saved.id, character=saved.character, display_name=saved.display_name, x=saved.x, y=saved.y,
+            reply=saved.reply, emotion=saved.emotion.name, emotion_intensity=saved.emotion.intensity,
+            social=saved.social,
+            inventory=saved.inventory.copy(), inventory_capacity=saved.inventory_capacity,
+            preferences=saved.preferences.model_dump(), command_revision=saved.command_revision,
+        )
+        npc.restore_activity({name: getattr(saved, name) for name in ACTIVITY_FIELDS})
+        npcs.append(npc)
+    by_id = {npc.id: npc for npc in npcs}
+    tree = Tree(id=state.tree.id, x=state.tree.x, y=state.tree.y, fruit=state.tree.fruit,
+                capacity=state.tree.capacity,
+                shake_elapsed=state.tree.shake_elapsed, shaker=by_id.get(state.tree.shaker),
+                reserved_by=by_id.get(state.tree.reserved_by))
+    world = Simulation(npcs, tree)
+    world.day, world.phase = state.day, state.phase
+    world.pending_actions = [PendingAction(**action.model_dump()) for action in state.pending_actions]
+    for action in world.pending_actions:
+        by_id[action.npc_id].request_pending = True
     history = [ConversationRecord(**saved.model_dump()) for saved in state.history]
     for saved in state.conversations:
-        # Loading bypasses __init__: it would move NPCs and interrupt their saved activities again.
+        # Loading bypasses __init__: it would interrupt the saved activities again.
         conversation = Conversation.__new__(Conversation)
         conversation.initiator, conversation.recipient = npcs[saved.initiator], npcs[saved.recipient]
         conversation.topic, conversation.arrived, conversation.active = saved.topic, saved.arrived, True
         conversation.record = history[saved.record]
         conversation.turns = saved.turns
         conversation.pending_opinions = [(npcs[index], opinions) for index, opinions in saved.pending_opinions]
-        conversation.saved_states = [(activity.behavior, activity.destination, activity.pause_remaining, activity.facing)
-                                     for activity in saved.saved_states]
-        conversation.shake_elapsed = (npcs[saved.shake_elapsed[0]], saved.shake_elapsed[1]) if saved.shake_elapsed else None
+        conversation.saved_states = [activity.model_dump() for activity in saved.saved_states]
         for npc in (conversation.initiator, conversation.recipient):
             npc.conversation = conversation
-    return npcs, tree, history
+    return world, history

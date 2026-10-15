@@ -5,16 +5,25 @@ import math
 import random
 import json
 from pathlib import Path
+from uuid import uuid4
 
 from character_data import DIRECTIONS, normalize_opinions
 from conversation_history import ConversationRecord, describe_opinion_change
+from simulation import (
+    COMPANY_MAX_SECONDS, DECISION_SECONDS, FAILURE_COOLDOWN, INVENTORY_CAPACITY,
+    MOVEMENT_SPEED, PARTNER_COOLDOWN, SHAKE_SECONDS, SOCIAL_DECAY, SOCIAL_RADIUS,
+    SOCIAL_RECOVERED, WANDER_PAUSE,
+)
 
 WORLD_WIDTH = 960
 WORLD_HEIGHT = 460
 NPC_RADIUS = 18
-SPEED = 90.0
-TREE_INTERACTION_POINT = (660.0, 280.0)
 EMOTION_THRESHOLD = 5
+
+ACTIVITY_FIELDS = (
+    "behavior", "destination", "pause_remaining", "facing", "owner", "target_id",
+    "activity_elapsed", "reason", "decision_remaining", "cooldowns", "resume_pending",
+)
 
 
 class Behavior(str, Enum):
@@ -23,6 +32,9 @@ class Behavior(str, Enum):
     GO_TO_TREE = "GO_TO_TREE"
     SHAKE_TREE = "SHAKE_TREE"
     SHAKING = "SHAKING"
+    HARVEST = "HARVEST"
+    COMPANY = "COMPANY"
+    WAIT = "WAIT"
 
 
 @dataclass
@@ -31,6 +43,26 @@ class Tree:
     y: float = 230.0
     shake_elapsed: float | None = None
     shaker: "NPC | None" = field(default=None, repr=False, compare=False)
+    id: str = "fruit-tree"
+    fruit: int = 8
+    capacity: int = 8
+    reserved_by: "NPC | None" = field(default=None, repr=False, compare=False)
+
+    @property
+    def interaction_point(self):
+        return (self.x - 60.0, self.y + 50.0)
+
+    def reserve(self, npc):
+        if self.reserved_by is not None and self.reserved_by is not npc:
+            return False
+        self.reserved_by = npc
+        return True
+
+    def release(self, npc):
+        if self.shaker is npc:
+            self.cancel_shake()
+        if self.reserved_by is npc:
+            self.reserved_by = None
 
     @property
     def shaking(self):
@@ -43,8 +75,11 @@ class Tree:
         return round(5 * math.sin(self.shake_elapsed * math.tau * 8))
 
     def start_shake(self, npc):
+        if not self.reserve(npc):
+            return False
         self.shake_elapsed = 0.0
         self.shaker = npc
+        return True
 
     def cancel_shake(self):
         self.shake_elapsed = None
@@ -53,8 +88,6 @@ class Tree:
     def update(self, dt):
         if self.shake_elapsed is not None:
             self.shake_elapsed += dt
-            if self.shake_elapsed >= 1.0 - 1e-9:
-                self.cancel_shake()
 
 
 @dataclass
@@ -75,6 +108,109 @@ class NPC:
     display_name: str | None = None
     emotion: str = "neutral"
     emotion_intensity: int = 0
+    id: str = field(default_factory=lambda: uuid4().hex)
+    social: float = field(default_factory=lambda: random.uniform(55, 80))
+    inventory: dict = field(default_factory=lambda: {"fruit": 0})
+    inventory_capacity: int = INVENTORY_CAPACITY
+    preferences: dict = field(default_factory=lambda: {
+        "sociability": random.uniform(0.25, 0.85),
+    })
+    owner: str = "autonomous"
+    target_id: str | None = None
+    activity_elapsed: float = 0.0
+    reason: str = "Exploring the world"
+    decision_remaining: float = field(default_factory=lambda: random.uniform(0, DECISION_SECONDS))
+    cooldowns: dict = field(default_factory=dict)
+    resume_pending: bool = False
+    command_revision: int = 0
+    request_pending: bool = False
+    world: object = field(default=None, repr=False, compare=False)
+
+    @property
+    def inventory_space(self):
+        return self.inventory_capacity - sum(self.inventory.values())
+
+    def can_reach(self, point):
+        left, right, top, bottom = self.movement_bounds
+        return left <= point[0] <= right and top <= point[1] <= bottom
+
+    def activity_state(self):
+        state = {name: getattr(self, name) for name in ACTIVITY_FIELDS}
+        state["cooldowns"] = self.cooldowns.copy()
+        return state
+
+    def restore_activity(self, state):
+        for name in ACTIVITY_FIELDS:
+            setattr(self, name, state[name].copy() if name == "cooldowns" else state[name])
+
+    def release_claims(self, world):
+        world.tree.release(self)
+
+    def finish_activity(self, world, failed=False):
+        target = self.target_id
+        if target is not None and (failed or self.behavior == Behavior.COMPANY):
+            self.cooldowns[target] = FAILURE_COOLDOWN if failed else PARTNER_COOLDOWN
+        self.release_claims(world)
+        self.behavior = Behavior.WAIT
+        self.destination = None
+        self.target_id = None
+        self.activity_elapsed = 0.0
+        self.resume_pending = False
+        self.owner = "autonomous"
+        self.decision_remaining = 0.0
+        self.reason = "Target unavailable; choosing another activity" if failed else "Finished; choosing what to do next"
+
+    def begin_activity(self, behavior, world, target=None, reason="", owner="autonomous"):
+        self.release_claims(world)
+        self.behavior, self.target_id = behavior, target
+        self.owner, self.reason = owner, reason
+        self.destination = None
+        self.activity_elapsed = self.pause_remaining = 0.0
+        self.resume_pending = False
+        self.decision_remaining = DECISION_SECONDS
+        if behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE, Behavior.SHAKE_TREE):
+            if target != world.tree.id or not self.can_reach(world.tree.interaction_point):
+                self.finish_activity(world, failed=True)
+                return
+            if not world.tree.reserve(self) and behavior == Behavior.HARVEST:
+                self.finish_activity(world, failed=True)
+                return
+            self.destination = world.tree.interaction_point
+        elif behavior == Behavior.COMPANY:
+            from autonomy import company_point
+            partner = world.npc_by_id(target)
+            self.destination = company_point(self, partner) if partner is not None else None
+            if self.destination is None:
+                self.finish_activity(world, failed=True)
+
+    def resume_activity(self, world):
+        """Reacquire suspended claims on a simulation tick, preserving committed progress."""
+        self.resume_pending = False
+        if self.behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING):
+            if (self.target_id != world.tree.id or not self.can_reach(world.tree.interaction_point)
+                    or not world.tree.reserve(self)):
+                self.finish_activity(world, failed=True)
+                return
+            if self.behavior == Behavior.SHAKING:
+                self.behavior = Behavior.SHAKE_TREE
+            self.destination = world.tree.interaction_point
+        elif self.behavior == Behavior.COMPANY:
+            from autonomy import company_point
+            partner = world.npc_by_id(self.target_id)
+            if partner is None or not world.company_available(partner):
+                self.finish_activity(world, failed=True)
+            else:
+                self.destination = company_point(self, partner)
+
+    def update_social(self, dt):
+        self.social = max(0.0, self.social - SOCIAL_DECAY * dt)
+        self.decision_remaining = max(0.0, self.decision_remaining - dt)
+        self.cooldowns = {key: value - dt for key, value in self.cooldowns.items() if value > dt}
+        if self.conversation is not None:
+            index = 0 if self.conversation.initiator is self else 1
+            suspended = self.conversation.saved_states[index]
+            suspended["decision_remaining"] = max(0.0, suspended["decision_remaining"] - dt)
+            suspended["cooldowns"] = {key: value - dt for key, value in suspended["cooldowns"].items() if value > dt}
 
     @property
     def portrait_emotion(self):
@@ -102,7 +238,16 @@ class NPC:
 
     @property
     def wandering_paused(self):
-        return self.selected and self.behavior == Behavior.WANDER
+        return (self.selected or self.request_pending) and self.behavior == Behavior.WANDER
+
+    @property
+    def decision_reason(self):
+        if self.conversation is None and self.owner == "autonomous":
+            if self.request_pending:
+                return f"{self.reason}. Waiting for the player request."
+            if self.selected:
+                return f"{self.reason}. New decisions wait while selected."
+        return self.reason
 
     @property
     def status(self):
@@ -112,14 +257,21 @@ class NPC:
             if self.conversation.initiator is self:
                 return f"Walking to {self.conversation.recipient.name}"
             return f"Waiting for {self.conversation.initiator.name}"
+        if self.owner == "player_hold":
+            return "Player hold (STOP)"
+        if self.resume_pending:
+            return "Resuming activity on next simulation tick"
         if self.wandering_paused:
-            return "Talking"
+            return "Waiting for player"
         return {
             Behavior.WANDER: "Wandering",
             Behavior.STOP: "Stopped",
             Behavior.GO_TO_TREE: "Walking to tree",
             Behavior.SHAKE_TREE: "Walking to tree",
             Behavior.SHAKING: "Shaking tree",
+            Behavior.HARVEST: "Walking to harvest" if self.destination else "Harvesting fruit",
+            Behavior.COMPANY: "Seeking company" if self.destination else "Spending time together",
+            Behavior.WAIT: "Waiting",
         }[self.behavior]
 
     def contains(self, point):
@@ -139,8 +291,16 @@ class NPC:
             "selected": self.selected,
             "position": [round(self.x, 1), round(self.y, 1)],
             "behavior": self.behavior.value,
-            "only_interactable_object": "tree",
-            "tree_interaction_point": list(TREE_INTERACTION_POINT),
+            "activity": self.status,
+            "activity_reason": self.decision_reason,
+            "activity_owner": self.owner,
+            "social_satisfaction": round(self.social, 1),
+            "inventory": self.inventory.copy(),
+            "tree_interaction_point": list(tree.interaction_point),
+            "tree_fruit": tree.fruit,
+            "tree_occupied": tree.reserved_by is not None,
+            "day": self.world.day if self.world else 1,
+            "time_of_day": self.world.phase if self.world else "day",
             "tree_is_shaking": tree.shaking,
             "last_reply": self.reply,
         }
@@ -164,11 +324,12 @@ class NPC:
         self.character["Opinions"] = opinions
 
     def _face_when_still(self):
-        at_tree = math.hypot(self.x - TREE_INTERACTION_POINT[0], self.y - TREE_INTERACTION_POINT[1]) <= 1e-6
+        point = self.world.tree.interaction_point if self.world else None
+        at_tree = point is not None and math.hypot(self.x - point[0], self.y - point[1]) <= 1e-6
         self.facing = 2 if at_tree or self.behavior == Behavior.SHAKING else 4
 
     def set_selected(self, selected):
-        """Pause wandering while explicit tasks keep running during dialogue."""
+        """Defer new decisions while allowing the current finite activity to finish."""
         self.selected = selected
         if self.conversation is None and selected and (self.wandering_paused or self.behavior in (Behavior.STOP, Behavior.SHAKING)):
             self._face_when_still()
@@ -179,28 +340,23 @@ class NPC:
             return
         if action not in ("WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE"):
             raise ValueError("Unsupported NPC action")
-        if tree.shaker is self:
-            tree.cancel_shake()
-        self.pause_remaining = 0.0
+        if self.conversation is not None:
+            raise ValueError("This NPC is already in a conversation.")
+        self.command_revision += 1
         if action == "WANDER":
-            self.behavior = Behavior.WANDER
-            self.destination = None
+            self.begin_activity(Behavior.WANDER, self.world, reason="Player released control; choosing activities")
+            self.decision_remaining = 0
         elif action == "STOP":
-            self.behavior = Behavior.STOP
-            self.destination = None
+            self.begin_activity(Behavior.STOP, self.world, reason="Player asked me to stay here; waiting for another task", owner="player_hold")
             self._face_when_still()
-        elif action == "GO_TO_TREE":
-            self.behavior = Behavior.GO_TO_TREE
-            self.destination = TREE_INTERACTION_POINT
-        elif action == "SHAKE_TREE":
-            self.behavior = Behavior.SHAKE_TREE
-            self.destination = TREE_INTERACTION_POINT
+        else:
+            self.begin_activity(Behavior(action), self.world, tree.id, "Player asked me to visit the tree" if action == "GO_TO_TREE" else "Player asked for a cosmetic tree shake", owner="player_task")
 
     def _move(self, dt):
         dx = self.destination[0] - self.x
         dy = self.destination[1] - self.y
         distance = math.hypot(dx, dy)
-        step = SPEED * dt
+        step = MOVEMENT_SPEED * dt
         if distance <= step:
             self.x, self.y = self.destination
             return True
@@ -210,50 +366,91 @@ class NPC:
         return False
 
     def update(self, dt, tree):
-        if self.conversation is not None:
+        if self.conversation is not None or self.resume_pending:
             return
+        world = self.world
         old_x, old_y = self.x, self.y
         left, right, top, bottom = self.movement_bounds
         dt = max(0.0, dt)
-        if self.behavior == Behavior.SHAKING:
-            if not tree.shaking or tree.shaker is not self:
-                self.behavior = Behavior.STOP
-        elif self.behavior == Behavior.WANDER and not self.wandering_paused:
-            if self.pause_remaining > 0:
-                remaining = self.pause_remaining
-                self.pause_remaining = max(0.0, remaining - dt)
-                dt = max(0.0, dt - remaining)
-            if dt > 0:
+        behavior = self.behavior
+        if behavior == Behavior.WANDER and not self.wandering_paused:
+            if any(other.behavior == Behavior.COMPANY and other.target_id == self.id
+                   and world.company_available(other) and math.hypot(other.x - self.x, other.y - self.y) <= SOCIAL_RADIUS
+                   for other in world.npcs):
+                self._face_when_still()
+                return
+            remaining = self.pause_remaining
+            self.pause_remaining = max(0.0, remaining - dt)
+            movement_dt = max(0.0, dt - remaining)
+            if movement_dt > 0:
                 if self.destination is None:
-                    self.destination = (
-                        self.rng.uniform(left, right),
-                        self.rng.uniform(top, bottom),
-                    )
+                    self.destination = (self.rng.uniform(left, right), self.rng.uniform(top, bottom))
+                if self._move(movement_dt):
+                    self.destination = None
+                    self.pause_remaining = WANDER_PAUSE
+        elif behavior in (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.HARVEST, Behavior.SHAKING):
+            # Player visits wait briefly for an occupied tree; autonomous harvests fail fast.
+            if not tree.reserve(self):
+                self.pause_remaining += dt
+                if self.pause_remaining >= DECISION_SECONDS:
+                    self.finish_activity(world, failed=True)
+                return
+            if self.destination is not None:
                 if self._move(dt):
                     self.destination = None
-                    self.pause_remaining = 0.5
-        elif self.behavior in (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE):
-            if self._move(dt):
-                self.destination = None
-                if self.behavior == Behavior.SHAKE_TREE:
+                    if behavior == Behavior.GO_TO_TREE:
+                        self.finish_activity(world)
+                    else:
+                        tree.start_shake(self)
+                        tree.shake_elapsed = self.activity_elapsed
+                        if behavior == Behavior.SHAKE_TREE:
+                            self.behavior = Behavior.SHAKING
+            elif behavior in (Behavior.HARVEST, Behavior.SHAKING):
+                if tree.shaker is not self:
                     tree.start_shake(self)
-                    self.behavior = Behavior.SHAKING
+                    tree.shake_elapsed = self.activity_elapsed
+                self.activity_elapsed += dt
+                if self.activity_elapsed + 1e-9 >= SHAKE_SECONDS:
+                    if behavior == Behavior.HARVEST:
+                        if tree.fruit <= 0 or self.inventory_space <= 0:
+                            self.finish_activity(world, failed=True)
+                            return
+                        # Commit both sides once, on the simulation thread.
+                        tree.fruit -= 1
+                        self.inventory['fruit'] = self.inventory.get('fruit', 0) + 1
+                    self.finish_activity(world)
+        elif behavior == Behavior.COMPANY:
+            from autonomy import company_point
+            partner = world.npc_by_id(self.target_id)
+            self.activity_elapsed += dt
+            if partner is None or not world.company_available(partner):
+                self.finish_activity(world, failed=True)
+            elif self.social >= SOCIAL_RECOVERED or self.activity_elapsed >= COMPANY_MAX_SECONDS:
+                self.finish_activity(world)
+            else:
+                point = company_point(self, partner)
+                if point is None:
+                    self.finish_activity(world, failed=True)
+                elif self.destination is not None or math.hypot(self.x - partner.x, self.y - partner.y) > SOCIAL_RADIUS:
+                    self.destination = point
+                    if self._move(dt):
+                        self.destination = None
                 else:
-                    self.behavior = Behavior.STOP
+                    angle = math.atan2(partner.x - self.x, self.y - partner.y)
+                    self.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
+        elif behavior == Behavior.WAIT:
+            self.activity_elapsed += dt
+            if self.activity_elapsed >= DECISION_SECONDS:
+                self.decision_remaining = 0.0
         self.x = min(right, max(left, self.x))
         self.y = min(bottom, max(top, self.y))
         dx, dy = self.x - old_x, self.y - old_y
         if dx or dy:
-            # Compass order: north=0, east=2, south=4, west=6. Screen y grows
-            # downward, so atan2(dx, -dy) measures clockwise from north.
             angle = math.atan2(dx, -dy)
             self.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
-        if (
-            self.wandering_paused
-            or self.behavior in (Behavior.STOP, Behavior.SHAKING)
-            or (self.behavior == Behavior.WANDER and (self.destination is None or self.pause_remaining > 0))
-        ):
+        elif self.behavior != Behavior.COMPANY:
             self._face_when_still()
+
 
 
 def assign_npc_names(npcs):
@@ -294,7 +491,6 @@ class Conversation:
         self.pending_opinions = []
         self.error = ""
         self.saved_states = []
-        self.shake_elapsed = None
         # Stand side by side with a visible gap, using the side with room.
         gap = (initiator.sprite_size or (NPC_RADIUS * 2, NPC_RADIUS))[0] / 2
         gap += (recipient.sprite_size or (NPC_RADIUS * 2, NPC_RADIUS))[0] / 2 + 12
@@ -313,10 +509,16 @@ class Conversation:
         if not candidates:
             raise ValueError("There isn't enough room here for a conversation.")
         for npc in (initiator, recipient):
-            self.saved_states.append((npc.behavior, npc.destination, npc.pause_remaining, npc.facing))
-            if tree.shaker is npc:
-                self.shake_elapsed = (npc, tree.shake_elapsed)
-                tree.cancel_shake()
+            self.saved_states.append(npc.activity_state())
+            npc.release_claims(npc.world)
+            npc.command_revision += 1
+            npc.behavior = Behavior.WAIT
+            npc.owner = "autonomous"
+            npc.destination = None
+            npc.reason = "In a player-initiated conversation"
+            npc.target_id = None
+            npc.activity_elapsed = 0.0
+            npc.resume_pending = False
             npc.conversation = self
         initiator.destination = min(candidates, key=lambda point: math.hypot(point[0] - initiator.x, point[1] - initiator.y))
 
@@ -405,14 +607,6 @@ class Conversation:
             self.record.outcomes = ["The conversation ended before anyone spoke."]
         for npc, state in zip((self.initiator, self.recipient), self.saved_states):
             npc.conversation = None
-            npc.behavior, npc.destination, npc.pause_remaining, npc.facing = state
-        if self.shake_elapsed is not None:
-            npc, elapsed = self.shake_elapsed
-            at_tree = math.hypot(npc.x - TREE_INTERACTION_POINT[0], npc.y - TREE_INTERACTION_POINT[1]) <= 1e-6
-            if not tree.shaking and at_tree:
-                tree.start_shake(npc)
-                tree.shake_elapsed = elapsed
-            else:
-                # Return to the tree if the initiator walked away during the chat.
-                npc.behavior = Behavior.SHAKE_TREE
-                npc.destination = TREE_INTERACTION_POINT
+            npc.restore_activity(state)
+            # Physical resumption and claim acquisition wait for the next update.
+            npc.resume_pending = True

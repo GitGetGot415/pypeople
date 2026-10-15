@@ -11,6 +11,7 @@ from conversation_history import ConversationRecord, describe_opinion_change
 from npc import Conversation, NPC, Tree, assign_npc_names
 from ollama_manager import load_model
 from simulation_data import InvalidSaveName, SaveStore, capture_simulation, restore_simulation
+from simulation import PendingAction, Simulation
 
 from .game import GameScreen
 from .character import CharacterScreen
@@ -57,6 +58,8 @@ class Application:
         self.request_history = None
         self.conversation_history = []
         self.tree = None
+        self.simulation = None
+        self.request_revision = None
         self.save_store = SaveStore()
         self.save_id = None
         self.save_identity = None
@@ -116,13 +119,14 @@ class Application:
             else:
                 # Arrange additional NPCs beside Judy, clear of the tree.
                 column, row = (index - 1) % columns, (index - 1) // columns
-                position = (350 + column * 220 / max(1, columns - 1), 150 + row * 260 / max(1, rows - 1))
+                position = (350 + column * 220 / max(1, columns - 1), 210 + row * 190 / max(1, rows - 1))
             npc = NPC(character=character, x=position[0], y=position[1])
             sprite = self.character.renderer.render(character, npc.facing, CHARACTER_SCALE)
             npc.sprite_size = sprite.get_size()
             self.npcs.append(npc)
         assign_npc_names(self.npcs)
         self.tree = Tree()
+        self.simulation = Simulation(self.npcs, self.tree)
         self.save_id = None
         self.save_identity = None
         self.simulation_name = "Unsaved simulation"
@@ -185,8 +189,8 @@ class Application:
         try:
             saved = self.save_store.load(save_id)
             identity = self.save_store.file_identity(save_id)
-            npcs, tree, history = restore_simulation(saved.state)
-            for npc in npcs:
+            simulation, history = restore_simulation(saved.state)
+            for npc in simulation.npcs:
                 sprite = self.character.renderer.render(npc.character, npc.facing, CHARACTER_SCALE)
                 npc.sprite_size = sprite.get_size()
         except (OSError, ValueError):
@@ -199,7 +203,8 @@ class Application:
         self.request_conversation = None
         self.request_history = None
         self.request_message = ""
-        self.npcs, self.tree, self.conversation_history = npcs, tree, history
+        self.simulation = simulation
+        self.npcs, self.tree, self.conversation_history = simulation.npcs, simulation.tree, history
         self.save_id, self.simulation_name = save_id, saved.name
         self.save_identity = identity
         self.game.camera_offset[:] = saved.state.camera_offset
@@ -208,6 +213,8 @@ class Application:
         return True
 
     def leave_game(self):
+        for npc in self.npcs:
+            npc.request_pending = any(action.npc_id == npc.id for action in self.simulation.pending_actions)
         if self.request_history is not None:
             self.request_history.status = "Ended before the reply arrived"
             self.request_history.outcomes = ["Left the game before a reply was received."]
@@ -233,14 +240,14 @@ class Application:
     def submit(self):
         message = self.game.prompt_input.text.strip()[:300]
         npc = self.game.selected_npc
-        if self.screen != "game" or npc is None or npc.conversation is not None or not message or self.requests.busy:
+        if self.screen != "game" or npc is None or npc.conversation is not None or npc.request_pending or not message or self.requests.busy:
             return
         if self.provider == "gemini" and not self.api_key:
             self.game.set_reply("I think you forgot to add your API key in Settings...")
             return
         snapshot = npc.snapshot(self.tree)
         snapshot["other_npcs"] = [
-            {**other.snapshot(self.tree), "available_to_talk": other.conversation is None}
+            {**other.snapshot(self.tree), "available_to_talk": other.conversation is None and not other.request_pending}
             for other in self.npcs if other is not npc
         ]
         if not self.requests.submit(
@@ -250,6 +257,8 @@ class Application:
             self.game.set_reply("Could not start the request. Please try again.")
             return
         self.request_npc = npc
+        self.request_revision = npc.command_revision
+        npc.request_pending = True
         self.request_conversation = None
         self.request_message = message
         self.request_history = ConversationRecord(
@@ -277,6 +286,8 @@ class Application:
         if len(matches) != 1:
             return "Please name one other NPC in this world to talk to."
         target = matches[0]
+        if target.request_pending:
+            return "That person has a pending player request. Try again once it finishes."
         try:
             # Leave enough space for both sprites and their name labels.
             spacing = (self.small_font.size(npc.name)[0] + self.small_font.size(target.name)[0]) / 2 + 12
@@ -287,6 +298,40 @@ class Application:
         if self.game.selected_npc is npc or self.game.selected_npc is target:
             self.game.close_dialogue()
         return None
+
+    def apply_pending_action(self, action):
+        npc = self.simulation.npc_by_id(action.npc_id)
+        if npc is None:
+            return
+        npc.request_pending = False
+        error = ""
+        if npc.conversation is not None or npc.command_revision != action.revision:
+            error = "That request is no longer available because the NPC's activity changed."
+        elif action.action == "TALK_TO_NPC":
+            target = self.simulation.npc_by_id(action.target_id)
+            error = self.start_conversation(npc, target.name, action.topic) if target else "That person is unavailable."
+        else:
+            npc.apply_action(action.action, self.tree)
+        if action.record is not None:
+            record = self.conversation_history[action.record]
+            record.status = "Failed" if error else "Completed"
+            if error:
+                record.error = error
+                record.outcomes = [error]
+            else:
+                outcomes = {
+                    "WANDER": "Returned to autonomous activities.",
+                    "STOP": "Holding position until another player task.",
+                    "GO_TO_TREE": "Started walking to the tree.",
+                    "SHAKE_TREE": "Started the task of shaking the tree.",
+                    "TALK_TO_NPC": f"Started a conversation with {target.name}." if action.action == "TALK_TO_NPC" else "",
+                }
+                record.outcomes[0:1] = [outcomes[action.action]]
+        if error:
+            npc.reply = error
+            npc.set_emotion("neutral", 0)
+            if self.game.selected_npc is npc:
+                self.game.set_reply(error)
 
     def request_conversation_dialogue(self, conversation):
         if not conversation.active or not conversation.arrived or self.requests.busy:
@@ -331,7 +376,10 @@ class Application:
             npc = self.request_npc
             if npc is None:
                 continue
+            npc.request_pending = False
             record = self.request_history
+            if not error and (npc.conversation is not None or npc.command_revision != self.request_revision):
+                error = "That reply arrived after the NPC became busy. Please send the request again."
             if record is not None and not error:
                 record.outcomes = [
                     describe_opinion_change(
@@ -342,10 +390,18 @@ class Application:
             if not error:
                 error = self.remember_response_opinions(npc, result)
             if not error:
-                if result.action == "TALK_TO_NPC":
-                    error = self.start_conversation(npc, result.target, self.request_message)
-                else:
-                    npc.apply_action(result.action, self.tree)
+                if result.action != "SAY":
+                    target = next((other for other in self.npcs if other.name == result.target), None)
+                    if result.action == "TALK_TO_NPC" and (target is None or target.conversation is not None or target.request_pending):
+                        error = "That person is busy now. Please try again later."
+                    else:
+                        self.simulation.pending_actions.append(PendingAction(
+                            npc.id, result.action, npc.command_revision,
+                            target.id if result.action == "TALK_TO_NPC" else None,
+                            self.request_message,
+                            self.conversation_history.index(record) if record is not None else None,
+                        ))
+                        npc.request_pending = True
             npc.reply = error or result.reply
             if error:
                 npc.set_emotion("neutral", 0)
@@ -354,18 +410,11 @@ class Application:
             if record is not None:
                 record.turns.append((npc.name, npc.reply))
                 record.error = error or ""
-                record.status = "Failed" if error else "Completed"
+                record.status = "Failed" if error else ("Applying player request" if npc.request_pending else "Completed")
                 if error:
                     record.outcomes = [f"The request could not be completed: {error}"]
                 else:
-                    actions = {
-                        "WANDER": "Started wandering.", "STOP": "Stopped moving.",
-                        "GO_TO_TREE": "Started walking to the tree.",
-                        "SHAKE_TREE": "Started the task of shaking the tree.",
-                        "TALK_TO_NPC": f"Started a conversation with {result.target}.",
-                        "SAY": "Replied without changing their activity.",
-                    }
-                    record.outcomes.insert(0, actions[result.action])
+                    record.outcomes.insert(0, "Accepted; applies on the next simulation tick." if npc.request_pending else "Replied without changing their activity.")
                 self.request_history = None
             if self.game.selected_npc is npc and self.game.viewed_conversation is None:
                 self.game.set_reply(npc.reply)
@@ -388,12 +437,9 @@ class Application:
         self.character.update(dt)
         if self.screen == "setup":
             self.setup.update(dt)
+        if self.simulation is not None:
+            self.simulation.advance(dt, active=simulation_active, action_handler=self.apply_pending_action)
         if simulation_active:
-            self.tree.update(dt)
-            for npc in self.npcs:
-                npc.update(dt, self.tree)
-                if npc.conversation is not None and npc.conversation.initiator is npc:
-                    npc.conversation.update(dt)
             for npc in self.npcs:
                 conversation = npc.conversation
                 if conversation is not None and conversation.initiator is npc:

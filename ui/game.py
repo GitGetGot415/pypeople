@@ -1,5 +1,4 @@
 import pygame
-from llm import MODEL
 from npc import EMOTION_THRESHOLD, WORLD_HEIGHT, WORLD_WIDTH
 
 from .button import Button
@@ -14,6 +13,7 @@ class GameScreen:
         self.menu_button = Button((824, 16, 112, 38), "Menu")
         self.stats_button = Button((704, 16, 112, 38), "Stats")
         self.save_button = Button((584, 16, 108, 38), "Save")
+        self.clock_button = Button((400, 16, 44, 38), "")
         self.save_message = ""
         self.save_message_remaining = 0
         self.send_button = Button((816, 564, 120, 44), "Send")
@@ -82,8 +82,10 @@ class GameScreen:
             self.selected_npc.reply = self.reply
 
     def handle_event(self, app, event):
+        if self.handle_clock_event(app, event):
+            return
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            if event.pos[1] < WORLD_HEIGHT and not any(
+            if 0 <= event.pos[1] < WORLD_HEIGHT and not any(
                 button.rect.collidepoint(event.pos) for button in (self.menu_button, self.stats_button, self.save_button)
             ):
                 self.pan_start = event.pos
@@ -102,7 +104,7 @@ class GameScreen:
                 self.camera_offset[1] += event.pos[1] - self.pan_last[1]
             self.pan_last = event.pos
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1 and self.pan_start is not None:
-            if not self.panning and 0 <= event.pos[0] < WORLD_WIDTH and event.pos[1] < WORLD_HEIGHT:
+            if not self.panning and 0 <= event.pos[0] < WORLD_WIDTH and 0 <= event.pos[1] < WORLD_HEIGHT:
                 self.select_at(app, event.pos)
             self.pan_start = None
             self.pan_last = None
@@ -146,6 +148,21 @@ class GameScreen:
                 self.prompt_input.focus()
             elif self.prompt_input.handle_event(event):
                 app.submit()
+
+    def handle_clock_event(self, app, event):
+        if self.clock_button.clicked(event):
+            app.simulation.next_phase()
+            return True
+        return False
+
+    def draw_clock(self, app):
+        self.clock_button.draw(app.window, app.small_font)
+        x, y = self.clock_button.rect.center
+        pygame.draw.circle(app.window, PAPER, (x, y), 12, width=2)
+        pygame.draw.line(app.window, PAPER, (x, y), (x, y - 8), 2)
+        pygame.draw.line(app.window, PAPER, (x, y), (x + 6, y + 3), 2)
+        color = PAPER if app.screen == "game" and app.simulation.phase == "night" else INK
+        app.window.blit(app.small_font.render(app.simulation.phase_label, True, color), (454, 27))
 
     def advance_conversation(self):
         conversation = self.viewed_conversation
@@ -206,47 +223,15 @@ class GameScreen:
             self.prompt_input.focus()
 
     def draw(self, app):
-        draw_world(app.window, app.npcs, app.tree, app.small_font, app.character.renderer, self.camera_offset)
-        if app.provider == "gemini":
-            model_name = f"Gemini ({MODEL})"
-        elif app.provider == "ollama":
-            model_name = f"Ollama ({app.ollama_model})"
-        else:
-            model_name = "No AI selected"
-
-        title_surface = app.font.render(
-            "Pypeople",
-            True,
-            INK
-        )
-
-        title_rect = title_surface.get_rect(
-            topleft=(24, 24)
-        )
-
-        app.window.blit(title_surface, title_rect)
-
-        model_surface = app.small_font.render(
-            model_name,
-            True,
-            MUTED
-        )
-
-        model_rect = model_surface.get_rect(
-            left=title_rect.right + 12,
-            centery=title_rect.centery
-        )
-
-        app.window.blit(model_surface, model_rect)
-
+        draw_world(app.window, app.npcs, app.tree, app.small_font, app.character.renderer,
+                   self.camera_offset, phase=app.simulation.phase)
         self.menu_button.draw(app.window, app.small_font)
         self.stats_button.draw(app.window, app.small_font)
         self.save_button.draw(app.window, app.small_font)
+        self.draw_clock(app)
         if self.save_message_remaining:
-            draw_wrapped_text(app.window, self.save_message, app.small_font, INK, (24, 65, 912, 44))
-        else:
-            name = app.simulation_name if app.save_id else "Unsaved simulation / Save or Ctrl+S to keep your progress."
-            draw_wrapped_text(app.window, name, app.small_font, INK, (24, 65, 912, 44))
+            color = PAPER if app.simulation.phase == "night" else INK
+            draw_wrapped_text(app.window, self.save_message, app.small_font, color, (24, 400, 912, 44))
 
         pygame.draw.rect(app.window, PAPER, (0, WORLD_HEIGHT, 960, 180))
         pygame.draw.line(app.window, (129, 154, 110), (0, WORLD_HEIGHT), (960, WORLD_HEIGHT), 3)
@@ -263,12 +248,14 @@ class GameScreen:
                 else "Finishing earlier request..."
             )
             status = f"{prefix} / {status}"
+        elif self.selected_npc is not None and self.selected_npc.request_pending:
+            status = f"Applying player request / {status}"
         rendered_status = app.small_font.render(status, True, MUTED)
         app.window.blit(rendered_status, rendered_status.get_rect(topright=(936, 478)))
         if not self.dialogue_open:
             app.window.blit(app.heading_font.render("Meet the people in your world", True, INK), (24, 494))
             app.window.blit(app.font.render("Click anyone to start a conversation.", True, MUTED), (24, 538))
-            app.window.blit(app.small_font.render("Drag to move the camera. Ask people to wander, stop, shake the tree, or talk to another NPC.", True, MUTED), (24, 602))
+            app.window.blit(app.small_font.render("Click the clock to change the time of day. Drag to move the camera.", True, MUTED), (24, 602))
             return
         app.window.blit(app.font.render(self.selected_npc.name, True, INK), (self.reply_rect.x, 477))
         self.draw_dialogue_lines(app.window, wrap_text(self.reply, app.font, self.reply_rect.width - 12), app.font, self.reply_rect)
@@ -276,6 +263,11 @@ class GameScreen:
         self.send_button.draw(app.window, app.font, enabled=not app.requests.busy)
         if self.prompt_input.error:
             app.window.blit(app.small_font.render(self.prompt_input.error, True, MUTED), (self.reply_rect.x, 616))
+        else:
+            reason = self.selected_npc.decision_reason
+            while reason and app.small_font.size(reason)[0] > self.reply_rect.width - 90:
+                reason = reason[:-4] + "..."
+            app.window.blit(app.small_font.render(reason, True, MUTED), (self.reply_rect.x, 616))
         count = app.small_font.render(f"{len(self.prompt_input.text)}/300", True, MUTED)
         app.window.blit(count, count.get_rect(topright=(936, 616)))
 

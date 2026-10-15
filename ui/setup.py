@@ -16,11 +16,11 @@ class SetupScreen:
 
     def __init__(self):
         # None means random; a Path means a character loaded from JSON.
-        self.sources = [None, None]
+        self.sources = [None, None, None]
         self.page = 0
         self.message = ""
         self.count_input = TextInput((430, 98, 100, 40), max_length=None)
-        self.count_input.set_value("2")
+        self.count_input.set_value("3")
         self.remove_button = Button((380, 98, 40, 40), "-")
         self.add_button = Button((540, 98, 40, 40), "+")
         self.apply_button = Button((595, 98, 145, 40), "Set count")
