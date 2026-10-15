@@ -11,6 +11,15 @@ from .text_input import TextInput
 from .theme import BORDER_RADIUS, GRASS, INK, MUTED, PAPER
 
 
+def format_model_size(size):
+    if size is None:
+        return "unavailable"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1000 or unit == "TB":
+            return f"{size:.2f} {unit}"
+        size /= 1000
+
+
 class SettingsScreen:
     def __init__(self):
         self.gemini_button = Button((180, 210, 280, 48), "Gemini")
@@ -30,7 +39,7 @@ class SettingsScreen:
         self.provider = "gemini"
         self.ollama_model = DEFAULT_OLLAMA_MODEL
         self.models = [DEFAULT_OLLAMA_MODEL]
-        self.installed_models = []
+        self.installed_models = {}
         self.model_worker = None
         self.model_results = queue.Queue()
         self.model_message = ""
@@ -63,21 +72,21 @@ class SettingsScreen:
             try:
                 self.model_results.put((list_models(), ""))
             except ValueError as error:
-                self.model_results.put(([], str(error)))
+                self.model_results.put(({}, str(error)))
 
         self.model_worker = threading.Thread(target=fetch, daemon=True, name="Ollama-model-list")
         self.model_worker.start()
 
     def update(self):
         try:
-            names, error = self.model_results.get_nowait()
+            models, error = self.model_results.get_nowait()
         except queue.Empty:
             return
         self.model_worker = None
-        self.installed_models = names
+        self.installed_models = models
         self.update_model_choices()
         self.model_message = error
-        if not error and not names:
+        if not error and not models:
             self.model_message = "No models installed. Use Setup Ollama, then Refresh models."
 
     def change_model(self, direction):
@@ -138,7 +147,12 @@ class SettingsScreen:
             app.window.blit(app.font.render(label, True, INK), (180, 276))
             self.previous_model_button.draw(app.window, app.font, enabled=len(self.models) > 1)
             self.next_model_button.draw(app.window, app.font, enabled=len(self.models) > 1)
-            draw_wrapped_text(app.window, self.ollama_model, app.font, INK, (244, 310, 472, 52))
+            draw_wrapped_text(app.window, self.ollama_model, app.font, INK, (244, 310, 472, 38))
+            size = self.installed_models.get(self.ollama_model)
+            if size is None and ":" not in self.ollama_model:
+                size = self.installed_models.get(f"{self.ollama_model}:latest")
+            size_label = f"Size on disk: {format_model_size(size)}"
+            app.window.blit(app.small_font.render(size_label, True, MUTED), (244, 350))
             app.window.blit(app.small_font.render("Your model choice is saved between launches.", True, MUTED), (180, 375))
             self.refresh_button.draw(app.window, app.small_font, enabled=self.model_worker is None)
             self.setup_button.draw(app.window, app.font)

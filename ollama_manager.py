@@ -32,7 +32,7 @@ def save_model(model):
 
 
 def list_models():
-    """Return installed model names, including their tags, from the local server."""
+    """Map installed model names (including tags) to their size in bytes, if known."""
     global _ollama_ready
     _ollama_ready = False
     try:
@@ -41,18 +41,19 @@ def list_models():
         models = response.json()["models"]
         if not isinstance(models, list):
             raise ValueError
-        names = set()
+        sizes = {}
         for model in models:
             name = model["name"]
             if not isinstance(name, str) or not name.strip():
                 raise ValueError
-            names.add(name.strip())
+            size = model.get("size")
+            sizes[name.strip()] = size if type(size) is int and size >= 0 else None
     except httpx.HTTPError:
         raise ValueError("Cannot list models. Make sure Ollama is running, then Refresh.") from None
     except (ValueError, KeyError, TypeError):
         raise ValueError("Ollama returned an invalid model list. Try Refresh again.") from None
     _ollama_ready = True
-    return sorted(names, key=str.casefold)
+    return {name: sizes[name] for name in sorted(sizes, key=str.casefold)}
 
 
 def check_ollama(*, force_refresh=False):
