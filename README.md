@@ -14,6 +14,7 @@
   - file_dialog.py - shared character JSON file picker
   - menu.py - menu screen
   - load_sim.py - saved simulation browser, renaming, and deletion
+  - save_sim.py - name selection when manually saving a new simulation
   - requests.py - background requests and response handling
   - settings.py - settings screen
   - setup.py - NPC count and character selection before a game

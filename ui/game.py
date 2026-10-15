@@ -112,7 +112,7 @@ class GameScreen:
         if self.save_button.clicked(event) or (
             event.type == pygame.KEYDOWN and event.key == pygame.K_s and event.mod & pygame.KMOD_CTRL
         ):
-            app.save_current_simulation()
+            app.request_save()
             return
         if self.stats_button.clicked(event):
             app.open_stats()
@@ -244,6 +244,9 @@ class GameScreen:
         self.save_button.draw(app.window, app.small_font)
         if self.save_message_remaining:
             draw_wrapped_text(app.window, self.save_message, app.small_font, INK, (24, 65, 912, 44))
+        else:
+            name = app.simulation_name if app.save_id else "Unsaved simulation / Save or Ctrl+S to keep your progress."
+            draw_wrapped_text(app.window, name, app.small_font, INK, (24, 65, 912, 44))
 
         pygame.draw.rect(app.window, PAPER, (0, WORLD_HEIGHT, 960, 180))
         pygame.draw.line(app.window, (129, 154, 110), (0, WORLD_HEIGHT), (960, WORLD_HEIGHT), 3)

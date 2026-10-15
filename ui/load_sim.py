@@ -65,9 +65,12 @@ class LoadSimScreen:
         if self.selected is None or self.selected.error:
             return
         try:
-            app.save_store.rename(self.selected_id, self.name_input.text)
+            self.selected_id = app.save_store.rename(self.selected_id, self.name_input.text)
+        except FileExistsError:
+            self.message = "A save with that name already exists. Choose another name."
+            return
         except (OSError, ValueError):
-            self.message = "Could not rename save. Enter a name and check folder permissions."
+            self.message = "Could not rename save. Use a valid filename and check folder permissions."
             return
         self.refresh(app.save_store)
         self.message = "Save renamed."
@@ -128,7 +131,7 @@ class LoadSimScreen:
         surface.blit(app.small_font.render("Choose a simulation to continue, rename, or delete.", True, MUTED), (100, 108))
         entries = self.entries[self.page * self.ROWS_PER_PAGE:][:self.ROWS_PER_PAGE]
         if not entries:
-            draw_wrapped_text(surface, "No saved simulations yet. Choose New Sim to create one.", app.font, MUTED, (100, 160, 480, 100))
+            draw_wrapped_text(surface, "No saved simulations yet. Start a New Sim, then use Save to keep it.", app.font, MUTED, (100, 160, 480, 100))
         for row, entry in enumerate(entries):
             rect = pygame.Rect(100, 145 + row * 68, 480, 60)
             selected = entry.id == self.selected_id

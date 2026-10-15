@@ -10,12 +10,13 @@ from character_data import load_character, random_character
 from conversation_history import ConversationRecord, describe_opinion_change
 from npc import Conversation, NPC, Tree, assign_npc_names
 from ollama_manager import load_model
-from simulation_data import SaveStore, capture_simulation, restore_simulation
+from simulation_data import InvalidSaveName, SaveStore, capture_simulation, restore_simulation
 
 from .game import GameScreen
 from .character import CharacterScreen
 from .menu import MenuScreen
 from .load_sim import LoadSimScreen
+from .save_sim import SaveSimScreen
 from .requests import RequestManager
 from .settings import SettingsScreen
 from .setup import SetupScreen
@@ -58,10 +59,13 @@ class Application:
         self.tree = None
         self.save_store = SaveStore()
         self.save_id = None
-        self.simulation_name = "Untitled simulation"
+        self.save_identity = None
+        self.save_name_refresh_remaining = 0
+        self.simulation_name = "Unsaved simulation"
         self.requests = RequestManager()
         self.menu = MenuScreen()
         self.load_sim = LoadSimScreen()
+        self.save_sim = SaveSimScreen()
         self.settings = SettingsScreen()
         self.setup = SetupScreen()
         self.character = CharacterScreen()
@@ -71,6 +75,7 @@ class Application:
         self.screens = {
             "menu": self.menu,
             "load_sim": self.load_sim,
+            "save_sim": self.save_sim,
             "settings": self.settings,
             "setup": self.setup,
             "character": self.character,
@@ -119,16 +124,55 @@ class Application:
         assign_npc_names(self.npcs)
         self.tree = Tree()
         self.save_id = None
-        self.simulation_name = "Untitled simulation"
+        self.save_identity = None
+        self.simulation_name = "Unsaved simulation"
         self.screen = "game"
-        self.save_current_simulation()
+        self.menu.message = ""
 
-    def save_current_simulation(self):
+    def sync_save_name(self):
+        if self.save_id is not None and self.save_identity is not None:
+            name = self.save_store.current_name(self.save_id, self.save_identity)
+            if name != self.save_id:
+                self.game.save_message_remaining = 0
+            self.save_id = name
+            self.simulation_name = self.save_id
+
+    def request_save(self):
+        if self.save_id is not None:
+            self.save_current_simulation()
+            return
         try:
+            name = self.save_store.next_name()
+        except OSError:
+            self.game.show_save_message("Could not read saves. Check folder permissions and try again.")
+            return
+        self.game.prompt_input.active = False
+        self.game.prompt_input.backspace_held = False
+        self.save_sim.open(name)
+        self.screen = "save_sim"
+
+    def save_current_simulation(self, *, name=None):
+        try:
+            self.sync_save_name()
+            if self.save_id is not None and self.save_identity is not None:
+                try:
+                    identity = self.save_store.file_identity(self.save_id)
+                except FileNotFoundError:
+                    identity = self.save_identity
+                if identity != self.save_identity:
+                    raise ValueError("The save file was replaced outside the game.")
             state = capture_simulation(self)
-            self.save_id = self.save_store.save(state, save_id=self.save_id, name=self.simulation_name)
+            self.save_id = self.save_store.save(state, save_id=self.save_id, name=name)
+            self.simulation_name = self.save_id
+            self.save_identity = self.save_store.file_identity(self.save_id)
+        except (InvalidSaveName, FileExistsError) as error:
+            self.save_sim.message = str(error)
+            self.game.show_save_message(str(error))
+            return False
         except (OSError, ValueError):
-            self.game.show_save_message("Could not save simulation. Check folder permissions and try Save again.")
+            message = "Could not save. Check the file and folder permissions, then try again."
+            self.save_sim.message = message
+            self.game.show_save_message(message)
             return False
         self.game.show_save_message(f"Saved {self.simulation_name}.")
         return True
@@ -140,6 +184,7 @@ class Application:
     def load_simulation(self, save_id):
         try:
             saved = self.save_store.load(save_id)
+            identity = self.save_store.file_identity(save_id)
             npcs, tree, history = restore_simulation(saved.state)
             for npc in npcs:
                 sprite = self.character.renderer.render(npc.character, npc.facing, CHARACTER_SCALE)
@@ -156,22 +201,20 @@ class Application:
         self.request_message = ""
         self.npcs, self.tree, self.conversation_history = npcs, tree, history
         self.save_id, self.simulation_name = save_id, saved.name
+        self.save_identity = identity
         self.game.camera_offset[:] = saved.state.camera_offset
         self.screen = "game"
         self.game.show_save_message(f"Loaded {saved.name}.")
         return True
 
     def leave_game(self):
-        # Save before closing dialogue, which finishes active NPC conversations.
-        if not self.save_current_simulation():
-            return
         if self.request_history is not None:
             self.request_history.status = "Ended before the reply arrived"
             self.request_history.outcomes = ["Left the game before a reply was received."]
             self.request_history = None
         self.session_id += 1
         self.screen = "menu"
-        self.menu.message = f"Saved {self.simulation_name}."
+        self.menu.message = ""
         self.game.close_dialogue()
         for npc in self.npcs:
             if npc.conversation is not None:
@@ -269,16 +312,13 @@ class Application:
 
     def handle_event(self, event):
         if event.type == pygame.QUIT:
-            if self.screen in ("game", "stats") and not self.save_current_simulation():
-                self.screen = "game"
-                return
             self.running = False
             return
         self.screens[self.screen].handle_event(self, event)
 
     def update(self, dt):
         simulation_active = self.screen in ("game", "stats")
-        active_session = self.session_id if simulation_active else None
+        active_session = self.session_id if simulation_active or self.screen == "save_sim" else None
         for result, error in self.requests.poll(active_session):
             conversation = self.request_conversation
             if conversation is not None:
@@ -334,6 +374,16 @@ class Application:
         self.settings.update()
         if self.screen == "load_sim":
             self.load_sim.name_input.update(dt)
+        if self.screen == "save_sim":
+            self.save_sim.name_input.update(dt)
+        if self.screen in ("game", "stats", "save_sim"):
+            self.save_name_refresh_remaining -= dt
+            if self.save_name_refresh_remaining <= 0:
+                self.save_name_refresh_remaining = 1
+                try:
+                    self.sync_save_name()
+                except (OSError, ValueError):
+                    pass
         self.game.save_message_remaining = max(0, self.game.save_message_remaining - dt)
         self.character.update(dt)
         if self.screen == "setup":
