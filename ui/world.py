@@ -5,7 +5,7 @@ import pygame
 
 from npc import WORLD_WIDTH, WORLD_HEIGHT
 
-from .theme import GRASS, INK, MUTED, PAPER, WALKABLE_GRASS
+from .theme import INK, PAPER, SHADOW_COLOR, WORLD_COLORS
 
 
 CHARACTER_SCALE = 0.5
@@ -38,6 +38,12 @@ def tree_artwork():
     return _tree_artwork
 
 
+def _draw_shadow(surface, rect):
+    shadow = pygame.Surface(rect.size, pygame.SRCALPHA)
+    pygame.draw.ellipse(shadow, SHADOW_COLOR, shadow.get_rect())
+    surface.blit(shadow, rect)
+
+
 def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), phase="day", zoom=1.0, viewport=None):
     # Scale the ground separately; sprites are drawn from their original artwork.
     scene = pygame.Surface((WORLD_WIDTH, WORLD_HEIGHT))
@@ -55,11 +61,7 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
 
 
 def _draw_scene(surface, npcs, tree, font, phase):
-    grass, walkable = {
-        "day": (GRASS, WALKABLE_GRASS),
-        "evening": ((190, 156, 120), (204, 176, 134)),
-        "night": ((64, 77, 98), (77, 92, 111)),
-    }[phase]
+    grass, walkable = WORLD_COLORS[phase]
     surface.fill(grass)
     if npcs:
         left, right, top, bottom = npcs[0].movement_bounds
@@ -73,7 +75,7 @@ def _draw_scene(surface, npcs, tree, font, phase):
 
     tree_x = round(tree.x) + tree.offset
     # Shadows lie on the ground beneath every sprite.
-    pygame.draw.ellipse(surface, (145, 171, 111), (tree_x - 43, round(tree.y) + 50, 86, 20))
+    _draw_shadow(surface, pygame.Rect(tree_x - 43, round(tree.y) + 50, 86, 20))
 
 
 def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, phase, zoom):
@@ -114,7 +116,7 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
         sprite = resized(original, CHARACTER_SCALE * zoom)
         sprite_rect = sprite.get_rect(midbottom=position)
         shadow = pygame.Rect(screen_point((npc.x - 16, npc.y - 4)), (round(32 * zoom), round(8 * zoom)))
-        pygame.draw.ellipse(surface, MUTED, shadow)
+        _draw_shadow(surface, shadow)
         surface.blit(sprite, sprite_rect)
         name = name_font.render(npc.name, True, label_color)
         name_rect = name.get_rect(midtop=screen_point((npc.x, npc.y + 6)))
