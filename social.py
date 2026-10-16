@@ -287,6 +287,8 @@ def information_views(context):
     result = {}
     for role, npc_id in context.participants.items():
         beliefs = {belief.claim_id: belief for belief in context.beliefs[role]}
+        firsthand = {options[b.claim_id].fact_id: options[b.claim_id]
+                     for b in beliefs.values() if b.direct}
         views = []
         for claim_id in context.allowed[role]:
             option = options[claim_id]
@@ -303,6 +305,12 @@ def information_views(context):
                                                  for b in context.beliefs[role]),
                             current_reputation_influence=sum(b.opinion_delta for b in context.beliefs[role]
                                                              if options[b.claim_id].fact_id == option.fact_id))
+            evidence = firsthand.get(option.fact_id)
+            if evidence:
+                view["firsthand_evidence"] = evidence.assertion
+                view["firsthand_stance"] = "believed" if evidence.affirmed == option.affirmed else "disbelieved"
+                if belief and belief.direct:
+                    view["permitted_use"] = "share personal experience; its truth needs no confirmation"
             views.append(view)
         result[role] = views
     return result
@@ -349,6 +357,7 @@ def validate_information(response, context):
                                  "in an earlier turn, with its actual absent subject and exact disclosed claim ID.")
             related = [b for b in beliefs[role].values() if options[b.claim_id].fact_id == option.fact_id]
             if (belief.stance != "believed" or entry.delta == 0
+                    or any(b.direct for b in related)
                     or any(b.assessed and options[b.claim_id].affirmed == option.affirmed for b in related)
                     or abs(sum(b.opinion_delta for b in related) + entry.delta) > 6
                     or (role, option.fact_id) in seen_opinions):
@@ -373,11 +382,22 @@ def validate_information(response, context):
             elif ((entry.intent == "lie" and (not context.can_lie[role] or belief.stance == "believed"))
                   or (entry.intent == "share" and belief.stance == "disbelieved")):
                 raise ValueError("A deliberate lie and an honestly repeated belief must remain distinct.")
+            firsthand = next((b for b in beliefs[role].values()
+                              if b.direct and options[b.claim_id].fact_id == option.fact_id), None)
+            if firsthand:
+                agrees = options[firsthand.claim_id].affirmed == option.affirmed
+                if agrees and entry.intent == "challenge":
+                    raise ValueError("The speaker already knows this account firsthand. Share it as a personal experience; "
+                                     "do not ask someone else to confirm whether it happened.")
+                if (not agrees and entry.intent == "share") or (agrees and entry.intent == "lie"):
+                    raise ValueError("The disclosure intent must respect the speaker's firsthand knowledge of this event.")
             prior = beliefs[listener].get(option.id)
             related = [b for b in beliefs[listener].values() if options[b.claim_id].fact_id == option.fact_id]
-            if any(b.direct and options[b.claim_id].affirmed != option.affirmed for b in related):
-                if entry.listener_stance != "disbelieved":
-                    raise ValueError("A listener's firsthand contrary evidence cannot be silently overwritten.")
+            firsthand = next((b for b in related if b.direct), None)
+            if firsthand:
+                stance = "believed" if options[firsthand.claim_id].affirmed == option.affirmed else "disbelieved"
+                if entry.listener_stance != stance:
+                    raise ValueError(f"The listener knows this event firsthand; their stance must remain {stance}.")
             elif prior is not None and entry.listener_stance != prior.stance:
                 raise ValueError("Repeating an account is not new independent confirmation.")
             elif (any(options[b.claim_id].affirmed == option.affirmed and b.stance != "believed" for b in related)
@@ -391,6 +411,8 @@ def validate_information(response, context):
             if prior is None:
                 beliefs[listener][option.id] = Belief(context.participants[listener], option.id,
                                                      entry.listener_stance, npc_id, None, False, 0)
+            elif not prior.direct:
+                prior.stance = entry.listener_stance
             acquired[listener].add(option.id)
             heard[listener, option.id] = turn
     if context.focus_claim_id:
@@ -867,8 +889,12 @@ def pair_objective(world, npc, other):
     news = [belief for belief in selected_beliefs(npc, other.id) if belief.claim_id not in other_known
             and claim_by_id(world, belief.claim_id).subject_id not in (npc.id, other.id)]
     if news:
-        subject = world.npc_by_id(claim_by_id(world, news[0].claim_id).subject_id)
-        return 0.5, f"Discuss an account about {subject.name}, distinguishing hearsay from firsthand experience"
+        claim = claim_by_id(world, news[0].claim_id)
+        subject = world.npc_by_id(claim.subject_id)
+        firsthand = any(b.direct and claim_by_id(world, b.claim_id).fact_id == claim.fact_id for b in npc.beliefs)
+        if firsthand:
+            return 0.5, f"Share a firsthand experience about {subject.name}; I already know what happened"
+        return 0.5, f"Discuss a secondhand account about {subject.name}, keeping its source and uncertainty clear"
     return 0, ""
 
 

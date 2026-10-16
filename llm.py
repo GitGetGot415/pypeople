@@ -326,6 +326,10 @@ WORLD_INSTRUCTION = """Use world_state.environment, live inventories, and record
 for the simulation. Profiles describe personality and interests; opinions and
 memory summaries are subjective. Neither establishes an unrecorded event.
 Keep speech grounded in what the speaker knows and what is happening now.
+Firsthand memories and accounts are events that speaker personally experienced.
+The speaker already knows whether they happened: never describe them as hearsay,
+invent a source for them, or ask another person to verify their occurrence.
+Someone else's uncertainty cannot make the speaker doubt their own experience.
 Only supported actions and structured social effects change the simulation.
 
 """
@@ -467,6 +471,13 @@ INFORMATION_INSTRUCTION = """permitted_accounts contains each speaker's initial 
 explicit denials, with beliefs and sources. Only that speaker knows them at
 first. Profiles, private motives, and opinion reasons are not shared knowledge.
 Use actual sources; hearing an account does not make the listener a witness.
+An account with basis firsthand must be spoken about as personal experience,
+not something the speaker heard or needs confirmed. firsthand_evidence also
+settles other accounts of the same event, even with different claim IDs or
+sources: firsthand_stance takes precedence over hearsay uncertainty. A witness
+can challenge a contrary account, but cannot question a matching firsthand fact.
+An uninformed partner may learn from the witness or say they did not witness it;
+their lack of knowledge is not evidence against the witness's experience.
 Accounts concern supported events or motives. Deception can deny a supplied
 account, but cannot invent unrelated events. Plan choices and speech together.
 Most exchanges need disclosures, third_party_opinions, and leverage all empty.
@@ -476,7 +487,9 @@ speaker. A listener can use it only in a later turn. share means honest belief,
 challenge questions an account, and lie means an allowed denial or knowingly
 repeating a disbelieved account to deceive. A denial is private to its owner.
 The listener's stance is uncertain, believed, or disbelieved. Firsthand contrary
-evidence requires disbelieved. Repeating a known account preserves its stance;
+evidence requires disbelieved; matching firsthand evidence requires believed.
+Rehearing a firsthand event is not new information for a reputation adjustment.
+Repeating a known account preserves its stance unless firsthand evidence settles it;
 hearsay through another source is not independent confirmation.
 For gossip, the initiator must disclose discussion_focus_claim_id or a permitted
 denial of that same account. Match the spoken assertion and listener's reaction.
@@ -649,6 +662,16 @@ def response_contract(snapshot, *, correction=False):
         if not food_request:
             instruction += "\n\n" + SOCIAL_INSTRUCTION
             instruction += "\n\n" + INFORMATION_INSTRUCTION
+            for role in ("initiator", "recipient"):
+                person = snapshot[role]
+                firsthand = list(dict.fromkeys(account["firsthand_evidence"]
+                                 for account in person.get("private_context", {}).get("permitted_accounts", [])
+                                 if "firsthand_evidence" in account))
+                if firsthand:
+                    instruction += (f"\n\n{person['npc_name']} personally knows these facts: "
+                                    + json.dumps(firsthand, ensure_ascii=False)
+                                    + " This is that speaker's firsthand knowledge. Speak from personal experience; "
+                                    "do not ask the partner whether these events happened.")
         info = snapshot.get("_information_validation")
         claim_ids = list(dict.fromkeys(claim_id for ids in info["allowed"].values() for claim_id in ids)) if info else []
         claim_field = {"type": "string", "enum": claim_ids or [""]}
