@@ -473,10 +473,10 @@ start a natural greeting instead. Do not invent a gift unless the inventories
 and world state establish it actually happened. Otherwise choose a grounded topic:
 the current day phase, walking here, the tree, carried apples, or an interest in
 their profiles. Do not fill a vague topic with invented outings or discoveries.
-Write 4 to 8 alternating turns, starting with initiator, and end the conversation
+Write 2 to 8 alternating turns, starting with initiator, and end the conversation
 naturally. Usually use six short turns so greetings, discussion, and closing
 have room to unfold. Use more turns when needed instead of squeezing separate
-exchanges into a four-turn conversation. Never exceed eight turns.
+exchanges into a four-turn conversation. If needed, you can go over the 8 turn limit.
 Use each speaker's own private_context.opinions to shape
 each person's tone, trust, warmth, disagreement, and choice of words. Their
 private opinion maps also matter when discussing other people. A positive score means
