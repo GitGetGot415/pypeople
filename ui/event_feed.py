@@ -17,10 +17,20 @@ class EventFeed:
         self.rows = []
         self.known_ids = set()
         self.limit = 0
+        self.drag_start = None
+        self.drag_offset = None
+        self.dragging = False
 
     @property
     def rect(self):
         return self.header if self.collapsed else self.header.union(self.body)
+
+    def keep_visible(self, app):
+        # Leave the top controls and any open dialogue accessible.
+        viewport = app.game.world_viewport
+        bounds = pygame.Rect(viewport.left, 64, viewport.width, viewport.bottom - 64)
+        self.header.topleft = self.rect.clamp(bounds).topleft
+        self.body.topleft = self.header.bottomleft
 
     def layout(self, app):
         events = app.simulation.events
@@ -49,16 +59,36 @@ class EventFeed:
             self.unread = 0
 
     def handle_event(self, app, event):
+        if event.type == pygame.WINDOWFOCUSLOST:
+            self.drag_start = self.drag_offset = None
+            self.dragging = False
+            return False
         if event.type not in (pygame.MOUSEWHEEL, pygame.MOUSEBUTTONDOWN,
                               pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION):
             return False
+        self.keep_visible(app)
         pos = getattr(event, "pos", pygame.mouse.get_pos())
-        if not self.rect.collidepoint(pos):
+        if self.drag_start is None and not self.rect.collidepoint(pos):
             return False
-        self.layout(app)
         # A drag that crosses the panel cannot select the world on release.
         app.game.pan_start = app.game.pan_last = None
         app.game.panning = False
+        if self.drag_start is not None:
+            if event.type == pygame.MOUSEMOTION:
+                dx, dy = pos[0] - self.drag_start[0], pos[1] - self.drag_start[1]
+                if self.dragging or dx * dx + dy * dy >= 16:
+                    self.dragging = True
+                    self.header.topleft = (pos[0] - self.drag_offset[0], pos[1] - self.drag_offset[1])
+                    self.body.topleft = self.header.bottomleft
+                    self.keep_visible(app)
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                if not self.dragging and self.header.collidepoint(pos):
+                    self.collapsed = not self.collapsed
+                    self.keep_visible(app)
+                self.drag_start = self.drag_offset = None
+                self.dragging = False
+            return True
+        self.layout(app)
         if event.type == pygame.MOUSEWHEEL and not self.collapsed:
             self.scroll = max(0, min(self.limit, self.scroll - event.y * 42))
             self.following = self.scroll >= self.limit
@@ -66,7 +96,9 @@ class EventFeed:
                 self.unread = 0
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if self.header.collidepoint(pos):
-                self.collapsed = not self.collapsed
+                self.drag_start = pos
+                self.drag_offset = (pos[0] - self.header.x, pos[1] - self.header.y)
+                self.dragging = False
             elif not self.collapsed:
                 for entry, top, height, _ in self.rows:
                     if top <= pos[1] - self.body.y + self.scroll < top + height and entry.history is not None:
@@ -76,6 +108,7 @@ class EventFeed:
         return True
 
     def draw(self, app):
+        self.keep_visible(app)
         self.layout(app)
         surface = app.window
         pygame.draw.rect(surface, PAPER, self.rect)
@@ -84,6 +117,8 @@ class EventFeed:
         if self.unread:
             title += f" ({self.unread} unread)"
         surface.blit(app.small_font.render(title, True, PAPER), (self.header.x + 10, self.header.y + 5))
+        hint = app.small_font.render("Drag to move", True, PAPER)
+        surface.blit(hint, hint.get_rect(topright=(self.header.right - 10, self.header.y + 5)))
         if self.collapsed:
             return
         previous_clip = surface.get_clip()
