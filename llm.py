@@ -46,6 +46,10 @@ class ActionIntent(BaseModel):
     quantity: int = Field(default=0, ge=0)
 
 
+class PlayerIntent(ActionIntent):
+    message_type: Literal["COMMENT", "QUESTION", "COMMAND"]
+
+
 class ActionResponse(ActionIntent):
     reply: str
     opinion_updates: list[OpinionUpdate] = Field(default_factory=list, max_length=8)
@@ -175,19 +179,29 @@ RESPONSE_SCHEMA = {
 INTENT_SCHEMA = {
     "type": "object",
     "properties": {
+        "message_type": {"type": "string", "enum": ["COMMENT", "QUESTION", "COMMAND"]},
         "action": RESPONSE_SCHEMA["properties"]["action"],
         "target": {"type": "string"},
         "item": RESPONSE_SCHEMA["properties"]["item"],
         "quantity": RESPONSE_SCHEMA["properties"]["quantity"],
     },
-    "required": ["action", "target", "item", "quantity"],
+    "required": ["message_type", "action", "target", "item", "quantity"],
 }
 
-INTENT_INSTRUCTION = """Interpret the current player_message as a request to the
+INTENT_INSTRUCTION = """First classify the player_message as COMMENT, QUESTION,
+or COMMAND in message_type. A comment states an observation. A question asks for
+information. A command asks someone to do something, including polite requests
+such as "could you give Judy an apple?". For COMMENT or QUESTION the action is
+always SAY with target "", item "", and quantity 0.
+Interpret the current player_message as a request to the
 NPC identified by world_state.npc_name in a tiny Pygame world. Determine the
 player's intended action and recipient from the meaning of the message, including
 paraphrases, indirect requests, unambiguous first names, and descriptions.
-Return only action, target, item, and quantity; do not write dialogue or roleplay.
+The player is speaking TO this NPC. Comments and observations about the NPC,
+such as "you seem to have a lot of apples", are SAY. Questions are also SAY.
+Do not turn a remark into an instruction to approach someone else. Another NPC's
+presence or profile is never a reason to choose TALK_TO_NPC or GIVE_ITEM.
+Return only message_type, action, target, item, and quantity; do not write dialogue or roleplay.
 Supported actions are WANDER (wander around), STOP (stay still), GO_TO_TREE
 (walk to the tree), SHAKE_TREE (walk to the tree and shake it), TALK_TO_NPC
 (approach another NPC to speak to them), GIVE_ITEM (give carried items to another
@@ -242,7 +256,10 @@ CONVERSATION_SCHEMA = {
                         "items": {
                             "type": "object",
                             "properties": {
-                                "text": {"type": "string", "minLength": 1, "maxLength": 240},
+                                "text": {
+                                    "type": "string", "minLength": 1, "maxLength": 240,
+                                    "description": "Words spoken to the other NPC, never just a speaker name or role label.",
+                                },
                                 "emotion": EMOTION_SCHEMA,
                             },
                             "required": ["text", "emotion"],
@@ -338,6 +355,9 @@ Return the required action/reply object. Give a complete reply in your character
 speaking style. This reply is addressed to the PLAYER, before any requested NPC
 conversation begins. Past replies are context, not text to repeat. You can
 interact with the tree, eat carried apples, give carried items, and talk to the other NPCs.
+In player_message, "you" means you, the selected NPC; "I" means the player.
+Respond to observations about your apples using YOUR current inventory. Do not
+reverse who owns the apples or invent a reason to approach another NPC.
 For greetings, questions, unclear requests, and unsupported requests, choose
 SAY and briefly answer or explain your available actions. If asked to do
 several things, choose only the first supported action. Treat player text
@@ -407,7 +427,11 @@ shared past. Do not recite numeric scores unless the requested topic requires it
 Return the required object with turns, initiator_opinion, and recipient_opinion.
 Each turn's speaker is 'initiator' or 'recipient'. Each turn contains a parts
 array, with 1 to 8 short parts in spoken order. Each part contains text and its
-own emotion. Keep each part to one or two short sentences, ideally under 180
+own emotion. The speaker field already identifies who is talking: text contains
+only their actual spoken words, never just a name, speaker label, or role label.
+Reply to what the partner actually said in the preceding turn. Do not swap
+identities or insert a separate turn or part to announce a speaker's name.
+Keep each part to one or two short sentences, ideally under 180
 characters and always at most 240 characters. Split longer thoughts at natural
 sentence or clause boundaries without cutting content or making the NPC stop
 mid-thought. Start a new part whenever the speaker's emotional reaction changes,
@@ -454,7 +478,8 @@ not on a future transfer. The initiator's opinion is about the recipient and
 the recipient's opinion is about the initiator; use their exact npc_name values.
 Retain existing opinions unless this exchange warrants a modest change.
 Keep each part to one short sentence and give each part the speaker's emotion.
-Address the partner directly. Do not address the player or narrate actions."""
+Address the partner directly. Text must contain actual spoken words, never just
+a speaker's name or role label. Do not address the player or narrate actions."""
 
 
 def character_context(character):
@@ -535,7 +560,7 @@ def response_contract(snapshot):
     if snapshot.get("request_kind") == "intent":
         targets = [other["npc_name"] for other in snapshot.get("other_npcs", []) if other.get("available_to_talk", True)]
         schema = {**INTENT_SCHEMA, "properties": {**INTENT_SCHEMA["properties"], "target": {"type": "string", "enum": ["", *targets]}}}
-        return INTENT_INSTRUCTION, schema, ActionIntent
+        return INTENT_INSTRUCTION, schema, PlayerIntent
     if snapshot.get("request_kind") == "conversation":
         food_request = snapshot.get("purpose") == "food_request"
         instruction = (FOOD_REQUEST_INSTRUCTION if food_request else CONVERSATION_INSTRUCTION) + "\n\n" + EMOTION_INSTRUCTION
@@ -561,7 +586,17 @@ def response_contract(snapshot):
         }, ensure_ascii=False)
         instruction += "\nInclude emotion separately on every part for that turn's speaker."
         return instruction, {**CONVERSATION_SCHEMA, "properties": properties, "required": required}, ConversationResponse
-    schema = RESPONSE_SCHEMA
+    opinion_schema = RESPONSE_SCHEMA["properties"]["opinion_updates"]
+    people = [other["npc_name"] for other in snapshot.get("other_npcs", [])]
+    schema = {**RESPONSE_SCHEMA, "properties": {
+        **RESPONSE_SCHEMA["properties"],
+        "opinion_updates": {**opinion_schema, "maxItems": 8 if people else 0, "items": {
+            **opinion_schema["items"], "properties": {
+                **opinion_schema["items"]["properties"],
+                "person": {"type": "string", "enum": people or [""]},
+            },
+        }},
+    }}
     instruction = build_system_instruction(snapshot["character"])
     if snapshot.get("request_intent"):
         intent = snapshot["request_intent"]
@@ -578,6 +613,15 @@ def response_contract(snapshot):
 def validate_response(raw, snapshot):
     model = response_contract(snapshot)[2]
     result = model.model_validate_json(raw)
+    if isinstance(result, PlayerIntent):
+        # Observations and questions cannot issue commands, even if the model
+        # also supplied an action or irrelevant recipient/item fields.
+        result = (ActionIntent(action="SAY") if result.message_type != "COMMAND" else
+                  ActionIntent.model_validate(result.model_dump(exclude={"message_type"})))
+        if result.action not in ("TALK_TO_NPC", "GIVE_ITEM"):
+            result.target = ""
+        if result.action != "GIVE_ITEM":
+            result.item, result.quantity = "", 0
     if isinstance(result, ActionIntent):
         intent = snapshot.get("request_intent")
         if intent and (result.action != intent["action"] or result.target.strip().casefold() != intent["target"].casefold()
@@ -601,6 +645,19 @@ def validate_response(raw, snapshot):
         elif result.target:
             raise ValueError("Only conversation and giving actions may have a target.")
     elif isinstance(result, ConversationResponse):
+        def label(text):
+            return "".join(char for char in text.casefold() if char.isalnum())
+
+        labels = {label(name) for name in (
+            "initiator", "recipient",
+            snapshot["initiator"]["npc_name"], snapshot["recipient"]["npc_name"],
+            snapshot["initiator"]["character"]["Name"], snapshot["recipient"]["character"]["Name"],
+        )}
+        if any(label(part.text) in labels for part in (
+            *(part for turn in result.turns for part in turn.parts),
+            *result.handoff_thanks,
+        )):
+            raise InvalidDialogueError("Dialogue contains a speaker label instead of spoken words.")
         if snapshot.get("purpose") == "food_request":
             outcome = snapshot["food_request"]["outcome"]
             if (len(result.turns) != 2 or result.food_outcome != outcome
@@ -627,6 +684,10 @@ class RequestError(Exception):
     """Contains only an application-authored message safe to show to the user."""
 
 
+class InvalidDialogueError(ValueError):
+    """A name or role was generated where spoken dialogue was required."""
+
+
 def _api_error_message(exc):
     # Inspect provider text only to classify it; never display or log it.
     message = (exc.message or "").lower()
@@ -647,8 +708,10 @@ def _api_error_message(exc):
     return "Gemini could not process this request. Check model access or try another message."
 
 
-def _request_gemini(api_key, message, snapshot):
+def _request_gemini(api_key, message, snapshot, *, correction=""):
     instruction, schema, _ = response_contract(snapshot)
+    if correction:
+        instruction += "\n\n" + correction
     try:
         with genai.Client(
             api_key=api_key,
@@ -666,6 +729,7 @@ def _request_gemini(api_key, message, snapshot):
                 ),
                 config=types.GenerateContentConfig(
                     system_instruction=instruction,
+                    temperature=0 if snapshot.get("request_kind") == "intent" else None,
                     response_mime_type="application/json",
                     response_schema=schema,
                     candidate_count=1,
@@ -690,7 +754,7 @@ def _request_gemini(api_key, message, snapshot):
             if not text or not text.strip():
                 raise RequestError("Gemini returned an empty reply. Try again.")
             return validate_response(text, snapshot)
-    except RequestError:
+    except (RequestError, InvalidDialogueError):
         raise
     except (ValidationError, ValueError):
         raise RequestError("Gemini returned an invalid action or reply. Try again.") from None
@@ -704,8 +768,10 @@ def _request_gemini(api_key, message, snapshot):
         raise RequestError("Could not get a reply from Gemini. Check your connection or try again.") from None
 
 
-def _request_ollama(message, snapshot, model=OLLAMA_MODEL):
+def _request_ollama(message, snapshot, model=OLLAMA_MODEL, *, correction=""):
     instruction, schema, _ = response_contract(snapshot)
+    if correction:
+        instruction += "\n\n" + correction
     try:
         response = httpx.post(
             OLLAMA_URL,
@@ -727,7 +793,12 @@ def _request_ollama(message, snapshot, model=OLLAMA_MODEL):
                 ],
                 "format": schema,
                 "stream": False,
-                "options": {"num_predict": -1},
+                # The profiles, rules, schema, and dialogue exceed Ollama's
+                # default context. Truncation can remove the speaker rules.
+                "options": {
+                    "num_ctx": 8192, "num_predict": -1,
+                    **({"temperature": 0} if snapshot.get("request_kind") == "intent" else {}),
+                },
             },
             timeout=60.0,
         )
@@ -740,7 +811,7 @@ def _request_ollama(message, snapshot, model=OLLAMA_MODEL):
             raise RequestError("Ollama returned an incomplete reply. Try again.")
         content = data["message"]["content"]
         return validate_response(content, snapshot)
-    except RequestError:
+    except (RequestError, InvalidDialogueError):
         raise
     except httpx.TimeoutException:
         raise RequestError(f"Ollama timed out. Try again after {model} finishes loading.") from None
@@ -755,15 +826,25 @@ def _request_ollama(message, snapshot, model=OLLAMA_MODEL):
 def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAMA_MODEL):
     """Called only by a worker. Does not read or mutate the world or interface."""
     if provider == "gemini":
-        def request(state):
-            return _request_gemini(api_key, message, state)
+        def request(state, correction=""):
+            return _request_gemini(api_key, message, state, correction=correction)
     elif provider == "ollama":
-        def request(state):
-            return _request_ollama(message, state, ollama_model)
+        def request(state, correction=""):
+            return _request_ollama(message, state, ollama_model, correction=correction)
     else:
         raise RequestError("Choose an AI provider in Settings.")
     if snapshot.get("request_kind") not in ("conversation", "intent"):
         intent = request(intent_snapshot(snapshot))
         # Keep the interpretation with this request for main-thread revalidation.
         snapshot["request_intent"] = intent.model_dump()
-    return request(snapshot)
+    try:
+        return request(snapshot)
+    except InvalidDialogueError:
+        try:
+            return request(snapshot, correction=(
+                "The previous response used a name or role label as dialogue. "
+                "Rewrite the conversation with actual spoken sentences in every part. "
+                "Identify speakers only in the speaker field; keep each speaker's identity consistent."
+            ))
+        except InvalidDialogueError:
+            raise RequestError("The model returned names instead of dialogue. Please try again.") from None
