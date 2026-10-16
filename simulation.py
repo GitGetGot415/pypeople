@@ -93,6 +93,11 @@ class Simulation:
         if action_handler is not None:
             actions, self.pending_actions = self.pending_actions, []
             for action in actions:
+                npc = self.npc_by_id(action.npc_id)
+                if npc is not None and npc.selected and npc.end_conversation:
+                    # Keep the closing reply visible until the player dismisses it.
+                    self.pending_actions.append(action)
+                    continue
                 action_handler(action)
         # Ignore long window stalls; there is no elapsed world time to catch up.
         self.step(min(0.1, max(0.0, dt)), viewed_conversation=viewed_conversation)

@@ -235,7 +235,7 @@ class Application:
     def submit(self):
         message = self.game.prompt_input.text.strip()[:300]
         npc = self.game.selected_npc
-        if self.screen != "game" or npc is None or npc.conversation is not None or npc.gift is not None or npc.eating or npc.request_pending or not message or self.requests.busy:
+        if self.screen != "game" or npc is None or npc.end_conversation or npc.conversation is not None or npc.gift is not None or npc.eating or npc.request_pending or not message or self.requests.busy:
             return
         if self.provider == "gemini" and not self.api_key:
             self.game.set_reply("Add an API key in Settings to generate a reply.")
@@ -340,6 +340,7 @@ class Application:
                 }
                 record.outcomes[0:1] = [outcomes[action.action]]
         if error:
+            npc.end_conversation = False
             npc.reply = error
             npc.set_emotion("neutral", 0)
             if self.game.selected_npc is npc:
@@ -427,6 +428,8 @@ class Application:
                             ))
                             npc.request_pending = True
             npc.reply = error or result.reply
+            # A reply arriving after the player leaves must not wait for a reader.
+            npc.end_conversation = bool(not error and result.end_conversation and npc.selected)
             if error:
                 npc.set_emotion("neutral", 0)
             else:
@@ -434,11 +437,21 @@ class Application:
             if record is not None:
                 record.turns.append((npc.name, npc.reply))
                 record.error = error or ""
-                record.status = "Failed" if error else ("Applying player request" if npc.request_pending else "Completed")
+                waiting_for_done = npc.request_pending and npc.end_conversation
                 if error:
+                    record.status = "Failed"
                     record.outcomes = [f"The request could not be completed: {error}"]
                 else:
-                    record.outcomes.insert(0, "Accepted; applies on the next simulation tick." if npc.request_pending else "Replied without changing their activity.")
+                    if waiting_for_done:
+                        record.status = "Waiting for Done"
+                        outcome = "Accepted; starts after the player closes the conversation."
+                    elif npc.request_pending:
+                        record.status = "Applying player request"
+                        outcome = "Accepted; applies on the next simulation tick."
+                    else:
+                        record.status = "Completed"
+                        outcome = "Replied without changing their activity."
+                    record.outcomes.insert(0, outcome)
                 self.request_history = None
             if self.game.selected_npc is npc and self.game.viewed_conversation is None:
                 self.game.set_reply(npc.reply)

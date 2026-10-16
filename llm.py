@@ -52,8 +52,16 @@ class PlayerIntent(ActionIntent):
 
 class ActionResponse(ActionIntent):
     reply: str
+    end_conversation: bool = False
     opinion_updates: list[OpinionUpdate] = Field(default_factory=list, max_length=8)
     emotion: EmotionReaction = Field(default_factory=EmotionReaction)
+
+    @model_validator(mode="after")
+    def close_for_action(self):
+        # Committed tasks always give the player a final line to read first.
+        if self.action != "SAY":
+            self.end_conversation = True
+        return self
 
 
 class ConversationPart(BaseModel):
@@ -155,6 +163,7 @@ RESPONSE_SCHEMA = {
     "properties": {
         "action": {"type": "string", "enum": ["WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "GIVE_ITEM", "EAT", "SAY"]},
         "reply": {"type": "string"},
+        "end_conversation": {"type": "boolean"},
         "target": {"type": "string"},
         "item": {"type": "string", "enum": ["", "fruit"]},
         "quantity": {"type": "integer", "minimum": 0},
@@ -173,7 +182,7 @@ RESPONSE_SCHEMA = {
             },
         },
     },
-    "required": ["action", "reply", "target", "item", "quantity", "opinion_updates", "emotion"],
+    "required": ["action", "reply", "end_conversation", "target", "item", "quantity", "opinion_updates", "emotion"],
 }
 
 INTENT_SCHEMA = {
@@ -351,6 +360,16 @@ Use exactly its action, target, item, and quantity. Keep your reply and any opin
 consistent with that interpretation and the current player_message.
 If it chooses SAY because the recipient is unclear or unavailable, explain or
 ask for clarification rather than promising to start a conversation.
+Include end_conversation. Set it to true for every action other than SAY:
+your reply is a final acknowledgement to the PLAYER before carrying out the
+action, not the conversation with the target NPC. State what you will do without
+asking another question or inviting a reply. The player reads your words and
+clicks Done; only then does the action start. For example, TALK_TO_NPC might say
+"I'll go ask Sofia Martin how many apples she has." The requested topic is for
+that NPC to answer, not the player. Use false for ordinary SAY replies and
+clarification questions. You may also use true with SAY when saying goodbye or
+ending the exchange to resume your current activity. SAY cannot start a new task,
+so never promise a new task when the action is SAY.
 Never target yourself. If the target is missing, ambiguous, or busy, choose SAY
 and ask the player to name an available NPC. For all other actions, target is "".
 Return the required action/reply object. Give a complete reply in your character's

@@ -104,6 +104,7 @@ class NPC:
     sprite_size: tuple[int, int] | None = None
     selected: bool = False
     reply: str = ""
+    end_conversation: bool = False
     conversation: "Conversation | None" = field(default=None, repr=False, compare=False)
     gift: "Gift | None" = field(default=None, repr=False, compare=False)
     character_path: Path | None = field(default=None, repr=False, compare=False)
@@ -354,6 +355,8 @@ class NPC:
     def set_selected(self, selected):
         """Defer new decisions while allowing the current finite activity to finish."""
         self.selected = selected
+        if not selected:
+            self.end_conversation = False
         if self.conversation is None and self.gift is None and selected and (self.wandering_paused or self.behavior in (Behavior.STOP, Behavior.SHAKING)):
             self._face_when_still()
 

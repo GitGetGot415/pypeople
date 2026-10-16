@@ -18,6 +18,7 @@ class GameScreen:
         self.save_message = ""
         self.save_message_remaining = 0
         self.send_button = Button((1136, 644, 120, 44), "Send")
+        self.done_button = Button((1136, 644, 120, 44), "Done")
         self.next_button = Button((1144, 552, 112, 32), "Next")
         self.back_button = Button((self.next_button.rect.left - 116, 552, 112, 32), "Back")
         self.retry_button = Button((904, 552, 112, 32), "Retry")
@@ -84,6 +85,9 @@ class GameScreen:
         self.dialogue_scroll = 0
         if self.selected_npc is not None:
             self.selected_npc.reply = self.reply
+            if self.selected_npc.end_conversation:
+                self.prompt_input.set_value("")
+                self.prompt_input.active = False
 
     @property
     def world_viewport(self):
@@ -166,6 +170,12 @@ class GameScreen:
                     self.advance_conversation()
                 elif self.retry_button.clicked(event, enabled=bool(self.viewed_conversation.pending_opinions)):
                     self.viewed_conversation.remember_opinions()
+                return
+            if self.selected_npc.end_conversation:
+                if self.done_button.clicked(event) or (
+                    event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE)
+                ):
+                    self.close_dialogue()
                 return
             if self.send_button.clicked(event):
                 app.submit()
@@ -289,7 +299,9 @@ class GameScreen:
                 else "Finishing earlier request..."
             )
             status = f"{prefix} / {status}"
-        elif self.selected_npc is not None and self.selected_npc.request_pending:
+        elif self.selected_npc.end_conversation:
+            status = "Click Done when you've finished reading."
+        elif self.selected_npc.request_pending:
             status = f"Applying player request / {status}"
         rendered_status = app.small_font.render(status, True, MUTED)
         app.window.blit(rendered_status, rendered_status.get_rect(topright=(1256, 558)))
@@ -297,17 +309,22 @@ class GameScreen:
         self.draw_dialogue_lines(app.window, wrap_text(self.reply or "Enter a message to talk to this NPC.", app.font,
                                                      self.reply_rect.width - 12), app.font, self.reply_rect,
                                  color=INK if self.reply else MUTED)
-        self.prompt_input.draw(app.window, app.font)
-        self.send_button.draw(app.window, app.font, enabled=not app.requests.busy)
-        if self.prompt_input.error:
+        closing = self.selected_npc.end_conversation
+        if closing:
+            self.done_button.draw(app.window, app.font)
+        else:
+            self.prompt_input.draw(app.window, app.font)
+            self.send_button.draw(app.window, app.font, enabled=not app.requests.busy)
+        if not closing and self.prompt_input.error:
             app.window.blit(app.small_font.render(self.prompt_input.error, True, MUTED), (self.reply_rect.x, 696))
         else:
             reason = self.selected_npc.decision_reason
             while reason and app.small_font.size(reason)[0] > self.reply_rect.width - 90:
                 reason = reason[:-4] + "..."
             app.window.blit(app.small_font.render(reason, True, MUTED), (self.reply_rect.x, 696))
-        count = app.small_font.render(f"{len(self.prompt_input.text)}/300", True, MUTED)
-        app.window.blit(count, count.get_rect(topright=(1256, 696)))
+        if not closing:
+            count = app.small_font.render(f"{len(self.prompt_input.text)}/300", True, MUTED)
+            app.window.blit(count, count.get_rect(topright=(1256, 696)))
 
     def draw_portrait(self, app, npc, emotion=None):
         pygame.draw.rect(app.window, (255, 254, 248), self.portrait_rect)
