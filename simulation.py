@@ -43,6 +43,10 @@ class Simulation:
         self.day = 1
         self.phase = "day"
         self.pending_actions = []
+        self.history = []
+        self.events = []
+        self.social_opportunity = False
+        self.social_rotation = 0
         for npc in self.npcs:
             npc.world = self
 
@@ -61,6 +65,24 @@ class Simulation:
         for npc in self.npcs:
             npc.social = max(0.0, npc.social - SATISFACTION_PHASE_LOSS)
         self.tree.fruit = min(self.tree.capacity, self.tree.fruit + FRUIT_PER_PHASE)
+        self.social_opportunity = True
+        self.publish("phase", [], f"Time changed to {self.phase}.")
+
+    def publish(self, kind, participants, text, record=None):
+        from conversation_history import WorldEvent
+
+        reference = next((i for i, entry in enumerate(self.history) if entry is record), None)
+        event = WorldEvent(self.day, self.phase, kind, [npc.id for npc in participants], text, reference)
+        self.events.append(event)
+        del self.events[:-200]
+        return event
+
+    def start_conversation(self, initiator, recipient, topic, *, origin="player", purpose="chat", spacing=0):
+        from npc import Conversation
+
+        interaction = Conversation(initiator, recipient, topic, self.tree, spacing, origin=origin, purpose=purpose)
+        self.history.append(interaction.record)
+        return interaction
 
     def npc_by_id(self, npc_id):
         return next((npc for npc in self.npcs if npc.id == npc_id), None)
@@ -79,25 +101,37 @@ class Simulation:
         from npc import Behavior
 
         return (npc.conversation is None and npc.gift is None and not npc.selected and not npc.request_pending
-                and npc.owner == "autonomous"
+                and npc.owner == "autonomous" and not npc.resume_pending
+                and not any(npc.id in (action.npc_id, action.target_id) for action in self.pending_actions)
                 and npc.behavior in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY))
 
     def step(self, dt):
-        from autonomy import reconsider
+        from autonomy import reconsider, social_pair
         from npc import Behavior
 
         self.tree.update(dt)
         for npc in self.npcs:
             npc.update_cooldowns(dt)
+        # Finish interactions (including atomic request-to-gift handoffs) before decisions.
+        interactions = {id(npc.conversation or npc.gift): npc.conversation or npc.gift
+                        for npc in self.npcs if npc.conversation or npc.gift}
+        for interaction in interactions.values():
+            interaction.update(dt)
+        if self.social_opportunity:
+            choice = social_pair(self)
+            if choice is not None:
+                initiator, recipient, purpose, topic, reason = choice
+                self.start_conversation(initiator, recipient, topic, origin="autonomous", purpose=purpose)
+                initiator.reason = reason
+                recipient.reason = (f"Answering {initiator.name}'s request for an apple" if purpose == "food_request"
+                                    else f"Chatting with {initiator.name}")
+                self.social_opportunity = False
+                self.social_rotation = (self.npcs.index(initiator) + 1) % len(self.npcs)
         for npc in self.npcs:
-            if npc.resume_pending and npc.conversation is None:
+            if npc.resume_pending and npc.conversation is None and npc.gift is None:
                 npc.resume_activity(self)
             reconsider(npc, self)
             npc.update(dt, self.tree)
-            if npc.conversation is not None and npc.conversation.initiator is npc:
-                npc.conversation.update(dt)
-            if npc.gift is not None and npc.gift.initiator is npc:
-                npc.gift.update(dt)
         # Each person benefits once, regardless of how many neighbors are present.
         socializing = []
         for npc in self.npcs:

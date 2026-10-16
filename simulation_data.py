@@ -9,7 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from character_data import normalize_character, normalize_opinions
-from conversation_history import ConversationRecord
+from conversation_history import ConversationRecord, Memory, WorldEvent
 from llm import ConversationTurn, EmotionReaction
 from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree, WORLD_HEIGHT, WORLD_WIDTH
 from simulation import EAT_SECONDS, PendingAction, SHAKE_SECONDS, Simulation
@@ -52,6 +52,27 @@ class ActivityState(SaveModel):
 
 class PreferencesState(SaveModel):
     sociability: float = Field(ge=0, le=1)
+    generosity: float = Field(ge=0, le=1)
+
+
+class MemoryState(SaveModel):
+    id: str = Field(min_length=1)
+    day: int = Field(ge=1)
+    phase: Literal["day", "evening", "night"]
+    partner_id: str
+    kind: Literal["gave_fruit", "received_fruit", "refused", "kept_fruit", "conversation"]
+    summary: str = Field(max_length=400)
+    weight: float = Field(ge=-12, le=12)
+
+
+class EventState(SaveModel):
+    id: str = Field(min_length=1)
+    day: int = Field(ge=1)
+    phase: Literal["day", "evening", "night"]
+    kind: Literal["phase", "food_requested", "food_refused", "fruit_shared", "conversation_completed", "interaction_failed"]
+    participants: list[str] = Field(max_length=2)
+    text: str
+    history: int | None = Field(ge=0)
 
 
 class NPCState(ActivityState):
@@ -66,6 +87,7 @@ class NPCState(ActivityState):
     inventory: dict[Literal["fruit"], int]
     inventory_capacity: int = Field(ge=1)
     preferences: PreferencesState
+    memories: list[MemoryState] = Field(max_length=20)
     command_revision: int = Field(ge=0)
 
     @field_validator("character")
@@ -87,9 +109,20 @@ class HistoryState(SaveModel):
     turns: list[tuple[str, str]]
     outcomes: list[str]
     error: str
+    origin: Literal["player", "autonomous"]
+    purpose: Literal["chat", "food_request"]
 
 
 class ConversationState(SaveModel):
+    id: str = Field(min_length=1)
+    origin: Literal["player", "autonomous"]
+    purpose: Literal["chat", "food_request"]
+    dialogue_state: Literal["waiting", "pending", "ready", "fallback"]
+    wait_elapsed: float = Field(ge=0, le=12.1)
+    talking_remaining: float = Field(ge=0, le=4)
+    food_outcome: Literal["", "accepted", "need", "refused", "unavailable"]
+    outcome_event_id: str | None
+    reactions: list[tuple[str, float]] = Field(max_length=2)
     initiator: int = Field(ge=0)
     recipient: int = Field(ge=0)
     record: int = Field(ge=0)
@@ -113,6 +146,8 @@ class GiftState(SaveModel):
     quantity: int = Field(ge=1)
     arrived: bool
     elapsed: float = Field(ge=0, lt=2)
+    transferred: bool
+    outcome_event_id: str | None
     saved_states: tuple[ActivityState, ActivityState]
 
 
@@ -141,6 +176,9 @@ class PendingActionState(SaveModel):
 class SimulationState(SaveModel):
     day: int = Field(ge=1)
     phase: Literal["day", "evening", "night"]
+    events: list[EventState] = Field(max_length=200)
+    social_opportunity: bool
+    social_rotation: int = Field(ge=0)
     npcs: list[NPCState] = Field(min_length=1)
     tree: TreeState
     pending_actions: list[PendingActionState]
@@ -160,6 +198,21 @@ class SimulationState(SaveModel):
             raise ValueError("Names and object IDs must be unique.")
         if self.tree.fruit > self.tree.capacity:
             raise ValueError("Invalid fruit resource.")
+        if self.social_rotation >= count:
+            raise ValueError("Invalid social rotation.")
+        event_ids = [event.id for event in self.events]
+        if len(set(event_ids)) != len(event_ids):
+            raise ValueError("Duplicate event IDs.")
+        for event in self.events:
+            if (any(participant not in ids for participant in event.participants)
+                    or len(set(event.participants)) != len(event.participants)
+                    or (event.history is not None and event.history >= len(self.history))):
+                raise ValueError("Invalid event references.")
+        for npc in self.npcs:
+            if len({memory.id for memory in npc.memories}) != len(npc.memories):
+                raise ValueError("Duplicate memories.")
+            if any(memory.partner_id not in ids or memory.partner_id == npc.id for memory in npc.memories):
+                raise ValueError("Invalid memory partner.")
         if (self.tree.shaker is None) != (self.tree.shake_elapsed is None):
             raise ValueError("A shaking tree needs a shaker and elapsed time.")
         if self.tree.reserved_by is not None and self.tree.reserved_by not in ids:
@@ -167,6 +220,8 @@ class SimulationState(SaveModel):
         if self.tree.shaker is not None and self.tree.shaker != self.tree.reserved_by:
             raise ValueError("The shaker must own the tree slot.")
         reserved, records = set(), set()
+        if len({conversation.id for conversation in self.conversations}) != len(self.conversations):
+            raise ValueError("Duplicate interaction IDs.")
 
         def validate_target(activity, npc):
             if any(target not in all_ids or target == npc.id for target in activity.cooldowns):
@@ -196,6 +251,27 @@ class SimulationState(SaveModel):
                 raise ValueError("Invalid conversation history reference.")
             if not conversation.arrived and self.npcs[pair[0]].destination is None:
                 raise ValueError("A meeting in progress needs a destination.")
+            if self.npcs[pair[1]].destination is not None:
+                raise ValueError("The conversation recipient must be waiting.")
+            if conversation.dialogue_state == "pending" and not conversation.arrived:
+                raise ValueError("Dialogue requests start only after meeting.")
+            if any(not reason.strip() or not -4 <= weight <= 4 for reason, weight in conversation.reactions):
+                raise ValueError("Invalid conversation reaction.")
+            if conversation.arrived and any(self.npcs[index].destination is not None for index in pair):
+                raise ValueError("Arrived conversation participants must be still.")
+            if (self.history[conversation.record].origin != conversation.origin
+                    or self.history[conversation.record].purpose != conversation.purpose):
+                raise ValueError("Conversation history purpose does not match.")
+            ready = conversation.dialogue_state in ("ready", "fallback")
+            if ready != bool(conversation.turns) or (ready and not conversation.arrived):
+                raise ValueError("Invalid dialogue progress.")
+            if conversation.purpose == "food_request":
+                if (conversation.origin != "autonomous" or bool(conversation.food_outcome) != conversation.arrived
+                        or conversation.dialogue_state not in ("waiting", "ready")
+                        or bool(conversation.outcome_event_id) != (conversation.food_outcome in ("need", "refused", "unavailable"))):
+                    raise ValueError("Invalid food request progress.")
+            elif conversation.food_outcome or (conversation.dialogue_state == "ready" and len(conversation.reactions) != 2):
+                raise ValueError("Invalid conversation outcome.")
             if any(index not in pair for index, _ in conversation.pending_opinions):
                 raise ValueError("Invalid pending opinion participant.")
             for index, activity in zip(pair, conversation.saved_states):
@@ -209,13 +285,14 @@ class SimulationState(SaveModel):
             if gift.record >= len(self.history) or gift.record in records:
                 raise ValueError("Invalid gift history reference.")
             giver, recipient = (self.npcs[index] for index in pair)
+            if self.history[gift.record].purpose == "food_request" and gift.quantity != 1:
+                raise ValueError("A food request shares exactly one apple.")
             if gift.arrived != (giver.destination is None) or (not gift.arrived and gift.elapsed != 0):
                 raise ValueError("Invalid gift progress.")
             if recipient.destination is not None:
                 raise ValueError("The gift recipient must be waiting.")
-            if gift.elapsed < 1 and (giver.inventory.get(gift.item, 0) < gift.quantity
-                                   or recipient.inventory_capacity - sum(recipient.inventory.values()) < gift.quantity):
-                raise ValueError("The gift needs available items and inventory space.")
+            if gift.transferred != (gift.elapsed >= 1) or gift.transferred != bool(gift.outcome_event_id):
+                raise ValueError("Invalid gift transfer progress.")
             for index, activity in zip(pair, gift.saved_states):
                 validate_target(activity, self.npcs[index])
             reserved.update(pair)
@@ -404,6 +481,7 @@ def capture_simulation(app):
             social=npc.social,
             inventory=npc.inventory.copy(), inventory_capacity=npc.inventory_capacity,
             preferences=npc.preferences.copy(), command_revision=npc.command_revision,
+            memories=[asdict(memory) for memory in npc.memories],
         ))
         gift = npc.gift
         if gift is not None and gift.initiator is npc:
@@ -411,12 +489,17 @@ def capture_simulation(app):
                 initiator=npc_indices[id(npc)], recipient=npc_indices[id(gift.recipient)],
                 record=records[id(gift.record)], item=gift.item, quantity=gift.quantity,
                 arrived=gift.arrived, elapsed=gift.elapsed,
+                transferred=gift.transferred, outcome_event_id=gift.outcome_event_id,
                 saved_states=[ActivityState(**activity) for activity in gift.saved_states],
             ))
         conversation = npc.conversation
         if conversation is None or conversation.initiator is not npc:
             continue
         conversations.append(ConversationState(
+            id=conversation.id, origin=conversation.origin, purpose=conversation.purpose,
+            dialogue_state=conversation.dialogue_state, wait_elapsed=conversation.wait_elapsed,
+            talking_remaining=conversation.talking_remaining, food_outcome=conversation.food_outcome,
+            outcome_event_id=conversation.outcome_event_id, reactions=conversation.reactions,
             initiator=npc_indices[id(npc)], recipient=npc_indices[id(conversation.recipient)],
             record=records[id(conversation.record)], topic=conversation.topic,
             arrived=conversation.arrived, turns=conversation.turns,
@@ -426,6 +509,8 @@ def capture_simulation(app):
     world = app.simulation
     return SimulationState(
         day=world.day, phase=world.phase,
+        events=[asdict(event) for event in world.events],
+        social_opportunity=world.social_opportunity, social_rotation=world.social_rotation,
         npcs=npcs, history=history, conversations=conversations, gifts=gifts,
         tree=TreeState(id=app.tree.id, x=app.tree.x, y=app.tree.y, fruit=app.tree.fruit,
                        capacity=app.tree.capacity,
@@ -449,6 +534,7 @@ def restore_simulation(state):
             social=saved.social,
             inventory=saved.inventory.copy(), inventory_capacity=saved.inventory_capacity,
             preferences=saved.preferences.model_dump(), command_revision=saved.command_revision,
+            memories=[Memory(**memory.model_dump()) for memory in saved.memories],
         )
         npc.restore_activity({name: getattr(saved, name) for name in ACTIVITY_FIELDS})
         npcs.append(npc)
@@ -463,9 +549,15 @@ def restore_simulation(state):
     for action in world.pending_actions:
         by_id[action.npc_id].request_pending = True
     history = [ConversationRecord(**saved.model_dump()) for saved in state.history]
+    world.history = history
+    world.events = [WorldEvent(**event.model_dump()) for event in state.events]
+    world.social_opportunity, world.social_rotation = state.social_opportunity, state.social_rotation
     for saved in state.conversations:
         # Loading bypasses __init__: it would interrupt the saved activities again.
         conversation = Conversation.__new__(Conversation)
+        for name in ("id", "origin", "purpose", "dialogue_state", "wait_elapsed", "talking_remaining",
+                     "food_outcome", "outcome_event_id", "reactions"):
+            setattr(conversation, name, getattr(saved, name))
         conversation.initiator, conversation.recipient = npcs[saved.initiator], npcs[saved.recipient]
         conversation.topic, conversation.arrived, conversation.active = saved.topic, saved.arrived, True
         conversation.record = history[saved.record]
@@ -474,13 +566,22 @@ def restore_simulation(state):
         conversation.saved_states = [activity.model_dump() for activity in saved.saved_states]
         for npc in (conversation.initiator, conversation.recipient):
             npc.conversation = conversation
+        if conversation.dialogue_state == "pending":
+            conversation.fallback("The outstanding dialogue request was not saved; used a local greeting.")
     for saved in state.gifts:
         gift = Gift.__new__(Gift)
         gift.initiator, gift.recipient = npcs[saved.initiator], npcs[saved.recipient]
         gift.item, gift.quantity = saved.item, saved.quantity
         gift.arrived, gift.elapsed = saved.arrived, saved.elapsed
+        gift.active, gift.transferred, gift.outcome_event_id = True, saved.transferred, saved.outcome_event_id
         gift.record = history[saved.record]
         gift.saved_states = [activity.model_dump() for activity in saved.saved_states]
         for npc in (gift.initiator, gift.recipient):
             npc.gift = gift
+    # Claims are reacquired through the same safe path as interrupted activities.
+    tree.reserved_by = None
+    tree.cancel_shake()
+    for npc in npcs:
+        if npc.conversation is None and npc.gift is None and npc.target_id == tree.id:
+            npc.resume_pending = True
     return world, history

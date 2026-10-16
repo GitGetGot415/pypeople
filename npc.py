@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from character_data import DIRECTIONS, normalize_opinions
-from conversation_history import ConversationRecord, describe_opinion_change
+from conversation_history import ConversationRecord, describe_opinion_change, remember
 from simulation import (
     APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, EAT_SECONDS, FAILURE_COOLDOWN, INVENTORY_CAPACITY,
     MOVEMENT_SPEED, PARTNER_COOLDOWN, SHAKE_SECONDS, SOCIAL_RADIUS,
@@ -116,7 +116,9 @@ class NPC:
     inventory_capacity: int = INVENTORY_CAPACITY
     preferences: dict = field(default_factory=lambda: {
         "sociability": random.uniform(0.25, 0.85),
+        "generosity": random.uniform(0.25, 0.85),
     })
+    memories: list = field(default_factory=list)
     owner: str = "autonomous"
     target_id: str | None = None
     activity_elapsed: float = 0.0
@@ -296,8 +298,11 @@ class NPC:
             )
         return math.hypot(point[0] - self.x, point[1] - self.y) <= NPC_RADIUS
 
-    def snapshot(self, tree):
+    def snapshot(self, tree, partner_id=None):
+        memories = sorted(enumerate(self.memories),
+                          key=lambda entry: (entry[1].partner_id == partner_id, entry[0]), reverse=True)[:5]
         return {
+            "npc_id": self.id,
             "npc_name": self.name,
             "character": {**self.character, "Name": self.name, "Opinions": self.opinions},
             "facing": DIRECTIONS[self.facing],
@@ -318,6 +323,9 @@ class NPC:
             "time_of_day": self.world.phase if self.world else "day",
             "tree_is_shaking": tree.shaking,
             "last_reply": self.reply,
+            "memories": [{"partner_id": memory.partner_id, "kind": memory.kind,
+                          "summary": memory.summary, "day": memory.day, "phase": memory.phase}
+                         for _, memory in memories],
         }
 
     @property
@@ -538,16 +546,25 @@ def assign_npc_names(npcs):
 class Conversation:
     """Temporarily reserve two NPCs, then restore their interrupted activities."""
 
-    def __init__(self, initiator, recipient, topic, tree, spacing=0):
+    def __init__(self, initiator, recipient, topic, tree, spacing=0, *, origin="player", purpose="chat"):
         if (initiator is recipient or initiator.conversation or recipient.conversation
                 or initiator.gift or recipient.gift or initiator.eating or recipient.eating):
             raise ValueError("Choose another NPC who is free to talk.")
         self.initiator = initiator
         self.recipient = recipient
         self.topic = topic
+        self.id = uuid4().hex
+        self.origin, self.purpose = origin, purpose
+        self.dialogue_state = "waiting"
+        self.wait_elapsed = 0.0
+        self.talking_remaining = 0.0
+        self.food_outcome = ""
+        self.outcome_event_id = None
+        self.reactions = []
         self.arrived = False
         self.active = True
-        self.record = ConversationRecord((initiator.name, recipient.name), topic, "Walking to meet")
+        self.record = ConversationRecord((initiator.name, recipient.name), topic, "Walking to meet",
+                                         origin=origin, purpose=purpose)
         self.turns = []
         self.pending_opinions = []
         self.error = ""
@@ -576,7 +593,11 @@ class Conversation:
             npc.behavior = Behavior.WAIT
             npc.owner = "autonomous"
             npc.destination = None
-            npc.reason = "In a player-initiated conversation"
+            if purpose == "food_request":
+                npc.reason = (f"Asking {recipient.name} for an apple" if npc is initiator
+                              else f"Answering {initiator.name}'s request for an apple")
+            else:
+                npc.reason = "Having an automatic chat" if origin == "autonomous" else "In a player-initiated conversation"
             npc.target_id = None
             npc.activity_elapsed = 0.0
             npc.resume_pending = False
@@ -595,6 +616,10 @@ class Conversation:
         self.record.error = message
 
     def set_response(self, response):
+        if not self.accepts_response:
+            return
+        self.dialogue_state = "ready"
+        self.talking_remaining = 4.0
         self.turns = response.turns
         self.record.turns = [
             (self.initiator.name if turn.speaker == "initiator" else self.recipient.name, turn.text)
@@ -618,6 +643,61 @@ class Conversation:
             )
         ]
         self.remember_opinions()
+        self.reactions = [
+            (entry.reason, max(-4.0, min(4.0, entry.opinion / 20)))
+            for entry in (response.initiator_opinion, response.recipient_opinion)
+        ]
+
+    @property
+    def accepts_response(self):
+        return self.active and self.purpose == "chat" and self.dialogue_state in ("waiting", "pending")
+
+    def local_dialogue(self, lines):
+        from llm import ConversationPart, ConversationTurn
+
+        self.turns = [ConversationTurn(speaker=speaker, parts=[ConversationPart(text=text)])
+                      for speaker, text in lines]
+        self.record.turns = [(self.initiator.name if speaker == "initiator" else self.recipient.name, text)
+                             for speaker, text in lines]
+
+    def fallback(self, reason):
+        if not self.accepts_response:
+            return
+        self.dialogue_state = "fallback"
+        self.record.error = reason
+        self.record.status = "Local greeting"
+        self.record.outcomes = ["Exchanged a brief greeting; no conversation reaction was generated."]
+        self.local_dialogue([("initiator", f"Hello, {self.recipient.name}."),
+                             ("recipient", f"Hi, {self.initiator.name}.")])
+        self.talking_remaining = 2.0
+
+    def answer_food_request(self):
+        from autonomy import donor_choice
+
+        requester, donor = self.initiator, self.recipient
+        world = requester.world
+        world.publish("food_requested", (requester, donor),
+                      f"{requester.name} asked {donor.name} for an apple.", self.record)
+        self.food_outcome, answer = donor_choice(donor, requester)
+        self.local_dialogue([("initiator", "Could you share an apple with me?"), ("recipient", answer)])
+        self.dialogue_state = "ready"
+        self.talking_remaining = 1.5
+        self.record.status = "Answering food request"
+        if self.food_outcome == "accepted":
+            self.record.outcomes = ["Agreed to share one apple; the handoff has not happened yet."]
+            return
+        deliberate = self.food_outcome in ("need", "refused")
+        text = (f"{donor.name} kept their last apple because they wanted to eat it."
+                if self.food_outcome == "need" else f"{donor.name} declined {requester.name}'s apple request.")
+        if not deliberate:
+            text = f"{donor.name} could no longer share with {requester.name}: the inventories changed."
+        event = world.publish("food_refused" if deliberate else "interaction_failed", (requester, donor), text, self.record)
+        self.outcome_event_id = event.id
+        self.record.outcomes = [answer]
+        if deliberate:
+            remember(requester, donor, event, "refused", f"{donor.name} declined my apple request: {answer}",
+                     -1 if self.food_outcome == "need" else -5)
+            remember(donor, requester, event, "kept_fruit", f"I kept my apple when {requester.name} asked: {answer}", 0)
 
     def remember_opinions(self):
         """Retry unsaved opinions without regenerating or hiding the dialogue."""
@@ -632,7 +712,20 @@ class Conversation:
         self.error = ""
 
     def update(self, dt):
-        if not self.active or self.arrived:
+        if not self.active:
+            return
+        if self.arrived:
+            if self.dialogue_state in ("waiting", "pending"):
+                self.wait_elapsed += dt
+                if self.wait_elapsed >= 12.0:
+                    self.fallback("Dialogue timed out; used a local greeting.")
+            else:
+                self.talking_remaining = max(0.0, self.talking_remaining - dt)
+                if self.talking_remaining <= 0:
+                    if self.purpose == "food_request" and self.food_outcome == "accepted":
+                        self.handoff()
+                    else:
+                        self.finish(self.initiator.world.tree)
             return
         npc = self.initiator
         old_x, old_y = npc.x, npc.y
@@ -644,19 +737,26 @@ class Conversation:
                 other = self.other(participant)
                 angle = math.atan2(other.x - participant.x, participant.y - other.y)
                 participant.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
+            if self.purpose == "food_request":
+                self.answer_food_request()
         elif npc.x != old_x or npc.y != old_y:
             angle = math.atan2(npc.x - old_x, old_y - npc.y)
             npc.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
 
     def snapshot(self, tree, npcs):
         def participant(npc):
-            state = npc.snapshot(tree)
+            involved = npc is self.initiator or npc is self.recipient
+            state = npc.snapshot(tree, self.other(npc).id) if involved else npc.snapshot(tree)
+            if not involved:
+                state.pop("memories", None)
             # These replies were addressed to the player before the NPCs met.
             state.pop("last_reply", None)
             return state
 
         return {
             "request_kind": "conversation",
+            "interaction_id": self.id,
+            "origin": self.origin,
             "initiator": participant(self.initiator),
             "recipient": participant(self.recipient),
             "topic": self.topic,
@@ -669,34 +769,65 @@ class Conversation:
         if not self.active:
             return
         self.active = False
-        self.record.status = "Finished" if self.turns else "Ended before dialogue was generated"
+        self.record.status = "Finished (local greeting)" if self.dialogue_state == "fallback" else "Finished"
         if not self.turns:
+            self.record.status = "Ended before dialogue"
             self.record.outcomes = ["The conversation ended before anyone spoke."]
+        if self.purpose == "chat":
+            world = self.initiator.world
+            text = (f"{self.initiator.name} and {self.recipient.name} talked about {self.topic}."
+                    if self.dialogue_state == "ready" else
+                    f"{self.initiator.name} and {self.recipient.name} exchanged only a brief greeting."
+                    if self.turns else f"{self.initiator.name} and {self.recipient.name}'s meeting ended before dialogue.")
+            event = world.publish("conversation_completed" if self.turns else "interaction_failed",
+                                  (self.initiator, self.recipient), text, self.record)
+            self.outcome_event_id = event.id
+            if self.dialogue_state == "ready":
+                for npc, reaction in zip((self.initiator, self.recipient), self.reactions):
+                    reason, weight = reaction
+                    remember(npc, self.other(npc), event, "conversation", f"Talked about {self.topic}. {reason}", weight)
+        elif self.food_outcome in ("", "accepted"):
+            self.record.status = "Ended before sharing"
+            self.record.outcomes = ["The food request ended before an apple was shared."]
+            event = self.initiator.world.publish("interaction_failed", (self.initiator, self.recipient),
+                                                self.record.outcomes[0], self.record)
+            self.outcome_event_id = event.id
         for npc, state in zip((self.initiator, self.recipient), self.saved_states):
+            state["cooldowns"][self.other(npc).id] = PARTNER_COOLDOWN
             npc.conversation = None
             npc.restore_activity(state)
             # Physical resumption and claim acquisition wait for the next update.
             npc.resume_pending = True
 
+    def handoff(self):
+        """Reverse the roles without restoring activities or reacquiring tree claims."""
+        requester, donor = self.initiator, self.recipient
+        self.active = False
+        requester.conversation = donor.conversation = None
+        Gift(donor, requester, "fruit", 1, self.record,
+             saved_states=[self.saved_states[1], self.saved_states[0]], already_met=True)
+
 
 class Gift:
     """Reserve both participants through approach, giving, and thanking."""
 
-    def __init__(self, initiator, recipient, item, quantity, record=None, spacing=0):
+    def __init__(self, initiator, recipient, item, quantity, record=None, spacing=0, *, saved_states=None, already_met=False):
         from autonomy import company_point
 
-        destination = company_point(initiator, recipient, spacing)
+        destination = (initiator.x, initiator.y) if already_met else company_point(initiator, recipient, spacing)
         if destination is None:
             raise ValueError("There isn't enough room here to give the items.")
         self.initiator, self.recipient = initiator, recipient
         self.item, self.quantity = item, quantity
-        self.arrived = False
+        self.arrived = already_met
+        self.active = True
+        self.transferred = False
+        self.outcome_event_id = None
         self.elapsed = 0.0
         self.record = record or ConversationRecord((initiator.name, recipient.name), "Give items", "Walking to give")
-        self.saved_states = []
-        self.record.status = "Walking to give"
+        self.saved_states = saved_states if saved_states is not None else [initiator.activity_state(), recipient.activity_state()]
+        self.record.status = "Giving items" if already_met else "Walking to give"
         for npc in (initiator, recipient):
-            self.saved_states.append(npc.activity_state())
             npc.release_claims(npc.world)
             npc.command_revision += 1
             npc.behavior = Behavior.WAIT
@@ -707,9 +838,11 @@ class Gift:
             npc.resume_pending = False
             npc.reason = "Giving items" if npc is initiator else "Receiving items"
             npc.gift = self
-        initiator.destination = destination
+        initiator.destination = None if already_met else destination
 
     def update(self, dt):
+        if not self.active:
+            return
         giver, recipient = self.initiator, self.recipient
         if not self.arrived:
             old_x, old_y = giver.x, giver.y
@@ -725,12 +858,21 @@ class Gift:
                     npc.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
             return
         elapsed = self.elapsed + max(0.0, dt)
-        if self.elapsed < 1.0 <= elapsed + 1e-9:
+        if not self.transferred and elapsed + 1e-9 >= 1.0:
             if giver.inventory.get(self.item, 0) < self.quantity or recipient.inventory_space < self.quantity:
                 self.finish("The items could not be given because the inventories changed.")
                 return
             giver.inventory[self.item] -= self.quantity
             recipient.inventory[self.item] = recipient.inventory.get(self.item, 0) + self.quantity
+            self.transferred = True
+            apples = "an apple" if self.quantity == 1 else f"{self.quantity} apples"
+            event = giver.world.publish("fruit_shared", (giver, recipient),
+                                        f"{giver.name} shared {apples} with {recipient.name}.", self.record)
+            self.outcome_event_id = event.id
+            remember(giver, recipient, event, "gave_fruit", f"I gave {recipient.name} {apples}.", 2)
+            remember(recipient, giver, event, "received_fruit", f"{giver.name} shared {apples} with me.", 6)
+            if self.record.purpose == "food_request":
+                self.record.turns.append((recipient.name, "Thank you for the apple."))
             self.record.outcomes[0:1] = [f"Gave {self.quantity} {self.item} to {recipient.name}."]
             self.record.status = "Thanking"
             elapsed = max(1.0, elapsed)
@@ -739,11 +881,18 @@ class Gift:
             self.finish()
 
     def finish(self, error=""):
+        if not self.active:
+            return
+        self.active = False
         self.record.status = "Failed" if error else "Completed"
         self.record.error = error
         if error:
             self.record.outcomes[0:1] = [error]
+            event = self.initiator.world.publish("interaction_failed", (self.initiator, self.recipient), error, self.record)
+            self.outcome_event_id = event.id
         for npc, state in zip((self.initiator, self.recipient), self.saved_states):
+            other = self.recipient if npc is self.initiator else self.initiator
+            state["cooldowns"][other.id] = PARTNER_COOLDOWN
             npc.gift = None
             facing = npc.facing
             npc.restore_activity(state)

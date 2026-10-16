@@ -2,6 +2,7 @@ import pygame
 from npc import EMOTION_THRESHOLD, WORLD_HEIGHT, WORLD_WIDTH
 
 from .button import Button
+from .event_feed import EventFeed
 from .text import draw_wrapped_text, paginate_text, wrap_text
 from .text_input import TextInput
 from .theme import INK, MUTED, PAPER, WINDOW_SIZE
@@ -40,6 +41,7 @@ class GameScreen:
         self.pan_start = None
         self.pan_last = None
         self.panning = False
+        self.feed = EventFeed()
 
     def reset(self):
         self.close_dialogue()
@@ -52,6 +54,7 @@ class GameScreen:
         self.panning = False
         self.save_message = ""
         self.save_message_remaining = 0
+        self.feed = EventFeed()
 
     def show_save_message(self, message):
         self.save_message = message
@@ -59,7 +62,6 @@ class GameScreen:
 
     def close_dialogue(self):
         if self.viewed_conversation is not None:
-            self.viewed_conversation.finish(self.conversation_tree)
             self.viewed_conversation = None
             self.conversation_tree = None
         if self.selected_npc is not None:
@@ -94,6 +96,8 @@ class GameScreen:
                 self.camera_offset[1] + (WINDOW_SIZE[1] - WORLD_HEIGHT) / 2)
 
     def handle_event(self, app, event):
+        if self.feed.handle_event(app, event):
+            return
         if event.type == pygame.MOUSEWHEEL:
             pos = getattr(event, "pos", pygame.mouse.get_pos())
             if self.world_viewport.collidepoint(pos) and not any(
@@ -160,8 +164,8 @@ class GameScreen:
                     self.rewind_conversation()
                 elif event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE, pygame.K_RIGHT):
                     self.advance_conversation()
-                elif self.retry_button.clicked(event, enabled=bool(self.viewed_conversation.error) and not app.requests.busy):
-                    app.request_conversation_dialogue(self.viewed_conversation)
+                elif self.retry_button.clicked(event, enabled=bool(self.viewed_conversation.pending_opinions)):
+                    self.viewed_conversation.remember_opinions()
                 return
             if self.send_button.clicked(event):
                 app.submit()
@@ -262,6 +266,7 @@ class GameScreen:
         self.stats_button.draw(app.window, app.small_font)
         self.save_button.draw(app.window, app.small_font)
         self.draw_clock(app)
+        self.feed.draw(app)
         if self.save_message_remaining:
             color = PAPER if app.simulation.phase == "night" else INK
             draw_wrapped_text(app.window, self.save_message, app.small_font, color, (24, 480, 1232, 44))
@@ -341,8 +346,8 @@ class GameScreen:
         last_page = bool(self.conversation_pages) and self.conversation_page_index == len(self.conversation_pages) - 1
         self.next_button.label = "Done" if last_page else "Next"
         self.next_button.draw(app.window, app.small_font, enabled=bool(self.conversation_pages))
-        if conversation.error:
-            self.retry_button.draw(app.window, app.small_font, enabled=not app.requests.busy)
+        if conversation.pending_opinions:
+            self.retry_button.draw(app.window, app.small_font)
         if not conversation.arrived:
             text = f"{conversation.initiator.name} is walking over to {conversation.recipient.name}..."
         elif conversation.error and not conversation.turns:

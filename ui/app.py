@@ -3,12 +3,13 @@ from dotenv import load_dotenv
 
 import math
 from pathlib import Path
+from uuid import uuid4
 
 import pygame
 
 from character_data import load_character, random_character
 from conversation_history import ConversationRecord, describe_opinion_change
-from npc import Conversation, NPC, Tree, assign_npc_names
+from npc import NPC, Tree, assign_npc_names
 from ollama_manager import load_model
 from simulation_data import InvalidSaveName, SaveStore, capture_simulation, restore_simulation
 from simulation import PendingAction, Simulation
@@ -60,6 +61,7 @@ class Application:
         self.tree = None
         self.simulation = None
         self.request_revision = None
+        self.request_id = None
         self.save_store = SaveStore()
         self.save_id = None
         self.save_identity = None
@@ -129,6 +131,7 @@ class Application:
         assign_npc_names(self.npcs)
         self.tree = Tree()
         self.simulation = Simulation(self.npcs, self.tree)
+        self.conversation_history = self.simulation.history
         self.save_id = None
         self.save_identity = None
         self.simulation_name = "Unsaved simulation"
@@ -250,16 +253,19 @@ class Application:
             return
         snapshot = npc.snapshot(self.tree)
         snapshot["other_npcs"] = [
-            {**other.snapshot(self.tree), "available_to_talk": other.conversation is None and other.gift is None and not other.eating and not other.request_pending}
+            {**{key: value for key, value in other.snapshot(self.tree).items() if key != "memories"},
+             "available_to_talk": other.conversation is None and other.gift is None and not other.eating and not other.request_pending}
             for other in self.npcs if other is not npc
         ]
+        request_id = uuid4().hex
         if not self.requests.submit(
             self.session_id, self.provider, self.api_key, message, snapshot,
-            ollama_model=self.ollama_model,
+            request_id=request_id, ollama_model=self.ollama_model,
         ):
             self.game.set_reply("Could not start the request. Please try again.")
             return
         self.request_npc = npc
+        self.request_id = request_id
         self.request_revision = npc.command_revision
         npc.request_pending = True
         self.request_conversation = None
@@ -294,10 +300,9 @@ class Application:
         try:
             # Leave enough space for both sprites and their name labels.
             spacing = (self.small_font.size(npc.name)[0] + self.small_font.size(target.name)[0]) / 2 + 12
-            conversation = Conversation(npc, target, topic, self.tree, spacing=spacing)
+            conversation = self.simulation.start_conversation(npc, target, topic, spacing=spacing)
         except ValueError as error:
             return str(error)
-        self.conversation_history.append(conversation.record)
         if self.game.selected_npc is npc or self.game.selected_npc is target:
             self.game.close_dialogue()
         return None
@@ -352,24 +357,24 @@ class Application:
                 self.game.set_reply(error)
 
     def request_conversation_dialogue(self, conversation):
-        if not conversation.active or not conversation.arrived or self.requests.busy:
+        if not conversation.accepts_response or not conversation.arrived or self.requests.busy:
             return
-        if conversation.turns:
-            if conversation.pending_opinions:
-                conversation.remember_opinions()
+        if conversation.dialogue_state != "waiting":
             return
         if self.provider == "gemini" and not self.api_key:
-            conversation.error = "Add your API key in Settings to hear their conversation."
+            conversation.fallback("No API key; used a local greeting.")
             return
         snapshot = conversation.snapshot(self.tree, self.npcs)
         if not self.requests.submit(
             self.session_id, self.provider, self.api_key,
             f"Write what {conversation.initiator.name} and {conversation.recipient.name} say directly to each other.", snapshot,
-            ollama_model=self.ollama_model,
+            request_id=conversation.id, ollama_model=self.ollama_model,
         ):
-            conversation.error = "Could not start the request. Please try again."
+            conversation.fallback("Could not start dialogue; used a local greeting.")
             return
         conversation.error = ""
+        conversation.dialogue_state = "pending"
+        self.request_id = conversation.id
         self.request_conversation = conversation
         self.request_history = None
         self.request_npc = conversation.initiator
@@ -383,12 +388,14 @@ class Application:
     def update(self, dt):
         simulation_active = self.screen in ("game", "stats")
         active_session = self.session_id if simulation_active or self.screen == "save_sim" else None
-        for result, error in self.requests.poll(active_session):
+        for request_id, result, error in self.requests.poll(active_session):
+            if request_id != self.request_id:
+                continue
             conversation = self.request_conversation
             if conversation is not None:
-                if conversation.active:
+                if conversation.id == request_id and conversation.accepts_response:
                     if error:
-                        conversation.error = error
+                        conversation.fallback(error)
                     else:
                         conversation.set_response(result)
                 continue
@@ -468,11 +475,14 @@ class Application:
         if self.simulation is not None:
             self.simulation.advance(dt, active=simulation_active, action_handler=self.apply_pending_action)
         if simulation_active:
-            for npc in self.npcs:
-                conversation = npc.conversation
-                if conversation is not None and conversation.initiator is npc:
-                    if conversation.active and not conversation.turns and not conversation.error:
-                        self.request_conversation_dialogue(conversation)
+            conversations = [npc.conversation for npc in self.npcs
+                             if npc.conversation is not None and npc.conversation.initiator is npc]
+            # Player conversations get the first free slot. Composition also reserves it.
+            composing = self.screen == "game" and self.game.prompt_input.active
+            for conversation in sorted(conversations, key=lambda interaction: interaction.origin != "player"):
+                if composing:
+                    continue
+                self.request_conversation_dialogue(conversation)
 
     def draw(self):
         self.screens[self.screen].draw(self)

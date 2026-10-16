@@ -28,6 +28,12 @@ class StatsScreen:
         self.detail_scroll = 0
         self.scroll_focus = "list"
 
+    def open_record(self, record):
+        self.tab = "Conversations"
+        self.selected_conversation = record
+        self.detail_scroll = 0
+        self.scroll_focus = "detail"
+
     def _list_rows(self, app):
         rows = []
         top = 0
@@ -67,6 +73,7 @@ class StatsScreen:
                 return lines
             add(" & ".join(record.participants), app.heading_font)
             add(f"Status: {record.status}", app.small_font, MUTED)
+            add(f"{record.origin.title()} / {record.purpose.replace('_', ' ')}", app.small_font, MUTED)
             gap()
             add(f"Topic / request: {record.topic}")
             gap()
@@ -104,6 +111,14 @@ class StatsScreen:
             gap()
             add(f"Satisfaction: {npc.social:.0f}/100")
             add(f"Carrying: {npc.inventory.get('fruit', 0)} fruit / {npc.inventory_capacity} items")
+            add(f"Sociability: {npc.preferences['sociability']:.0%}; generosity: {npc.preferences['generosity']:.0%}", app.small_font, MUTED)
+            gap()
+            add("Recent memories", app.heading_font)
+            if not npc.memories:
+                add("No personal experiences remembered yet.", color=MUTED)
+            for memory in reversed(npc.memories):
+                add(f"Day {memory.day} / {memory.phase.title()}: {memory.summary}")
+                add(f"Influence: {memory.weight:+g}", app.small_font, MUTED)
             gap()
             fields = tuple(field for field in FIELDS if field != "Details")
             for field in (*fields, "Hair", "Eyes", *DEFAULT_COLORS, "Details"):
