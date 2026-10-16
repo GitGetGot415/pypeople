@@ -22,15 +22,15 @@ def format_model_size(size):
 
 class SettingsScreen:
     def __init__(self):
-        self.gemini_button = Button((180, 210, 280, 48), "Gemini")
-        self.ollama_button = Button((500, 210, 280, 48), "Ollama")
-        self.previous_model_button = Button((180, 310, 48, 52), "<")
-        self.next_model_button = Button((732, 310, 48, 52), ">")
-        self.refresh_button = Button((590, 370, 190, 32), "Refresh models")
-        self.save_button = Button((340, 410, 280, 54), "Save & Back")
-        self.setup_button = Button((340, 470, 280, 48), "Setup Ollama")
+        self.gemini_button = Button((340, 250, 280, 48), "Gemini")
+        self.ollama_button = Button((660, 250, 280, 48), "Ollama")
+        self.previous_model_button = Button((340, 350, 48, 52), "<")
+        self.next_model_button = Button((892, 350, 48, 52), ">")
+        self.refresh_button = Button((750, 410, 190, 32), "Refresh models")
+        self.save_button = Button((500, 450, 280, 54), "Save & Back")
+        self.setup_button = Button((500, 510, 280, 48), "Setup Ollama")
         self.key_input = TextInput(
-            (180, 310, 600, 52),
+            (340, 350, 600, 52),
             max_length=512,
             secret=True,
             strip_paste=True,
@@ -133,32 +133,32 @@ class SettingsScreen:
 
     def draw(self, app):
         app.window.fill(GRASS)
-        pygame.draw.rect(app.window, PAPER, (120, 120, 720, 405), border_radius=BORDER_RADIUS)
-        draw_centered_text(app.window, "Settings", app.heading_font, 160)
+        pygame.draw.rect(app.window, PAPER, (280, 160, 720, 405), border_radius=BORDER_RADIUS)
+        draw_centered_text(app.window, "Settings", app.heading_font, 200)
         self.gemini_button.draw(app.window, app.font, enabled=self.provider != "gemini")
         self.ollama_button.draw(app.window, app.font, enabled=self.provider != "ollama")
         if self.provider == "gemini":
-            app.window.blit(app.font.render("Gemini API key", True, INK), (180, 276))
+            app.window.blit(app.font.render("Gemini API key", True, INK), (340, 316))
             self.key_input.draw(app.window, app.font)
-            app.window.blit(app.small_font.render("Stored only for this session.", True, MUTED), (180, 375))
+            app.window.blit(app.small_font.render("Stored only for this session.", True, MUTED), (340, 415))
         else:
             index = self.models.index(self.ollama_model) + 1
             label = f"Local Ollama model ({index}/{len(self.models)})"
-            app.window.blit(app.font.render(label, True, INK), (180, 276))
+            app.window.blit(app.font.render(label, True, INK), (340, 316))
             self.previous_model_button.draw(app.window, app.font, enabled=len(self.models) > 1)
             self.next_model_button.draw(app.window, app.font, enabled=len(self.models) > 1)
-            draw_wrapped_text(app.window, self.ollama_model, app.font, INK, (244, 310, 472, 38))
+            draw_wrapped_text(app.window, self.ollama_model, app.font, INK, (404, 350, 472, 38))
             size = self.installed_models.get(self.ollama_model)
             if size is None and ":" not in self.ollama_model:
                 size = self.installed_models.get(f"{self.ollama_model}:latest")
             size_label = f"Size on disk: {format_model_size(size)}"
-            app.window.blit(app.small_font.render(size_label, True, MUTED), (244, 350))
-            app.window.blit(app.small_font.render("Your model choice is saved between launches.", True, MUTED), (180, 375))
+            app.window.blit(app.small_font.render(size_label, True, MUTED), (404, 390))
+            app.window.blit(app.small_font.render("Your model choice is saved between launches.", True, MUTED), (340, 415))
             self.refresh_button.draw(app.window, app.small_font, enabled=self.model_worker is None)
             self.setup_button.draw(app.window, app.font)
         self.save_button.draw(app.window, app.font)
         if self.provider == "gemini":
-            draw_centered_text(app.window, "Get a key at Google AI Studio: aistudio.google.com/apikey", app.small_font, 475, MUTED)
+            draw_centered_text(app.window, "Get a key at Google AI Studio: aistudio.google.com/apikey", app.small_font, 515, MUTED)
             hint = self.key_input.error or "Ctrl+V to paste. Escape discards your edits."
         else:
             hint = self.model_message or "Use < and > to choose a model. Escape discards your edits."
@@ -166,4 +166,4 @@ class SettingsScreen:
                          or f"{self.ollama_model}:latest" in self.installed_models)
             if not self.model_message and not installed:
                 hint = "Selected model is not installed. Download it in Ollama, then Refresh models."
-        draw_wrapped_text(app.window, self.error or hint, app.small_font, INK, (120, 553, 720, 65))
+        draw_wrapped_text(app.window, self.error or hint, app.small_font, INK, (280, 593, 720, 65))

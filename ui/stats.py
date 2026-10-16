@@ -11,13 +11,13 @@ class StatsScreen:
     """Browse live NPC profiles and the current game's conversation history."""
 
     def __init__(self):
-        self.back_button = Button((24, 16, 170, 38), "Back to game")
+        self.back_button = Button((184, 56, 170, 38), "Back to game")
         self.tabs = {
-            name: Button((352 + index * 176, 106, 160, 36), name)
+            name: Button((512 + index * 176, 146, 160, 36), name)
             for index, name in enumerate(("Statistics", "Opinions", "Conversations"))
         }
-        self.list_rect = pygame.Rect(40, 144, 264, 440)
-        self.detail_rect = pygame.Rect(352, 160, 568, 424)
+        self.list_rect = pygame.Rect(200, 184, 264, 440)
+        self.detail_rect = pygame.Rect(512, 200, 568, 424)
         self.open()
 
     def open(self):
@@ -212,17 +212,17 @@ class StatsScreen:
         surface = app.window
         surface.fill(GRASS)
         self.back_button.draw(surface, app.small_font)
-        surface.blit(app.heading_font.render("World Stats", True, INK), (220, 21))
-        surface.blit(app.small_font.render("People, items, and conversations.", True, MUTED), (24, 68))
+        surface.blit(app.heading_font.render("World Stats", True, INK), (380, 61))
+        surface.blit(app.small_font.render("People, items, and conversations.", True, MUTED), (184, 108))
         app.game.draw_clock(app)
-        pygame.draw.rect(surface, PAPER, (24, 94, 296, 506))
-        pygame.draw.rect(surface, PAPER, (336, 94, 600, 506))
+        pygame.draw.rect(surface, PAPER, (184, 134, 296, 506))
+        pygame.draw.rect(surface, PAPER, (496, 134, 600, 506))
         list_title = f"Conversations ({len(app.conversation_history)})" if self.tab == "Conversations" else f"NPCs ({len(app.npcs)})"
-        surface.blit(app.font.render(list_title, True, INK), (40, 110))
+        surface.blit(app.font.render(list_title, True, INK), (200, 150))
         for name, button in self.tabs.items():
             button.draw(surface, app.small_font)
             if self.tab == name:
-                pygame.draw.line(surface, PAPER, (button.rect.left + 16, 136), (button.rect.right - 16, 136), 2)
+                pygame.draw.line(surface, PAPER, (button.rect.left + 16, 176), (button.rect.right - 16, 176), 2)
 
         limits = self._scroll_limits(app)
         for pane in limits:
@@ -253,4 +253,4 @@ class StatsScreen:
                 track, thumb = self._scrollbar(rect, getattr(self, f"{pane}_scroll"), limits[pane])
                 pygame.draw.rect(surface, GRASS, track)
                 pygame.draw.rect(surface, MUTED, thumb)
-        surface.blit(app.small_font.render("Scroll or use Up/Down and Page Up/Down. Escape returns to the game.", True, MUTED), (24, 615))
+        surface.blit(app.small_font.render("Scroll or use Up/Down and Page Up/Down. Escape returns to the game.", True, MUTED), (184, 655))

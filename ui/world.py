@@ -1,3 +1,4 @@
+from functools import lru_cache
 from pathlib import Path
 
 import pygame
@@ -13,6 +14,11 @@ TREE_BASE_OFFSET = 64
 APPLE_POINTS = ((38, 58), (83, 28), (112, 60), (65, 84), (96, 111), (33, 101), (111, 32), (46, 30))
 _talking_bubble = None
 _tree_artwork = None
+
+
+@lru_cache(maxsize=64)
+def npc_name_font(size):
+    return pygame.font.Font(None, size)
 
 
 def talking_bubble():
@@ -80,6 +86,8 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
         return image if image.get_size() == size else pygame.transform.smoothscale(image, size)
 
     label_color = PAPER if phase == "night" else INK
+    name_font = npc_name_font(max(1, round(22 * zoom)))
+    map_rect = pygame.Rect(screen_point((0, 0)), (round(WORLD_WIDTH * zoom), round(WORLD_HEIGHT * zoom)))
     tree_image, apple_image = tree_artwork()
     # NPC y is at their feet; use the bottom of the tree's trunk for the same comparison.
     objects = sorted([tree, *npcs], key=lambda obj: tree.y + TREE_BASE_OFFSET if obj is tree else obj.y)
@@ -96,7 +104,7 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
             for x, y in APPLE_POINTS[:tree.fruit]:
                 center = screen_point((left + x * TREE_SCALE, top + y * TREE_SCALE))
                 surface.blit(apple, apple.get_rect(center=center))
-            label = resized(font.render(f"Fruit {tree.fruit}/{tree.capacity}", True, label_color), zoom)
+            label = name_font.render(f"Fruit {tree.fruit}/{tree.capacity}", True, label_color)
             surface.blit(label, label.get_rect(midtop=screen_point((tree_x, tree.y + 76))))
             continue
         npc = obj
@@ -108,10 +116,10 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
         shadow = pygame.Rect(screen_point((npc.x - 16, npc.y - 4)), (round(32 * zoom), round(8 * zoom)))
         pygame.draw.ellipse(surface, MUTED, shadow)
         surface.blit(sprite, sprite_rect)
-        name = font.render(npc.name, True, label_color)
-        name_rect = name.get_rect(midtop=(round(npc.x), round(npc.y) + 6))
-        name_rect.clamp_ip(pygame.Rect(0, 0, WORLD_WIDTH, WORLD_HEIGHT))
-        surface.blit(resized(name, zoom), screen_point(name_rect.topleft))
+        name = name_font.render(npc.name, True, label_color)
+        name_rect = name.get_rect(midtop=screen_point((npc.x, npc.y + 6)))
+        name_rect.clamp_ip(map_rect)
+        surface.blit(name, name_rect)
     # Draw above every character, anchored to the initiator's top right.
     for npc in npcs:
         if npc.conversation is not None and npc.conversation.arrived and npc.conversation.initiator is npc:

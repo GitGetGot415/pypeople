@@ -7,22 +7,22 @@ from ollama_manager import check_ollama
 
 class MenuScreen:
     def __init__(self):
-        self.start_button = Button((250, 250, 220, 54), "New Sim")
-        self.load_button = Button((490, 250, 220, 54), "Load Sim")
-        self.character_button = Button((250, 320, 460, 54), "Character Creator")
-        self.settings_button = Button((250, 390, 220, 54), "Settings")
-        self.exit_button = Button((490, 390, 220, 54), "Exit")
+        self.start_button = Button((410, 290, 220, 54), "New Sim")
+        self.load_button = Button((650, 290, 220, 54), "Load Sim")
+        self.character_button = Button((410, 360, 460, 54), "Character Creator")
+        self.settings_button = Button((410, 430, 220, 54), "Settings")
+        self.exit_button = Button((650, 430, 220, 54), "Exit")
         self.message = ""
 
         self.confirm_start = False
 
         self.yes_button = Button(
-            (315, 350, 145, 48),
+            (475, 390, 145, 48),
             "Yes",
         )
 
         self.no_button = Button(
-            (500, 350, 145, 48),
+            (660, 390, 145, 48),
             "No",
         )
 
@@ -77,7 +77,7 @@ class MenuScreen:
 
     def draw(self, app):
         app.window.fill(GRASS)
-        pygame.draw.rect(app.window, PAPER, (210, 55, 540, 530), border_radius=BORDER_RADIUS)
+        pygame.draw.rect(app.window, PAPER, (370, 95, 540, 530), border_radius=BORDER_RADIUS)
         if app.provider == "gemini":
             model_name = f"Gemini ({MODEL})"
         elif app.provider == "ollama":
@@ -89,7 +89,7 @@ class MenuScreen:
             app.window,
             "Pypeople",
             app.title_font,
-            105,
+            145,
             INK,
         )
 
@@ -97,15 +97,15 @@ class MenuScreen:
             app.window,
             model_name,
             app.small_font,
-            165,
+            205,
             MUTED,
         )
-        draw_centered_text(app.window, "say whatever you want", app.font, 185, MUTED)
+        draw_centered_text(app.window, "say whatever you want", app.font, 225, MUTED)
         for button in (self.start_button, self.load_button, self.character_button, self.settings_button, self.exit_button):
             button.draw(app.window, app.font)
-        draw_centered_text(app.window, "(no you can't flirt with the ai yet)", app.small_font, 510, MUTED)
+        draw_centered_text(app.window, "(no you can't flirt with the ai yet)", app.small_font, 550, MUTED)
         if self.message:
-            draw_wrapped_text(app.window, self.message, app.small_font, MUTED, (260, 540, 440, 40))
+            draw_wrapped_text(app.window, self.message, app.small_font, MUTED, (420, 580, 440, 40))
         if self.confirm_start:
 
             # Darken the background
@@ -120,7 +120,7 @@ class MenuScreen:
 
             # Popup background
             popup = pygame.Rect(
-                245, 235, 470, 195
+                405, 275, 470, 195
             )
 
             pygame.draw.rect(
@@ -135,7 +135,7 @@ class MenuScreen:
                 app.window,
                 "AI is not configured,",
                 app.heading_font,
-                285,
+                325,
                 INK,
             )
 
@@ -143,7 +143,7 @@ class MenuScreen:
                 app.window,
                 "continue anyways?",
                 app.font,
-                323,
+                363,
                 INK,
             )
 

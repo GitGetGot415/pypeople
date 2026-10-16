@@ -31,36 +31,36 @@ class CharacterScreen:
         for index, name in enumerate(self.FIELDS):
             multiline = name == "Details"
             self.inputs[name] = TextInput(
-                (550, 210 + index * 58, 300, 156 if multiline else 42),
+                (710, 250 + index * 58, 300, 156 if multiline else 42),
                 max_length=None if multiline else 100,
                 strip_paste=not multiline,
                 placeholder=f"Enter {name.lower()}",
                 multiline=multiline,
             )
             self.inputs[name].set_value(self.values[name])
-        self.stats_viewport = pygame.Rect(430, 200, 450, 308)
+        self.stats_viewport = pygame.Rect(590, 240, 450, 308)
         self.stats_scroll = 0
         self.stats_input_tops = {name: field.rect.y for name, field in self.inputs.items()}
         self.stats_scroll_limit = max(field.rect.bottom for field in self.inputs.values()) + 10 - self.stats_viewport.bottom
-        self.stats_scrollbar = pygame.Rect(864, self.stats_viewport.y, 8, self.stats_viewport.height)
+        self.stats_scrollbar = pygame.Rect(1024, self.stats_viewport.y, 8, self.stats_viewport.height)
         self.stats_dragging = False
         self._stats_drag_offset = 0
         self.tab_buttons = {
-            name: Button((430 + index * 80, 140, 100 if name == "Emotions" else 70, 44), name)
+            name: Button((590 + index * 80, 180, 100 if name == "Emotions" else 70, 44), name)
             for index, name in enumerate(("Stats", "Color", "Eyes", "Hair", "Emotions"))
         }
         self.eye_buttons = {
-            style: Button((430 + index % 2 * 220, 200 + index // 2 * 158, 200, 148), style.title())
+            style: Button((590 + index % 2 * 220, 240 + index // 2 * 158, 200, 148), style.title())
             for index, style in enumerate(EYE_STYLES)
         }
         self.hair_buttons = {
-            style: Button((430 + index % 2 * 220, 200 + index // 2 * 158, 200, 148), style.title())
+            style: Button((590 + index % 2 * 220, 240 + index // 2 * 158, 200, 148), style.title())
             for index, style in enumerate(HAIR_STYLES)
         }
         self.color_sliders = {}
         self.color_panels = {}
         for index, name in enumerate(self.COLOR_GRID):
-            panel = pygame.Rect(430 + index % 2 * 220, 200 + index // 2 * 158, 200, 148)
+            panel = pygame.Rect(590 + index % 2 * 220, 240 + index // 2 * 158, 200, 148)
             self.color_panels[name] = panel
             rgb = self._parse_color(self.DEFAULT_COLORS[name])
             self.color_sliders[name] = [
@@ -70,13 +70,13 @@ class CharacterScreen:
                 )
                 for channel, label in enumerate(("R", "G", "B"))
             ]
-        self.back_button = Button((80, 545, 150, 48), "Back")
-        self.random_button = Button((250, 545, 150, 48), "Random")
-        self.import_button = Button((570, 545, 130, 48), "Import JSON")
-        self.export_button = Button((720, 545, 130, 48), "Export JSON")
-        self.turn_left_button = Button((96, 473, 120, 30), "Turn left")
-        self.turn_right_button = Button((244, 473, 120, 30), "Turn right")
-        self.preview_area = pygame.Rect(96, 206, 268, 260)
+        self.back_button = Button((240, 585, 150, 48), "Back")
+        self.random_button = Button((410, 585, 150, 48), "Random")
+        self.import_button = Button((730, 585, 130, 48), "Import JSON")
+        self.export_button = Button((880, 585, 130, 48), "Export JSON")
+        self.turn_left_button = Button((256, 513, 120, 30), "Turn left")
+        self.turn_right_button = Button((404, 513, 120, 30), "Turn right")
+        self.preview_area = pygame.Rect(256, 246, 268, 260)
         self.direction = 4  # Start facing south, with both hands visible.
         self.message = ""
 
@@ -85,7 +85,7 @@ class CharacterScreen:
         self.renderer = CharacterRenderer()
         self.selected_emotion = "neutral"
         self.emotion_buttons = {
-            emotion: Button((430 + index % 3 * 144, 200 + index // 3 * 104, 132, 96), emotion.title())
+            emotion: Button((590 + index % 3 * 144, 240 + index // 3 * 104, 132, 96), emotion.title())
             for index, emotion in enumerate(("neutral", *self.renderer.eye_emotions))
         }
         self.preview = None
@@ -304,16 +304,16 @@ class CharacterScreen:
         self._sync_values()
         surface = app.window
         surface.fill(GRASS)
-        pygame.draw.rect(surface, PAPER, (50, 65, 860, 545), border_radius=BORDER_RADIUS)
-        draw_centered_text(surface, "Character Creator", app.heading_font, 88)
-        pygame.draw.rect(surface, GRASS, (80, 140, 300, 375), border_radius=BORDER_RADIUS)
+        pygame.draw.rect(surface, PAPER, (210, 105, 860, 545), border_radius=BORDER_RADIUS)
+        draw_centered_text(surface, "Character Creator", app.heading_font, 128)
+        pygame.draw.rect(surface, GRASS, (240, 180, 300, 375), border_radius=BORDER_RADIUS)
 
         label = app.font.render("Face preview" if self.category == "Emotions" else "Preview", True, INK)
-        surface.blit(label, label.get_rect(center=(230, 170)))
+        surface.blit(label, label.get_rect(center=(390, 210)))
         self._draw_preview(surface)
         preview_label = self.selected_emotion.title() if self.category == "Emotions" else self.DIRECTIONS[self.direction]
         direction_label = app.small_font.render(preview_label, True, MUTED)
-        surface.blit(direction_label, direction_label.get_rect(center=(230, 194)))
+        surface.blit(direction_label, direction_label.get_rect(center=(390, 234)))
         if self.category != "Emotions":
             self.turn_left_button.draw(surface, app.small_font)
             self.turn_right_button.draw(surface, app.small_font)
@@ -334,7 +334,7 @@ class CharacterScreen:
                     continue
                 label = app.font.render(name, True, INK)
                 label_y = text_input.rect.y + 21 if text_input.multiline else text_input.rect.centery
-                surface.blit(label, label.get_rect(midleft=(430, label_y)))
+                surface.blit(label, label.get_rect(midleft=(590, label_y)))
                 text_input.draw(surface, app.font)
             surface.set_clip(previous_clip)
             pygame.draw.rect(surface, GRASS, self.stats_scrollbar)
@@ -389,6 +389,6 @@ class CharacterScreen:
         if self.message:
             message = app.small_font.render(self.message, True, MUTED)
             previous_clip = surface.get_clip()
-            surface.set_clip(pygame.Rect(430, 510, 420, 28))
-            surface.blit(message, (430, 515))
+            surface.set_clip(pygame.Rect(590, 550, 420, 28))
+            surface.blit(message, (590, 555))
             surface.set_clip(previous_clip)

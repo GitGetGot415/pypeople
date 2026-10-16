@@ -9,10 +9,10 @@ from .theme import GRASS, PAPER, MUTED, BORDER_RADIUS
 
 class OllamaSetupScreen:
     def __init__(self):
-        self.manual_button = Button((340, 220, 280, 48), "Install Ollama")
-        self.continue_button = Button((340, 325, 280, 40), "I've Installed Ollama")
-        self.download_button = Button((340, 455, 280, 48), "Download Llama 3")
-        self.back_button = Button((50, 580, 60, 30), "Back")
+        self.manual_button = Button((500, 260, 280, 48), "Install Ollama")
+        self.continue_button = Button((500, 365, 280, 40), "I've Installed Ollama")
+        self.download_button = Button((500, 495, 280, 48), "Download Llama 3")
+        self.back_button = Button((210, 620, 60, 30), "Back")
 
         self.ollama_ready = False
         self.message = ""
@@ -50,18 +50,18 @@ class OllamaSetupScreen:
         pygame.draw.rect(
             surface,
             PAPER,
-            (120, 65, 720, 515),
+            (280, 105, 720, 515),
             border_radius=BORDER_RADIUS
         )
 
-        draw_centered_text(surface, "Ollama Setup", app.heading_font, 90)
+        draw_centered_text(surface, "Ollama Setup", app.heading_font, 130)
 
         # Step 1: Install Ollama
-        draw_centered_text(surface, "Step 1: Install Ollama", app.font, 155)
+        draw_centered_text(surface, "Step 1: Install Ollama", app.font, 195)
         draw_centered_text(
             surface,
             "Download Ollama from its official website.",
-            app.small_font, 188, MUTED
+            app.small_font, 228, MUTED
         )
 
         self.manual_button.draw(surface, app.font)
@@ -69,17 +69,17 @@ class OllamaSetupScreen:
         draw_centered_text(
             surface,
             "Already installed? Make sure Ollama is running.",
-            app.small_font, 290, MUTED
+            app.small_font, 330, MUTED
         )
 
         self.continue_button.draw(surface, app.font)
 
         # Step 2: Download Llama 3
-        draw_centered_text(surface, "Step 2: Download Llama 3", app.font, 390)
+        draw_centered_text(surface, "Step 2: Download Llama 3", app.font, 430)
         draw_centered_text(
             surface,
             "A terminal will open. Internet connection required.",
-            app.small_font, 425, MUTED
+            app.small_font, 465, MUTED
         )
 
         self.download_button.draw(
@@ -89,7 +89,7 @@ class OllamaSetupScreen:
         if self.message:
             draw_centered_text(
                 surface, self.message,
-                app.small_font, 530, MUTED
+                app.small_font, 570, MUTED
             )
 
         self.back_button.draw(surface, app.font)

@@ -10,20 +10,20 @@ from .world import draw_world
 
 class GameScreen:
     def __init__(self):
-        self.menu_button = Button((824, 16, 112, 38), "Menu")
-        self.stats_button = Button((704, 16, 112, 38), "Stats")
-        self.save_button = Button((584, 16, 108, 38), "Save")
-        self.clock_button = Button((400, 16, 44, 38), "")
+        self.menu_button = Button((1144, 16, 112, 38), "Menu")
+        self.stats_button = Button((1024, 16, 112, 38), "Stats")
+        self.save_button = Button((904, 16, 108, 38), "Save")
+        self.clock_button = Button((720, 16, 44, 38), "")
         self.save_message = ""
         self.save_message_remaining = 0
-        self.send_button = Button((816, 564, 120, 44), "Send")
-        self.next_button = Button((824, 472, 112, 32), "Next")
-        self.back_button = Button((self.next_button.rect.left - 116, 472, 112, 32), "Back")
-        self.retry_button = Button((584, 472, 112, 32), "Retry")
-        self.portrait_rect = pygame.Rect(24, 472, 148, 148)
+        self.send_button = Button((1136, 644, 120, 44), "Send")
+        self.next_button = Button((1144, 552, 112, 32), "Next")
+        self.back_button = Button((self.next_button.rect.left - 116, 552, 112, 32), "Back")
+        self.retry_button = Button((904, 552, 112, 32), "Retry")
+        self.portrait_rect = pygame.Rect(24, 552, 148, 148)
         dialogue_x = self.portrait_rect.right + 16
         self.prompt_input = TextInput(
-            (dialogue_x, 564, 802 - dialogue_x, 44), placeholder="[insert cool action here]"
+            (dialogue_x, 644, 1122 - dialogue_x, 44), placeholder="[insert cool action here]"
         )
         self.dialogue_open = False
         self.selected_npc = None
@@ -34,7 +34,7 @@ class GameScreen:
         self.conversation_pages = []
         self._conversation_page_turns = None
         self.dialogue_scroll = 0
-        self.reply_rect = pygame.Rect(dialogue_x, 500, 936 - dialogue_x, 58)
+        self.reply_rect = pygame.Rect(dialogue_x, 580, 1256 - dialogue_x, 58)
         self.camera_offset = [0.0, 0.0]
         self.camera_zoom = 1.0
         self.pan_start = None
@@ -85,7 +85,7 @@ class GameScreen:
 
     @property
     def world_viewport(self):
-        height = WORLD_HEIGHT if self.dialogue_open else WINDOW_SIZE[1]
+        height = WINDOW_SIZE[1] - 180 if self.dialogue_open else WINDOW_SIZE[1]
         return pygame.Rect(0, 0, WINDOW_SIZE[0], height)
 
     @property
@@ -182,7 +182,7 @@ class GameScreen:
         pygame.draw.line(app.window, PAPER, (x, y), (x, y - 8), 2)
         pygame.draw.line(app.window, PAPER, (x, y), (x + 6, y + 3), 2)
         color = PAPER if app.screen == "game" and app.simulation.phase == "night" else INK
-        app.window.blit(app.small_font.render(app.simulation.phase_label, True, color), (454, 27))
+        app.window.blit(app.small_font.render(app.simulation.phase_label, True, color), (774, 27))
 
     def advance_conversation(self):
         conversation = self.viewed_conversation
@@ -264,12 +264,13 @@ class GameScreen:
         self.draw_clock(app)
         if self.save_message_remaining:
             color = PAPER if app.simulation.phase == "night" else INK
-            draw_wrapped_text(app.window, self.save_message, app.small_font, color, (24, 400, 912, 44))
+            draw_wrapped_text(app.window, self.save_message, app.small_font, color, (24, 480, 1232, 44))
 
         if not self.dialogue_open:
             return
-        pygame.draw.rect(app.window, PAPER, (0, WORLD_HEIGHT, 960, 180))
-        pygame.draw.line(app.window, (129, 154, 110), (0, WORLD_HEIGHT), (960, WORLD_HEIGHT), 3)
+        dialogue_top = self.world_viewport.bottom
+        pygame.draw.rect(app.window, PAPER, (0, dialogue_top, WINDOW_SIZE[0], 180))
+        pygame.draw.line(app.window, (129, 154, 110), (0, dialogue_top), (WINDOW_SIZE[0], dialogue_top), 3)
         if self.viewed_conversation is not None:
             self.draw_conversation(app)
             return
@@ -286,20 +287,20 @@ class GameScreen:
         elif self.selected_npc is not None and self.selected_npc.request_pending:
             status = f"Applying player request / {status}"
         rendered_status = app.small_font.render(status, True, MUTED)
-        app.window.blit(rendered_status, rendered_status.get_rect(topright=(936, 478)))
-        app.window.blit(app.font.render(self.selected_npc.name, True, INK), (self.reply_rect.x, 477))
+        app.window.blit(rendered_status, rendered_status.get_rect(topright=(1256, 558)))
+        app.window.blit(app.font.render(self.selected_npc.name, True, INK), (self.reply_rect.x, 557))
         self.draw_dialogue_lines(app.window, wrap_text(self.reply, app.font, self.reply_rect.width - 12), app.font, self.reply_rect)
         self.prompt_input.draw(app.window, app.font)
         self.send_button.draw(app.window, app.font, enabled=not app.requests.busy)
         if self.prompt_input.error:
-            app.window.blit(app.small_font.render(self.prompt_input.error, True, MUTED), (self.reply_rect.x, 616))
+            app.window.blit(app.small_font.render(self.prompt_input.error, True, MUTED), (self.reply_rect.x, 696))
         else:
             reason = self.selected_npc.decision_reason
             while reason and app.small_font.size(reason)[0] > self.reply_rect.width - 90:
                 reason = reason[:-4] + "..."
-            app.window.blit(app.small_font.render(reason, True, MUTED), (self.reply_rect.x, 616))
+            app.window.blit(app.small_font.render(reason, True, MUTED), (self.reply_rect.x, 696))
         count = app.small_font.render(f"{len(self.prompt_input.text)}/300", True, MUTED)
-        app.window.blit(count, count.get_rect(topright=(936, 616)))
+        app.window.blit(count, count.get_rect(topright=(1256, 696)))
 
     def draw_portrait(self, app, npc, emotion=None):
         pygame.draw.rect(app.window, (255, 254, 248), self.portrait_rect)
@@ -311,7 +312,7 @@ class GameScreen:
 
     def draw_conversation(self, app):
         conversation = self.viewed_conversation
-        rect = pygame.Rect(self.reply_rect.x, 514, self.reply_rect.width, 96)
+        rect = pygame.Rect(self.reply_rect.x, 594, self.reply_rect.width, 96)
         if self._conversation_page_turns is not conversation.turns:
             # Model parts carry distinct reactions; oversized parts are split
             # again to fit the actual font and dialogue box without scrolling.
@@ -335,7 +336,7 @@ class GameScreen:
             title = f"{conversation.initiator.name} & {conversation.recipient.name}"
         emotion = part.emotion.name if part is not None and part.emotion.intensity >= EMOTION_THRESHOLD else None
         self.draw_portrait(app, speaker, emotion)
-        draw_wrapped_text(app.window, title, app.font, INK, (self.reply_rect.x, 477, self.retry_button.rect.x - self.reply_rect.x - 16, 30))
+        draw_wrapped_text(app.window, title, app.font, INK, (self.reply_rect.x, 557, self.retry_button.rect.x - self.reply_rect.x - 16, 30))
         self.back_button.draw(app.window, app.small_font, enabled=self.conversation_page_index > 0)
         last_page = bool(self.conversation_pages) and self.conversation_page_index == len(self.conversation_pages) - 1
         self.next_button.label = "Done" if last_page else "Next"
@@ -351,9 +352,9 @@ class GameScreen:
         self.draw_dialogue_lines(app.window, wrap_text(text, app.font, rect.width - 12), app.font, rect)
         if conversation.turns:
             if conversation.error:
-                draw_wrapped_text(app.window, conversation.error, app.small_font, MUTED, (rect.x, 616, rect.width - 80, 24))
+                draw_wrapped_text(app.window, conversation.error, app.small_font, MUTED, (rect.x, 696, rect.width - 80, 24))
             progress = app.small_font.render(f"{self.conversation_page_index + 1}/{len(self.conversation_pages)}", True, MUTED)
-            app.window.blit(progress, progress.get_rect(topright=(936, 616)))
+            app.window.blit(progress, progress.get_rect(topright=(1256, 696)))
 
     def draw_dialogue_lines(self, surface, lines, font, rect):
         line_height = font.get_linesize()

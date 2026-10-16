@@ -8,9 +8,9 @@ from .theme import INK, MUTED, PAPER
 
 class SaveSimScreen:
     def __init__(self):
-        self.name_input = TextInput((260, 275, 440, 48), max_length=80, placeholder="Simulation name")
-        self.save_button = Button((495, 395, 205, 44), "Save")
-        self.cancel_button = Button((260, 395, 205, 44), "Cancel")
+        self.name_input = TextInput((420, 315, 440, 48), max_length=80, placeholder="Simulation name")
+        self.save_button = Button((655, 435, 205, 44), "Save")
+        self.cancel_button = Button((420, 435, 205, 44), "Cancel")
         self.message = ""
 
     def open(self, name):
@@ -37,11 +37,11 @@ class SaveSimScreen:
         overlay = pygame.Surface(app.window.get_size(), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 140))
         app.window.blit(overlay, (0, 0))
-        pygame.draw.rect(app.window, PAPER, (230, 185, 500, 280))
-        draw_centered_text(app.window, "Save simulation", app.heading_font, 210)
-        app.window.blit(app.small_font.render("Save name", True, INK), (260, 250))
+        pygame.draw.rect(app.window, PAPER, (390, 225, 500, 280))
+        draw_centered_text(app.window, "Save simulation", app.heading_font, 250)
+        app.window.blit(app.small_font.render("Save name", True, INK), (420, 290))
         self.name_input.draw(app.window, app.font)
         hint = self.message or self.name_input.error or "This name will also be the JSON filename."
-        draw_wrapped_text(app.window, hint, app.small_font, MUTED, (260, 338, 440, 48))
+        draw_wrapped_text(app.window, hint, app.small_font, MUTED, (420, 378, 440, 48))
         self.save_button.draw(app.window, app.font)
         self.cancel_button.draw(app.window, app.font)

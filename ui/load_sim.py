@@ -10,16 +10,16 @@ class LoadSimScreen:
     ROWS_PER_PAGE = 5
 
     def __init__(self):
-        self.back_button = Button((100, 560, 160, 42), "Back")
-        self.refresh_button = Button((700, 560, 160, 42), "Refresh")
-        self.previous_button = Button((100, 505, 120, 34), "Previous")
-        self.next_button = Button((460, 505, 120, 34), "Next")
-        self.load_button = Button((620, 300, 240, 44), "Load simulation")
-        self.rename_button = Button((620, 358, 240, 44), "Rename save")
-        self.delete_button = Button((620, 416, 240, 44), "Delete save")
-        self.confirm_button = Button((320, 355, 145, 44), "Delete")
-        self.cancel_button = Button((495, 355, 145, 44), "Cancel")
-        self.name_input = TextInput((620, 225, 240, 48), max_length=80, placeholder="Save name")
+        self.back_button = Button((260, 600, 160, 42), "Back")
+        self.refresh_button = Button((860, 600, 160, 42), "Refresh")
+        self.previous_button = Button((260, 545, 120, 34), "Previous")
+        self.next_button = Button((620, 545, 120, 34), "Next")
+        self.load_button = Button((780, 340, 240, 44), "Load simulation")
+        self.rename_button = Button((780, 398, 240, 44), "Rename save")
+        self.delete_button = Button((780, 456, 240, 44), "Delete save")
+        self.confirm_button = Button((480, 395, 145, 44), "Delete")
+        self.cancel_button = Button((655, 395, 145, 44), "Cancel")
+        self.name_input = TextInput((780, 265, 240, 48), max_length=80, placeholder="Save name")
         self.entries = []
         self.selected_id = None
         self.page = 0
@@ -114,7 +114,7 @@ class LoadSimScreen:
             self.page = max(0, min(self.last_page, self.page - event.y))
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             for row, candidate in enumerate(self.entries[self.page * self.ROWS_PER_PAGE:][:self.ROWS_PER_PAGE]):
-                if pygame.Rect(100, 145 + row * 68, 480, 60).collidepoint(event.pos):
+                if pygame.Rect(260, 185 + row * 68, 480, 60).collidepoint(event.pos):
                     self.select(candidate)
                     self.message = ""
                     return
@@ -126,14 +126,14 @@ class LoadSimScreen:
     def draw(self, app):
         surface = app.window
         surface.fill(GRASS)
-        pygame.draw.rect(surface, PAPER, (70, 35, 820, 510))
-        draw_centered_text(surface, "Load simulation", app.heading_font, 60)
-        surface.blit(app.small_font.render("Choose a simulation to continue, rename, or delete.", True, MUTED), (100, 108))
+        pygame.draw.rect(surface, PAPER, (230, 75, 820, 510))
+        draw_centered_text(surface, "Load simulation", app.heading_font, 100)
+        surface.blit(app.small_font.render("Choose a simulation to continue, rename, or delete.", True, MUTED), (260, 148))
         entries = self.entries[self.page * self.ROWS_PER_PAGE:][:self.ROWS_PER_PAGE]
         if not entries:
-            draw_wrapped_text(surface, "No saved simulations yet. Start a New Sim, then use Save to keep it.", app.font, MUTED, (100, 160, 480, 100))
+            draw_wrapped_text(surface, "No saved simulations yet. Start a New Sim, then use Save to keep it.", app.font, MUTED, (260, 200, 480, 100))
         for row, entry in enumerate(entries):
-            rect = pygame.Rect(100, 145 + row * 68, 480, 60)
+            rect = pygame.Rect(260, 185 + row * 68, 480, 60)
             selected = entry.id == self.selected_id
             pygame.draw.rect(surface, ACCENT if selected else GRASS, rect)
             color = PAPER if selected else INK
@@ -146,29 +146,29 @@ class LoadSimScreen:
             detail = f"{entry.npc_count} NPCs / {timestamp}" if not entry.error else timestamp
             surface.blit(app.small_font.render(detail, True, color), (rect.x + 12, rect.y + 34))
         entry = self.selected
-        surface.blit(app.font.render("Save name", True, INK), (620, 190))
+        surface.blit(app.font.render("Save name", True, INK), (780, 230))
         if entry is not None:
             self.name_input.draw(surface, app.font)
         else:
-            surface.blit(app.small_font.render("Select a save first.", True, MUTED), (620, 235))
+            surface.blit(app.small_font.render("Select a save first.", True, MUTED), (780, 275))
         enabled = entry is not None and not entry.error
         self.load_button.draw(surface, app.font, enabled=enabled)
         self.rename_button.draw(surface, app.font, enabled=enabled)
         self.delete_button.draw(surface, app.font, enabled=entry is not None)
         self.previous_button.draw(surface, app.small_font, enabled=self.page > 0)
         self.next_button.draw(surface, app.small_font, enabled=self.page < self.last_page)
-        surface.blit(app.small_font.render(f"Page {self.page + 1}/{self.last_page + 1}", True, MUTED), (278, 514))
+        surface.blit(app.small_font.render(f"Page {self.page + 1}/{self.last_page + 1}", True, MUTED), (438, 554))
         self.back_button.draw(surface, app.font)
         self.refresh_button.draw(surface, app.font)
         hint = self.message or (entry.error if entry else "") or "Edit the name above, then choose Rename save."
-        draw_wrapped_text(surface, hint, app.small_font, INK, (100, 610, 760, 28))
+        draw_wrapped_text(surface, hint, app.small_font, INK, (260, 650, 760, 28))
         if self.confirm_delete:
             overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
             overlay.fill((0, 0, 0, 140))
             surface.blit(overlay, (0, 0))
-            pygame.draw.rect(surface, PAPER, (235, 220, 490, 205))
-            draw_centered_text(surface, "Delete this simulation?", app.heading_font, 240)
-            draw_wrapped_text(surface, entry.name, app.font, INK, (265, 280, 430, 48))
-            draw_centered_text(surface, "This permanently removes the save.", app.small_font, 330, MUTED)
+            pygame.draw.rect(surface, PAPER, (395, 260, 490, 205))
+            draw_centered_text(surface, "Delete this simulation?", app.heading_font, 280)
+            draw_wrapped_text(surface, entry.name, app.font, INK, (425, 320, 430, 48))
+            draw_centered_text(surface, "This permanently removes the save.", app.small_font, 370, MUTED)
             self.confirm_button.draw(surface, app.font)
             self.cancel_button.draw(surface, app.font)

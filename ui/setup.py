@@ -19,17 +19,17 @@ class SetupScreen:
         self.sources = [None, None, None]
         self.page = 0
         self.message = ""
-        self.count_input = TextInput((430, 98, 100, 40), max_length=None)
+        self.count_input = TextInput((590, 138, 100, 40), max_length=None)
         self.count_input.set_value("3")
-        self.remove_button = Button((380, 98, 40, 40), "-")
-        self.add_button = Button((540, 98, 40, 40), "+")
-        self.apply_button = Button((595, 98, 145, 40), "Set count")
-        self.previous_button = Button((100, 485, 120, 32), "Previous")
-        self.next_button = Button((740, 485, 120, 32), "Next")
-        self.back_button = Button((100, 565, 160, 44), "Back")
-        self.start_button = Button((660, 565, 200, 44), "Start game")
-        self.random_buttons = [Button((490, 218 + row * 65, 150, 38), "Random") for row in range(self.ROWS_PER_PAGE)]
-        self.json_buttons = [Button((655, 218 + row * 65, 185, 38), "Choose JSON") for row in range(self.ROWS_PER_PAGE)]
+        self.remove_button = Button((540, 138, 40, 40), "-")
+        self.add_button = Button((700, 138, 40, 40), "+")
+        self.apply_button = Button((755, 138, 145, 40), "Set count")
+        self.previous_button = Button((260, 525, 120, 32), "Previous")
+        self.next_button = Button((900, 525, 120, 32), "Next")
+        self.back_button = Button((260, 605, 160, 44), "Back")
+        self.start_button = Button((820, 605, 200, 44), "Start game")
+        self.random_buttons = [Button((650, 258 + row * 65, 150, 38), "Random") for row in range(self.ROWS_PER_PAGE)]
+        self.json_buttons = [Button((815, 258 + row * 65, 185, 38), "Choose JSON") for row in range(self.ROWS_PER_PAGE)]
 
     @property
     def last_page(self):
@@ -102,35 +102,35 @@ class SetupScreen:
 
     def draw(self, app):
         app.window.fill(GRASS)
-        pygame.draw.rect(app.window, PAPER, (70, 25, 820, 600), border_radius=BORDER_RADIUS)
-        draw_centered_text(app.window, "Set up your game", app.heading_font, 48)
-        app.window.blit(app.font.render("Additional NPCs", True, INK), (100, 108))
+        pygame.draw.rect(app.window, PAPER, (230, 65, 820, 600), border_radius=BORDER_RADIUS)
+        draw_centered_text(app.window, "Set up your game", app.heading_font, 88)
+        app.window.blit(app.font.render("Additional NPCs", True, INK), (260, 148))
         self.count_input.draw(app.window, app.font)
         self.remove_button.draw(app.window, app.font, enabled=bool(self.sources))
         self.add_button.draw(app.window, app.font)
         self.apply_button.draw(app.window, app.font)
-        app.window.blit(app.small_font.render(f"Total: {len(self.sources) + 1} NPCs, including Judy", True, MUTED), (100, 148))
-        pygame.draw.rect(app.window, (225, 232, 210), (100, 175, 760, 32))
-        app.window.blit(app.font.render("NPC 1: judy.json (fixed)", True, INK), (112, 180))
+        app.window.blit(app.small_font.render(f"Total: {len(self.sources) + 1} NPCs, including Judy", True, MUTED), (260, 188))
+        pygame.draw.rect(app.window, (225, 232, 210), (260, 215, 760, 32))
+        app.window.blit(app.font.render("NPC 1: judy.json (fixed)", True, INK), (272, 220))
 
         for row in range(self.ROWS_PER_PAGE):
             index = self.page * self.ROWS_PER_PAGE + row
             if index >= len(self.sources):
                 break
             path = self.sources[index]
-            y = 218 + row * 65
-            app.window.blit(app.font.render(f"NPC {index + 2}", True, INK), (112, y))
+            y = 258 + row * 65
+            app.window.blit(app.font.render(f"NPC {index + 2}", True, INK), (272, y))
             label = path.name if path is not None else "Randomized when the game starts"
-            draw_wrapped_text(app.window, label, app.small_font, MUTED, (112, y + 24, 360, 38))
+            draw_wrapped_text(app.window, label, app.small_font, MUTED, (272, y + 24, 360, 38))
             self.random_buttons[row].draw(app.window, app.font)
             self.json_buttons[row].draw(app.window, app.font)
             selected = self.random_buttons[row] if path is None else self.json_buttons[row]
             pygame.draw.rect(app.window, ACCENT, selected.rect.inflate(6, 6), width=2)
         if not self.sources:
-            draw_centered_text(app.window, "Only Judy will be in this game.", app.font, 300, MUTED)
+            draw_centered_text(app.window, "Only Judy will be in this game.", app.font, 340, MUTED)
         self.previous_button.draw(app.window, app.small_font, enabled=self.page > 0)
         self.next_button.draw(app.window, app.small_font, enabled=self.page < self.last_page)
-        draw_centered_text(app.window, f"Page {self.page + 1} of {self.last_page + 1}", app.small_font, 492, MUTED)
-        draw_wrapped_text(app.window, self.message, app.small_font, MUTED, (100, 524, 760, 38))
+        draw_centered_text(app.window, f"Page {self.page + 1} of {self.last_page + 1}", app.small_font, 532, MUTED)
+        draw_wrapped_text(app.window, self.message, app.small_font, MUTED, (260, 564, 760, 38))
         self.back_button.draw(app.window, app.font)
         self.start_button.draw(app.window, app.font)
