@@ -9,10 +9,11 @@ from uuid import uuid4
 
 from character_data import DIRECTIONS, normalize_opinions
 from conversation_history import ConversationRecord, describe_opinion_change, relevant_memories, remember, unsupported_location
-from social import (Goal, check_relationship_goals, commit_agreements, conversation_references, on_transfer,
-                    permitted_proposals, phase_label, private_context, validate_live_agreements)
+from social import (Goal, check_relationship_goals, commit_agreements, commit_information, conversation_references, gossip_claim,
+                    information_views, on_transfer, permitted_proposals, phase_label, prepare_information,
+                    private_context, validate_live_agreements)
 from simulation import (
-    APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, EAT_SECONDS, FAILURE_COOLDOWN, INVENTORY_CAPACITY,
+    APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DIALOGUE_WAIT_SECONDS, EAT_SECONDS, FAILURE_COOLDOWN, INVENTORY_CAPACITY,
     MOVEMENT_SPEED, PARTNER_COOLDOWN, SHAKE_SECONDS, SOCIAL_RADIUS,
     SOCIAL_RECOVERED, WANDER_PAUSE,
 )
@@ -124,6 +125,7 @@ class NPC:
     memories: list = field(default_factory=list)
     goal: Goal | None = None
     pending_social_opinions: list = field(default_factory=list)
+    beliefs: list = field(default_factory=list)
     owner: str = "autonomous"
     target_id: str | None = None
     activity_elapsed: float = 0.0
@@ -307,7 +309,7 @@ class NPC:
         state = {
             "npc_id": self.id,
             "npc_name": self.name,
-            "character": {**self.character, "Name": self.name, "Opinions": self.opinions},
+            "character": {key: value for key, value in {**self.character, "Name": self.name}.items() if key != "Opinions"},
             "facing": DIRECTIONS[self.facing],
             "selected": self.selected,
             "position": [round(self.x, 1), round(self.y, 1)],
@@ -332,6 +334,7 @@ class NPC:
                           "summary": memory.summary, "day": memory.day, "phase": memory.phase}
                                  for memory in relevant_memories(self, partner_id)]
             state["private_context"] = private_context(self, partner_id)
+            state["private_context"]["opinions"] = self.opinions
         else:
             state["character"].pop("Opinions", None)
             for key in ("last_reply", "activity_reason"):
@@ -580,6 +583,9 @@ class Conversation:
         self.topic = topic
         self.id = uuid4().hex
         self.origin, self.purpose = origin, purpose
+        self.focus_claim_id = gossip_claim(initiator, recipient) if purpose == "gossip" else None
+        if purpose == "gossip" and self.focus_claim_id is None:
+            raise ValueError("There is no permitted account to discuss with this person.")
         self.dialogue_state = "waiting"
         self.wait_elapsed = 0.0
         self.talking_remaining = 0.0
@@ -598,6 +604,10 @@ class Conversation:
         self.accepted_proposals = []
         self.social_effects_applied = False
         self.context_references = {}
+        self.information_context = None
+        self.accepted_disclosures = []
+        self.third_party_opinions = []
+        self.leverage_uses = []
         self.record.id = self.id
         self.error = ""
         self.saved_states = []
@@ -678,8 +688,12 @@ class Conversation:
             )
         ]
         self.accepted_proposals = list(response.accepted_proposals)
+        self.accepted_disclosures = list(response.disclosures)
+        self.third_party_opinions = list(response.third_party_opinions)
+        self.leverage_uses = list(response.leverage)
         if not self.social_effects_applied:
             commit_agreements(self)
+            commit_information(self)
             for npc, partner in ((self.initiator, self.recipient), (self.recipient, self.initiator)):
                 if npc.goal and npc.goal.status == "active" and npc.goal.target_id == partner.id:
                     npc.goal.last_attempt_phase = npc.world.phase_index
@@ -758,7 +772,7 @@ class Conversation:
                 return
             if self.dialogue_state in ("waiting", "pending"):
                 self.wait_elapsed += dt
-                if self.wait_elapsed >= 12.0:
+                if self.wait_elapsed >= DIALOGUE_WAIT_SECONDS:
                     self.fail_dialogue("Dialogue generation timed out. No dialogue was generated.")
             else:
                 self.talking_remaining = max(0.0, self.talking_remaining - dt)
@@ -792,6 +806,15 @@ class Conversation:
         if self.dialogue_state == "waiting":
             self.proposals = permitted_proposals(self)
             self.context_references = conversation_references(self)
+            self.information_context = prepare_information(self)
+        views = information_views(self.information_context)
+        initiator, recipient = participant(self.initiator), participant(self.recipient)
+        for role, state in (("initiator", initiator), ("recipient", recipient)):
+            state["private_context"].pop("known_accounts", None)
+            state["private_context"]["permitted_accounts"] = views.get(role, [])
+        initiator["private_context"]["discussion_focus_claim_id"] = self.focus_claim_id
+        initiator["private_context"]["immediate_objective"] = self.topic
+        recipient["private_context"]["immediate_objective"] = "Respond to what is actually said using only my own knowledge."
         return {
             "request_kind": "conversation",
             "interaction_id": self.id,
@@ -799,10 +822,10 @@ class Conversation:
             "purpose": self.purpose,
             "food_request": {"item": "fruit", "quantity": 1, "outcome": self.food_outcome,
                              "reason": self.food_reason, "transferred": False} if self.purpose == "food_request" else None,
-            "initiator": participant(self.initiator),
-            "recipient": participant(self.recipient),
-            "topic": self.topic,
-            "objective": self.topic,
+            "initiator": initiator,
+            "recipient": recipient,
+            "_information_validation": asdict(self.information_context) if self.information_context else None,
+            "topic": "The initiator will introduce their own concern or account; it is not shared knowledge yet.",
             "permitted_proposals": [dict(
                 asdict(p), item="fruit", quantity=1, deadline_label=phase_label(p.deadline),
                 giver_name=self.initiator.world.npc_by_id(p.promisor_id).name,
@@ -810,8 +833,6 @@ class Conversation:
                 offer_speaker="initiator" if p.promisor_id == self.initiator.id else "recipient",
                 acceptance_speaker="initiator" if p.recipient_id == self.initiator.id else "recipient",
             ) for p in self.proposals],
-            "initiator_opinion_of_recipient": self.initiator.opinions.get(self.recipient.name),
-            "recipient_opinion_of_initiator": self.recipient.opinions.get(self.initiator.name),
             "nearby_npcs": [participant(npc) for npc in npcs if npc is not self.initiator and npc is not self.recipient],
         }
 
@@ -828,7 +849,7 @@ class Conversation:
         if not self.turns:
             self.record.status = "Failed" if self.error else "Ended before dialogue"
             self.record.outcomes = [self.error or "The conversation ended before any dialogue was generated."]
-        if self.purpose == "chat":
+        if self.purpose != "food_request":
             world = self.initiator.world
             text = (f"{self.initiator.name} and {self.recipient.name} talked about {self.topic}."
                     if self.turns else f"{self.initiator.name} and {self.recipient.name}'s meeting ended without generated dialogue.")

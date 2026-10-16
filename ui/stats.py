@@ -1,7 +1,7 @@
 import pygame
 
 from character_data import DEFAULT_COLORS, FIELDS
-from social import phase_label
+from social import assertion_text, claim_by_id, fact_by_id, phase_label, selected_beliefs
 
 from .button import Button
 from .text import wrap_text
@@ -126,14 +126,36 @@ class StatsScreen:
                 add(f"{goal.status.title()} / due {phase_label(goal.deadline)}", app.small_font, MUTED)
                 if goal.outcome:
                     add(goal.outcome, app.small_font)
-                self.private_toggle_top = sum(font.get_linesize() for _, font, _ in lines)
-                add(f"{'Hide' if self.show_private else 'Show'} private motives (observer only)", app.small_font, ACCENT)
-                if self.show_private:
+            else:
+                add("No feasible personal objective right now.", color=MUTED)
+            self.private_toggle_top = sum(font.get_linesize() for _, font, _ in lines)
+            add(f"{'Hide' if self.show_private else 'Show'} private details (observer only)", app.small_font, ACCENT)
+            if self.show_private:
+                if goal:
                     add(f"Motive: {goal.motive}")
                     add(f"Approach: {goal.approach}")
                     add(f"Boundary: {goal.boundary}")
-            else:
-                add("No feasible personal objective right now.", color=MUTED)
+                add("Known accounts and sources", app.heading_font)
+                if not npc.beliefs:
+                    add("No firsthand accounts or rumors yet.", app.small_font, MUTED)
+                for belief in selected_beliefs(npc):
+                    claim = claim_by_id(app.simulation, belief.claim_id)
+                    fact = fact_by_id(app.simulation, claim.fact_id)
+                    source = app.simulation.npc_by_id(belief.source_id)
+                    originator = app.simulation.npc_by_id(claim.originator_id)
+                    add(assertion_text(app.simulation, fact, claim.affirmed), app.small_font)
+                    add(f"{belief.stance.title()} / {'firsthand' if belief.direct else 'personal assertion' if belief.source_id == npc.id else 'hearsay'}", app.small_font, MUTED)
+                    add(f"Immediate source: {source.name}; original account: {originator.name}", app.small_font, MUTED)
+                    add(f"Observer: {'supported by the actual event or intention' if claim.affirmed else 'contradicts the actual event or intention'}.", app.small_font, MUTED)
+                    if claim.deliberate:
+                        add(f"Observer: the original assertion was deliberately fabricated by {originator.name}.", app.small_font, MUTED)
+                    if belief.disclosure_id:
+                        disclosure = next(d for d in app.simulation.disclosures if d.id == belief.disclosure_id)
+                        top = sum(font.get_linesize() for _, font, _ in lines)
+                        add("View source conversation", app.small_font, ACCENT)
+                        bottom = sum(font.get_linesize() for _, font, _ in lines)
+                        self.promise_links.append((top, bottom, disclosure.conversation_id))
+                    gap()
             gap()
             add("Apple promises", app.heading_font)
             promises = [p for p in app.simulation.promises if npc.id in (p.promisor_id, p.recipient_id)]

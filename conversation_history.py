@@ -75,6 +75,7 @@ def relevant_memories(npc, partner_id=None):
     partners = {p.recipient_id if p.promisor_id == npc.id else p.promisor_id for p in promises}
     ranked = sorted(enumerate(npc.memories), key=lambda entry: (
         entry[1].partner_id in partners and entry[1].kind in ("promise_created", "promise_broken"),
+        entry[1].kind in ("heard_claim", "claim_opinion", "leverage"),
         entry[1].partner_id == partner_id, entry[1].partner_id == goal_target,
         abs(entry[1].weight), entry[0]), reverse=True)
     seen, selected = set(), []

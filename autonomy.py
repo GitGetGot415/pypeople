@@ -150,8 +150,9 @@ def social_pair(world):
                                 if {p.promisor_id, p.recipient_id} == {npc.id, other.id}), default=world.phase_index)
                 purposeful.append((priority, -deadline, rank(npc, other), npc, other, objective))
     if purposeful:
-        _, _, _, npc, partner, objective = max(purposeful, key=lambda choice: choice[:3])
-        return npc, partner, "chat", objective, f"Meeting {partner.name}: {objective}"
+        priority, _, _, npc, partner, objective = max(purposeful, key=lambda choice: choice[:3])
+        purpose = "gossip" if priority == 0.5 or (priority == 1 and npc.goal and npc.goal.kind == "sabotage_relationship") else "chat"
+        return npc, partner, purpose, objective, f"Meeting {partner.name}: {objective}"
 
     food = []
     for npc in available:

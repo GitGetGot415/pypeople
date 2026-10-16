@@ -8,6 +8,7 @@ MOVEMENT_SPEED = 90.0
 SHAKE_SECONDS = 1.0
 WANDER_PAUSE = 0.5
 DECISION_SECONDS = 4.0
+DIALOGUE_WAIT_SECONDS = 60.0
 FAILURE_COOLDOWN = 8.0
 PARTNER_COOLDOWN = 25.0
 SATISFACTION_PHASE_LOSS = 5
@@ -46,6 +47,9 @@ class Simulation:
         self.history = []
         self.events = []
         self.promises = []
+        self.facts = []
+        self.claims = []
+        self.disclosures = []
         self.social_opportunity = False
         self.social_rotation = 0
         for npc in self.npcs:
@@ -86,6 +90,8 @@ class Simulation:
         reference = next((i for i, entry in enumerate(self.history) if entry is record), None)
         event = WorldEvent(self.day, self.phase, kind, [npc.id for npc in participants], text, reference)
         self.events.append(event)
+        from social import record_event_fact
+        record_event_fact(self, event, record)
         del self.events[:-200]
         return event
 
