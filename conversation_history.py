@@ -27,6 +27,7 @@ class ConversationRecord:
     error: str = ""
     origin: str = "player"
     purpose: str = "chat"
+    id: str = field(default_factory=lambda: uuid4().hex)
 
 
 @dataclass
@@ -64,6 +65,26 @@ def remember(npc, partner, event, kind, summary, weight):
         return
     npc.memories.append(Memory(event.id, event.day, event.phase, partner.id, kind, summary[:400], weight))
     del npc.memories[:-20]
+
+
+def relevant_memories(npc, partner_id=None):
+    """Keep a small, deduplicated selection with obligations ahead of routine chat."""
+    goal_target = npc.goal.target_id if npc.goal and npc.goal.status == "active" else None
+    promises = [p for p in npc.world.promises if npc.id in (p.promisor_id, p.recipient_id)
+                and p.status in ("pending", "broken")] if npc.world else []
+    partners = {p.recipient_id if p.promisor_id == npc.id else p.promisor_id for p in promises}
+    ranked = sorted(enumerate(npc.memories), key=lambda entry: (
+        entry[1].partner_id in partners and entry[1].kind in ("promise_created", "promise_broken"),
+        entry[1].partner_id == partner_id, entry[1].partner_id == goal_target,
+        abs(entry[1].weight), entry[0]), reverse=True)
+    seen, selected = set(), []
+    for _, memory in ranked:
+        if memory.id not in seen:
+            selected.append(memory)
+            seen.add(memory.id)
+        if len(selected) == 5:
+            break
+    return selected
 
 
 def describe_opinion_change(person, target, previous, opinion, reason):

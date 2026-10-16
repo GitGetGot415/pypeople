@@ -1,6 +1,7 @@
 import pygame
 
 from character_data import DEFAULT_COLORS, FIELDS
+from social import phase_label
 
 from .button import Button
 from .text import wrap_text
@@ -27,6 +28,9 @@ class StatsScreen:
         self.list_scroll = 0
         self.detail_scroll = 0
         self.scroll_focus = "list"
+        self.show_private = False
+        self.private_toggle_top = None
+        self.promise_links = []
 
     def open_record(self, record):
         self.tab = "Conversations"
@@ -53,6 +57,8 @@ class StatsScreen:
 
     def _detail_lines(self, app):
         lines = []
+        self.private_toggle_top = None
+        self.promise_links = []
 
         def add(text, font=app.font, color=INK):
             for paragraph in str(text).splitlines() or [""]:
@@ -112,6 +118,40 @@ class StatsScreen:
             add(f"Satisfaction: {npc.social:.0f}/100")
             add(f"Carrying: {npc.inventory.get('fruit', 0)} fruit / {npc.inventory_capacity} items")
             add(f"Sociability: {npc.preferences['sociability']:.0%}; generosity: {npc.preferences['generosity']:.0%}", app.small_font, MUTED)
+            gap()
+            add("Personal objective", app.heading_font)
+            goal = npc.goal
+            if goal:
+                add(goal.objective)
+                add(f"{goal.status.title()} / due {phase_label(goal.deadline)}", app.small_font, MUTED)
+                if goal.outcome:
+                    add(goal.outcome, app.small_font)
+                self.private_toggle_top = sum(font.get_linesize() for _, font, _ in lines)
+                add(f"{'Hide' if self.show_private else 'Show'} private motives (observer only)", app.small_font, ACCENT)
+                if self.show_private:
+                    add(f"Motive: {goal.motive}")
+                    add(f"Approach: {goal.approach}")
+                    add(f"Boundary: {goal.boundary}")
+            else:
+                add("No feasible personal objective right now.", color=MUTED)
+            gap()
+            add("Apple promises", app.heading_font)
+            promises = [p for p in app.simulation.promises if npc.id in (p.promisor_id, p.recipient_id)]
+            promises.sort(key=lambda p: (p.status == "pending", p.created_phase), reverse=True)
+            if not promises:
+                add("No promises yet.", color=MUTED)
+            for promise in promises[:8]:
+                giver = app.simulation.npc_by_id(promise.promisor_id)
+                recipient = app.simulation.npc_by_id(promise.recipient_id)
+                top = sum(font.get_linesize() for _, font, _ in lines)
+                add(f"{giver.name} -> {recipient.name}: one apple / {promise.status} [view]", app.small_font, ACCENT)
+                bottom = sum(font.get_linesize() for _, font, _ in lines)
+                self.promise_links.append((top, bottom, promise.conversation_id))
+                add(f"Due {phase_label(promise.deadline)}", app.small_font, MUTED)
+                if promise.outcome:
+                    add(promise.outcome, app.small_font)
+            if npc.pending_social_opinions:
+                add("An opinion could not be saved; the simulation will retry.", app.small_font, MUTED)
             gap()
             add("Recent memories", app.heading_font)
             if not npc.memories:
@@ -195,6 +235,17 @@ class StatsScreen:
                     return
                 if event.button != 1:
                     return
+                if pane == "detail":
+                    content_y = pos[1] - rect.top + scroll
+                    if (self.private_toggle_top is not None
+                            and self.private_toggle_top <= content_y < self.private_toggle_top + app.small_font.get_linesize()):
+                        self.show_private = not self.show_private
+                        return
+                    for top, bottom, record_id in self.promise_links:
+                        if top <= content_y < bottom:
+                            record = next(entry for entry in app.conversation_history if entry.id == record_id)
+                            self.open_record(record)
+                            return
                 track, thumb = self._scrollbar(rect, scroll, limits[pane])
                 if limits[pane] and track.collidepoint(pos):
                     offset = pos[1] - track.top - thumb.height / 2
@@ -208,6 +259,7 @@ class StatsScreen:
                                 self.selected_conversation = entry
                             else:
                                 self.selected_npc = entry
+                                self.show_private = False
                             self.detail_scroll = 0
                             self.scroll_focus = "detail"
                             return

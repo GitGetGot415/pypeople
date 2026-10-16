@@ -168,8 +168,12 @@ class GameScreen:
                     self.rewind_conversation()
                 elif event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE, pygame.K_RIGHT):
                     self.advance_conversation()
-                elif self.retry_button.clicked(event, enabled=bool(self.viewed_conversation.pending_opinions)):
-                    self.viewed_conversation.remember_opinions()
+                elif self.retry_button.clicked(event, enabled=bool(self.viewed_conversation.pending_opinions)
+                                               or bool(self.viewed_conversation.error and not self.viewed_conversation.turns)):
+                    if self.viewed_conversation.pending_opinions:
+                        self.viewed_conversation.remember_opinions()
+                    else:
+                        app.retry_conversation_dialogue(self.viewed_conversation)
                 return
             if self.selected_npc.end_conversation:
                 if self.done_button.clicked(event) or (
@@ -365,7 +369,7 @@ class GameScreen:
         last_page = bool(self.conversation_pages) and self.conversation_page_index == len(self.conversation_pages) - 1
         self.next_button.label = "Done" if last_page else "Next"
         self.next_button.draw(app.window, app.small_font, enabled=bool(self.conversation_pages))
-        if conversation.pending_opinions:
+        if conversation.pending_opinions or (conversation.error and not conversation.turns):
             self.retry_button.draw(app.window, app.small_font)
         if not conversation.arrived:
             text = f"{conversation.initiator.name} is walking over to {conversation.recipient.name}..."

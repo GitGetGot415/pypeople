@@ -1,5 +1,5 @@
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 import math
 import random
@@ -8,7 +8,9 @@ from pathlib import Path
 from uuid import uuid4
 
 from character_data import DIRECTIONS, normalize_opinions
-from conversation_history import ConversationRecord, describe_opinion_change, remember, unsupported_location
+from conversation_history import ConversationRecord, describe_opinion_change, relevant_memories, remember, unsupported_location
+from social import (Goal, check_relationship_goals, commit_agreements, conversation_references, on_transfer,
+                    permitted_proposals, phase_label, private_context, validate_live_agreements)
 from simulation import (
     APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, EAT_SECONDS, FAILURE_COOLDOWN, INVENTORY_CAPACITY,
     MOVEMENT_SPEED, PARTNER_COOLDOWN, SHAKE_SECONDS, SOCIAL_RADIUS,
@@ -120,6 +122,8 @@ class NPC:
         "generosity": random.uniform(0.25, 0.85),
     })
     memories: list = field(default_factory=list)
+    goal: Goal | None = None
+    pending_social_opinions: list = field(default_factory=list)
     owner: str = "autonomous"
     target_id: str | None = None
     activity_elapsed: float = 0.0
@@ -299,10 +303,8 @@ class NPC:
             )
         return math.hypot(point[0] - self.x, point[1] - self.y) <= NPC_RADIUS
 
-    def snapshot(self, tree, partner_id=None):
-        memories = sorted(enumerate(self.memories),
-                          key=lambda entry: (entry[1].partner_id == partner_id, entry[0]), reverse=True)[:5]
-        return {
+    def snapshot(self, tree, partner_id=None, *, private=True):
+        state = {
             "npc_id": self.id,
             "npc_name": self.name,
             "character": {**self.character, "Name": self.name, "Opinions": self.opinions},
@@ -324,10 +326,17 @@ class NPC:
             "time_of_day": self.world.phase if self.world else "day",
             "tree_is_shaking": tree.shaking,
             "last_reply": self.reply,
-            "memories": [{"partner_id": memory.partner_id, "kind": memory.kind,
-                          "summary": memory.summary, "day": memory.day, "phase": memory.phase}
-                         for _, memory in memories],
         }
+        if private:
+            state["memories"] = [{"partner_id": memory.partner_id, "kind": memory.kind,
+                          "summary": memory.summary, "day": memory.day, "phase": memory.phase}
+                                 for memory in relevant_memories(self, partner_id)]
+            state["private_context"] = private_context(self, partner_id)
+        else:
+            state["character"].pop("Opinions", None)
+            for key in ("last_reply", "activity_reason"):
+                state.pop(key, None)
+        return state
 
     @property
     def opinions(self):
@@ -335,6 +344,14 @@ class NPC:
         return {person: entry.copy() for person, entry in self.character.get("Opinions", {}).items()}
 
     def remember_opinions(self, updates):
+        updates = normalize_opinions(updates)
+        if self.world:
+            for person, entry in updates.items():
+                target = next((npc for npc in self.world.npcs if npc.name == person), None)
+                outcomes = [p.outcome for p in self.world.promises if p.status != "pending" and target is not None
+                            and {p.promisor_id, p.recipient_id} == {self.id, target.id}]
+                if outcomes and outcomes[-1] not in entry["reason"]:
+                    entry["reason"] = (outcomes[-1] + " Current impression: " + entry["reason"])[:400]
         opinions = normalize_opinions({**self.opinions, **updates})
         if opinions == self.opinions:
             return
@@ -346,6 +363,9 @@ class NPC:
             temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
             temporary.replace(self.character_path)
         self.character["Opinions"] = opinions
+        if self.world:
+            interaction = self.conversation or self.gift
+            check_relationship_goals(self.world, self, interaction.record if interaction else None)
 
     def _face_when_still(self):
         point = self.world.tree.interaction_point if self.world else None
@@ -574,6 +594,11 @@ class Conversation:
                                          origin=origin, purpose=purpose)
         self.turns = []
         self.pending_opinions = []
+        self.proposals = []
+        self.accepted_proposals = []
+        self.social_effects_applied = False
+        self.context_references = {}
+        self.record.id = self.id
         self.error = ""
         self.saved_states = []
         # Stand side by side with a visible gap, using the side with room.
@@ -625,6 +650,8 @@ class Conversation:
     def set_response(self, response):
         if not self.accepts_response:
             return
+        # Reject before displaying any agreement or committing any social effects.
+        validate_live_agreements(self, response)
         self.dialogue_state = "ready"
         self.talking_remaining = 4.0
         self.turns = response.turns
@@ -650,6 +677,13 @@ class Conversation:
                 (self.recipient, self.initiator, response.recipient_opinion),
             )
         ]
+        self.accepted_proposals = list(response.accepted_proposals)
+        if not self.social_effects_applied:
+            commit_agreements(self)
+            for npc, partner in ((self.initiator, self.recipient), (self.recipient, self.initiator)):
+                if npc.goal and npc.goal.status == "active" and npc.goal.target_id == partner.id:
+                    npc.goal.last_attempt_phase = npc.world.phase_index
+            self.social_effects_applied = True
         self.remember_opinions()
         self.reactions = [
             (entry.reason, max(-4.0, min(4.0, entry.opinion / 20)))
@@ -750,13 +784,14 @@ class Conversation:
     def snapshot(self, tree, npcs):
         def participant(npc):
             involved = npc is self.initiator or npc is self.recipient
-            state = npc.snapshot(tree, self.other(npc).id) if involved else npc.snapshot(tree)
-            if not involved:
-                state.pop("memories", None)
+            state = npc.snapshot(tree, self.other(npc).id) if involved else npc.snapshot(tree, private=False)
             # These replies were addressed to the player before the NPCs met.
             state.pop("last_reply", None)
             return state
 
+        if self.dialogue_state == "waiting":
+            self.proposals = permitted_proposals(self)
+            self.context_references = conversation_references(self)
         return {
             "request_kind": "conversation",
             "interaction_id": self.id,
@@ -767,6 +802,14 @@ class Conversation:
             "initiator": participant(self.initiator),
             "recipient": participant(self.recipient),
             "topic": self.topic,
+            "objective": self.topic,
+            "permitted_proposals": [dict(
+                asdict(p), item="fruit", quantity=1, deadline_label=phase_label(p.deadline),
+                giver_name=self.initiator.world.npc_by_id(p.promisor_id).name,
+                receiver_name=self.initiator.world.npc_by_id(p.recipient_id).name,
+                offer_speaker="initiator" if p.promisor_id == self.initiator.id else "recipient",
+                acceptance_speaker="initiator" if p.recipient_id == self.initiator.id else "recipient",
+            ) for p in self.proposals],
             "initiator_opinion_of_recipient": self.initiator.opinions.get(self.recipient.name),
             "recipient_opinion_of_initiator": self.recipient.opinions.get(self.initiator.name),
             "nearby_npcs": [participant(npc) for npc in npcs if npc is not self.initiator and npc is not self.recipient],
@@ -775,6 +818,11 @@ class Conversation:
     def finish(self, tree):
         if not self.active:
             return
+        if self.pending_opinions:
+            self.remember_opinions()
+            if self.pending_opinions:
+                self.talking_remaining = DECISION_SECONDS
+                return
         self.active = False
         self.record.status = "Finished"
         if not self.turns:
@@ -879,6 +927,7 @@ class Gift:
             self.outcome_event_id = event.id
             remember(giver, recipient, event, "gave_fruit", f"I gave {recipient.name} {apples}.", 2)
             remember(recipient, giver, event, "received_fruit", f"{giver.name} shared {apples} with me.", 6)
+            on_transfer(giver.world, giver, recipient, self.quantity, event, self.record)
             if self.thanks:
                 self.record.turns.append((recipient.name, " ".join(part.text.strip() for part in self.thanks)))
             self.record.outcomes[0:1] = [f"Gave {self.quantity} {self.item} to {recipient.name}."]

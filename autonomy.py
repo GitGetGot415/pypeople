@@ -5,6 +5,7 @@ import math
 from npc import Behavior
 from conversation_history import memory_bias
 from simulation import APPLE_SATISFACTION, DECISION_SECONDS, SOCIAL_START
+from social import goal_attempt_cooling_down, pair_objective, pending_promises
 
 
 def company_point(npc, partner, spacing=0):
@@ -39,23 +40,47 @@ def reconsider(npc, world):
         npc.finish_activity(world, failed=True)
     if npc.owner != "autonomous" or npc.selected or npc.request_pending:
         return
+    if any(npc.id in (action.npc_id, action.target_id) for action in world.pending_actions):
+        return
     if npc.decision_remaining > 0:
         return
     npc.decision_remaining = DECISION_SECONDS
-    if npc.behavior in (Behavior.HARVEST, Behavior.COMPANY, Behavior.EAT):
+    if npc.behavior in (Behavior.HARVEST, Behavior.EAT):
+        return
+
+    obligations = sorted(pending_promises(world, npc.id), key=lambda promise: (promise.deadline, promise.created_phase))
+    goal = npc.goal if npc.goal and npc.goal.status == "active" else None
+    delivery_targets = [(promise.recipient_id, "Delivering a promised apple") for promise in obligations]
+    if goal and goal.kind == "help_with_apple":
+        delivery_targets.append((goal.target_id, "Giving an apple to complete my objective"))
+    if npc.inventory.get("fruit", 0) > 0 and world.company_available(npc):
+        for target_id, reason in delivery_targets:
+            target = world.npc_by_id(target_id)
+            if (target is not None and world.company_available(target) and target.inventory_space > 0
+                    and target.id not in npc.cooldowns and npc.id not in target.cooldowns
+                    and company_point(npc, target) is not None):
+                gift = npc.give_items(target, "fruit", 1)
+                gift.record.origin = "autonomous"
+                world.history.append(gift.record)
+                npc.reason = f"{reason} to {target.name}"
+                return
+    apples_needed = len({target_id for target_id, _ in delivery_targets})
+    needs_apple = npc.inventory.get("fruit", 0) < min(apples_needed, npc.inventory_capacity)
+    if npc.behavior == Behavior.COMPANY and not needs_apple:
         return
 
     def distance(point):
         return math.hypot(npc.x - point[0], npc.y - point[1]) / 90
 
     candidates = [(1 + npc.rng.random(), Behavior.WANDER, None, "Exploring the world")]
-    if npc.inventory.get("fruit", 0) > 0 and npc.social <= 100 - APPLE_SATISFACTION:
+    if npc.inventory.get("fruit", 0) > apples_needed and npc.social <= 100 - APPLE_SATISFACTION:
         candidates.append((130 - npc.social, Behavior.EAT, None, "Eating an apple to improve satisfaction"))
     tree = world.tree
     if (tree.fruit > 0 and tree.reserved_by in (None, npc) and npc.inventory_space > 0
             and tree.id not in npc.cooldowns and npc.can_reach(tree.interaction_point)):
-        score = 24 - sum(npc.inventory.values()) * 4 - distance(tree.interaction_point)
-        candidates.append((score, Behavior.HARVEST, tree.id, "Collecting fruit for my inventory"))
+        score = 24 - sum(npc.inventory.values()) * 4 - distance(tree.interaction_point) + (110 if needs_apple else 0)
+        candidates.append((score, Behavior.HARVEST, tree.id,
+                           "Collecting an apple for a promise or helping goal" if needs_apple else "Collecting fruit for my inventory"))
     if npc.social <= SOCIAL_START:
         partners = [other for other in world.npcs if other is not npc and world.company_available(other)
                     and other.id not in npc.cooldowns and company_point(npc, other) is not None]
@@ -107,11 +132,26 @@ def social_pair(world):
     def partners(npc):
         return [other for other in available if other is not npc
                 and other.id not in npc.cooldowns and npc.id not in other.cooldowns
+                and (pair_objective(world, npc, other)[0] >= 2
+                     or not (goal_attempt_cooling_down(npc, other, world)
+                             or goal_attempt_cooling_down(other, npc, world)))
                 and company_point(npc, other) is not None]
 
     def rank(npc, other):
         return (npc.opinions.get(other.name, {}).get("opinion", 0) * 0.08
                 + memory_bias(npc, other.id) - math.hypot(npc.x - other.x, npc.y - other.y) / 90)
+
+    purposeful = []
+    for npc in available:
+        for other in partners(npc):
+            priority, objective = pair_objective(world, npc, other)
+            if priority:
+                deadline = min((p.deadline for p in pending_promises(world)
+                                if {p.promisor_id, p.recipient_id} == {npc.id, other.id}), default=world.phase_index)
+                purposeful.append((priority, -deadline, rank(npc, other), npc, other, objective))
+    if purposeful:
+        _, _, _, npc, partner, objective = max(purposeful, key=lambda choice: choice[:3])
+        return npc, partner, "chat", objective, f"Meeting {partner.name}: {objective}"
 
     food = []
     for npc in available:

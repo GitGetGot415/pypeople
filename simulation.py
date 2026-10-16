@@ -35,7 +35,7 @@ class PendingAction:
 
 
 class Simulation:
-    def __init__(self, npcs, tree=None):
+    def __init__(self, npcs, tree=None, *, assign_goals=True):
         from npc import Tree
 
         self.npcs = npcs
@@ -45,16 +45,27 @@ class Simulation:
         self.pending_actions = []
         self.history = []
         self.events = []
+        self.promises = []
         self.social_opportunity = False
         self.social_rotation = 0
         for npc in self.npcs:
             npc.world = self
+        if assign_goals:
+            from social import assign_goal
+            for npc in self.npcs:
+                assign_goal(npc, self)
+
+    @property
+    def phase_index(self):
+        from social import phase_index
+        return phase_index(self.day, self.phase)
 
     @property
     def phase_label(self):
         return f"Day {self.day} / {self.phase.title()}"
 
     def next_phase(self):
+        from social import advance_social_phase
         if self.phase == "day":
             self.phase = "evening"
         elif self.phase == "evening":
@@ -65,6 +76,7 @@ class Simulation:
         for npc in self.npcs:
             npc.social = max(0.0, npc.social - SATISFACTION_PHASE_LOSS)
         self.tree.fruit = min(self.tree.capacity, self.tree.fruit + FRUIT_PER_PHASE)
+        advance_social_phase(self)
         self.social_opportunity = True
         self.publish("phase", [], f"Time changed to {self.phase}.")
 
@@ -117,6 +129,10 @@ class Simulation:
         self.tree.update(dt)
         for npc in self.npcs:
             npc.update_cooldowns(dt)
+            if npc.pending_social_opinions and npc.decision_remaining == 0:
+                from social import apply_opinion_effects
+                if not apply_opinion_effects(npc):
+                    npc.decision_remaining = DECISION_SECONDS
         # Finish interactions (including atomic request-to-gift handoffs) before decisions.
         interactions = {id(npc.conversation or npc.gift): npc.conversation or npc.gift
                         for npc in self.npcs if npc.conversation or npc.gift}

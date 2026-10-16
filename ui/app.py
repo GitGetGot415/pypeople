@@ -242,7 +242,7 @@ class Application:
             return
         snapshot = npc.snapshot(self.tree)
         snapshot["other_npcs"] = [
-            {**{key: value for key, value in other.snapshot(self.tree).items() if key != "memories"},
+            {**other.snapshot(self.tree, private=False),
              "available_to_talk": other.conversation is None and other.gift is None and not other.eating and not other.request_pending}
             for other in self.npcs if other is not npc
         ]
@@ -369,6 +369,19 @@ class Application:
         self.request_history = None
         self.request_npc = conversation.initiator
 
+    def retry_conversation_dialogue(self, conversation):
+        if conversation.active or conversation.turns or self.requests.busy:
+            return
+        try:
+            replacement = self.simulation.start_conversation(
+                conversation.initiator, conversation.recipient, conversation.topic,
+                origin=conversation.origin, purpose=conversation.purpose)
+        except ValueError as exc:
+            conversation.error = str(exc)
+            return
+        self.game.viewed_conversation = replacement
+        self.game._conversation_page_turns = None
+
     def handle_event(self, event):
         if event.type == pygame.QUIT:
             self.running = False
@@ -387,7 +400,10 @@ class Application:
                     if error:
                         conversation.fail_dialogue(error)
                     else:
-                        conversation.set_response(result)
+                        try:
+                            conversation.set_response(result)
+                        except ValueError as exc:
+                            conversation.fail_dialogue(str(exc))
                 continue
             npc = self.request_npc
             if npc is None:

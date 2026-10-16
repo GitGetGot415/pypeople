@@ -10,9 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from character_data import normalize_character, normalize_opinions
 from conversation_history import ConversationRecord, Memory, WorldEvent
-from llm import ConversationPart, ConversationTurn, EmotionReaction
+from llm import AcceptedProposal, ConversationPart, ConversationTurn, EmotionReaction
 from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree, WORLD_HEIGHT, WORLD_WIDTH
 from simulation import EAT_SECONDS, PendingAction, SHAKE_SECONDS, Simulation
+from social import Goal, GoalKind, OpinionEffect, Promise, Proposal, phase_index, validate_agreements
 
 SAVE_DIRECTORY = Path(__file__).resolve().parent / "saves"
 
@@ -60,7 +61,8 @@ class MemoryState(SaveModel):
     day: int = Field(ge=1)
     phase: Literal["day", "evening", "night"]
     partner_id: str
-    kind: Literal["gave_fruit", "received_fruit", "refused", "kept_fruit", "conversation"]
+    kind: Literal["gave_fruit", "received_fruit", "refused", "kept_fruit", "conversation",
+                  "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed"]
     summary: str = Field(max_length=400)
     weight: float = Field(ge=-12, le=12)
 
@@ -69,10 +71,55 @@ class EventState(SaveModel):
     id: str = Field(min_length=1)
     day: int = Field(ge=1)
     phase: Literal["day", "evening", "night"]
-    kind: Literal["phase", "food_requested", "food_refused", "fruit_shared", "conversation_completed", "interaction_failed"]
+    kind: Literal["phase", "food_requested", "food_refused", "fruit_shared", "conversation_completed", "interaction_failed",
+                  "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed"]
     participants: list[str] = Field(max_length=2)
     text: str
     history: int | None = Field(ge=0)
+
+
+class GoalState(SaveModel):
+    id: str = Field(min_length=1)
+    kind: GoalKind
+    target_id: str
+    objective: str = Field(min_length=1, max_length=400)
+    motive: str = Field(min_length=1, max_length=400)
+    approach: str = Field(min_length=1, max_length=400)
+    boundary: str = Field(min_length=1, max_length=400)
+    created_phase: int = Field(ge=0)
+    deadline: int = Field(ge=0)
+    baseline_opinion: int = Field(ge=-100, le=100)
+    status: Literal["active", "completed", "failed"]
+    resolution_event_id: str | None
+    resolved_phase: int | None = Field(ge=0)
+    outcome: str
+    last_attempt_phase: int | None = Field(ge=0)
+
+
+class ProposalState(SaveModel):
+    id: str = Field(min_length=1)
+    promisor_id: str
+    recipient_id: str
+    deadline: int = Field(ge=0)
+
+
+class PromiseState(ProposalState):
+    conversation_id: str = Field(min_length=1)
+    created_phase: int = Field(ge=0)
+    item: Literal["fruit"]
+    quantity: Literal[1]
+    status: Literal["pending", "fulfilled", "broken"]
+    resolution_event_id: str | None
+    resolved_phase: int | None = Field(ge=0)
+    outcome: str
+    consequence_event_id: str | None
+
+
+class OpinionEffectState(SaveModel):
+    event_id: str = Field(min_length=1)
+    target_id: str
+    delta: Literal[-6, 4]
+    reason: str = Field(min_length=1, max_length=400)
 
 
 class NPCState(ActivityState):
@@ -88,6 +135,8 @@ class NPCState(ActivityState):
     inventory_capacity: int = Field(ge=1)
     preferences: PreferencesState
     memories: list[MemoryState] = Field(max_length=20)
+    goal: GoalState | None
+    pending_social_opinions: list[OpinionEffectState]
     command_revision: int = Field(ge=0)
 
     @field_validator("character")
@@ -103,6 +152,7 @@ class NPCState(ActivityState):
 
 
 class HistoryState(SaveModel):
+    id: str = Field(min_length=1)
     participants: tuple[str, str]
     topic: str
     status: str
@@ -133,6 +183,10 @@ class ConversationState(SaveModel):
     turns: list[ConversationTurn] = Field(max_length=8)
     saved_states: tuple[ActivityState, ActivityState]
     pending_opinions: list[tuple[int, dict]]
+    proposals: list[ProposalState] = Field(max_length=2)
+    accepted_proposals: list[AcceptedProposal] = Field(max_length=2)
+    social_effects_applied: bool
+    context_references: dict[str, Literal["active", "completed", "failed", "pending", "fulfilled", "broken"]]
 
     @field_validator("pending_opinions")
     @classmethod
@@ -180,6 +234,7 @@ class SimulationState(SaveModel):
     day: int = Field(ge=1)
     phase: Literal["day", "evening", "night"]
     events: list[EventState] = Field(max_length=200)
+    promises: list[PromiseState]
     social_opportunity: bool
     social_rotation: int = Field(ge=0)
     npcs: list[NPCState] = Field(min_length=1)
@@ -206,6 +261,53 @@ class SimulationState(SaveModel):
         event_ids = [event.id for event in self.events]
         if len(set(event_ids)) != len(event_ids):
             raise ValueError("Duplicate event IDs.")
+        now = phase_index(self.day, self.phase)
+        history_by_id = {entry.id: entry for entry in self.history}
+        if len(history_by_id) != len(self.history):
+            raise ValueError("Duplicate history IDs.")
+        promise_ids, pending_pairs, pending_counts = set(), set(), {}
+        goal_ids = [npc.goal.id for npc in self.npcs if npc.goal]
+        if len(set(goal_ids)) != len(goal_ids):
+            raise ValueError("Duplicate goal IDs.")
+        retained_events = {event.id: event for event in self.events}
+
+        def validate_resolution(record, active):
+            if record.created_phase > now or record.deadline < record.created_phase:
+                raise ValueError("Invalid social deadline.")
+            if active:
+                if record.deadline < now or record.resolved_phase is not None or record.resolution_event_id or record.outcome:
+                    raise ValueError("Invalid active social outcome.")
+            elif (record.resolved_phase is None or not record.resolution_event_id or not record.outcome
+                  or not record.created_phase <= record.resolved_phase <= now):
+                raise ValueError("Invalid resolved social outcome.")
+
+        for promise in self.promises:
+            pair = (promise.promisor_id, promise.recipient_id)
+            origin = history_by_id.get(promise.conversation_id)
+            if (promise.id in promise_ids or pair[0] == pair[1] or any(npc_id not in ids for npc_id in pair)
+                    or origin is None or origin.purpose != "chat"
+                    or {name.casefold() for name in origin.participants} != {names[ids.index(npc_id)] for npc_id in pair}):
+                raise ValueError("Invalid promise references.")
+            validate_resolution(promise, promise.status == "pending")
+            if (promise.consequence_event_id is not None) != (promise.status != "pending"):
+                raise ValueError("Invalid promise consequence reference.")
+            if promise.status == "broken" and promise.resolved_phase <= promise.deadline:
+                raise ValueError("A promise breaks only after its deadline phase.")
+            if promise.status == "fulfilled" and promise.resolved_phase > promise.deadline:
+                raise ValueError("A late gift cannot fulfill an expired promise.")
+            event = retained_events.get(promise.resolution_event_id)
+            if event is not None and (event.kind != ("fruit_shared" if promise.status == "fulfilled" else "promise_broken")
+                                      or event.participants != list(pair)):
+                raise ValueError("Invalid promise resolution event.")
+            event = retained_events.get(promise.consequence_event_id)
+            if event is not None and (event.kind != f"promise_{promise.status}" or event.participants != list(pair)):
+                raise ValueError("Invalid promise consequence event.")
+            if promise.status == "pending":
+                pending_counts[pair[0]] = pending_counts.get(pair[0], 0) + 1
+                if pair in pending_pairs or pending_counts[pair[0]] > 2:
+                    raise ValueError("Invalid outstanding promises.")
+                pending_pairs.add(pair)
+            promise_ids.add(promise.id)
         for event in self.events:
             if (any(participant not in ids for participant in event.participants)
                     or len(set(event.participants)) != len(event.participants)
@@ -216,6 +318,29 @@ class SimulationState(SaveModel):
                 raise ValueError("Duplicate memories.")
             if any(memory.partner_id not in ids or memory.partner_id == npc.id for memory in npc.memories):
                 raise ValueError("Invalid memory partner.")
+            if npc.goal:
+                if npc.goal.target_id not in ids or npc.goal.target_id == npc.id:
+                    raise ValueError("Invalid goal target.")
+                validate_resolution(npc.goal, npc.goal.status == "active")
+                if npc.goal.last_attempt_phase is not None and not npc.goal.created_phase <= npc.goal.last_attempt_phase <= now:
+                    raise ValueError("Invalid goal attempt phase.")
+                if npc.goal.status == "completed" and npc.goal.resolved_phase > npc.goal.deadline:
+                    raise ValueError("A goal cannot complete after its deadline.")
+                if npc.goal.status == "failed" and npc.goal.resolved_phase <= npc.goal.deadline:
+                    raise ValueError("A goal expires after its deadline phase.")
+                event = retained_events.get(npc.goal.resolution_event_id)
+                if event is not None and (event.kind != f"goal_{npc.goal.status}"
+                                          or event.participants != [npc.id, npc.goal.target_id]):
+                    raise ValueError("Invalid goal resolution event.")
+            if (len({effect.event_id for effect in npc.pending_social_opinions}) != len(npc.pending_social_opinions)
+                    or any(effect.target_id not in ids or effect.target_id == npc.id for effect in npc.pending_social_opinions)):
+                raise ValueError("Invalid pending social opinion effects.")
+            for effect in npc.pending_social_opinions:
+                promise = next((p for p in self.promises if p.consequence_event_id == effect.event_id), None)
+                if (promise is None or promise.recipient_id != npc.id or promise.promisor_id != effect.target_id
+                        or effect.delta != (4 if promise.status == "fulfilled" else -6)
+                        or effect.reason != promise.outcome):
+                    raise ValueError("Opinion effect does not match a committed promise outcome.")
         if (self.tree.shaker is None) != (self.tree.shake_elapsed is None):
             raise ValueError("A shaking tree needs a shaker and elapsed time.")
         if self.tree.reserved_by is not None and self.tree.reserved_by not in ids:
@@ -252,6 +377,8 @@ class SimulationState(SaveModel):
                 raise ValueError("Invalid conversation participants.")
             if conversation.record >= len(self.history) or conversation.record in records:
                 raise ValueError("Invalid conversation history reference.")
+            if self.history[conversation.record].id != conversation.id:
+                raise ValueError("Conversation identity does not match its history.")
             if not conversation.arrived and self.npcs[pair[0]].destination is None:
                 raise ValueError("A meeting in progress needs a destination.")
             if self.npcs[pair[1]].destination is not None:
@@ -266,6 +393,27 @@ class SimulationState(SaveModel):
                     or self.history[conversation.record].purpose != conversation.purpose):
                 raise ValueError("Conversation history purpose does not match.")
             ready = conversation.dialogue_state == "ready"
+            if conversation.social_effects_applied != ready:
+                raise ValueError("Conversation social effects must match accepted dialogue.")
+            if len({p.id for p in conversation.proposals}) != len(conversation.proposals):
+                raise ValueError("Duplicate proposal IDs.")
+            pair_ids = {self.npcs[index].id for index in pair}
+            if any({p.promisor_id, p.recipient_id} != pair_ids for p in conversation.proposals):
+                raise ValueError("Invalid proposal participants.")
+            validate_agreements(conversation.accepted_proposals, [p.model_dump() for p in conversation.proposals],
+                                conversation.turns, self.npcs[pair[0]].id, self.npcs[pair[1]].id)
+            if not ready and conversation.accepted_proposals:
+                raise ValueError("Unaccepted dialogue cannot have agreements.")
+            if {p.id for p in self.promises if p.conversation_id == conversation.id} != {
+                    agreement.proposal_id for agreement in conversation.accepted_proposals}:
+                raise ValueError("Conversation agreements do not match applied promises.")
+            for agreement in conversation.accepted_proposals:
+                promise = next((p for p in self.promises if p.id == agreement.proposal_id), None)
+                proposal = next(p for p in conversation.proposals if p.id == agreement.proposal_id)
+                if (promise is None or promise.conversation_id != self.history[conversation.record].id
+                        or (promise.promisor_id, promise.recipient_id, promise.deadline)
+                        != (proposal.promisor_id, proposal.recipient_id, proposal.deadline)):
+                    raise ValueError("Accepted agreement is missing its applied promise.")
             if ready != bool(conversation.turns) or (ready and not conversation.arrived):
                 raise ValueError("Invalid dialogue progress.")
             if ready and len(conversation.reactions) != 2:
@@ -275,7 +423,8 @@ class SimulationState(SaveModel):
                           or (conversation.purpose == "chat" and turn_count < 4)):
                 raise ValueError("Invalid conversation turn count.")
             if conversation.purpose == "food_request":
-                if (conversation.origin != "autonomous" or bool(conversation.food_outcome) != conversation.arrived
+                if (conversation.proposals or conversation.accepted_proposals
+                        or conversation.origin != "autonomous" or bool(conversation.food_outcome) != conversation.arrived
                         or bool(conversation.food_reason) != conversation.arrived
                         or bool(conversation.handoff_thanks) != (ready and conversation.food_outcome == "accepted")
                         or bool(conversation.outcome_event_id) != (ready and conversation.food_outcome in ("need", "refused", "unavailable"))):
@@ -494,6 +643,8 @@ def capture_simulation(app):
             inventory=npc.inventory.copy(), inventory_capacity=npc.inventory_capacity,
             preferences=npc.preferences.copy(), command_revision=npc.command_revision,
             memories=[asdict(memory) for memory in npc.memories],
+            goal=asdict(npc.goal) if npc.goal else None,
+            pending_social_opinions=[asdict(effect) for effect in npc.pending_social_opinions],
         ))
         gift = npc.gift
         if gift is not None and gift.initiator is npc:
@@ -519,11 +670,15 @@ def capture_simulation(app):
             arrived=conversation.arrived, turns=conversation.turns,
             saved_states=[ActivityState(**activity) for activity in conversation.saved_states],
             pending_opinions=[(npc_indices[id(person)], opinions) for person, opinions in conversation.pending_opinions],
+            proposals=[asdict(p) for p in conversation.proposals], accepted_proposals=conversation.accepted_proposals,
+            social_effects_applied=conversation.social_effects_applied,
+            context_references=conversation.context_references.copy(),
         ))
     world = app.simulation
     return SimulationState(
         day=world.day, phase=world.phase,
         events=[asdict(event) for event in world.events],
+        promises=[asdict(promise) for promise in world.promises],
         social_opportunity=world.social_opportunity, social_rotation=world.social_rotation,
         npcs=npcs, history=history, conversations=conversations, gifts=gifts,
         tree=TreeState(id=app.tree.id, x=app.tree.x, y=app.tree.y, fruit=app.tree.fruit,
@@ -549,6 +704,8 @@ def restore_simulation(state):
             inventory=saved.inventory.copy(), inventory_capacity=saved.inventory_capacity,
             preferences=saved.preferences.model_dump(), command_revision=saved.command_revision,
             memories=[Memory(**memory.model_dump()) for memory in saved.memories],
+            goal=Goal(**saved.goal.model_dump()) if saved.goal else None,
+            pending_social_opinions=[OpinionEffect(**effect.model_dump()) for effect in saved.pending_social_opinions],
         )
         npc.restore_activity({name: getattr(saved, name) for name in ACTIVITY_FIELDS})
         npcs.append(npc)
@@ -557,7 +714,7 @@ def restore_simulation(state):
                 capacity=state.tree.capacity,
                 shake_elapsed=state.tree.shake_elapsed, shaker=by_id.get(state.tree.shaker),
                 reserved_by=by_id.get(state.tree.reserved_by))
-    world = Simulation(npcs, tree)
+    world = Simulation(npcs, tree, assign_goals=False)
     world.day, world.phase = state.day, state.phase
     world.pending_actions = [PendingAction(**action.model_dump()) for action in state.pending_actions]
     for action in world.pending_actions:
@@ -565,17 +722,20 @@ def restore_simulation(state):
     history = [ConversationRecord(**saved.model_dump()) for saved in state.history]
     world.history = history
     world.events = [WorldEvent(**event.model_dump()) for event in state.events]
+    world.promises = [Promise(**promise.model_dump()) for promise in state.promises]
     world.social_opportunity, world.social_rotation = state.social_opportunity, state.social_rotation
     for saved in state.conversations:
         # Loading bypasses __init__: it would interrupt the saved activities again.
         conversation = Conversation.__new__(Conversation)
         for name in ("id", "origin", "purpose", "dialogue_state", "wait_elapsed", "talking_remaining",
-                     "food_outcome", "food_reason", "handoff_thanks", "outcome_event_id", "reactions"):
+                     "food_outcome", "food_reason", "handoff_thanks", "outcome_event_id", "reactions",
+                     "accepted_proposals", "social_effects_applied", "context_references"):
             setattr(conversation, name, getattr(saved, name))
         conversation.initiator, conversation.recipient = npcs[saved.initiator], npcs[saved.recipient]
         conversation.topic, conversation.arrived, conversation.active = saved.topic, saved.arrived, True
         conversation.record = history[saved.record]
         conversation.turns = saved.turns
+        conversation.proposals = [Proposal(**proposal.model_dump()) for proposal in saved.proposals]
         conversation.pending_opinions = [(npcs[index], opinions) for index, opinions in saved.pending_opinions]
         conversation.saved_states = [activity.model_dump() for activity in saved.saved_states]
         for npc in (conversation.initiator, conversation.recipient):
