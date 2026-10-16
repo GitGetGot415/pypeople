@@ -8,7 +8,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from character_data import DIRECTIONS, normalize_opinions
-from conversation_history import ConversationRecord, describe_opinion_change, relevant_memories, remember, unsupported_location
+from conversation_history import (ConversationRecord, describe_opinion_change, relevant_memories, remember,
+                                  shared_conversation_history)
 from social import (Goal, check_relationship_goals, commit_agreements, commit_information, conversation_references, gossip_claim,
                     information_views, on_transfer, permitted_proposals, phase_label, prepare_information,
                     private_context, validate_live_agreements)
@@ -578,8 +579,6 @@ class Conversation:
             raise ValueError("Choose another NPC who is free to talk.")
         self.initiator = initiator
         self.recipient = recipient
-        if unsupported_location(topic):
-            topic = "The current surroundings and how things are going"
         self.topic = topic
         self.id = uuid4().hex
         self.origin, self.purpose = origin, purpose
@@ -824,6 +823,7 @@ class Conversation:
                              "reason": self.food_reason, "transferred": False} if self.purpose == "food_request" else None,
             "initiator": initiator,
             "recipient": recipient,
+            "shared_history": shared_conversation_history(self),
             "_information_validation": asdict(self.information_context) if self.information_context else None,
             "topic": "The initiator will introduce their own concern or account; it is not shared knowledge yet.",
             "permitted_proposals": [dict(

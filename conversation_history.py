@@ -1,20 +1,7 @@
 """Session records of dialogue and its outcomes."""
 
 from dataclasses import dataclass, field
-import re
 from uuid import uuid4
-
-
-# These destinations do not exist in this simulation. Reject invented outings
-# before they become dialogue or context for a later conversation.
-UNSUPPORTED_LOCATIONS = re.compile(
-    r"\b(?:markets?|shops?|buildings?|towns?|cities|city|villages?|roads?|streets?|caf[eé]s?|restaurants?)\b",
-    re.IGNORECASE,
-)
-
-
-def unsupported_location(text):
-    return UNSUPPORTED_LOCATIONS.search(text) is not None
 
 
 @dataclass
@@ -86,6 +73,33 @@ def relevant_memories(npc, partner_id=None):
         if len(selected) == 5:
             break
     return selected
+
+
+def shared_conversation_history(conversation):
+    """Describe this pair's actual earlier dialogue, excluding the current request."""
+    world = conversation.initiator.world
+    pair = {conversation.initiator.name, conversation.recipient.name}
+    records = {index for index, record in enumerate(world.history)
+               if record.id != conversation.id and set(record.participants) == pair and len(record.turns) >= 2}
+    dated = {event.history for event in world.events
+             if event.history in records and event.kind in ("conversation_completed", "food_requested")}
+    days = sorted({event.day for event in world.events
+                   if event.history in dated and event.kind in ("conversation_completed", "food_requested")})
+    recent_dialogue = [
+        {"excerpts": [(speaker, text[:400]) for speaker, text in world.history[index].turns]}
+        for index in sorted(records)[-2:]
+    ]
+    pair_ids = {conversation.initiator.id, conversation.recipient.id}
+    # These committed interactions are known to both participants. Private goals,
+    # beliefs, deception, and opinion changes must stay in their owner's context.
+    shared_events = [event for event in world.events if set(event.participants) == pair_ids
+                     and event.kind in ("fruit_shared", "food_requested", "food_refused", "promise_created",
+                                        "promise_fulfilled", "promise_broken")]
+    return {"first_conversation": not records, "previous_conversation_count": len(records),
+            "recorded_conversation_days": days, "has_undated_conversations": bool(records - dated),
+            "recent_dialogue": recent_dialogue,
+            "confirmed_events": [{"kind": event.kind, "day": event.day, "phase": event.phase, "text": event.text}
+                                 for event in shared_events[-6:]]}
 
 
 def describe_opinion_change(person, target, previous, opinion, reason):
