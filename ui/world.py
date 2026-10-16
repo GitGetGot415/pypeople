@@ -32,7 +32,7 @@ def tree_artwork():
     return _tree_artwork
 
 
-def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), phase="day", zoom=1.0):
+def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), phase="day", zoom=1.0, viewport=None):
     # Scale the ground separately; sprites are drawn from their original artwork.
     scene = pygame.Surface((WORLD_WIDTH, WORLD_HEIGHT))
     _draw_scene(scene, npcs, tree, font, phase)
@@ -41,7 +41,8 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
         scene = pygame.transform.smoothscale(scene, (round(WORLD_WIDTH * zoom), round(WORLD_HEIGHT * zoom)))
     previous_clip = surface.get_clip()
     scene_rect = scene.get_rect(topleft=(round(camera_offset[0]), round(camera_offset[1])))
-    surface.set_clip(pygame.Rect(0, 0, WORLD_WIDTH, WORLD_HEIGHT).clip(previous_clip).clip(scene_rect))
+    viewport = surface.get_rect() if viewport is None else viewport
+    surface.set_clip(viewport.clip(previous_clip).clip(scene_rect))
     surface.blit(scene, scene_rect)
     _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, phase, zoom)
     surface.set_clip(previous_clip)

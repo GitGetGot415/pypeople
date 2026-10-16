@@ -4,7 +4,7 @@ from npc import EMOTION_THRESHOLD, WORLD_HEIGHT, WORLD_WIDTH
 from .button import Button
 from .text import draw_wrapped_text, paginate_text, wrap_text
 from .text_input import TextInput
-from .theme import INK, MUTED, PAPER
+from .theme import INK, MUTED, PAPER, WINDOW_SIZE
 from .world import draw_world
 
 
@@ -83,10 +83,20 @@ class GameScreen:
         if self.selected_npc is not None:
             self.selected_npc.reply = self.reply
 
+    @property
+    def world_viewport(self):
+        height = WORLD_HEIGHT if self.dialogue_open else WINDOW_SIZE[1]
+        return pygame.Rect(0, 0, WINDOW_SIZE[0], height)
+
+    @property
+    def view_offset(self):
+        return (self.camera_offset[0] + (WINDOW_SIZE[0] - WORLD_WIDTH) / 2,
+                self.camera_offset[1] + (WINDOW_SIZE[1] - WORLD_HEIGHT) / 2)
+
     def handle_event(self, app, event):
         if event.type == pygame.MOUSEWHEEL:
             pos = getattr(event, "pos", pygame.mouse.get_pos())
-            if 0 <= pos[0] < WORLD_WIDTH and 0 <= pos[1] < WORLD_HEIGHT and not any(
+            if self.world_viewport.collidepoint(pos) and not any(
                 button.rect.collidepoint(pos)
                 for button in (self.menu_button, self.stats_button, self.save_button, self.clock_button)
             ):
@@ -95,7 +105,7 @@ class GameScreen:
         if self.handle_clock_event(app, event):
             return
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            if 0 <= event.pos[1] < WORLD_HEIGHT and not any(
+            if self.world_viewport.collidepoint(event.pos) and not any(
                 button.rect.collidepoint(event.pos) for button in (self.menu_button, self.stats_button, self.save_button)
             ):
                 self.pan_start = event.pos
@@ -114,7 +124,7 @@ class GameScreen:
                 self.camera_offset[1] += event.pos[1] - self.pan_last[1]
             self.pan_last = event.pos
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1 and self.pan_start is not None:
-            if not self.panning and 0 <= event.pos[0] < WORLD_WIDTH and 0 <= event.pos[1] < WORLD_HEIGHT:
+            if not self.panning and self.world_viewport.collidepoint(event.pos):
                 self.select_at(app, event.pos)
             self.pan_start = None
             self.pan_last = None
@@ -207,14 +217,16 @@ class GameScreen:
         return False
 
     def screen_to_world(self, screen_pos):
-        return ((screen_pos[0] - self.camera_offset[0]) / self.camera_zoom,
-                (screen_pos[1] - self.camera_offset[1]) / self.camera_zoom)
+        offset = self.view_offset
+        return ((screen_pos[0] - offset[0]) / self.camera_zoom,
+                (screen_pos[1] - offset[1]) / self.camera_zoom)
 
     def zoom_at(self, screen_pos, steps):
         world_pos = self.screen_to_world(screen_pos)
+        old_zoom = self.camera_zoom
         self.camera_zoom = max(0.5, min(2.5, self.camera_zoom * 1.1 ** steps))
-        self.camera_offset[:] = (screen_pos[0] - world_pos[0] * self.camera_zoom,
-                                 screen_pos[1] - world_pos[1] * self.camera_zoom)
+        self.camera_offset[0] += world_pos[0] * (old_zoom - self.camera_zoom)
+        self.camera_offset[1] += world_pos[1] * (old_zoom - self.camera_zoom)
 
     def select_at(self, app, screen_pos):
         world_pos = self.screen_to_world(screen_pos)
@@ -244,7 +256,8 @@ class GameScreen:
 
     def draw(self, app):
         draw_world(app.window, app.npcs, app.tree, app.small_font, app.character.renderer,
-                   self.camera_offset, phase=app.simulation.phase, zoom=self.camera_zoom)
+                   self.view_offset, phase=app.simulation.phase, zoom=self.camera_zoom,
+                   viewport=self.world_viewport)
         self.menu_button.draw(app.window, app.small_font)
         self.stats_button.draw(app.window, app.small_font)
         self.save_button.draw(app.window, app.small_font)
@@ -253,6 +266,8 @@ class GameScreen:
             color = PAPER if app.simulation.phase == "night" else INK
             draw_wrapped_text(app.window, self.save_message, app.small_font, color, (24, 400, 912, 44))
 
+        if not self.dialogue_open:
+            return
         pygame.draw.rect(app.window, PAPER, (0, WORLD_HEIGHT, 960, 180))
         pygame.draw.line(app.window, (129, 154, 110), (0, WORLD_HEIGHT), (960, WORLD_HEIGHT), 3)
         if self.viewed_conversation is not None:
@@ -272,11 +287,6 @@ class GameScreen:
             status = f"Applying player request / {status}"
         rendered_status = app.small_font.render(status, True, MUTED)
         app.window.blit(rendered_status, rendered_status.get_rect(topright=(936, 478)))
-        if not self.dialogue_open:
-            app.window.blit(app.heading_font.render("Meet the people in your world", True, INK), (24, 494))
-            app.window.blit(app.font.render("Click anyone to start a conversation.", True, MUTED), (24, 538))
-            app.window.blit(app.small_font.render("Click the clock to change the time of day. Drag to move the camera; scroll to zoom.", True, MUTED), (24, 602))
-            return
         app.window.blit(app.font.render(self.selected_npc.name, True, INK), (self.reply_rect.x, 477))
         self.draw_dialogue_lines(app.window, wrap_text(self.reply, app.font, self.reply_rect.width - 12), app.font, self.reply_rect)
         self.prompt_input.draw(app.window, app.font)
