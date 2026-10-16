@@ -249,7 +249,7 @@ class Application:
         if self.screen != "game" or npc is None or npc.conversation is not None or npc.gift is not None or npc.eating or npc.request_pending or not message or self.requests.busy:
             return
         if self.provider == "gemini" and not self.api_key:
-            self.game.set_reply("I think you forgot to add your API key in Settings...")
+            self.game.set_reply("Add an API key in Settings to generate a reply.")
             return
         snapshot = npc.snapshot(self.tree)
         snapshot["other_npcs"] = [
@@ -362,7 +362,7 @@ class Application:
         if conversation.dialogue_state != "waiting":
             return
         if self.provider == "gemini" and not self.api_key:
-            conversation.fallback("No API key; used a local greeting.")
+            conversation.fail_dialogue("Add an API key in Settings to generate this conversation.")
             return
         snapshot = conversation.snapshot(self.tree, self.npcs)
         if not self.requests.submit(
@@ -370,7 +370,7 @@ class Application:
             f"Write what {conversation.initiator.name} and {conversation.recipient.name} say directly to each other.", snapshot,
             request_id=conversation.id, ollama_model=self.ollama_model,
         ):
-            conversation.fallback("Could not start dialogue; used a local greeting.")
+            conversation.fail_dialogue("Could not start dialogue generation.")
             return
         conversation.error = ""
         conversation.dialogue_state = "pending"
@@ -395,7 +395,7 @@ class Application:
             if conversation is not None:
                 if conversation.id == request_id and conversation.accepts_response:
                     if error:
-                        conversation.fallback(error)
+                        conversation.fail_dialogue(error)
                     else:
                         conversation.set_response(result)
                 continue

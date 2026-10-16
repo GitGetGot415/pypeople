@@ -93,10 +93,10 @@ def donor_choice(donor, requester):
     if fruit == 1 and donor.social <= SOCIAL_START:
         score -= 8
     if score >= 0:
-        return "accepted", "Yes, I can share an apple with you."
+        return "accepted", "The donor is willing to share one apple."
     if fruit == 1 and donor.social <= SOCIAL_START:
-        return "need", "I'd like to eat my last apple myself."
-    return "refused", "I'd rather keep my apples this time."
+        return "need", "The donor wants to eat their last apple themselves."
+    return "refused", "The donor prefers to keep their apples this time."
 
 
 def social_pair(world):

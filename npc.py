@@ -561,6 +561,8 @@ class Conversation:
         self.wait_elapsed = 0.0
         self.talking_remaining = 0.0
         self.food_outcome = ""
+        self.food_reason = ""
+        self.handoff_thanks = []
         self.outcome_event_id = None
         self.reactions = []
         self.arrived = False
@@ -623,6 +625,7 @@ class Conversation:
         self.dialogue_state = "ready"
         self.talking_remaining = 4.0
         self.turns = response.turns
+        self.handoff_thanks = response.handoff_thanks
         self.record.turns = [
             (self.initiator.name if turn.speaker == "initiator" else self.recipient.name, turn.text)
             for turn in response.turns
@@ -649,44 +652,32 @@ class Conversation:
             (entry.reason, max(-4.0, min(4.0, entry.opinion / 20)))
             for entry in (response.initiator_opinion, response.recipient_opinion)
         ]
+        if self.purpose == "food_request":
+            self.record_food_request()
 
     @property
     def accepts_response(self):
-        return self.active and self.purpose == "chat" and self.dialogue_state in ("waiting", "pending")
+        return self.active and self.dialogue_state in ("waiting", "pending")
 
-    def local_dialogue(self, lines):
-        from llm import ConversationPart, ConversationTurn
-
-        self.turns = [ConversationTurn(speaker=speaker, parts=[ConversationPart(text=text)])
-                      for speaker, text in lines]
-        self.record.turns = [(self.initiator.name if speaker == "initiator" else self.recipient.name, text)
-                             for speaker, text in lines]
-
-    def fallback(self, reason):
+    def fail_dialogue(self, reason):
         if not self.accepts_response:
             return
-        self.dialogue_state = "fallback"
+        self.dialogue_state = "failed"
         self.record.error = reason
-        self.record.status = "Local greeting"
-        self.record.outcomes = ["Exchanged a brief greeting; no conversation reaction was generated."]
-        self.local_dialogue([("initiator", f"Hello, {self.recipient.name}."),
-                             ("recipient", f"Hi, {self.initiator.name}.")])
-        self.talking_remaining = 2.0
+        self.finish(self.initiator.world.tree)
 
-    def answer_food_request(self):
+    def prepare_food_request(self):
         from autonomy import donor_choice
 
+        self.food_outcome, self.food_reason = donor_choice(self.recipient, self.initiator)
+
+    def record_food_request(self):
         requester, donor = self.initiator, self.recipient
         world = requester.world
         world.publish("food_requested", (requester, donor),
                       f"{requester.name} asked {donor.name} for an apple.", self.record)
-        self.food_outcome, answer = donor_choice(donor, requester)
-        self.local_dialogue([("initiator", "Could you share an apple with me?"), ("recipient", answer)])
-        self.dialogue_state = "ready"
-        self.talking_remaining = 1.5
-        self.record.status = "Answering food request"
         if self.food_outcome == "accepted":
-            self.record.outcomes = ["Agreed to share one apple; the handoff has not happened yet."]
+            self.record.outcomes.insert(0, "Agreed to share one apple; the handoff has not happened yet.")
             return
         deliberate = self.food_outcome in ("need", "refused")
         text = (f"{donor.name} kept their last apple because they wanted to eat it."
@@ -695,11 +686,11 @@ class Conversation:
             text = f"{donor.name} could no longer share with {requester.name}: the inventories changed."
         event = world.publish("food_refused" if deliberate else "interaction_failed", (requester, donor), text, self.record)
         self.outcome_event_id = event.id
-        self.record.outcomes = [answer]
+        self.record.outcomes.insert(0, self.food_reason)
         if deliberate:
-            remember(requester, donor, event, "refused", f"{donor.name} declined my apple request: {answer}",
+            remember(requester, donor, event, "refused", f"{donor.name} declined my apple request: {self.food_reason}",
                      -1 if self.food_outcome == "need" else -5)
-            remember(donor, requester, event, "kept_fruit", f"I kept my apple when {requester.name} asked: {answer}", 0)
+            remember(donor, requester, event, "kept_fruit", f"I kept my apple when {requester.name} asked: {self.food_reason}", 0)
 
     def remember_opinions(self):
         """Retry unsaved opinions without regenerating or hiding the dialogue."""
@@ -731,7 +722,7 @@ class Conversation:
             if self.dialogue_state in ("waiting", "pending"):
                 self.wait_elapsed += dt
                 if self.wait_elapsed >= 12.0:
-                    self.fallback("Dialogue timed out; used a local greeting.")
+                    self.fail_dialogue("Dialogue generation timed out. No dialogue was generated.")
             else:
                 self.talking_remaining = max(0.0, self.talking_remaining - dt)
                 if self.talking_remaining <= 0:
@@ -748,7 +739,7 @@ class Conversation:
             npc.destination = None
             self.face_each_other()
             if self.purpose == "food_request":
-                self.answer_food_request()
+                self.prepare_food_request()
         elif npc.x != old_x or npc.y != old_y:
             angle = math.atan2(npc.x - old_x, old_y - npc.y)
             npc.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
@@ -767,6 +758,9 @@ class Conversation:
             "request_kind": "conversation",
             "interaction_id": self.id,
             "origin": self.origin,
+            "purpose": self.purpose,
+            "food_request": {"item": "fruit", "quantity": 1, "outcome": self.food_outcome,
+                             "reason": self.food_reason, "transferred": False} if self.purpose == "food_request" else None,
             "initiator": participant(self.initiator),
             "recipient": participant(self.recipient),
             "topic": self.topic,
@@ -779,16 +773,14 @@ class Conversation:
         if not self.active:
             return
         self.active = False
-        self.record.status = "Finished (local greeting)" if self.dialogue_state == "fallback" else "Finished"
+        self.record.status = "Finished"
         if not self.turns:
-            self.record.status = "Ended before dialogue"
-            self.record.outcomes = ["The conversation ended before anyone spoke."]
+            self.record.status = "Failed" if self.error else "Ended before dialogue"
+            self.record.outcomes = [self.error or "The conversation ended before any dialogue was generated."]
         if self.purpose == "chat":
             world = self.initiator.world
             text = (f"{self.initiator.name} and {self.recipient.name} talked about {self.topic}."
-                    if self.dialogue_state == "ready" else
-                    f"{self.initiator.name} and {self.recipient.name} exchanged only a brief greeting."
-                    if self.turns else f"{self.initiator.name} and {self.recipient.name}'s meeting ended before dialogue.")
+                    if self.turns else f"{self.initiator.name} and {self.recipient.name}'s meeting ended without generated dialogue.")
             event = world.publish("conversation_completed" if self.turns else "interaction_failed",
                                   (self.initiator, self.recipient), text, self.record)
             self.outcome_event_id = event.id
@@ -796,9 +788,10 @@ class Conversation:
                 for npc, reaction in zip((self.initiator, self.recipient), self.reactions):
                     reason, weight = reaction
                     remember(npc, self.other(npc), event, "conversation", f"Talked about {self.topic}. {reason}", weight)
-        elif self.food_outcome in ("", "accepted"):
-            self.record.status = "Ended before sharing"
-            self.record.outcomes = ["The food request ended before an apple was shared."]
+        elif not self.turns or self.food_outcome in ("", "accepted"):
+            if not self.error:
+                self.record.status = "Ended before sharing"
+                self.record.outcomes = ["The food request ended before an apple was shared."]
             event = self.initiator.world.publish("interaction_failed", (self.initiator, self.recipient),
                                                 self.record.outcomes[0], self.record)
             self.outcome_event_id = event.id
@@ -815,13 +808,14 @@ class Conversation:
         self.active = False
         requester.conversation = donor.conversation = None
         Gift(donor, requester, "fruit", 1, self.record,
-             saved_states=[self.saved_states[1], self.saved_states[0]], already_met=True)
+             saved_states=[self.saved_states[1], self.saved_states[0]], already_met=True,
+             thanks=self.handoff_thanks)
 
 
 class Gift:
     """Reserve both participants through approach, giving, and thanking."""
 
-    def __init__(self, initiator, recipient, item, quantity, record=None, spacing=0, *, saved_states=None, already_met=False):
+    def __init__(self, initiator, recipient, item, quantity, record=None, spacing=0, *, saved_states=None, already_met=False, thanks=None):
         from autonomy import company_point
 
         destination = (initiator.x, initiator.y) if already_met else company_point(initiator, recipient, spacing)
@@ -833,6 +827,7 @@ class Gift:
         self.active = True
         self.transferred = False
         self.outcome_event_id = None
+        self.thanks = list(thanks) if thanks is not None else []
         self.elapsed = 0.0
         self.record = record or ConversationRecord((initiator.name, recipient.name), "Give items", "Walking to give")
         self.saved_states = saved_states if saved_states is not None else [initiator.activity_state(), recipient.activity_state()]
@@ -881,8 +876,8 @@ class Gift:
             self.outcome_event_id = event.id
             remember(giver, recipient, event, "gave_fruit", f"I gave {recipient.name} {apples}.", 2)
             remember(recipient, giver, event, "received_fruit", f"{giver.name} shared {apples} with me.", 6)
-            if self.record.purpose == "food_request":
-                self.record.turns.append((recipient.name, "Thank you for the apple."))
+            if self.thanks:
+                self.record.turns.append((recipient.name, " ".join(part.text.strip() for part in self.thanks)))
             self.record.outcomes[0:1] = [f"Gave {self.quantity} {self.item} to {recipient.name}."]
             self.record.status = "Thanking"
             elapsed = max(1.0, elapsed)

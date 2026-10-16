@@ -255,7 +255,7 @@ class GameScreen:
                 self.conversation_tree = app.tree
                 self.dialogue_scroll = 0
                 return
-            self.set_reply(npc.reply or f"Hi, I'm {npc.name}! What should I do today?")
+            self.set_reply(npc.reply)
             self.prompt_input.focus()
 
     def draw(self, app):
@@ -294,7 +294,9 @@ class GameScreen:
         rendered_status = app.small_font.render(status, True, MUTED)
         app.window.blit(rendered_status, rendered_status.get_rect(topright=(1256, 558)))
         app.window.blit(app.font.render(self.selected_npc.name, True, INK), (self.reply_rect.x, 557))
-        self.draw_dialogue_lines(app.window, wrap_text(self.reply, app.font, self.reply_rect.width - 12), app.font, self.reply_rect)
+        self.draw_dialogue_lines(app.window, wrap_text(self.reply or "Enter a message to talk to this NPC.", app.font,
+                                                     self.reply_rect.width - 12), app.font, self.reply_rect,
+                                 color=INK if self.reply else MUTED)
         self.prompt_input.draw(app.window, app.font)
         self.send_button.draw(app.window, app.font, enabled=not app.requests.busy)
         if self.prompt_input.error:
@@ -363,7 +365,7 @@ class GameScreen:
             progress = app.small_font.render(f"{self.conversation_page_index + 1}/{len(self.conversation_pages)}", True, MUTED)
             app.window.blit(progress, progress.get_rect(topright=(1256, 696)))
 
-    def draw_dialogue_lines(self, surface, lines, font, rect):
+    def draw_dialogue_lines(self, surface, lines, font, rect, *, color=INK):
         line_height = font.get_linesize()
         total_height = len(lines) * line_height
         scroll_limit = max(0, total_height - rect.height)
@@ -373,7 +375,7 @@ class GameScreen:
         for index, line in enumerate(lines):
             y = rect.y + index * line_height - self.dialogue_scroll
             if rect.top - line_height < y < rect.bottom:
-                surface.blit(font.render(line, True, INK), (rect.x, y))
+                surface.blit(font.render(line, True, color), (rect.x, y))
         if scroll_limit:
             track = pygame.Rect(rect.right - 5, rect.top, 4, rect.height)
             height = max(12, round(rect.height * rect.height / total_height))
