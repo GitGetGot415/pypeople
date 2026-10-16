@@ -713,7 +713,12 @@ def validate_agreements(agreements, proposals, turns, initiator_id, recipient_id
             raise ValueError("The agreement refers to an unavailable or repeated proposal.")
         seen.add(agreement.proposal_id)
         if not 0 <= agreement.offer_turn < agreement.accept_turn < len(turns):
-            raise ValueError("A promise needs an offer followed by acceptance in this exchange.")
+            raise ValueError(
+                f"Invalid promise indices: offer_turn={agreement.offer_turn}, accept_turn={agreement.accept_turn}. "
+                f"This exchange has {len(turns)} turns, indexed 0 through {len(turns) - 1}. "
+                "Choose an existing giver's offer followed by the receiver's acceptance in a later turn, "
+                "or use accepted_proposals=[] if no agreement was made."
+            )
         speakers = {"initiator": initiator_id, "recipient": recipient_id}
         if (speakers[turns[agreement.offer_turn].speaker] != proposal["promisor_id"]
                 or speakers[turns[agreement.accept_turn].speaker] != proposal["recipient_id"]):

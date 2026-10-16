@@ -440,7 +440,7 @@ CONVERSATION_INSTRUCTION = WORLD_INSTRUCTION + """Write a natural face-to-face c
 recipient. They are already together; address each other, not the player.
 Use each speaker's own profile Details, opinions, knowledge, and immediate
 objective. Personality and goals shape wording without guaranteeing cooperation.
-Write 2 to 8 alternating turns, starting with initiator. Each turn is one stretch
+Write 4 to 8 alternating turns, starting with initiator. Each turn is one stretch
 of speech before the partner replies. Its parts divide that stretch for display
 and emotion changes; later answers belong in later turns. Use short spoken
 sentences, at most 240 characters per part, with emotion for that part's speaker.
@@ -458,6 +458,8 @@ permitted_proposals lists available future apple promises, their giver and
 receiver, offer_speaker, acceptance_speaker, and deadline_label. A giver may
 promise an apple they do not own yet. Promises and cooperation are optional.
 For accepted_proposals, use proposal_id and zero-based offer_turn/accept_turn.
+These index the turns array, not parts: the first turn is 0. Both turns must
+exist in this response. If you cite turn 4, include at least 5 turns.
 Choose the giver's spoken offer, then the receiver's explicit acceptance in a
 later turn. A request to receive an apple is not an offer to give one. The
 conversation role recipient is not necessarily the apple receiver. Write the
@@ -615,6 +617,12 @@ def response_contract(snapshot, *, correction=False):
         instruction = (FOOD_REQUEST_INSTRUCTION if food_request else CONVERSATION_INSTRUCTION) + "\n\n" + EMOTION_INSTRUCTION
         instruction += "\n\n" + CONVERSATION_HISTORY_INSTRUCTION
         properties = CONVERSATION_SCHEMA["properties"].copy()
+        if food_request or correction:
+            turn_count = 2 if food_request else 4
+            properties["turns"] = {**properties["turns"], "minItems": turn_count, "maxItems": turn_count}
+            instruction += (f"\n\nWrite exactly {turn_count} alternating turns, indexed 0 through {turn_count - 1}. "
+                            "Every structured effect must refer to one of these turns.")
+        turn_limit = properties["turns"]["maxItems"]
         history = snapshot.get("shared_history")
         if history:
             names = f"{snapshot['initiator']['npc_name']} and {snapshot['recipient']['npc_name']}"
@@ -637,12 +645,11 @@ def response_contract(snapshot, *, correction=False):
             "type": "array", "maxItems": min(2, len(proposals)),
             "items": {"type": "object", "properties": {
                 "proposal_id": {"type": "string", "enum": [p["id"] for p in proposals] or [""]},
-                "offer_turn": {"type": "integer", "minimum": 0, "maximum": 7},
-                "accept_turn": {"type": "integer", "minimum": 1, "maximum": 7},
+                "offer_turn": {"type": "integer", "minimum": 0, "maximum": turn_limit - 2},
+                "accept_turn": {"type": "integer", "minimum": 1, "maximum": turn_limit - 1},
             }, "required": ["proposal_id", "offer_turn", "accept_turn"]},
         }
         agreement_choices = []
-        turn_limit = properties["turns"]["maxItems"]
         for proposal in proposals:
             giver_turn = 0 if proposal["promisor_id"] == snapshot["initiator"]["npc_id"] else 1
             for offer in range(giver_turn, turn_limit - 1, 2):
@@ -675,7 +682,7 @@ def response_contract(snapshot, *, correction=False):
         info = snapshot.get("_information_validation")
         claim_ids = list(dict.fromkeys(claim_id for ids in info["allowed"].values() for claim_id in ids)) if info else []
         claim_field = {"type": "string", "enum": claim_ids or [""]}
-        turn_field = {"type": "integer", "minimum": 0, "maximum": 7}
+        turn_field = {"type": "integer", "minimum": 0, "maximum": turn_limit - 1}
         limit = 4 if not food_request and claim_ids else 0
         properties["disclosures"] = {
             "type": "array", "minItems": 1 if snapshot.get("purpose") == "gossip" else 0,
@@ -730,7 +737,6 @@ def response_contract(snapshot, *, correction=False):
         required.extend(("disclosures", "third_party_opinions", "leverage"))
         if food_request:
             accepted = snapshot["food_request"]["outcome"] == "accepted"
-            properties["turns"] = {**properties["turns"], "minItems": 2, "maxItems": 2}
             properties["food_outcome"] = {"type": "string", "enum": [snapshot["food_request"]["outcome"]]}
             properties["handoff_thanks"] = {
                 "type": "array", "minItems": 1 if accepted else 0, "maxItems": 3 if accepted else 0,
