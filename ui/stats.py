@@ -1,6 +1,7 @@
 import pygame
 
 from character_data import DEFAULT_COLORS, FIELDS
+from npc import EMOTION_THRESHOLD
 from social import assertion_text, claim_by_id, fact_by_id, phase_label, selected_beliefs
 
 from .button import Button
@@ -31,6 +32,7 @@ class StatsScreen:
         self.show_private = False
         self.private_toggle_top = None
         self.promise_links = []
+        self.dialogue_portraits = []
 
     def open_record(self, record):
         self.tab = "Conversations"
@@ -59,14 +61,35 @@ class StatsScreen:
         lines = []
         self.private_toggle_top = None
         self.promise_links = []
+        self.dialogue_portraits = []
 
-        def add(text, font=app.font, color=INK):
+        def add(text, font=app.font, color=INK, indent=0):
             for paragraph in str(text).splitlines() or [""]:
-                for line in wrap_text(paragraph, font, self.detail_rect.width - 20) or [""]:
-                    lines.append((line, font, color))
+                for line in wrap_text(paragraph, font, self.detail_rect.width - 20 - indent) or [""]:
+                    lines.append((line, font, color, indent))
 
         def gap():
-            lines.append(("", app.small_font, MUTED))
+            lines.append(("", app.small_font, MUTED, 0))
+
+        def height():
+            return sum(font.get_linesize() for _, font, _, _ in lines)
+
+        def message(speaker, text, emotion=None):
+            npc = next((npc for npc in app.npcs if npc.name == speaker), None)
+            top = height()
+            indent = 112 if npc is not None else 0
+            add(speaker, color=ACCENT, indent=indent)
+            add(text, indent=indent)
+            if npc is not None:
+                visible = emotion is not None and emotion["intensity"] >= EMOTION_THRESHOLD
+                expression = emotion["name"] if visible else None
+                label = (expression or "neutral").title() if emotion is not None else "Not recorded"
+                labels = wrap_text(label, app.small_font, 100)
+                self.dialogue_portraits.append((top, npc.character, expression, labels))
+                portrait_height = 94 + len(labels) * app.small_font.get_linesize()
+                while height() - top < portrait_height:
+                    gap()
+            gap()
 
         if self.tab == "Conversations":
             record = self.selected_conversation
@@ -96,10 +119,13 @@ class StatsScreen:
             gap()
             if not record.turns:
                 add("No dialogue generated yet.", color=MUTED)
-            for speaker, text in record.turns:
-                add(speaker, color=ACCENT)
-                add(text)
-                gap()
+            for index, (speaker, text) in enumerate(record.turns):
+                parts = record.dialogue_parts.get(index)
+                if parts:
+                    for part in parts:
+                        message(speaker, part["text"], part["emotion"])
+                else:
+                    message(speaker, text)
             return lines
 
         npc = self.selected_npc
@@ -128,7 +154,7 @@ class StatsScreen:
                     add(goal.outcome, app.small_font)
             else:
                 add("No feasible personal objective right now.", color=MUTED)
-            self.private_toggle_top = sum(font.get_linesize() for _, font, _ in lines)
+            self.private_toggle_top = height()
             add(f"{'Hide' if self.show_private else 'Show'} private details (observer only)", app.small_font, ACCENT)
             if self.show_private:
                 if goal:
@@ -151,9 +177,9 @@ class StatsScreen:
                         add(f"Observer: the original assertion was deliberately fabricated by {originator.name}.", app.small_font, MUTED)
                     if belief.disclosure_id:
                         disclosure = next(d for d in app.simulation.disclosures if d.id == belief.disclosure_id)
-                        top = sum(font.get_linesize() for _, font, _ in lines)
+                        top = height()
                         add("View source conversation", app.small_font, ACCENT)
-                        bottom = sum(font.get_linesize() for _, font, _ in lines)
+                        bottom = height()
                         self.promise_links.append((top, bottom, disclosure.conversation_id))
                     gap()
             gap()
@@ -165,9 +191,9 @@ class StatsScreen:
             for promise in promises[:8]:
                 giver = app.simulation.npc_by_id(promise.promisor_id)
                 recipient = app.simulation.npc_by_id(promise.recipient_id)
-                top = sum(font.get_linesize() for _, font, _ in lines)
+                top = height()
                 add(f"{giver.name} -> {recipient.name}: one apple / {promise.status} [view]", app.small_font, ACCENT)
-                bottom = sum(font.get_linesize() for _, font, _ in lines)
+                bottom = height()
                 self.promise_links.append((top, bottom, promise.conversation_id))
                 add(f"Due {phase_label(promise.deadline)}", app.small_font, MUTED)
                 if promise.outcome:
@@ -207,7 +233,7 @@ class StatsScreen:
 
     def _scroll_limits(self, app):
         _, list_height = self._list_rows(app)
-        detail_height = sum(font.get_linesize() for _, font, _ in self._detail_lines(app))
+        detail_height = sum(font.get_linesize() for _, font, _, _ in self._detail_lines(app))
         return {
             "list": max(0, list_height - self.list_rect.height),
             "detail": max(0, detail_height - self.detail_rect.height),
@@ -332,10 +358,20 @@ class StatsScreen:
                 surface.blit(app.font.render(line, True, PAPER if selected else INK), (row.x + 8, row.y + 10 + index * app.font.get_linesize()))
         surface.set_clip(self.detail_rect.clip(previous_clip))
         y = self.detail_rect.top - self.detail_scroll
-        for line, font, color in self._detail_lines(app):
+        for line, font, color, indent in self._detail_lines(app):
             if self.detail_rect.top - font.get_linesize() < y < self.detail_rect.bottom:
-                surface.blit(font.render(line, True, color), (self.detail_rect.x, y))
+                surface.blit(font.render(line, True, color), (self.detail_rect.x + indent, y))
             y += font.get_linesize()
+        for top, character, emotion, labels in self.dialogue_portraits:
+            rect = pygame.Rect(self.detail_rect.x, self.detail_rect.top + top - self.detail_scroll, 88, 88)
+            if rect.bottom + 6 + len(labels) * app.small_font.get_linesize() < self.detail_rect.top or rect.top >= self.detail_rect.bottom:
+                continue
+            pygame.draw.rect(surface, GRASS, rect)
+            portrait = app.character.renderer.render_portrait(character, rect.inflate(-8, -8).size, emotion=emotion)
+            surface.blit(portrait, portrait.get_rect(center=rect.center))
+            for index, label in enumerate(labels):
+                surface.blit(app.small_font.render(label, True, MUTED),
+                             (rect.x, rect.bottom + 6 + index * app.small_font.get_linesize()))
         surface.set_clip(previous_clip)
         for pane, rect in (("list", self.list_rect), ("detail", self.detail_rect)):
             if limits[pane]:

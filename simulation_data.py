@@ -241,6 +241,7 @@ class HistoryState(SaveModel):
     topic: str
     status: str
     turns: list[tuple[str, str]]
+    dialogue_parts: dict[int, list[ConversationPart]] = Field(default_factory=dict)
     outcomes: list[str]
     error: str
     origin: Literal["player", "autonomous"]

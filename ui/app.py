@@ -451,7 +451,10 @@ class Application:
             else:
                 npc.set_emotion(result.emotion.name, result.emotion.intensity)
             if record is not None:
-                record.turns.append((npc.name, npc.reply))
+                record.add_turn(npc.name, npc.reply, [{
+                    "text": npc.reply,
+                    "emotion": {"name": npc.emotion, "intensity": npc.emotion_intensity},
+                }])
                 record.error = error or ""
                 waiting_for_done = npc.request_pending and npc.end_conversation
                 if error:

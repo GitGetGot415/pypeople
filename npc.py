@@ -665,10 +665,9 @@ class Conversation:
         self.talking_remaining = 4.0
         self.turns = response.turns
         self.handoff_thanks = response.handoff_thanks
-        self.record.turns = [
-            (self.initiator.name if turn.speaker == "initiator" else self.recipient.name, turn.text)
-            for turn in response.turns
-        ]
+        for turn in response.turns:
+            speaker = self.initiator if turn.speaker == "initiator" else self.recipient
+            self.record.add_turn(speaker.name, turn.text, [part.model_dump() for part in turn.parts])
         self.record.outcomes = [
             describe_opinion_change(
                 npc.name, partner.name, npc.opinions.get(partner.name, {}).get("opinion"), entry.opinion, entry.reason
@@ -950,7 +949,8 @@ class Gift:
             remember(recipient, giver, event, "received_fruit", f"{giver.name} shared {apples} with me.", 6)
             on_transfer(giver.world, giver, recipient, self.quantity, event, self.record)
             if self.thanks:
-                self.record.turns.append((recipient.name, " ".join(part.text.strip() for part in self.thanks)))
+                self.record.add_turn(recipient.name, " ".join(part.text.strip() for part in self.thanks),
+                                     [part.model_dump() for part in self.thanks])
             self.record.outcomes[0:1] = [f"Gave {self.quantity} {self.item} to {recipient.name}."]
             self.record.status = "Thanking"
             elapsed = max(1.0, elapsed)
