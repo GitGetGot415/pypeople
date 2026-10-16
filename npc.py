@@ -39,8 +39,8 @@ class Behavior(str, Enum):
 
 @dataclass
 class Tree:
-    x: float = 720.0
-    y: float = 230.0
+    x: float = WORLD_WIDTH / 2
+    y: float = WORLD_HEIGHT / 2
     shake_elapsed: float | None = None
     shaker: "NPC | None" = field(default=None, repr=False, compare=False)
     id: str = "fruit-tree"

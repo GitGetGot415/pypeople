@@ -111,15 +111,17 @@ class Application:
         self.request_history = None
         self.conversation_history = []
         self.npcs = []
-        columns = max(1, math.ceil(math.sqrt(len(characters) - 1)))
-        rows = max(1, math.ceil((len(characters) - 1) / columns))
+        columns = max(1, math.ceil(math.sqrt((len(characters) - 1) / 2)))
+        rows = max(1, math.ceil((len(characters) - 1) / (columns * 2)))
         for index, character in enumerate(characters):
             if index == 0:
                 position = (240, 230)
             else:
-                # Arrange additional NPCs beside Judy, clear of the tree.
-                column, row = (index - 1) % columns, (index - 1) // columns
-                position = (350 + column * 220 / max(1, columns - 1), 210 + row * 190 / max(1, rows - 1))
+                # Spawn on either side, leaving the central tree and its approach clear.
+                side, slot = (index - 1) % 2, (index - 1) // 2
+                column, row = slot % columns, slot // columns
+                position = (120 + side * 500 + column * 200 / max(1, columns - 1),
+                            150 + row * 260 / max(1, rows - 1))
             npc = NPC(character=character, x=position[0], y=position[1])
             sprite = self.character.renderer.render(character, npc.facing, CHARACTER_SCALE)
             npc.sprite_size = sprite.get_size()
@@ -208,6 +210,7 @@ class Application:
         self.save_id, self.simulation_name = save_id, saved.name
         self.save_identity = identity
         self.game.camera_offset[:] = saved.state.camera_offset
+        self.game.camera_zoom = saved.state.camera_zoom
         self.screen = "game"
         self.game.show_save_message(f"Loaded {saved.name}.")
         return True

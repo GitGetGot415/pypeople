@@ -134,6 +134,7 @@ class SimulationState(SaveModel):
     history: list[HistoryState]
     conversations: list[ConversationState]
     camera_offset: tuple[float, float]
+    camera_zoom: float = Field(default=1.0, ge=0.5, le=2.5)
 
     @model_validator(mode="after")
     def validate_references(self):
@@ -391,6 +392,7 @@ def capture_simulation(app):
                        reserved_by=app.tree.reserved_by.id if app.tree.reserved_by is not None else None),
         pending_actions=[asdict(action) for action in world.pending_actions],
         camera_offset=tuple(app.game.camera_offset),
+        camera_zoom=app.game.camera_zoom,
     )
 
 

@@ -36,6 +36,7 @@ class GameScreen:
         self.dialogue_scroll = 0
         self.reply_rect = pygame.Rect(dialogue_x, 500, 936 - dialogue_x, 58)
         self.camera_offset = [0.0, 0.0]
+        self.camera_zoom = 1.0
         self.pan_start = None
         self.pan_last = None
         self.panning = False
@@ -45,6 +46,7 @@ class GameScreen:
         self.prompt_input.set_value("")
         self.reply = ""
         self.camera_offset[:] = (0.0, 0.0)
+        self.camera_zoom = 1.0
         self.pan_start = None
         self.pan_last = None
         self.panning = False
@@ -82,6 +84,14 @@ class GameScreen:
             self.selected_npc.reply = self.reply
 
     def handle_event(self, app, event):
+        if event.type == pygame.MOUSEWHEEL:
+            pos = getattr(event, "pos", pygame.mouse.get_pos())
+            if 0 <= pos[0] < WORLD_WIDTH and 0 <= pos[1] < WORLD_HEIGHT and not any(
+                button.rect.collidepoint(pos)
+                for button in (self.menu_button, self.stats_button, self.save_button, self.clock_button)
+            ):
+                self.zoom_at(pos, event.y)
+                return
         if self.handle_clock_event(app, event):
             return
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -196,8 +206,18 @@ class GameScreen:
                 return True
         return False
 
+    def screen_to_world(self, screen_pos):
+        return ((screen_pos[0] - self.camera_offset[0]) / self.camera_zoom,
+                (screen_pos[1] - self.camera_offset[1]) / self.camera_zoom)
+
+    def zoom_at(self, screen_pos, steps):
+        world_pos = self.screen_to_world(screen_pos)
+        self.camera_zoom = max(0.5, min(2.5, self.camera_zoom * 1.1 ** steps))
+        self.camera_offset[:] = (screen_pos[0] - world_pos[0] * self.camera_zoom,
+                                 screen_pos[1] - world_pos[1] * self.camera_zoom)
+
     def select_at(self, app, screen_pos):
-        world_pos = (screen_pos[0] - self.camera_offset[0], screen_pos[1] - self.camera_offset[1])
+        world_pos = self.screen_to_world(screen_pos)
         npc = next((npc for npc in sorted(app.npcs, key=lambda npc: npc.y, reverse=True) if npc.contains(world_pos)), None)
         if self.viewed_conversation is not None and npc is not None and npc.conversation is self.viewed_conversation:
             # Clicking the other participant keeps the same conversation open.
@@ -224,7 +244,7 @@ class GameScreen:
 
     def draw(self, app):
         draw_world(app.window, app.npcs, app.tree, app.small_font, app.character.renderer,
-                   self.camera_offset, phase=app.simulation.phase)
+                   self.camera_offset, phase=app.simulation.phase, zoom=self.camera_zoom)
         self.menu_button.draw(app.window, app.small_font)
         self.stats_button.draw(app.window, app.small_font)
         self.save_button.draw(app.window, app.small_font)
@@ -255,7 +275,7 @@ class GameScreen:
         if not self.dialogue_open:
             app.window.blit(app.heading_font.render("Meet the people in your world", True, INK), (24, 494))
             app.window.blit(app.font.render("Click anyone to start a conversation.", True, MUTED), (24, 538))
-            app.window.blit(app.small_font.render("Click the clock to change the time of day. Drag to move the camera.", True, MUTED), (24, 602))
+            app.window.blit(app.small_font.render("Click the clock to change the time of day. Drag to move the camera; scroll to zoom.", True, MUTED), (24, 602))
             return
         app.window.blit(app.font.render(self.selected_npc.name, True, INK), (self.reply_rect.x, 477))
         self.draw_dialogue_lines(app.window, wrap_text(self.reply, app.font, self.reply_rect.width - 12), app.font, self.reply_rect)

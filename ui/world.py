@@ -19,7 +19,20 @@ def talking_bubble():
     return _talking_bubble
 
 
-def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), phase="day"):
+def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), phase="day", zoom=1.0):
+    # Draw once in world coordinates, then apply the same camera transform to everything.
+    scene = pygame.Surface((WORLD_WIDTH, WORLD_HEIGHT))
+    _draw_scene(scene, npcs, tree, font, character_renderer, phase)
+    surface.fill(scene.get_at((0, 0)))
+    if zoom != 1.0:
+        scene = pygame.transform.smoothscale(scene, (round(WORLD_WIDTH * zoom), round(WORLD_HEIGHT * zoom)))
+    previous_clip = surface.get_clip()
+    surface.set_clip(pygame.Rect(0, 0, WORLD_WIDTH, WORLD_HEIGHT).clip(previous_clip))
+    surface.blit(scene, (round(camera_offset[0]), round(camera_offset[1])))
+    surface.set_clip(previous_clip)
+
+
+def _draw_scene(surface, npcs, tree, font, character_renderer, phase):
     grass, walkable = {
         "day": (GRASS, WALKABLE_GRASS),
         "evening": ((190, 156, 120), (204, 176, 134)),
@@ -27,19 +40,18 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     }[phase]
     label_color = PAPER if phase == "night" else INK
     surface.fill(grass)
-    offset_x, offset_y = camera_offset
     if npcs:
         left, right, top, bottom = npcs[0].movement_bounds
         walkable_rect = pygame.Rect(
-            round(left + offset_x),
-            round(top + offset_y),
+            round(left),
+            round(top),
             round(right - left),
             round(bottom - top),
         )
         pygame.draw.rect(surface, walkable, walkable_rect)
 
-    tree_x = round(tree.x + offset_x) + tree.offset
-    tree_y = round(tree.y + offset_y)
+    tree_x = round(tree.x) + tree.offset
+    tree_y = round(tree.y)
     pygame.draw.ellipse(surface, (145, 171, 111), (tree_x - 43, tree_y + 50, 86, 20))
     pygame.draw.rect(surface, (134, 89, 55), (tree_x - 13, tree_y - 12, 26, 76))
     pygame.draw.circle(surface, (68, 124, 66), (tree_x, tree_y - 38), 53)
@@ -50,7 +62,7 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     label = font.render(f"Fruit {tree.fruit}/{tree.capacity}", True, label_color)
     surface.blit(label, label.get_rect(midtop=(tree_x, tree_y + 76)))
     for npc in sorted(npcs, key=lambda npc: npc.y):
-        position = (round(npc.x + offset_x), round(npc.y + offset_y))
+        position = (round(npc.x), round(npc.y))
         sprite = character_renderer.render(npc.character, npc.facing, CHARACTER_SCALE)
         sprite_rect = sprite.get_rect(midbottom=position)
         pygame.draw.ellipse(surface, MUTED, (position[0] - 16, position[1] - 4, 32, 8))
@@ -64,5 +76,5 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
         if npc.conversation is not None and npc.conversation.arrived and npc.conversation.initiator is npc:
             width, height = npc.sprite_size or character_renderer.render(npc.character, npc.facing, CHARACTER_SCALE).get_size()
             bubble = talking_bubble()
-            rect = bubble.get_rect(bottomleft=(round(npc.x + offset_x + width / 2 - 6), round(npc.y + offset_y - height + 8)))
+            rect = bubble.get_rect(bottomleft=(round(npc.x + width / 2 - 6), round(npc.y - height + 8)))
             surface.blit(bubble, rect)
