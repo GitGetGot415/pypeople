@@ -38,10 +38,10 @@ class SaveSimScreen:
         overlay.fill((0, 0, 0, 140))
         app.window.blit(overlay, (0, 0))
         pygame.draw.rect(app.window, PAPER, (390, 225, 500, 280))
-        draw_centered_text(app.window, "Save simulation", app.heading_font, 250)
+        draw_centered_text(app.window, "Save simulation as", app.heading_font, 250)
         app.window.blit(app.small_font.render("Save name", True, INK), (420, 290))
         self.name_input.draw(app.window, app.font)
-        hint = self.message or self.name_input.error or "This name will also be the JSON filename."
+        hint = self.message or self.name_input.error or "Creates a new JSON file. Existing saves are kept."
         draw_wrapped_text(app.window, hint, app.small_font, MUTED, (420, 378, 440, 48))
         self.save_button.draw(app.window, app.font)
         self.cancel_button.draw(app.window, app.font)

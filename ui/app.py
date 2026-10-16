@@ -147,9 +147,6 @@ class Application:
             self.simulation_name = self.save_id
 
     def request_save(self):
-        if self.save_id is not None:
-            self.save_current_simulation()
-            return
         try:
             name = self.save_store.next_name()
         except OSError:
@@ -160,18 +157,10 @@ class Application:
         self.save_sim.open(name)
         self.screen = "save_sim"
 
-    def save_current_simulation(self, *, name=None):
+    def save_current_simulation(self, *, name):
         try:
-            self.sync_save_name()
-            if self.save_id is not None and self.save_identity is not None:
-                try:
-                    identity = self.save_store.file_identity(self.save_id)
-                except FileNotFoundError:
-                    identity = self.save_identity
-                if identity != self.save_identity:
-                    raise ValueError("The save file was replaced outside the game.")
             state = capture_simulation(self)
-            self.save_id = self.save_store.save(state, save_id=self.save_id, name=name)
+            self.save_id = self.save_store.save(state, name=name)
             self.simulation_name = self.save_id
             self.save_identity = self.save_store.file_identity(self.save_id)
         except (InvalidSaveName, FileExistsError) as error:
