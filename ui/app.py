@@ -243,14 +243,14 @@ class Application:
     def submit(self):
         message = self.game.prompt_input.text.strip()[:300]
         npc = self.game.selected_npc
-        if self.screen != "game" or npc is None or npc.conversation is not None or npc.request_pending or not message or self.requests.busy:
+        if self.screen != "game" or npc is None or npc.conversation is not None or npc.gift is not None or npc.request_pending or not message or self.requests.busy:
             return
         if self.provider == "gemini" and not self.api_key:
             self.game.set_reply("I think you forgot to add your API key in Settings...")
             return
         snapshot = npc.snapshot(self.tree)
         snapshot["other_npcs"] = [
-            {**other.snapshot(self.tree), "available_to_talk": other.conversation is None and not other.request_pending}
+            {**other.snapshot(self.tree), "available_to_talk": other.conversation is None and other.gift is None and not other.request_pending}
             for other in self.npcs if other is not npc
         ]
         if not self.requests.submit(
@@ -308,7 +308,7 @@ class Application:
             return
         npc.request_pending = False
         error = ""
-        if npc.conversation is not None or npc.command_revision != action.revision:
+        if npc.conversation is not None or npc.gift is not None or npc.command_revision != action.revision:
             error = "That request is no longer available because the NPC's activity changed."
         elif action.action == "TALK_TO_NPC":
             target = self.simulation.npc_by_id(action.target_id)
@@ -316,14 +316,18 @@ class Application:
         elif action.action == "GIVE_ITEM":
             target = self.simulation.npc_by_id(action.target_id)
             try:
-                transfer_outcome = npc.give_items(target, action.item, action.quantity)
+                record = self.conversation_history[action.record] if action.record is not None else None
+                spacing = (self.small_font.size(npc.name)[0] + self.small_font.size(target.name)[0]) / 2 + 12 if target else 0
+                gift = npc.give_items(target, action.item, action.quantity, record, spacing)
+                if record is None:
+                    self.conversation_history.append(gift.record)
             except ValueError as exc:
                 error = str(exc)
         else:
             npc.apply_action(action.action, self.tree)
         if action.record is not None:
             record = self.conversation_history[action.record]
-            record.status = "Failed" if error else "Completed"
+            record.status = "Failed" if error else ("Walking to give" if action.action == "GIVE_ITEM" else "Completed")
             if error:
                 record.error = error
                 record.outcomes = [error]
@@ -334,7 +338,7 @@ class Application:
                     "GO_TO_TREE": "Started walking to the tree.",
                     "SHAKE_TREE": "Started the task of shaking the tree.",
                     "TALK_TO_NPC": f"Started a conversation with {target.name}." if action.action == "TALK_TO_NPC" else "",
-                    "GIVE_ITEM": transfer_outcome if action.action == "GIVE_ITEM" else "",
+                    "GIVE_ITEM": f"Walking to give {action.quantity} {action.item} to {target.name}." if action.action == "GIVE_ITEM" else "",
                 }
                 record.outcomes[0:1] = [outcomes[action.action]]
         if error:
@@ -389,7 +393,7 @@ class Application:
                 continue
             npc.request_pending = False
             record = self.request_history
-            if not error and (npc.conversation is not None or npc.command_revision != self.request_revision):
+            if not error and (npc.conversation is not None or npc.gift is not None or npc.command_revision != self.request_revision):
                 error = "That reply arrived after the NPC became busy. Please send the request again."
             if record is not None and not error:
                 record.outcomes = [
@@ -403,7 +407,7 @@ class Application:
             if not error:
                 if result.action != "SAY":
                     target = next((other for other in self.npcs if other.name == result.target), None)
-                    if result.action in ("TALK_TO_NPC", "GIVE_ITEM") and (target is None or target.conversation is not None or target.request_pending):
+                    if result.action in ("TALK_TO_NPC", "GIVE_ITEM") and (target is None or target.conversation is not None or target.gift is not None or target.request_pending):
                         error = "That person is busy now. Please try again later."
                     else:
                         if result.action == "GIVE_ITEM":

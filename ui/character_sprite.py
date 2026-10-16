@@ -23,7 +23,7 @@ class CharacterRenderer:
         }
         self.hands = {
             direction: pygame.image.load(str(asset_dir / "hands" / f"Hands_{direction}.png")).convert_alpha()
-            for direction in ("NS", "WE", "NSWE")
+            for direction in ("NS", "WE", "NSWE", "Give")
         }
         self.hand_masks = {
             direction: {"Skin Color": pygame.mask.from_threshold(asset, (255, 0, 0, 255), (1, 1, 1, 1))}
@@ -106,7 +106,7 @@ class CharacterRenderer:
         self._frames = {}
         self._scaled_frames = {}
 
-    def render(self, values, direction, scale=1.0):
+    def render(self, values, direction, scale=1.0, giving=False):
         """Return a cached sprite; callers should not modify the surface."""
         if type(direction) is not int or not 0 <= direction < 8:
             raise ValueError("Facing must be one of the eight character directions.")
@@ -150,16 +150,17 @@ class CharacterRenderer:
             self._color_key = colors
             self._frames.clear()
             self._scaled_frames.clear()
-        frame_key = (style, eye_style, direction)
+        frame_key = (style, eye_style, direction, giving)
         if frame_key not in self._frames:
             self.direction = direction
             self.hair_style = style
             self.eye_style = eye_style
+            self.giving = giving
             self._frames[frame_key] = self._compose_preview()
         frame = self._frames[frame_key]
         if scale == 1.0:
             return frame
-        key = (style, eye_style, direction, scale)
+        key = (style, eye_style, direction, scale, giving)
         if key not in self._scaled_frames:
             size = (max(1, round(frame.get_width() * scale)), max(1, round(frame.get_height() * scale)))
             self._scaled_frames[key] = pygame.transform.scale(frame, size)
@@ -219,7 +220,9 @@ class CharacterRenderer:
             hand_rect = hands.get_rect(midtop=(48, 0))
             frame.blit(hands, (hand_rect.x, 1), (0, 1, hands.get_width(), hands.get_height() - 2))
 
-        if self.direction in (0, 4):
+        if self.giving:
+            frame.blit(self.colored_body, body_rect)
+        elif self.direction in (0, 4):
             # From the back, the body covers the inner edges of the hands.
             if self.direction == 0:
                 draw_hands(self.colored_hands["NS"])
@@ -266,8 +269,18 @@ class CharacterRenderer:
         return self._add_hair(frame)
 
     def _add_hair(self, body_frame):
-        frame = pygame.Surface(self.character_size, pygame.SRCALPHA)
+        width, height = self.character_size
+        frame = pygame.Surface((max(width, 128) if self.giving else width, height), pygame.SRCALPHA)
         frame.blit(body_frame, body_frame.get_rect(midbottom=frame.get_rect().midbottom))
+        if self.giving:
+            # The registration mark anchors this outstretched hand at the head center.
+            hands = self.colored_hands["Give"]
+            layer = pygame.Surface(frame.get_size(), pygame.SRCALPHA)
+            layer.blit(hands, (frame.get_width() // 2 - 1, height - body_frame.get_height() + 1),
+                       (0, 1, hands.get_width(), hands.get_height() - 2))
+            if self.direction == 6:
+                layer = pygame.transform.flip(layer, True, False)
+            frame.blit(layer, (0, 0))
         self._draw_hair(frame, self.hair_style, self.direction)
         return frame
 

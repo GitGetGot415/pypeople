@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from character_data import normalize_character, normalize_opinions
 from conversation_history import ConversationRecord
 from llm import ConversationTurn, EmotionReaction
-from npc import ACTIVITY_FIELDS, Behavior, Conversation, NPC, Tree, WORLD_HEIGHT, WORLD_WIDTH
+from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree, WORLD_HEIGHT, WORLD_WIDTH
 from simulation import PendingAction, SHAKE_SECONDS, Simulation
 
 SAVE_DIRECTORY = Path(__file__).resolve().parent / "saves"
@@ -103,6 +103,17 @@ class ConversationState(SaveModel):
         return [(index, normalize_opinions(opinions)) for index, opinions in value]
 
 
+class GiftState(SaveModel):
+    initiator: int = Field(ge=0)
+    recipient: int = Field(ge=0)
+    record: int = Field(ge=0)
+    item: Literal["fruit"]
+    quantity: int = Field(ge=1)
+    arrived: bool
+    elapsed: float = Field(ge=0, lt=2)
+    saved_states: tuple[ActivityState, ActivityState]
+
+
 class TreeState(SaveModel):
     id: str = Field(min_length=1)
     x: float = Field(ge=60, le=WORLD_WIDTH)
@@ -133,6 +144,7 @@ class SimulationState(SaveModel):
     pending_actions: list[PendingActionState]
     history: list[HistoryState]
     conversations: list[ConversationState]
+    gifts: list[GiftState] = Field(default_factory=list)
     camera_offset: tuple[float, float]
     camera_zoom: float = Field(default=1.0, ge=0.5, le=2.5)
 
@@ -188,12 +200,30 @@ class SimulationState(SaveModel):
                 validate_target(activity, self.npcs[index])
             reserved.update(pair)
             records.add(conversation.record)
+        for gift in self.gifts:
+            pair = (gift.initiator, gift.recipient)
+            if pair[0] == pair[1] or any(index >= count or index in reserved for index in pair):
+                raise ValueError("Invalid gift participants.")
+            if gift.record >= len(self.history) or gift.record in records:
+                raise ValueError("Invalid gift history reference.")
+            giver, recipient = (self.npcs[index] for index in pair)
+            if gift.arrived != (giver.destination is None) or (not gift.arrived and gift.elapsed != 0):
+                raise ValueError("Invalid gift progress.")
+            if recipient.destination is not None:
+                raise ValueError("The gift recipient must be waiting.")
+            if gift.elapsed < 1 and (giver.inventory.get(gift.item, 0) < gift.quantity
+                                   or recipient.inventory_capacity - sum(recipient.inventory.values()) < gift.quantity):
+                raise ValueError("The gift needs available items and inventory space.")
+            for index, activity in zip(pair, gift.saved_states):
+                validate_target(activity, self.npcs[index])
+            reserved.update(pair)
+            records.add(gift.record)
         for index, npc in enumerate(self.npcs):
             if index in reserved:
                 if npc.behavior != Behavior.WAIT or npc.owner != "autonomous" or npc.target_id is not None or npc.resume_pending:
-                    raise ValueError("Invalid activity during a conversation.")
+                    raise ValueError("Invalid activity during an interaction.")
                 if npc.id == self.tree.reserved_by:
-                    raise ValueError("Conversation participants cannot reserve the tree.")
+                    raise ValueError("Interaction participants cannot reserve the tree.")
                 continue
             validate_target(npc, npc)
             if npc.resume_pending:
@@ -361,7 +391,7 @@ def capture_simulation(app):
         record = history[records[id(app.request_history)]]
         record["status"] = "Reply pending when saved"
         record["outcomes"] = ["The reply was not saved. Send the request again after loading."]
-    npcs, conversations = [], []
+    npcs, conversations, gifts = [], [], []
     for npc in app.npcs:
         npcs.append(NPCState(
             **npc.activity_state(), id=npc.id,
@@ -371,6 +401,14 @@ def capture_simulation(app):
             inventory=npc.inventory.copy(), inventory_capacity=npc.inventory_capacity,
             preferences=npc.preferences.copy(), command_revision=npc.command_revision,
         ))
+        gift = npc.gift
+        if gift is not None and gift.initiator is npc:
+            gifts.append(GiftState(
+                initiator=npc_indices[id(npc)], recipient=npc_indices[id(gift.recipient)],
+                record=records[id(gift.record)], item=gift.item, quantity=gift.quantity,
+                arrived=gift.arrived, elapsed=gift.elapsed,
+                saved_states=[ActivityState(**activity) for activity in gift.saved_states],
+            ))
         conversation = npc.conversation
         if conversation is None or conversation.initiator is not npc:
             continue
@@ -384,7 +422,7 @@ def capture_simulation(app):
     world = app.simulation
     return SimulationState(
         day=world.day, phase=world.phase,
-        npcs=npcs, history=history, conversations=conversations,
+        npcs=npcs, history=history, conversations=conversations, gifts=gifts,
         tree=TreeState(id=app.tree.id, x=app.tree.x, y=app.tree.y, fruit=app.tree.fruit,
                        capacity=app.tree.capacity,
                        shake_elapsed=app.tree.shake_elapsed,
@@ -432,4 +470,13 @@ def restore_simulation(state):
         conversation.saved_states = [activity.model_dump() for activity in saved.saved_states]
         for npc in (conversation.initiator, conversation.recipient):
             npc.conversation = conversation
+    for saved in state.gifts:
+        gift = Gift.__new__(Gift)
+        gift.initiator, gift.recipient = npcs[saved.initiator], npcs[saved.recipient]
+        gift.item, gift.quantity = saved.item, saved.quantity
+        gift.arrived, gift.elapsed = saved.arrived, saved.elapsed
+        gift.record = history[saved.record]
+        gift.saved_states = [activity.model_dump() for activity in saved.saved_states]
+        for npc in (gift.initiator, gift.recipient):
+            npc.gift = gift
     return world, history

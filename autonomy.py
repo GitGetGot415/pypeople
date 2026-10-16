@@ -6,9 +6,10 @@ from npc import Behavior
 from simulation import DECISION_SECONDS, SOCIAL_START
 
 
-def company_point(npc, partner):
+def company_point(npc, partner, spacing=0):
     left, right, top, bottom = npc.movement_bounds
     gap = ((npc.sprite_size or (36, 18))[0] + (partner.sprite_size or (36, 18))[0]) / 2 + 12
+    gap = max(gap, spacing)
     points = [(partner.x - gap, partner.y), (partner.x + gap, partner.y)]
     points = [point for point in points if left <= point[0] <= right and top <= point[1] <= bottom]
     return min(points, key=lambda p: math.hypot(p[0] - npc.x, p[1] - npc.y)) if points else None
@@ -29,7 +30,7 @@ def target_valid(npc, world):
 
 
 def reconsider(npc, world):
-    if npc.conversation is not None or npc.resume_pending:
+    if npc.conversation is not None or npc.gift is not None or npc.resume_pending:
         return
     if not target_valid(npc, world):
         npc.finish_activity(world, failed=True)

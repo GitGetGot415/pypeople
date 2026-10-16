@@ -74,7 +74,7 @@ class Simulation:
     def company_available(self, npc):
         from npc import Behavior
 
-        return (npc.conversation is None and not npc.selected and not npc.request_pending
+        return (npc.conversation is None and npc.gift is None and not npc.selected and not npc.request_pending
                 and npc.owner == "autonomous"
                 and npc.behavior in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY))
 
@@ -92,6 +92,8 @@ class Simulation:
             npc.update(dt, self.tree)
             if npc.conversation is not None and npc.conversation.initiator is npc:
                 npc.conversation.update(dt)
+            if npc.gift is not None and npc.gift.initiator is npc:
+                npc.gift.update(dt)
         # Each person benefits once, regardless of how many neighbors are present.
         socializing = []
         for npc in self.npcs:

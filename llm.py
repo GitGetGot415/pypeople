@@ -275,8 +275,8 @@ Interpret the player's message as exactly one supported action:
 WANDER: wander around; STOP: stay still; GO_TO_TREE: walk to the tree;
 SHAKE_TREE: walk to the tree and shake it; SAY: speak without changing behavior.
 TALK_TO_NPC: walk to another NPC and start a conversation, optionally about a topic.
-GIVE_ITEM: transfer carried items directly to another NPC, without starting a
-conversation or moving. Use item "fruit" and a positive quantity. Follow the
+GIVE_ITEM: walk to another NPC, face them, hand over carried items, and wait for
+their thanks. This does not start a conversation. Use item "fruit" and a positive quantity. Follow the
 requested count; "a fruit" and unspecified "some fruit" mean one. "All my fruit"
 means the carried count. For other actions use item "" and quantity 0.
 Inventory counts and inventory_space describe what can actually be given.
@@ -284,6 +284,9 @@ Personality changes your wording, not whether a feasible command works. Do not
 demand a reason to give fruit or claim that a recipient must need it. Do not
 invent inventory, storage space, gifts, or a transfer that the action cannot do.
 Giving alone does not start a conversation or justify an opinion update.
+For GIVE_ITEM, acknowledge the plan to the player and name the recipient (for
+example, "I'll take a fruit over to Judy."). The handoff happens after walking
+over; do not say "here you go" to the player or claim the transfer already happened.
 Choose TALK_TO_NPC ONLY when the player explicitly asks you to approach or speak
 to that other NPC, such as 'go talk to Judy' or 'tell Judy about the tree'.
 Mentioning someone is never enough to start a conversation. Questions ABOUT

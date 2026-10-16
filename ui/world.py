@@ -12,7 +12,6 @@ CHARACTER_SCALE = 0.5
 TREE_SCALE = 0.6
 TREE_BASE_OFFSET = 64
 APPLE_POINTS = ((38, 58), (83, 28), (112, 60), (65, 84), (96, 111), (33, 101), (111, 32), (46, 30))
-_talking_bubble = None
 _tree_artwork = None
 
 
@@ -21,12 +20,10 @@ def npc_name_font(size):
     return pygame.font.Font(None, size)
 
 
-def talking_bubble():
-    global _talking_bubble
-    if _talking_bubble is None:
-        path = Path(__file__).resolve().parent.parent / "assets" / "Talking.png"
-        _talking_bubble = pygame.image.load(str(path)).convert_alpha()
-    return _talking_bubble
+@lru_cache(maxsize=3)
+def interaction_bubble(name):
+    path = Path(__file__).resolve().parent.parent / "assets" / f"{name}.png"
+    return pygame.image.load(str(path)).convert_alpha()
 
 
 def tree_artwork():
@@ -112,7 +109,7 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
         npc = obj
         position = screen_point((npc.x, npc.y))
         # Always resize from the original composed artwork, including when zooming out.
-        original = character_renderer.render(npc.character, npc.facing)
+        original = character_renderer.render(npc.character, npc.facing, giving=npc.giving)
         sprite = resized(original, CHARACTER_SCALE * zoom)
         sprite_rect = sprite.get_rect(midbottom=position)
         shadow = pygame.Rect(screen_point((npc.x - 16, npc.y - 4)), (round(32 * zoom), round(8 * zoom)))
@@ -122,13 +119,16 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
         name_rect = name.get_rect(midtop=screen_point((npc.x, npc.y + 6)))
         name_rect.clamp_ip(map_rect)
         surface.blit(name, name_rect)
-    # Draw above every character, anchored to the initiator's top right.
+    # Draw interaction bubbles above the characters, anchored to their top right.
     for npc in npcs:
+        bubble_name = "Giving" if npc.giving else "Thanking" if npc.thanking else None
         if npc.conversation is not None and npc.conversation.arrived and npc.conversation.initiator is npc:
+            bubble_name = "Talking"
+        if bubble_name is not None:
             width, height = npc.sprite_size or (
                 round(character_renderer.character_size[0] * CHARACTER_SCALE),
                 round(character_renderer.character_size[1] * CHARACTER_SCALE),
             )
-            bubble = resized(talking_bubble(), zoom)
+            bubble = resized(interaction_bubble(bubble_name), zoom)
             rect = bubble.get_rect(bottomleft=screen_point((npc.x + width / 2 - 6, npc.y - height + 8)))
             surface.blit(bubble, rect)

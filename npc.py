@@ -104,6 +104,7 @@ class NPC:
     selected: bool = False
     reply: str = ""
     conversation: "Conversation | None" = field(default=None, repr=False, compare=False)
+    gift: "Gift | None" = field(default=None, repr=False, compare=False)
     character_path: Path | None = field(default=None, repr=False, compare=False)
     display_name: str | None = None
     emotion: str = "neutral"
@@ -206,9 +207,10 @@ class NPC:
         self.social = max(0.0, self.social - SOCIAL_DECAY * dt)
         self.decision_remaining = max(0.0, self.decision_remaining - dt)
         self.cooldowns = {key: value - dt for key, value in self.cooldowns.items() if value > dt}
-        if self.conversation is not None:
-            index = 0 if self.conversation.initiator is self else 1
-            suspended = self.conversation.saved_states[index]
+        interaction = self.conversation or self.gift
+        if interaction is not None:
+            index = 0 if interaction.initiator is self else 1
+            suspended = interaction.saved_states[index]
             suspended["decision_remaining"] = max(0.0, suspended["decision_remaining"] - dt)
             suspended["cooldowns"] = {key: value - dt for key, value in suspended["cooldowns"].items() if value > dt}
 
@@ -251,6 +253,14 @@ class NPC:
 
     @property
     def status(self):
+        if self.gift is not None:
+            if self.thanking:
+                return f"Thanking {self.gift.initiator.name}"
+            if self.gift.initiator is self:
+                if self.gift.elapsed >= 1.0:
+                    return f"Waiting for {self.gift.recipient.name}'s thanks"
+                return f"Giving to {self.gift.recipient.name}" if self.gift.arrived else f"Walking to {self.gift.recipient.name}"
+            return f"Receiving from {self.gift.initiator.name}"
         if self.conversation is not None:
             if self.conversation.arrived:
                 return f"Talking with {self.conversation.other(self).name}"
@@ -333,7 +343,7 @@ class NPC:
     def set_selected(self, selected):
         """Defer new decisions while allowing the current finite activity to finish."""
         self.selected = selected
-        if self.conversation is None and selected and (self.wandering_paused or self.behavior in (Behavior.STOP, Behavior.SHAKING)):
+        if self.conversation is None and self.gift is None and selected and (self.wandering_paused or self.behavior in (Behavior.STOP, Behavior.SHAKING)):
             self._face_when_still()
 
     def apply_action(self, action, tree):
@@ -342,8 +352,8 @@ class NPC:
             return
         if action not in ("WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE"):
             raise ValueError("Unsupported NPC action")
-        if self.conversation is not None:
-            raise ValueError("This NPC is already in a conversation.")
+        if self.conversation is not None or self.gift is not None:
+            raise ValueError("This NPC is already in an interaction.")
         self.command_revision += 1
         if action == "WANDER":
             self.begin_activity(Behavior.WANDER, self.world, reason="Player released control; choosing activities")
@@ -357,7 +367,8 @@ class NPC:
     def check_gift(self, recipient, item, quantity):
         if recipient is self or self.world is None or not any(person is recipient for person in self.world.npcs):
             raise ValueError("Choose another NPC in this world to receive the items.")
-        if self.conversation is not None or recipient.conversation is not None or recipient.request_pending:
+        if (self.conversation is not None or recipient.conversation is not None
+                or self.gift is not None or recipient.gift is not None or recipient.request_pending):
             raise ValueError("That person is busy now. Please try again later.")
         if item != "fruit" or type(quantity) is not int or quantity < 1:
             raise ValueError("Give a positive number of fruit.")
@@ -366,13 +377,19 @@ class NPC:
         if recipient.inventory_space < quantity:
             raise ValueError(f"{recipient.name} only has room for {recipient.inventory_space} more items.")
 
-    def give_items(self, recipient, item, quantity):
-        """Commit a player-requested transfer once, after checking both inventories."""
+    @property
+    def giving(self):
+        return (self.gift is not None and self.gift.initiator is self
+                and self.gift.arrived and self.gift.elapsed < 1.0)
+
+    @property
+    def thanking(self):
+        return self.gift is not None and self.gift.recipient is self and self.gift.elapsed >= 1.0
+
+    def give_items(self, recipient, item, quantity, record=None, spacing=0):
+        """Walk over and hand the items to the recipient before transferring them."""
         self.check_gift(recipient, item, quantity)
-        self.inventory[item] -= quantity
-        recipient.inventory[item] = recipient.inventory.get(item, 0) + quantity
-        self.command_revision += 1
-        return f"Gave {quantity} {item} to {recipient.name}."
+        return Gift(self, recipient, item, quantity, record, spacing)
 
     def _move(self, dt):
         dx = self.destination[0] - self.x
@@ -388,7 +405,7 @@ class NPC:
         return False
 
     def update(self, dt, tree):
-        if self.conversation is not None or self.resume_pending:
+        if self.conversation is not None or self.gift is not None or self.resume_pending:
             return
         world = self.world
         old_x, old_y = self.x, self.y
@@ -501,7 +518,7 @@ class Conversation:
     """Temporarily reserve two NPCs, then restore their interrupted activities."""
 
     def __init__(self, initiator, recipient, topic, tree, spacing=0):
-        if initiator is recipient or initiator.conversation or recipient.conversation:
+        if initiator is recipient or initiator.conversation or recipient.conversation or initiator.gift or recipient.gift:
             raise ValueError("Choose another NPC who is free to talk.")
         self.initiator = initiator
         self.recipient = recipient
@@ -637,4 +654,76 @@ class Conversation:
             npc.conversation = None
             npc.restore_activity(state)
             # Physical resumption and claim acquisition wait for the next update.
+            npc.resume_pending = True
+
+
+class Gift:
+    """Reserve both participants through approach, giving, and thanking."""
+
+    def __init__(self, initiator, recipient, item, quantity, record=None, spacing=0):
+        from autonomy import company_point
+
+        destination = company_point(initiator, recipient, spacing)
+        if destination is None:
+            raise ValueError("There isn't enough room here to give the items.")
+        self.initiator, self.recipient = initiator, recipient
+        self.item, self.quantity = item, quantity
+        self.arrived = False
+        self.elapsed = 0.0
+        self.record = record or ConversationRecord((initiator.name, recipient.name), "Give items", "Walking to give")
+        self.saved_states = []
+        self.record.status = "Walking to give"
+        for npc in (initiator, recipient):
+            self.saved_states.append(npc.activity_state())
+            npc.release_claims(npc.world)
+            npc.command_revision += 1
+            npc.behavior = Behavior.WAIT
+            npc.owner = "autonomous"
+            npc.destination = None
+            npc.target_id = None
+            npc.activity_elapsed = 0.0
+            npc.resume_pending = False
+            npc.reason = "Giving items" if npc is initiator else "Receiving items"
+            npc.gift = self
+        initiator.destination = destination
+
+    def update(self, dt):
+        giver, recipient = self.initiator, self.recipient
+        if not self.arrived:
+            old_x, old_y = giver.x, giver.y
+            self.arrived = giver._move(max(0.0, dt))
+            if giver.x != old_x or giver.y != old_y:
+                angle = math.atan2(giver.x - old_x, old_y - giver.y)
+                giver.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
+            if self.arrived:
+                giver.destination = None
+                self.record.status = "Giving items"
+                for npc, other in ((giver, recipient), (recipient, giver)):
+                    angle = math.atan2(other.x - npc.x, npc.y - other.y)
+                    npc.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
+            return
+        elapsed = self.elapsed + max(0.0, dt)
+        if self.elapsed < 1.0 <= elapsed + 1e-9:
+            if giver.inventory.get(self.item, 0) < self.quantity or recipient.inventory_space < self.quantity:
+                self.finish("The items could not be given because the inventories changed.")
+                return
+            giver.inventory[self.item] -= self.quantity
+            recipient.inventory[self.item] = recipient.inventory.get(self.item, 0) + self.quantity
+            self.record.outcomes[0:1] = [f"Gave {self.quantity} {self.item} to {recipient.name}."]
+            self.record.status = "Thanking"
+            elapsed = max(1.0, elapsed)
+        self.elapsed = elapsed
+        if self.elapsed + 1e-9 >= 2.0:
+            self.finish()
+
+    def finish(self, error=""):
+        self.record.status = "Failed" if error else "Completed"
+        self.record.error = error
+        if error:
+            self.record.outcomes[0:1] = [error]
+        for npc, state in zip((self.initiator, self.recipient), self.saved_states):
+            npc.gift = None
+            facing = npc.facing
+            npc.restore_activity(state)
+            npc.facing = facing
             npc.resume_pending = True
