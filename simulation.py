@@ -10,7 +10,9 @@ WANDER_PAUSE = 0.5
 DECISION_SECONDS = 4.0
 FAILURE_COOLDOWN = 8.0
 PARTNER_COOLDOWN = 25.0
-SOCIAL_DECAY = 0.09
+SATISFACTION_PHASE_LOSS = 5
+APPLE_SATISFACTION = 10
+EAT_SECONDS = 1.0
 COMPANY_SOCIAL_RECOVERY = 0.96
 SOCIAL_RADIUS = 110
 COMPANY_MAX_SECONDS = 100.0
@@ -56,6 +58,8 @@ class Simulation:
         else:
             self.phase = "day"
             self.day += 1
+        for npc in self.npcs:
+            npc.social = max(0.0, npc.social - SATISFACTION_PHASE_LOSS)
         self.tree.fruit = min(self.tree.capacity, self.tree.fruit + FRUIT_PER_PHASE)
 
     def npc_by_id(self, npc_id):
@@ -84,7 +88,7 @@ class Simulation:
 
         self.tree.update(dt)
         for npc in self.npcs:
-            npc.update_social(dt)
+            npc.update_cooldowns(dt)
         for npc in self.npcs:
             if npc.resume_pending and npc.conversation is None:
                 npc.resume_activity(self)

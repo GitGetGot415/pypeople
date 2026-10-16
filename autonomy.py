@@ -3,7 +3,7 @@
 import math
 
 from npc import Behavior
-from simulation import DECISION_SECONDS, SOCIAL_START
+from simulation import APPLE_SATISFACTION, DECISION_SECONDS, SOCIAL_START
 
 
 def company_point(npc, partner, spacing=0):
@@ -16,6 +16,8 @@ def company_point(npc, partner, spacing=0):
 
 
 def target_valid(npc, world):
+    if npc.behavior == Behavior.EAT:
+        return npc.inventory.get("fruit", 0) > 0
     if npc.behavior == Behavior.HARVEST:
         return (npc.target_id == world.tree.id and world.tree.reserved_by is npc
                 and world.tree.fruit > 0 and npc.inventory_space > 0
@@ -39,13 +41,15 @@ def reconsider(npc, world):
     if npc.decision_remaining > 0:
         return
     npc.decision_remaining = DECISION_SECONDS
-    if npc.behavior in (Behavior.HARVEST, Behavior.COMPANY):
+    if npc.behavior in (Behavior.HARVEST, Behavior.COMPANY, Behavior.EAT):
         return
 
     def distance(point):
         return math.hypot(npc.x - point[0], npc.y - point[1]) / 90
 
     candidates = [(1 + npc.rng.random(), Behavior.WANDER, None, "Exploring the world")]
+    if npc.inventory.get("fruit", 0) > 0 and npc.social <= 100 - APPLE_SATISFACTION:
+        candidates.append((130 - npc.social, Behavior.EAT, None, "Eating an apple to improve satisfaction"))
     tree = world.tree
     if (tree.fruit > 0 and tree.reserved_by in (None, npc) and npc.inventory_space > 0
             and tree.id not in npc.cooldowns and npc.can_reach(tree.interaction_point)):

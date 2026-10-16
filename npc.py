@@ -10,8 +10,8 @@ from uuid import uuid4
 from character_data import DIRECTIONS, normalize_opinions
 from conversation_history import ConversationRecord, describe_opinion_change
 from simulation import (
-    COMPANY_MAX_SECONDS, DECISION_SECONDS, FAILURE_COOLDOWN, INVENTORY_CAPACITY,
-    MOVEMENT_SPEED, PARTNER_COOLDOWN, SHAKE_SECONDS, SOCIAL_DECAY, SOCIAL_RADIUS,
+    APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, EAT_SECONDS, FAILURE_COOLDOWN, INVENTORY_CAPACITY,
+    MOVEMENT_SPEED, PARTNER_COOLDOWN, SHAKE_SECONDS, SOCIAL_RADIUS,
     SOCIAL_RECOVERED, WANDER_PAUSE,
 )
 
@@ -33,6 +33,7 @@ class Behavior(str, Enum):
     SHAKE_TREE = "SHAKE_TREE"
     SHAKING = "SHAKING"
     HARVEST = "HARVEST"
+    EAT = "EAT"
     COMPANY = "COMPANY"
     WAIT = "WAIT"
 
@@ -169,7 +170,9 @@ class NPC:
         self.activity_elapsed = self.pause_remaining = 0.0
         self.resume_pending = False
         self.decision_remaining = DECISION_SECONDS
-        if behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE, Behavior.SHAKE_TREE):
+        if behavior == Behavior.EAT:
+            self.facing = 4
+        elif behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE, Behavior.SHAKE_TREE):
             if target != world.tree.id or not self.can_reach(world.tree.interaction_point):
                 self.finish_activity(world, failed=True)
                 return
@@ -203,8 +206,7 @@ class NPC:
             else:
                 self.destination = company_point(self, partner)
 
-    def update_social(self, dt):
-        self.social = max(0.0, self.social - SOCIAL_DECAY * dt)
+    def update_cooldowns(self, dt):
         self.decision_remaining = max(0.0, self.decision_remaining - dt)
         self.cooldowns = {key: value - dt for key, value in self.cooldowns.items() if value > dt}
         interaction = self.conversation or self.gift
@@ -280,6 +282,7 @@ class NPC:
             Behavior.SHAKE_TREE: "Walking to tree",
             Behavior.SHAKING: "Shaking tree",
             Behavior.HARVEST: "Walking to harvest" if self.destination else "Harvesting fruit",
+            Behavior.EAT: "Eating an apple",
             Behavior.COMPANY: "Seeking company" if self.destination else "Spending time together",
             Behavior.WAIT: "Waiting",
         }[self.behavior]
@@ -304,7 +307,7 @@ class NPC:
             "activity": self.status,
             "activity_reason": self.decision_reason,
             "activity_owner": self.owner,
-            "social_satisfaction": round(self.social, 1),
+            "satisfaction": round(self.social, 1),
             "inventory": self.inventory.copy(),
             "inventory_capacity": self.inventory_capacity,
             "inventory_space": self.inventory_space,
@@ -338,7 +341,7 @@ class NPC:
     def _face_when_still(self):
         point = self.world.tree.interaction_point if self.world else None
         at_tree = point is not None and math.hypot(self.x - point[0], self.y - point[1]) <= 1e-6
-        self.facing = 2 if at_tree or self.behavior == Behavior.SHAKING else 4
+        self.facing = 2 if not self.eating and (at_tree or self.behavior == Behavior.SHAKING) else 4
 
     def set_selected(self, selected):
         """Defer new decisions while allowing the current finite activity to finish."""
@@ -350,10 +353,12 @@ class NPC:
         # Reject before changing anything. SAY preserves even an active shake.
         if action == "SAY":
             return
-        if action not in ("WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE"):
+        if action not in ("WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "EAT"):
             raise ValueError("Unsupported NPC action")
-        if self.conversation is not None or self.gift is not None:
+        if self.conversation is not None or self.gift is not None or self.eating:
             raise ValueError("This NPC is already in an interaction.")
+        if action == "EAT" and self.inventory.get("fruit", 0) < 1:
+            raise ValueError("I don't have an apple to eat.")
         self.command_revision += 1
         if action == "WANDER":
             self.begin_activity(Behavior.WANDER, self.world, reason="Player released control; choosing activities")
@@ -361,6 +366,8 @@ class NPC:
         elif action == "STOP":
             self.begin_activity(Behavior.STOP, self.world, reason="Player asked me to stay here; waiting for another task", owner="player_hold")
             self._face_when_still()
+        elif action == "EAT":
+            self.begin_activity(Behavior.EAT, self.world, reason="Player asked me to eat an apple", owner="player_task")
         else:
             self.begin_activity(Behavior(action), self.world, tree.id, "Player asked me to visit the tree" if action == "GO_TO_TREE" else "Player asked for a cosmetic tree shake", owner="player_task")
 
@@ -368,7 +375,7 @@ class NPC:
         if recipient is self or self.world is None or not any(person is recipient for person in self.world.npcs):
             raise ValueError("Choose another NPC in this world to receive the items.")
         if (self.conversation is not None or recipient.conversation is not None
-                or self.gift is not None or recipient.gift is not None or recipient.request_pending):
+                or self.gift is not None or recipient.gift is not None or self.eating or recipient.eating or recipient.request_pending):
             raise ValueError("That person is busy now. Please try again later.")
         if item != "fruit" or type(quantity) is not int or quantity < 1:
             raise ValueError("Give a positive number of fruit.")
@@ -376,6 +383,10 @@ class NPC:
             raise ValueError(f"{self.name} only has {self.inventory.get(item, 0)} fruit to give.")
         if recipient.inventory_space < quantity:
             raise ValueError(f"{recipient.name} only has room for {recipient.inventory_space} more items.")
+
+    @property
+    def eating(self):
+        return self.behavior == Behavior.EAT and self.conversation is None and self.gift is None
 
     @property
     def giving(self):
@@ -477,6 +488,16 @@ class NPC:
                 else:
                     angle = math.atan2(partner.x - self.x, self.y - partner.y)
                     self.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
+        elif behavior == Behavior.EAT:
+            self.facing = 4
+            self.activity_elapsed += dt
+            if self.activity_elapsed + 1e-9 >= EAT_SECONDS:
+                if self.inventory.get("fruit", 0) > 0:
+                    self.inventory["fruit"] -= 1
+                    self.social = min(100.0, self.social + APPLE_SATISFACTION)
+                    self.finish_activity(world)
+                else:
+                    self.finish_activity(world, failed=True)
         elif behavior == Behavior.WAIT:
             self.activity_elapsed += dt
             if self.activity_elapsed >= DECISION_SECONDS:
@@ -518,7 +539,8 @@ class Conversation:
     """Temporarily reserve two NPCs, then restore their interrupted activities."""
 
     def __init__(self, initiator, recipient, topic, tree, spacing=0):
-        if initiator is recipient or initiator.conversation or recipient.conversation or initiator.gift or recipient.gift:
+        if (initiator is recipient or initiator.conversation or recipient.conversation
+                or initiator.gift or recipient.gift or initiator.eating or recipient.eating):
             raise ValueError("Choose another NPC who is free to talk.")
         self.initiator = initiator
         self.recipient = recipient

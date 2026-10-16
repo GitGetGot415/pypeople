@@ -102,7 +102,7 @@ class StatsScreen:
             if npc.request_pending:
                 add("Player request pending; new decisions are deferred.", app.small_font, MUTED)
             gap()
-            add(f"Social: {npc.social:.0f}/100 (higher = more satisfied)")
+            add(f"Satisfaction: {npc.social:.0f}/100")
             add(f"Carrying: {npc.inventory.get('fruit', 0)} fruit / {npc.inventory_capacity} items")
             gap()
             fields = tuple(field for field in FIELDS if field != "Details")

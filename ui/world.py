@@ -20,7 +20,7 @@ def npc_name_font(size):
     return pygame.font.Font(None, size)
 
 
-@lru_cache(maxsize=3)
+@lru_cache(maxsize=4)
 def interaction_bubble(name):
     path = Path(__file__).resolve().parent.parent / "assets" / f"{name}.png"
     return pygame.image.load(str(path)).convert_alpha()
@@ -109,7 +109,7 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
         npc = obj
         position = screen_point((npc.x, npc.y))
         # Always resize from the original composed artwork, including when zooming out.
-        original = character_renderer.render(npc.character, npc.facing, giving=npc.giving)
+        original = character_renderer.render(npc.character, npc.facing, giving=npc.giving, eating=npc.eating)
         sprite = resized(original, CHARACTER_SCALE * zoom)
         sprite_rect = sprite.get_rect(midbottom=position)
         shadow = pygame.Rect(screen_point((npc.x - 16, npc.y - 4)), (round(32 * zoom), round(8 * zoom)))
@@ -121,7 +121,7 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
         surface.blit(name, name_rect)
     # Draw interaction bubbles above the characters, anchored to their top right.
     for npc in npcs:
-        bubble_name = "Giving" if npc.giving else "Thanking" if npc.thanking else None
+        bubble_name = "Eating" if npc.eating else "Giving" if npc.giving else "Thanking" if npc.thanking else None
         if npc.conversation is not None and npc.conversation.arrived and npc.conversation.initiator is npc:
             bubble_name = "Talking"
         if bubble_name is not None:

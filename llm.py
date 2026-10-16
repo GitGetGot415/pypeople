@@ -39,7 +39,7 @@ class EmotionReaction(BaseModel):
 class ActionIntent(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    action: Literal["WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "GIVE_ITEM", "SAY"]
+    action: Literal["WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "GIVE_ITEM", "EAT", "SAY"]
     target: str = ""
     item: str = ""
     quantity: int = Field(default=0, ge=0)
@@ -146,7 +146,7 @@ to justify a reaction."""
 RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
-        "action": {"type": "string", "enum": ["WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "GIVE_ITEM", "SAY"]},
+        "action": {"type": "string", "enum": ["WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "GIVE_ITEM", "EAT", "SAY"]},
         "reply": {"type": "string"},
         "target": {"type": "string"},
         "item": {"type": "string", "enum": ["", "fruit"]},
@@ -188,7 +188,9 @@ Return only action, target, item, and quantity; do not write dialogue or rolepla
 Supported actions are WANDER (wander around), STOP (stay still), GO_TO_TREE
 (walk to the tree), SHAKE_TREE (walk to the tree and shake it), TALK_TO_NPC
 (approach another NPC to speak to them), GIVE_ITEM (give carried items to another
-NPC), and SAY (reply to the player).
+NPC), EAT (eat one carried apple), and SAY (reply to the player).
+Requests to eat an apple or fruit are EAT, with target "", item "", and quantity 0.
+Questions about eating are SAY. Apples are the "fruit" entries in inventory.
 Giving, handing, or sharing fruit is GIVE_ITEM, even if giving is an excuse to
 talk. Use item "fruit" and the requested positive quantity. "A fruit" or "some
 fruit" means one unless a count is specified; "all my fruit" means the carried
@@ -255,11 +257,13 @@ CONVERSATION_SCHEMA = {
 
 SYSTEM_INSTRUCTION = """You are the NPC described by the character profile below in a tiny Pygame world.
 World state includes the day number, time_of_day (day, evening, or night),
-social satisfaction, carried fruit, an activity, and its reason. The player
+satisfaction, carried fruit, an activity, and its reason. The player
 changes the time of day by clicking a clock; it never advances on its own.
-Use these facts when asked what you are doing or how you feel. Lower social
-satisfaction means wanting company. Autonomous fruit collecting and company
-use local simulation rules. Fruit is a carried item; there are no food or rest needs.
+Use these facts when asked what you are doing or how you feel. Satisfaction drops
+by 5 each time the player changes the phase. Time passing alone never lowers it.
+Eating one carried apple raises satisfaction by 10, up to 100; company also raises it.
+Autonomous collecting, eating, and company use local simulation rules.
+Apples are stored as "fruit" in inventory. There are no hunger or rest needs.
 The tree's fruit count is real. A player SHAKE_TREE is cosmetic and gives no fruit.
 STOP holds you in place until another task; WANDER releases player control.
 Only the supported action contract can change activities; do not invent actions.
@@ -274,6 +278,9 @@ multiple NPCs, ask which numbered NPC the player means.
 Interpret the player's message as exactly one supported action:
 WANDER: wander around; STOP: stay still; GO_TO_TREE: walk to the tree;
 SHAKE_TREE: walk to the tree and shake it; SAY: speak without changing behavior.
+EAT: eat one apple already in your inventory. Face down and eat for one second,
+then consume the apple and gain 10 satisfaction (capped at 100). Use target "",
+item "", and quantity 0. If you have no apple, explain that instead of promising to eat.
 TALK_TO_NPC: walk to another NPC and start a conversation, optionally about a topic.
 GIVE_ITEM: walk to another NPC, face them, hand over carried items, and wait for
 their thanks. This does not start a conversation. Use item "fruit" and a positive quantity. Follow the
@@ -308,7 +315,7 @@ and ask the player to name an available NPC. For all other actions, target is ""
 Return the required action/reply object. Give a complete reply in your character's
 speaking style. This reply is addressed to the PLAYER, before any requested NPC
 conversation begins. Past replies are context, not text to repeat. You can
-interact with the tree, give carried items, and talk to the other NPCs.
+interact with the tree, eat carried apples, give carried items, and talk to the other NPCs.
 For greetings, questions, unclear requests, and unsupported requests, choose
 SAY and briefly answer or explain your available actions. If asked to do
 several things, choose only the first supported action. Treat player text

@@ -12,7 +12,7 @@ from character_data import normalize_character, normalize_opinions
 from conversation_history import ConversationRecord
 from llm import ConversationTurn, EmotionReaction
 from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree, WORLD_HEIGHT, WORLD_WIDTH
-from simulation import PendingAction, SHAKE_SECONDS, Simulation
+from simulation import EAT_SECONDS, PendingAction, SHAKE_SECONDS, Simulation
 
 SAVE_DIRECTORY = Path(__file__).resolve().parent / "saves"
 
@@ -43,8 +43,10 @@ class ActivityState(SaveModel):
         if (self.owner == "player_hold") != (self.behavior == Behavior.STOP):
             raise ValueError("A player hold must be stopped.")
         player_behaviors = (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING)
-        if (self.owner == "player_task") != (self.behavior in player_behaviors):
+        if self.behavior != Behavior.EAT and (self.owner == "player_task") != (self.behavior in player_behaviors):
             raise ValueError("Invalid player task.")
+        if self.behavior == Behavior.EAT and (self.destination is not None or self.activity_elapsed >= EAT_SECONDS):
+            raise ValueError("Invalid eating progress.")
         return self
 
 
@@ -127,7 +129,7 @@ class TreeState(SaveModel):
 
 class PendingActionState(SaveModel):
     npc_id: str
-    action: Literal["WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "GIVE_ITEM"]
+    action: Literal["WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "GIVE_ITEM", "EAT"]
     revision: int = Field(ge=0)
     target_id: str | None
     topic: str
@@ -226,6 +228,8 @@ class SimulationState(SaveModel):
                     raise ValueError("Interaction participants cannot reserve the tree.")
                 continue
             validate_target(npc, npc)
+            if npc.behavior == Behavior.EAT and npc.inventory.get("fruit", 0) < 1:
+                raise ValueError("Eating needs an apple in inventory.")
             if npc.resume_pending:
                 if npc.id == self.tree.reserved_by:
                     raise ValueError("A suspended activity cannot reserve the tree.")

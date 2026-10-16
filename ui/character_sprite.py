@@ -23,7 +23,7 @@ class CharacterRenderer:
         }
         self.hands = {
             direction: pygame.image.load(str(asset_dir / "hands" / f"Hands_{direction}.png")).convert_alpha()
-            for direction in ("NS", "WE", "NSWE", "Give")
+            for direction in ("NS", "WE", "NSWE", "Give", "Eat")
         }
         self.hand_masks = {
             direction: {"Skin Color": pygame.mask.from_threshold(asset, (255, 0, 0, 255), (1, 1, 1, 1))}
@@ -106,7 +106,7 @@ class CharacterRenderer:
         self._frames = {}
         self._scaled_frames = {}
 
-    def render(self, values, direction, scale=1.0, giving=False):
+    def render(self, values, direction, scale=1.0, giving=False, eating=False):
         """Return a cached sprite; callers should not modify the surface."""
         if type(direction) is not int or not 0 <= direction < 8:
             raise ValueError("Facing must be one of the eight character directions.")
@@ -150,17 +150,18 @@ class CharacterRenderer:
             self._color_key = colors
             self._frames.clear()
             self._scaled_frames.clear()
-        frame_key = (style, eye_style, direction, giving)
+        frame_key = (style, eye_style, direction, giving, eating)
         if frame_key not in self._frames:
             self.direction = direction
             self.hair_style = style
             self.eye_style = eye_style
             self.giving = giving
+            self.eating = eating
             self._frames[frame_key] = self._compose_preview()
         frame = self._frames[frame_key]
         if scale == 1.0:
             return frame
-        key = (style, eye_style, direction, scale, giving)
+        key = (style, eye_style, direction, scale, giving, eating)
         if key not in self._scaled_frames:
             size = (max(1, round(frame.get_width() * scale)), max(1, round(frame.get_height() * scale)))
             self._scaled_frames[key] = pygame.transform.scale(frame, size)
@@ -222,6 +223,9 @@ class CharacterRenderer:
 
         if self.giving:
             frame.blit(self.colored_body, body_rect)
+        elif self.eating:
+            frame.blit(self.colored_body, body_rect)
+            draw_hands(self.colored_hands["Eat"])
         elif self.direction in (0, 4):
             # From the back, the body covers the inner edges of the hands.
             if self.direction == 0:
