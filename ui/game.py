@@ -356,8 +356,10 @@ class GameScreen:
             text = "Generating their conversation..." if self.request_is_current(app) else "Waiting to hear their conversation..."
         self.draw_dialogue_lines(app.window, wrap_text(text, app.font, rect.width - 12), app.font, rect)
         if conversation.turns:
-            if conversation.error:
-                draw_wrapped_text(app.window, conversation.error, app.small_font, MUTED, (rect.x, 696, rect.width - 80, 24))
+            status = ("Conversation paused while you read." if conversation.active
+                      else f"{conversation.record.status} - recorded dialogue.")
+            draw_wrapped_text(app.window, conversation.error or status, app.small_font, MUTED,
+                              (rect.x, 696, rect.width - 80, 24))
             progress = app.small_font.render(f"{self.conversation_page_index + 1}/{len(self.conversation_pages)}", True, MUTED)
             app.window.blit(progress, progress.get_rect(topright=(1256, 696)))
 

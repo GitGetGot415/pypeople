@@ -87,7 +87,7 @@ class Simulation:
     def npc_by_id(self, npc_id):
         return next((npc for npc in self.npcs if npc.id == npc_id), None)
 
-    def advance(self, dt, *, active=True, action_handler=None):
+    def advance(self, dt, *, active=True, action_handler=None, viewed_conversation=None):
         if not active:
             return
         if action_handler is not None:
@@ -95,7 +95,7 @@ class Simulation:
             for action in actions:
                 action_handler(action)
         # Ignore long window stalls; there is no elapsed world time to catch up.
-        self.step(min(0.1, max(0.0, dt)))
+        self.step(min(0.1, max(0.0, dt)), viewed_conversation=viewed_conversation)
 
     def company_available(self, npc):
         from npc import Behavior
@@ -105,7 +105,7 @@ class Simulation:
                 and not any(npc.id in (action.npc_id, action.target_id) for action in self.pending_actions)
                 and npc.behavior in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY))
 
-    def step(self, dt):
+    def step(self, dt, *, viewed_conversation=None):
         from autonomy import reconsider, social_pair
         from npc import Behavior
 
@@ -116,7 +116,10 @@ class Simulation:
         interactions = {id(npc.conversation or npc.gift): npc.conversation or npc.gift
                         for npc in self.npcs if npc.conversation or npc.gift}
         for interaction in interactions.values():
-            interaction.update(dt)
+            if interaction is viewed_conversation:
+                interaction.update(dt, reading=True)
+            else:
+                interaction.update(dt)
         if self.social_opportunity:
             choice = social_pair(self)
             if choice is not None:

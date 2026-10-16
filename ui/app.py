@@ -473,7 +473,9 @@ class Application:
         if self.screen == "setup":
             self.setup.update(dt)
         if self.simulation is not None:
-            self.simulation.advance(dt, active=simulation_active, action_handler=self.apply_pending_action)
+            viewed = self.game.viewed_conversation if self.screen == "game" and self.game.dialogue_open else None
+            self.simulation.advance(dt, active=simulation_active, action_handler=self.apply_pending_action,
+                                    viewed_conversation=viewed)
         if simulation_active:
             conversations = [npc.conversation for npc in self.npcs
                              if npc.conversation is not None and npc.conversation.initiator is npc]

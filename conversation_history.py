@@ -1,7 +1,20 @@
 """Session records of dialogue and its outcomes."""
 
 from dataclasses import dataclass, field
+import re
 from uuid import uuid4
+
+
+# These destinations do not exist in this simulation. Reject invented outings
+# before they become dialogue or context for a later conversation.
+UNSUPPORTED_LOCATIONS = re.compile(
+    r"\b(?:markets?|shops?|buildings?|towns?|cities|city|villages?|roads?|streets?|caf[eé]s?|restaurants?)\b",
+    re.IGNORECASE,
+)
+
+
+def unsupported_location(text):
+    return UNSUPPORTED_LOCATIONS.search(text) is not None
 
 
 @dataclass

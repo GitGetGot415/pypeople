@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from character_data import DIRECTIONS, normalize_opinions
-from conversation_history import ConversationRecord, describe_opinion_change, remember
+from conversation_history import ConversationRecord, describe_opinion_change, remember, unsupported_location
 from simulation import (
     APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, EAT_SECONDS, FAILURE_COOLDOWN, INVENTORY_CAPACITY,
     MOVEMENT_SPEED, PARTNER_COOLDOWN, SHAKE_SECONDS, SOCIAL_RADIUS,
@@ -552,6 +552,8 @@ class Conversation:
             raise ValueError("Choose another NPC who is free to talk.")
         self.initiator = initiator
         self.recipient = recipient
+        if unsupported_location(topic):
+            topic = "The current surroundings and how things are going"
         self.topic = topic
         self.id = uuid4().hex
         self.origin, self.purpose = origin, purpose
@@ -711,10 +713,21 @@ class Conversation:
             self.pending_opinions.pop(0)
         self.error = ""
 
-    def update(self, dt):
+    def face_each_other(self):
+        for participant in (self.initiator, self.recipient):
+            other = self.other(participant)
+            angle = math.atan2(other.x - participant.x, participant.y - other.y)
+            participant.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
+
+    def update(self, dt, *, reading=False):
         if not self.active:
             return
         if self.arrived:
+            self.face_each_other()
+            # Reading a live exchange holds both participants, not just the selected NPC.
+            # Missing dialogue still reaches its bounded timeout while the view is open.
+            if reading and self.turns:
+                return
             if self.dialogue_state in ("waiting", "pending"):
                 self.wait_elapsed += dt
                 if self.wait_elapsed >= 12.0:
@@ -733,10 +746,7 @@ class Conversation:
         if self.arrived:
             self.record.status = "Waiting for dialogue"
             npc.destination = None
-            for participant in (self.initiator, self.recipient):
-                other = self.other(participant)
-                angle = math.atan2(other.x - participant.x, participant.y - other.y)
-                participant.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
+            self.face_each_other()
             if self.purpose == "food_request":
                 self.answer_food_request()
         elif npc.x != old_x or npc.y != old_y:
