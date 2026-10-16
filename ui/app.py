@@ -310,6 +310,12 @@ class Application:
         elif action.action == "TALK_TO_NPC":
             target = self.simulation.npc_by_id(action.target_id)
             error = self.start_conversation(npc, target.name, action.topic) if target else "That person is unavailable."
+        elif action.action == "GIVE_ITEM":
+            target = self.simulation.npc_by_id(action.target_id)
+            try:
+                transfer_outcome = npc.give_items(target, action.item, action.quantity)
+            except ValueError as exc:
+                error = str(exc)
         else:
             npc.apply_action(action.action, self.tree)
         if action.record is not None:
@@ -325,6 +331,7 @@ class Application:
                     "GO_TO_TREE": "Started walking to the tree.",
                     "SHAKE_TREE": "Started the task of shaking the tree.",
                     "TALK_TO_NPC": f"Started a conversation with {target.name}." if action.action == "TALK_TO_NPC" else "",
+                    "GIVE_ITEM": transfer_outcome if action.action == "GIVE_ITEM" else "",
                 }
                 record.outcomes[0:1] = [outcomes[action.action]]
         if error:
@@ -345,7 +352,8 @@ class Application:
             return
         snapshot = conversation.snapshot(self.tree, self.npcs)
         if not self.requests.submit(
-            self.session_id, self.provider, self.api_key, "Let me hear their conversation.", snapshot,
+            self.session_id, self.provider, self.api_key,
+            f"Write what {conversation.initiator.name} and {conversation.recipient.name} say directly to each other.", snapshot,
             ollama_model=self.ollama_model,
         ):
             conversation.error = "Could not start the request. Please try again."
@@ -392,16 +400,23 @@ class Application:
             if not error:
                 if result.action != "SAY":
                     target = next((other for other in self.npcs if other.name == result.target), None)
-                    if result.action == "TALK_TO_NPC" and (target is None or target.conversation is not None or target.request_pending):
+                    if result.action in ("TALK_TO_NPC", "GIVE_ITEM") and (target is None or target.conversation is not None or target.request_pending):
                         error = "That person is busy now. Please try again later."
                     else:
-                        self.simulation.pending_actions.append(PendingAction(
-                            npc.id, result.action, npc.command_revision,
-                            target.id if result.action == "TALK_TO_NPC" else None,
-                            self.request_message,
-                            self.conversation_history.index(record) if record is not None else None,
-                        ))
-                        npc.request_pending = True
+                        if result.action == "GIVE_ITEM":
+                            try:
+                                npc.check_gift(target, result.item, result.quantity)
+                            except ValueError as exc:
+                                error = str(exc)
+                        if not error:
+                            self.simulation.pending_actions.append(PendingAction(
+                                npc.id, result.action, npc.command_revision,
+                                target.id if result.action in ("TALK_TO_NPC", "GIVE_ITEM") else None,
+                                self.request_message,
+                                self.conversation_history.index(record) if record is not None else None,
+                                result.item, result.quantity,
+                            ))
+                            npc.request_pending = True
             npc.reply = error or result.reply
             if error:
                 npc.set_emotion("neutral", 0)

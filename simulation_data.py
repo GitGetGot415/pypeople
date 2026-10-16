@@ -116,11 +116,13 @@ class TreeState(SaveModel):
 
 class PendingActionState(SaveModel):
     npc_id: str
-    action: Literal["WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC"]
+    action: Literal["WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "GIVE_ITEM"]
     revision: int = Field(ge=0)
     target_id: str | None
     topic: str
     record: int | None = Field(ge=0)
+    item: Literal["", "fruit"] = ""
+    quantity: int = Field(default=0, ge=0)
 
 
 class SimulationState(SaveModel):
@@ -211,11 +213,16 @@ class SimulationState(SaveModel):
         for action in self.pending_actions:
             if action.npc_id not in ids or action.npc_id in pending:
                 raise ValueError("Invalid pending action participant.")
-            if action.action == "TALK_TO_NPC":
+            if action.action in ("TALK_TO_NPC", "GIVE_ITEM"):
                 if action.target_id not in ids or action.target_id == action.npc_id:
-                    raise ValueError("Invalid pending conversation target.")
+                    raise ValueError("Invalid pending recipient.")
             elif action.target_id is not None:
                 raise ValueError("Unexpected pending action target.")
+            if action.action == "GIVE_ITEM":
+                if action.item != "fruit" or action.quantity < 1:
+                    raise ValueError("Invalid pending gift.")
+            elif action.item or action.quantity:
+                raise ValueError("Only giving actions may include items.")
             if action.record is not None and action.record >= len(self.history):
                 raise ValueError("Invalid pending action history.")
             pending.add(action.npc_id)

@@ -28,6 +28,8 @@ class PendingAction:
     target_id: str | None = None
     topic: str = ""
     record: int | None = None
+    item: str = ""
+    quantity: int = 0
 
 
 class Simulation:

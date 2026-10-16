@@ -296,6 +296,8 @@ class NPC:
             "activity_owner": self.owner,
             "social_satisfaction": round(self.social, 1),
             "inventory": self.inventory.copy(),
+            "inventory_capacity": self.inventory_capacity,
+            "inventory_space": self.inventory_space,
             "tree_interaction_point": list(tree.interaction_point),
             "tree_fruit": tree.fruit,
             "tree_occupied": tree.reserved_by is not None,
@@ -351,6 +353,26 @@ class NPC:
             self._face_when_still()
         else:
             self.begin_activity(Behavior(action), self.world, tree.id, "Player asked me to visit the tree" if action == "GO_TO_TREE" else "Player asked for a cosmetic tree shake", owner="player_task")
+
+    def check_gift(self, recipient, item, quantity):
+        if recipient is self or self.world is None or not any(person is recipient for person in self.world.npcs):
+            raise ValueError("Choose another NPC in this world to receive the items.")
+        if self.conversation is not None or recipient.conversation is not None or recipient.request_pending:
+            raise ValueError("That person is busy now. Please try again later.")
+        if item != "fruit" or type(quantity) is not int or quantity < 1:
+            raise ValueError("Give a positive number of fruit.")
+        if self.inventory.get(item, 0) < quantity:
+            raise ValueError(f"{self.name} only has {self.inventory.get(item, 0)} fruit to give.")
+        if recipient.inventory_space < quantity:
+            raise ValueError(f"{recipient.name} only has room for {recipient.inventory_space} more items.")
+
+    def give_items(self, recipient, item, quantity):
+        """Commit a player-requested transfer once, after checking both inventories."""
+        self.check_gift(recipient, item, quantity)
+        self.inventory[item] -= quantity
+        recipient.inventory[item] = recipient.inventory.get(item, 0) + quantity
+        self.command_revision += 1
+        return f"Gave {quantity} {item} to {recipient.name}."
 
     def _move(self, dt):
         dx = self.destination[0] - self.x
@@ -588,14 +610,20 @@ class Conversation:
             npc.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
 
     def snapshot(self, tree, npcs):
+        def participant(npc):
+            state = npc.snapshot(tree)
+            # These replies were addressed to the player before the NPCs met.
+            state.pop("last_reply", None)
+            return state
+
         return {
             "request_kind": "conversation",
-            "initiator": self.initiator.snapshot(tree),
-            "recipient": self.recipient.snapshot(tree),
-            "player_request": self.topic,
+            "initiator": participant(self.initiator),
+            "recipient": participant(self.recipient),
+            "topic": self.topic,
             "initiator_opinion_of_recipient": self.initiator.opinions.get(self.recipient.name),
             "recipient_opinion_of_initiator": self.recipient.opinions.get(self.initiator.name),
-            "nearby_npcs": [npc.snapshot(tree) for npc in npcs if npc is not self.initiator and npc is not self.recipient],
+            "nearby_npcs": [participant(npc) for npc in npcs if npc is not self.initiator and npc is not self.recipient],
         }
 
     def finish(self, tree):
