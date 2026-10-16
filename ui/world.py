@@ -8,7 +8,11 @@ from .theme import GRASS, INK, MUTED, PAPER, WALKABLE_GRASS
 
 
 CHARACTER_SCALE = 0.5
+TREE_SCALE = 0.6
+TREE_BASE_OFFSET = 64
+APPLE_POINTS = ((38, 58), (83, 28), (112, 60), (65, 84), (96, 111), (33, 101), (111, 32), (46, 30))
 _talking_bubble = None
+_tree_artwork = None
 
 
 def talking_bubble():
@@ -19,8 +23,17 @@ def talking_bubble():
     return _talking_bubble
 
 
+def tree_artwork():
+    global _tree_artwork
+    if _tree_artwork is None:
+        asset_dir = Path(__file__).resolve().parent.parent / "assets"
+        _tree_artwork = tuple(pygame.image.load(str(asset_dir / name)).convert_alpha()
+                              for name in ("Tree.png", "Apple.png"))
+    return _tree_artwork
+
+
 def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), phase="day", zoom=1.0):
-    # Scale the scenery separately so characters never pass through a reduced map image.
+    # Scale the ground separately; sprites are drawn from their original artwork.
     scene = pygame.Surface((WORLD_WIDTH, WORLD_HEIGHT))
     _draw_scene(scene, npcs, tree, font, phase)
     surface.fill(scene.get_at((0, 0)))
@@ -30,7 +43,7 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     scene_rect = scene.get_rect(topleft=(round(camera_offset[0]), round(camera_offset[1])))
     surface.set_clip(pygame.Rect(0, 0, WORLD_WIDTH, WORLD_HEIGHT).clip(previous_clip).clip(scene_rect))
     surface.blit(scene, scene_rect)
-    _draw_people(surface, npcs, font, character_renderer, camera_offset, phase, zoom)
+    _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, phase, zoom)
     surface.set_clip(previous_clip)
 
 
@@ -40,7 +53,6 @@ def _draw_scene(surface, npcs, tree, font, phase):
         "evening": ((190, 156, 120), (204, 176, 134)),
         "night": ((64, 77, 98), (77, 92, 111)),
     }[phase]
-    label_color = PAPER if phase == "night" else INK
     surface.fill(grass)
     if npcs:
         left, right, top, bottom = npcs[0].movement_bounds
@@ -53,19 +65,11 @@ def _draw_scene(surface, npcs, tree, font, phase):
         pygame.draw.rect(surface, walkable, walkable_rect)
 
     tree_x = round(tree.x) + tree.offset
-    tree_y = round(tree.y)
-    pygame.draw.ellipse(surface, (145, 171, 111), (tree_x - 43, tree_y + 50, 86, 20))
-    pygame.draw.rect(surface, (134, 89, 55), (tree_x - 13, tree_y - 12, 26, 76))
-    pygame.draw.circle(surface, (68, 124, 66), (tree_x, tree_y - 38), 53)
-    pygame.draw.circle(surface, (83, 141, 72), (tree_x - 11, tree_y - 49), 31)
-    fruit_points = [(-30, -43), (5, -65), (28, -40), (-10, -27), (10, -12), (-32, -13), (28, -66), (-20, -72)]
-    for dx, dy in fruit_points[:tree.fruit]:
-        pygame.draw.circle(surface, (205, 65, 48), (tree_x + dx, tree_y + dy), 6)
-    label = font.render(f"Fruit {tree.fruit}/{tree.capacity}", True, label_color)
-    surface.blit(label, label.get_rect(midtop=(tree_x, tree_y + 76)))
+    # Shadows lie on the ground beneath every sprite.
+    pygame.draw.ellipse(surface, (145, 171, 111), (tree_x - 43, round(tree.y) + 50, 86, 20))
 
 
-def _draw_people(surface, npcs, font, character_renderer, camera_offset, phase, zoom):
+def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, phase, zoom):
     def screen_point(point):
         return (round(point[0] * zoom + camera_offset[0]),
                 round(point[1] * zoom + camera_offset[1]))
@@ -75,7 +79,26 @@ def _draw_people(surface, npcs, font, character_renderer, camera_offset, phase, 
         return image if image.get_size() == size else pygame.transform.smoothscale(image, size)
 
     label_color = PAPER if phase == "night" else INK
-    for npc in sorted(npcs, key=lambda npc: npc.y):
+    tree_image, apple_image = tree_artwork()
+    # NPC y is at their feet; use the bottom of the tree's trunk for the same comparison.
+    objects = sorted([tree, *npcs], key=lambda obj: tree.y + TREE_BASE_OFFSET if obj is tree else obj.y)
+    for obj in objects:
+        if obj is tree:
+            tree_x = tree.x + tree.offset
+            base_y = tree.y + TREE_BASE_OFFSET
+            image = resized(tree_image, TREE_SCALE * zoom)
+            rect = image.get_rect(midbottom=screen_point((tree_x, base_y)))
+            surface.blit(image, rect)
+            left = tree_x - tree_image.get_width() * TREE_SCALE / 2
+            top = base_y - tree_image.get_height() * TREE_SCALE
+            apple = resized(apple_image, TREE_SCALE * zoom)
+            for x, y in APPLE_POINTS[:tree.fruit]:
+                center = screen_point((left + x * TREE_SCALE, top + y * TREE_SCALE))
+                surface.blit(apple, apple.get_rect(center=center))
+            label = resized(font.render(f"Fruit {tree.fruit}/{tree.capacity}", True, label_color), zoom)
+            surface.blit(label, label.get_rect(midtop=screen_point((tree_x, tree.y + 76))))
+            continue
+        npc = obj
         position = screen_point((npc.x, npc.y))
         # Always resize from the original composed artwork, including when zooming out.
         original = character_renderer.render(npc.character, npc.facing)
