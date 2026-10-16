@@ -3,7 +3,7 @@ import threading
 
 from pydantic import ValidationError
 
-from llm import RequestError, request_response, validate_response
+from llm import InvalidResponseError, RequestError, request_response, validate_response
 from ollama_manager import DEFAULT_OLLAMA_MODEL
 
 
@@ -63,6 +63,9 @@ class RequestManager:
             try:
                 # Revalidate at the main-thread boundary before touching the world.
                 result = validate_response(raw, snapshot)
+            except InvalidResponseError as exc:
+                replies.append((request_id, None, f"The model's reply failed validation: {exc}"))
+                continue
             except (ValidationError, ValueError, TypeError):
                 replies.append((request_id, None, "The model returned an invalid action or reply. Try again."))
                 continue

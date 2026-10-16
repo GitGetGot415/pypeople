@@ -336,7 +336,8 @@ def validate_information(response, context):
                     or use.claim_id not in context.allowed[role] and use.claim_id not in acquired[role]
                     or use.claim_id in seen_leverage
                     or option.kind not in ("private_motive", "apple_given", "apple_refused", "promise_kept", "promise_broken")):
-                raise ValueError("Leverage must concern a claim this speaker actually knows.")
+                raise ValueError(f"Leverage on turn {turn} ({role}) requires a permitted claim already known before this turn. "
+                                 "An account disclosed on this same turn is too late; omit leverage for ordinary requests.")
             seen_leverage.add(use.claim_id)
         for entry in [entry for entry in response.third_party_opinions if entry.turn == turn]:
             option = options.get(entry.claim_id)
@@ -344,7 +345,8 @@ def validate_information(response, context):
             if (option is None or belief is None or (role, entry.claim_id) not in heard
                     or entry.subject_id != option.subject_id or entry.subject_id in context.participants.values()
                     or heard[role, entry.claim_id] >= turn):
-                raise ValueError("A third-party opinion needs a claim heard before this speaker's reaction.")
+                raise ValueError(f"A third-party opinion on turn {turn} ({role}) must cite an account this speaker heard "
+                                 "in an earlier turn, with its actual absent subject and exact disclosed claim ID.")
             related = [b for b in beliefs[role].values() if options[b.claim_id].fact_id == option.fact_id]
             if (belief.stance != "believed" or entry.delta == 0
                     or any(b.assessed and options[b.claim_id].affirmed == option.affirmed for b in related)
@@ -366,7 +368,8 @@ def validate_information(response, context):
                     raise ValueError("This speaker cannot fabricate that assertion.")
                 beliefs[role][option.id] = Belief(npc_id, option.id, "disbelieved", npc_id, None, False, 0)
             elif (belief is None or entry.claim_id not in context.allowed[role] and entry.claim_id not in acquired[role]):
-                raise ValueError("The speaker has not learned or been permitted to disclose that claim.")
+                raise ValueError(f"The {role} on turn {turn} has not learned or been permitted to disclose that claim. "
+                                 "Use that speaker's permitted_accounts or an account heard in an earlier turn.")
             elif ((entry.intent == "lie" and (not context.can_lie[role] or belief.stance == "believed"))
                   or (entry.intent == "share" and belief.stance == "disbelieved")):
                 raise ValueError("A deliberate lie and an honestly repeated belief must remain distinct.")

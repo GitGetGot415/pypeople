@@ -476,7 +476,7 @@ their profiles. Do not fill a vague topic with invented outings or discoveries.
 Write 4 to 8 alternating turns, starting with initiator, and end the conversation
 naturally. Usually use six short turns so greetings, discussion, and closing
 have room to unfold. Use more turns when needed instead of squeezing separate
-exchanges into a four-turn conversation. If needed, you can go over the 8 turn limit.
+exchanges into a four-turn conversation. Never exceed eight turns.
 Use each speaker's own private_context.opinions to shape
 each person's tone, trust, warmth, disagreement, and choice of words. Their
 private opinion maps also matter when discussing other people. A positive score means
@@ -561,6 +561,10 @@ facts. A speaker's known_accounts and opinions belong ONLY to that speaker.
 The other speaker cannot use those secrets, evidence, sources, or motives until
 they are explicitly disclosed in a spoken turn. Nearby people never overhear.
 Return disclosures, third_party_opinions, and leverage as arrays; [] is normal.
+An ordinary apple request or friendly chat does not require any of these effects.
+Include only effects actually needed by the spoken exchange, rather than filling
+every array. Leverage means pressuring someone with known information, not simply
+asking for an apple, asking a question, or sharing an account.
 For every spoken disclosure of a supported account, include claim_id, turn
 (zero-based), intent, and listener_stance. The turn's speaker supplies it to the
 other participant. Use at most one account per turn and disclose each account
@@ -716,7 +720,7 @@ def intent_snapshot(snapshot):
     }
 
 
-def response_contract(snapshot):
+def response_contract(snapshot, *, correction=False):
     if snapshot.get("request_kind") == "intent":
         targets = [other["npc_name"] for other in snapshot.get("other_npcs", []) if other.get("available_to_talk", True)]
         schema = {**INTENT_SCHEMA, "properties": {**INTENT_SCHEMA["properties"], "target": {"type": "string", "enum": ["", *targets]}}}
@@ -750,27 +754,52 @@ def response_contract(snapshot):
         limit = 4 if not food_request and claim_ids else 0
         properties["disclosures"] = {
             "type": "array", "minItems": 1 if snapshot.get("purpose") == "gossip" else 0,
+            "description": "Accounts actually disclosed by their knowledgeable speaker; otherwise [].",
             "maxItems": limit, "items": {"type": "object", "properties": {
                 "turn": turn_field, "claim_id": claim_field,
                 "intent": {"type": "string", "enum": ["share", "challenge", "lie"]},
                 "listener_stance": {"type": "string", "enum": ["uncertain", "believed", "disbelieved"]},
             }, "required": ["turn", "claim_id", "intent", "listener_stance"]},
         }
-        subjects = [person["npc_id"] for person in snapshot.get("nearby_npcs", [])]
+        nearby_ids = {person["npc_id"] for person in snapshot.get("nearby_npcs", [])}
+        third_party_accounts = [option for option in info["options"]
+                                if option["id"] in claim_ids and option["subject_id"] in nearby_ids] if info else []
+        subjects = list(dict.fromkeys(option["subject_id"] for option in third_party_accounts))
+        third_party_claims = [option["id"] for option in third_party_accounts]
         properties["third_party_opinions"] = {
-            "type": "array", "maxItems": limit if subjects else 0, "items": {"type": "object", "properties": {
-                "turn": turn_field, "claim_id": claim_field,
+            "type": "array", "maxItems": limit if subjects else 0,
+            "description": "Optional reaction to a newly heard account about an absent NPC; otherwise [].",
+            "items": {"type": "object", "properties": {
+                "turn": turn_field, "claim_id": {"type": "string", "enum": third_party_claims or [""]},
                 "subject_id": {"type": "string", "enum": subjects or [""]},
                 "delta": {"type": "integer", "minimum": -6, "maximum": 6},
                 "reason": {"type": "string", "minLength": 1, "maxLength": 400},
             }, "required": ["turn", "claim_id", "subject_id", "delta", "reason"]},
         }
         properties["leverage"] = {
-            "type": "array", "maxItems": min(2, limit), "items": {"type": "object", "properties": {
+            "type": "array", "maxItems": min(2, limit),
+            "description": "Explicit pressure using known information. Normal requests are not leverage; usually [].",
+            "items": {"type": "object", "properties": {
                 "turn": turn_field, "claim_id": claim_field,
                 "demand": {"type": "string", "enum": ["apple", "repayment", "disclosure"]},
             }, "required": ["turn", "claim_id", "demand"]},
         }
+        if correction:
+            # Regenerate the whole exchange with fewer optional effects. Required
+            # gossip disclosures and permitted apple promises still work.
+            for key in ("third_party_opinions", "leverage"):
+                properties[key] = {**properties[key], "maxItems": 0}
+            if snapshot.get("purpose") == "gossip":
+                # Open with the initiator's chosen account, keeping its ownership
+                # unambiguous without prescribing any spoken words.
+                disclosure = properties["disclosures"]
+                properties["disclosures"] = {**disclosure, "maxItems": 1, "items": {
+                    **disclosure["items"], "properties": {
+                        **disclosure["items"]["properties"],
+                        "turn": {"type": "integer", "minimum": 0, "maximum": 0},
+                        "claim_id": {"type": "string", "enum": [info["focus_claim_id"]]},
+                    },
+                }}
         required.extend(("disclosures", "third_party_opinions", "leverage"))
         if food_request:
             accepted = snapshot["food_request"]["outcome"] == "accepted"
@@ -815,6 +844,20 @@ def response_contract(snapshot):
 
 def validate_response(raw, snapshot):
     model = response_contract(snapshot)[2]
+    try:
+        return _validate_response(raw, snapshot, model)
+    except ValidationError as exc:
+        issue = exc.errors(include_input=False, include_url=False)[0]
+        field = issue["loc"][0] if issue["loc"] and issue["loc"][0] in model.model_fields else "response"
+        raise InvalidResponseError(
+            f"Invalid {field}: use the required JSON fields, value limits, and alternating speaker order.",
+        ) from None
+    except ValueError as exc:
+        # These validators supply application-authored reasons, never provider text.
+        raise InvalidResponseError(str(exc)) from None
+
+
+def _validate_response(raw, snapshot, model):
     result = model.model_validate_json(raw)
     if isinstance(result, PlayerIntent):
         # Observations and questions cannot issue commands, even if the model
@@ -848,10 +891,7 @@ def validate_response(raw, snapshot):
         elif result.target:
             raise ValueError("Only conversation and giving actions may have a target.")
     elif isinstance(result, ConversationResponse):
-        try:
-            validate_information(result, snapshot.get("_information_validation"))
-        except ValueError as exc:
-            raise InvalidInformationError(str(exc)) from None
+        validate_information(result, snapshot.get("_information_validation"))
         validate_agreements(result.accepted_proposals, snapshot.get("permitted_proposals", []),
                             result.turns, snapshot["initiator"]["npc_id"], snapshot["recipient"]["npc_id"])
         def label(text):
@@ -866,7 +906,7 @@ def validate_response(raw, snapshot):
             *(part for turn in result.turns for part in turn.parts),
             *result.handoff_thanks,
         )):
-            raise InvalidDialogueError("Dialogue contains a speaker label instead of spoken words.")
+            raise ValueError("Dialogue contains a speaker label instead of spoken words.")
         if snapshot.get("purpose") == "food_request":
             outcome = snapshot["food_request"]["outcome"]
             if (result.accepted_proposals or len(result.turns) != 2 or result.food_outcome != outcome
@@ -894,12 +934,8 @@ class RequestError(Exception):
     """Contains only an application-authored message safe to show to the user."""
 
 
-class InvalidDialogueError(ValueError):
-    """A name or role was generated where spoken dialogue was required."""
-
-
-class InvalidInformationError(ValueError):
-    """Structured social choices violate the supplied knowledge or turn sequence."""
+class InvalidResponseError(ValueError):
+    """An application-authored validation reason that can be sent back for correction."""
 
 
 def _api_error_message(exc):
@@ -923,7 +959,7 @@ def _api_error_message(exc):
 
 
 def _request_gemini(api_key, message, snapshot, *, correction=""):
-    instruction, schema, _ = response_contract(snapshot)
+    instruction, schema, _ = response_contract(snapshot, correction=bool(correction))
     if correction:
         instruction += "\n\n" + correction
     try:
@@ -938,7 +974,8 @@ def _request_gemini(api_key, message, snapshot, *, correction=""):
             response = client.models.generate_content(
                 model=MODEL,
                 contents=json.dumps(
-                    {"world_state": world_context(snapshot), "player_message": message},
+                    {"world_state": world_context(snapshot), "player_message": message,
+                     **({"correction_request": correction} if correction else {})},
                     ensure_ascii=False,
                 ),
                 config=types.GenerateContentConfig(
@@ -968,7 +1005,7 @@ def _request_gemini(api_key, message, snapshot, *, correction=""):
             if not text or not text.strip():
                 raise RequestError("Gemini returned an empty reply. Try again.")
             return validate_response(text, snapshot)
-    except (RequestError, InvalidDialogueError, InvalidInformationError):
+    except (RequestError, InvalidResponseError):
         raise
     except (ValidationError, ValueError):
         raise RequestError("Gemini returned an invalid action or reply. Try again.") from None
@@ -983,7 +1020,7 @@ def _request_gemini(api_key, message, snapshot, *, correction=""):
 
 
 def _request_ollama(message, snapshot, model=OLLAMA_MODEL, *, correction=""):
-    instruction, schema, _ = response_contract(snapshot)
+    instruction, schema, _ = response_contract(snapshot, correction=bool(correction))
     if correction:
         instruction += "\n\n" + correction
     try:
@@ -1000,7 +1037,8 @@ def _request_ollama(message, snapshot, model=OLLAMA_MODEL, *, correction=""):
                     {
                         "role": "user",
                         "content": json.dumps(
-                            {"world_state": world_context(snapshot), "player_message": message},
+                            {"world_state": world_context(snapshot), "player_message": message,
+                             **({"correction_request": correction} if correction else {})},
                             ensure_ascii=False,
                         ),
                     },
@@ -1011,7 +1049,7 @@ def _request_ollama(message, snapshot, model=OLLAMA_MODEL, *, correction=""):
                 # default context. Truncation can remove the speaker rules.
                 "options": {
                     "num_ctx": 16384 if snapshot.get("request_kind") == "conversation" else 8192, "num_predict": -1,
-                    **({"temperature": 0} if snapshot.get("request_kind") == "intent" else {}),
+                    **({"temperature": 0} if correction or snapshot.get("request_kind") in ("intent", "conversation") else {}),
                 },
             },
             timeout=60.0,
@@ -1025,7 +1063,7 @@ def _request_ollama(message, snapshot, model=OLLAMA_MODEL, *, correction=""):
             raise RequestError("Ollama returned an incomplete reply. Try again.")
         content = data["message"]["content"]
         return validate_response(content, snapshot)
-    except (RequestError, InvalidDialogueError, InvalidInformationError):
+    except (RequestError, InvalidResponseError):
         raise
     except httpx.TimeoutException:
         raise RequestError(f"Ollama timed out. Try again after {model} finishes loading.") from None
@@ -1047,22 +1085,38 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
             return _request_ollama(message, state, ollama_model, correction=correction)
     else:
         raise RequestError("Choose an AI provider in Settings.")
+
+    def validated_request(state):
+        try:
+            return request(state)
+        except InvalidResponseError as exc:
+            correction = (
+                f"The previous response was rejected: {exc} "
+                "Do not repeat the rejected choice. "
+            )
+            if state.get("request_kind") == "conversation":
+                correction += (
+                    "Plan a fresh exchange. "
+                    "Rewrite the complete JSON response, correcting that error and keeping all speech consistent with the corrected choices. "
+                    "Use the exact permitted IDs and the correct speaker's knowledge. Turns are zero-based and alternate from initiator. "
+                    "An opinion reaction must follow a disclosure of that EXACT claim_id about an absent third NPC. "
+                    "Only the giver can offer a permitted apple promise, and its receiver accepts in a later turn. "
+                    "For this correction, leverage and third_party_opinions MUST be empty. "
+                    "Write speech without threats or new judgments of absent NPCs; hearing an account need not change an opinion. "
+                    "Other social arrays can be empty unless needed; gossip still requires its chosen account. "
+                    "For gossip corrections, the initiator discloses the exact discussion_focus_claim_id in turn 0, "
+                    "with no further disclosures; the recipient hears it before answering. "
+                    "Write actual spoken words in dialogue parts, never just speaker labels."
+                )
+            else:
+                correction += "Return the complete JSON response matching the required schema and the current player's request."
+            try:
+                return request(state, correction=correction)
+            except InvalidResponseError as retry_error:
+                raise RequestError(f"The model's reply failed validation after correction: {retry_error}") from None
+
     if snapshot.get("request_kind") not in ("conversation", "intent"):
-        intent = request(intent_snapshot(snapshot))
+        intent = validated_request(intent_snapshot(snapshot))
         # Keep the interpretation with this request for main-thread revalidation.
         snapshot["request_intent"] = intent.model_dump()
-    try:
-        return request(snapshot)
-    except (InvalidDialogueError, InvalidInformationError) as exc:
-        correction = (
-            "The previous response used a name or role label as dialogue. Rewrite with actual spoken sentences in every part. "
-            "Identify speakers only in the speaker field; keep each speaker's identity consistent."
-            if isinstance(exc, InvalidDialogueError) else
-            f"The previous response was rejected: {exc} Recheck permitted_accounts, exact claim IDs, speaker knowledge, "
-            "and zero-based turns. An opinion reaction must use the EXACT claim_id disclosed in an earlier turn, "
-            "not its parent or original account. Keep dialogue and structured disclosures consistent; do not invent shared knowledge."
-        )
-        try:
-            return request(snapshot, correction=correction)
-        except (InvalidDialogueError, InvalidInformationError):
-            raise RequestError("The model returned invalid dialogue or information choices. Please try again.") from None
+    return validated_request(snapshot)
