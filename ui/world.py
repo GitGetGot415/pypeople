@@ -45,13 +45,14 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     # Scale the ground separately; sprites are drawn from their original artwork.
     scene = pygame.Surface((WORLD_WIDTH, WORLD_HEIGHT))
     _draw_scene(scene, npcs, tree, font, phase)
-    surface.fill(scene.get_at((0, 0)))
+    surface.fill(WORLD_COLORS[phase][0])
     if zoom != 1.0:
         scene = pygame.transform.smoothscale(scene, (round(WORLD_WIDTH * zoom), round(WORLD_HEIGHT * zoom)))
     previous_clip = surface.get_clip()
     scene_rect = scene.get_rect(topleft=(round(camera_offset[0]), round(camera_offset[1])))
     viewport = surface.get_rect() if viewport is None else viewport
-    surface.set_clip(viewport.clip(previous_clip).clip(scene_rect))
+    # Bubbles can extend beyond the ground's rectangle into the surrounding view.
+    surface.set_clip(viewport.clip(previous_clip))
     surface.blit(scene, scene_rect)
     _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, phase, zoom)
     surface.set_clip(previous_clip)
@@ -59,7 +60,8 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
 
 def _draw_scene(surface, npcs, tree, font, phase):
     grass, walkable = WORLD_COLORS[phase]
-    surface.fill(grass)
+    # Darken only the band between the walking area and the map's outer edge.
+    surface.fill(tuple(channel - 10 for channel in grass))
     if npcs:
         left, right, top, bottom = npcs[0].movement_bounds
         walkable_rect = pygame.Rect(

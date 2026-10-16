@@ -207,6 +207,10 @@ class GameScreen:
         if conversation is None or not self.conversation_pages:
             return
         if self.conversation_page_index == len(self.conversation_pages) - 1:
+            # Done completes the exchange, including any agreed item handoff.
+            if conversation.active:
+                conversation.talking_remaining = 0.0
+                conversation.update(0.0)
             self.close_dialogue()
         else:
             self.conversation_page_index += 1
