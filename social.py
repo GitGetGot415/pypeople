@@ -914,11 +914,9 @@ def pair_objective(world, npc, other):
     goal = npc.goal
     if goal and goal.status == "active" and goal.target_id == other.id:
         return 1, f"{goal.objective}, by {phase_label(goal.deadline)}"
-    other_known = {belief.claim_id for belief in other.beliefs}
-    news = [belief for belief in selected_beliefs(npc, other.id) if belief.claim_id not in other_known
-            and claim_by_id(world, belief.claim_id).subject_id not in (npc.id, other.id)]
+    news = gossip_claim(npc, other)
     if news:
-        claim = claim_by_id(world, news[0].claim_id)
+        claim = claim_by_id(world, news)
         subject = world.actor_by_id(claim.subject_id)
         firsthand = any(b.direct and claim_by_id(world, b.claim_id).fact_id == claim.fact_id for b in npc.beliefs)
         if firsthand:
@@ -936,8 +934,12 @@ def goal_attempt_cooling_down(npc, other, world):
 def gossip_claim(npc, partner):
     if npc.goal and npc.goal.status == "active" and npc.goal.kind == "sabotage_relationship" and npc.goal.target_id == partner.id:
         return npc.goal.claim_id
-    known = {b.claim_id for b in partner.beliefs}
-    return next((b.claim_id for b in selected_beliefs(npc, partner.id) if b.claim_id not in known
+    # Witnesses have distinct claim IDs for the same fact. Another source's ID
+    # does not make an already known assertion new gossip.
+    claims = {claim.id: claim for claim in npc.world.claims}
+    known = {(claims[b.claim_id].fact_id, claims[b.claim_id].affirmed) for b in partner.beliefs}
+    return next((b.claim_id for b in selected_beliefs(npc, partner.id)
+                 if (claims[b.claim_id].fact_id, claims[b.claim_id].affirmed) not in known
                  and claim_by_id(npc.world, b.claim_id).subject_id not in (npc.id, partner.id)), None)
 
 

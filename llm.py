@@ -1,6 +1,7 @@
 import json
 import re
 import unicodedata
+from copy import deepcopy
 from typing import Literal
 
 from google import genai
@@ -559,6 +560,9 @@ challenge questions an account, and lie means an allowed denial or knowingly
 repeating a disbelieved account to deceive. A denial is private to its owner.
 The listener's stance is uncertain, believed, or disbelieved. Firsthand contrary
 evidence requires disbelieved; matching firsthand evidence requires believed.
+This stance concerns the supplied assertion: knowing the snake made a claim
+does not mean believing its claim about divine authority. Keep that separate
+from the speaker's snake attitudes.
 Rehearing a firsthand event is not new information for a reputation adjustment.
 Repeating a known account preserves its stance unless firsthand evidence settles it;
 hearsay through another source is not independent confirmation.
@@ -613,7 +617,7 @@ def character_context(character):
     return character.copy()
 
 
-def world_context(snapshot):
+def world_context(snapshot, *, correction=False):
     """Supply relevant state without exposing other NPCs' private knowledge."""
     if snapshot.get("request_kind") in ("snake_encounter", "snake_player"):
         return {k: v for k, v in snapshot.items() if not k.startswith("_")}
@@ -650,6 +654,11 @@ def world_context(snapshot):
         current = snapshot["initiator"]
         context["day"], context["time_of_day"] = current["day"], current["time_of_day"]
         context["environment"]["tree"] = {"fruit": current["tree_fruit"], "shaking": current["tree_is_shaking"]}
+        if correction and context.get("shared_history"):
+            # Keep transcripts for validation, but do not feed replayed lines
+            # back to the model when asking it to write a fresh exchange.
+            context["shared_history"] = {key: value for key, value in context["shared_history"].items()
+                                         if key != "recent_dialogue"}
     for key in ("initiator", "recipient"):
         if key in context:
             context[key] = person_context(context[key])
@@ -727,6 +736,40 @@ def validate_snake_response(result, snapshot):
         raise ValueError("A public endorsement needs a living listener.")
     if result.snake_account_id and result.snake_account_id not in {a["claim_id"] for a in snapshot["snake"]["known_accounts"]}:
         raise ValueError("The snake can reveal only one of its supplied known accounts.")
+
+
+def disclosure_schema(info, turn_limit, *, opening=False):
+    """Bind account IDs to listener knowledge without choosing their reaction."""
+    options = {option["id"]: option for option in info["options"]}
+    claim_ids = list(dict.fromkeys(claim_id for ids in info["allowed"].values() for claim_id in ids))
+    choices = []
+    for index, role in enumerate(("initiator", "recipient")):
+        if opening and index:
+            continue
+        listener = "recipient" if role == "initiator" else "initiator"
+        beliefs = info["beliefs"][listener]
+        groups = {}
+        for claim_id in ([info["focus_claim_id"]] if opening else claim_ids):
+            option = options[claim_id]
+            firsthand = next((b for b in beliefs if b["direct"]
+                              and options[b["claim_id"]]["fact_id"] == option["fact_id"]), None)
+            prior = next((b for b in beliefs if b["claim_id"] == claim_id), None)
+            if firsthand:
+                stances = ("believed" if options[firsthand["claim_id"]]["affirmed"] == option["affirmed"] else "disbelieved",)
+            elif prior and opening:
+                stances = (prior["stance"],)
+            else:
+                stances = ("uncertain", "believed", "disbelieved")
+            groups.setdefault(stances, []).append(claim_id)
+        for stances, accounts in groups.items():
+            choices.append({"type": "object", "properties": {
+                "turn": {"anyOf": [{"type": "integer", "minimum": turn, "maximum": turn}
+                                    for turn in ([0] if opening else range(index, turn_limit, 2))]},
+                "claim_id": {"type": "string", "enum": accounts},
+                "intent": {"type": "string", "enum": ["share", "challenge", "lie"]},
+                "listener_stance": {"type": "string", "enum": list(stances)},
+            }, "required": ["turn", "claim_id", "intent", "listener_stance"]})
+    return choices[0] if len(choices) == 1 else {"anyOf": choices}
 
 
 def response_contract(snapshot, *, correction=False):
@@ -808,7 +851,7 @@ def response_contract(snapshot, *, correction=False):
         instruction = (FOOD_REQUEST_INSTRUCTION if food_request else CONVERSATION_INSTRUCTION) + "\n\n" + EMOTION_INSTRUCTION
         instruction += "\n\n" + CONVERSATION_HISTORY_INSTRUCTION
         instruction += "\n\n" + DIALOGUE_VARIETY_INSTRUCTION
-        properties = CONVERSATION_SCHEMA["properties"].copy()
+        properties = deepcopy(CONVERSATION_SCHEMA["properties"])
         if food_request or correction:
             turn_count = 2 if food_request else 4
             properties["turns"] = {**properties["turns"], "minItems": turn_count, "maxItems": turn_count}
@@ -816,6 +859,9 @@ def response_contract(snapshot, *, correction=False):
                             "Every structured effect must refer to one of these turns.")
         else:
             properties["turns"] = {**properties["turns"], "maxItems": 6}
+        parts = properties["turns"]["items"]["properties"]["parts"]
+        parts["maxItems"] = 1 if correction else 2
+        parts["items"]["properties"]["text"]["maxLength"] = 160 if correction else 240
         turn_limit = properties["turns"]["maxItems"]
         history = snapshot.get("shared_history")
         if history:
@@ -887,6 +933,8 @@ def response_contract(snapshot, *, correction=False):
                 "listener_stance": {"type": "string", "enum": ["uncertain", "believed", "disbelieved"]},
             }, "required": ["turn", "claim_id", "intent", "listener_stance"]},
         }
+        if limit:
+            properties["disclosures"]["items"] = disclosure_schema(info, turn_limit)
         pair_ids = {snapshot["initiator"]["npc_id"], snapshot["recipient"]["npc_id"]}
         third_party_accounts = [option for option in info["options"]
                                 if option["id"] in claim_ids and option["subject_id"] not in pair_ids] if info else []
@@ -919,13 +967,8 @@ def response_contract(snapshot, *, correction=False):
                 # Open with the initiator's chosen account, keeping its ownership
                 # unambiguous without prescribing any spoken words.
                 disclosure = properties["disclosures"]
-                properties["disclosures"] = {**disclosure, "maxItems": 1, "items": {
-                    **disclosure["items"], "properties": {
-                        **disclosure["items"]["properties"],
-                        "turn": {"type": "integer", "minimum": 0, "maximum": 0},
-                        "claim_id": {"type": "string", "enum": [info["focus_claim_id"]]},
-                    },
-                }}
+                properties["disclosures"] = {**disclosure, "maxItems": 1,
+                                             "items": disclosure_schema(info, turn_limit, opening=True)}
             else:
                 properties["disclosures"] = {**properties["disclosures"], "maxItems": 0}
         required.extend(("disclosures", "third_party_opinions", "leverage"))
@@ -942,6 +985,19 @@ def response_contract(snapshot, *, correction=False):
             "recipient": snapshot["recipient"]["npc_name"],
         }, ensure_ascii=False)
         instruction += "\nInclude emotion separately on every part for that turn's speaker."
+        objective = snapshot["initiator"].get("private_context", {}).get("immediate_objective", "")
+        instruction += ("\nCurrent concern for the initiator: " + objective
+                        + " Keep this exchange centered on that concern. Refer to older subjects "
+                        "only when they help resolve it.")
+        if snapshot.get("purpose") == "gossip":
+            focus = next(option for option in info["options"] if option["id"] == info["focus_claim_id"])
+            instruction += ("\nThe initiator must open with this account or its permitted denial, in their own words: "
+                            + focus["assertion"] + " The partner responds to that specific account; "
+                            "do not substitute an older subject or merely promise to discuss it later.")
+        if correction:
+            instruction += ("\nWrite one brief sentence per turn, with one part of at most 160 characters. "
+                            "Previous dialogue excerpts are omitted for this rewrite. Use the recorded "
+                            "memories and confirmed events for continuity, and write fresh speech.")
         properties = {key: properties[key] for key in ("disclosures", "third_party_opinions", "leverage") } | {
             key: value for key, value in properties.items() if key not in ("disclosures", "third_party_opinions", "leverage")}
         return instruction, {**CONVERSATION_SCHEMA, "properties": properties, "required": required}, ConversationResponse
@@ -1123,7 +1179,7 @@ def _request_gemini(api_key, message, snapshot, *, correction=""):
             response = client.models.generate_content(
                 model=MODEL,
                 contents=json.dumps(
-                    {"world_state": world_context(snapshot), "player_message": message,
+                    {"world_state": world_context(snapshot, correction=bool(correction)), "player_message": message,
                      **({"correction_request": correction} if correction else {})},
                     ensure_ascii=False, separators=(",", ":"),
                 ),
@@ -1196,7 +1252,7 @@ def _request_ollama(message, snapshot, model=OLLAMA_MODEL, *, correction=""):
                     {
                         "role": "user",
                         "content": json.dumps(
-                            {"world_state": world_context(snapshot), "player_message": message,
+                            {"world_state": world_context(snapshot, correction=bool(correction)), "player_message": message,
                              **({"correction_request": correction} if correction else {})},
                             ensure_ascii=False, separators=(",", ":"),
                         ),
