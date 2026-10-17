@@ -1437,8 +1437,12 @@ def _dialogue_repair_snapshot(snapshot, response, index):
             "heard_accounts": heard, "word_limit": 10}
 
 
-def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAMA_MODEL):
+def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAMA_MODEL, progress=None):
     """Called only by a worker. Does not read or mutate the world or interface."""
+    def report(stage):
+        if progress is not None:
+            progress(stage)
+
     if provider == "gemini":
         def request(state, correction=""):
             return _request_gemini(api_key, message, state, correction=correction)
@@ -1449,9 +1453,15 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
         raise RequestError("Choose an AI provider in Settings.")
 
     def validated_request(state):
+        kind = state.get("request_kind")
+        activity = {"intent": "player intent", "conversation": "conversation",
+                    "snake_encounter": "snake encounter", "snake_player": "snake reply",
+                    "dialogue_repair": "dialogue repair"}.get(kind, "NPC reply")
+        report(f"Generating {activity}")
         try:
             return request(state)
         except InvalidResponseError as exc:
+            report(f"Correcting {activity}")
             correction = (
                 f"The previous response was rejected: {exc} Regenerate the complete JSON, correcting this error. "
                 "Use the supplied state and keep speech consistent with the structured choices. "
@@ -1479,6 +1489,7 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
                     # All structured effects passed validation. Repair only the
                     # offending speech, keeping every other field and turn fixed.
                     try:
+                        report("Recovery: removing duplicate speech")
                         candidate = retry_error.response.model_copy(deep=True)
                         for index in retry_error.repeated_turns:
                             candidate.turns[index].parts = _deduplicate_dialogue_parts(candidate.turns[index])
@@ -1500,7 +1511,9 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
                             raise InvalidResponseError(f"Required action or disclosure speech still repeats in turns {required}; retry the exchange.")
                         for index in indices:
                             repair_state = _dialogue_repair_snapshot(state, candidate, index)
+                            report(f"Recovery: rewriting turn {index + 1}/{len(candidate.turns)}")
                             candidate.turns[index].parts = request(repair_state).parts
+                        report("Validating recovered conversation")
                         return validate_response(candidate.model_dump_json(), state)
                     except InvalidResponseError as repair_error:
                         raise RequestError(f"The model's dialogue still failed validation after targeted repair: {repair_error}") from None

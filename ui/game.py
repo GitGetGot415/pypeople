@@ -3,6 +3,7 @@ from npc import EMOTION_THRESHOLD, WORLD_HEIGHT, WORLD_WIDTH
 
 from .button import Button
 from .event_feed import EventFeed
+from .request_status import RequestStatus
 from .text import draw_wrapped_text, paginate_text, wrap_text
 from .text_input import TextInput
 from .theme import INK, MUTED, PAPER, WINDOW_SIZE
@@ -10,7 +11,7 @@ from .world import draw_world, snake_artwork
 
 
 class GameScreen:
-    def __init__(self):
+    def __init__(self, max_requests=2):
         self.menu_button = Button((1144, 16, 112, 38), "Menu")
         self.stats_button = Button((1024, 16, 112, 38), "Stats")
         self.save_button = Button((904, 16, 108, 38), "Save")
@@ -46,6 +47,7 @@ class GameScreen:
         self.pan_start = None
         self.pan_last = None
         self.panning = False
+        self.request_status = RequestStatus(max_requests)
         self.feed = EventFeed()
 
     def reset(self):
@@ -114,6 +116,12 @@ class GameScreen:
             return
         if self.feed.handle_event(app, event):
             return
+        if event.type in (pygame.MOUSEWHEEL, pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION):
+            pos = getattr(event, "pos", pygame.mouse.get_pos())
+            if self.request_status.rect.collidepoint(pos):
+                self.pan_start = self.pan_last = None
+                self.panning = False
+                return
         if event.type == pygame.MOUSEWHEEL:
             pos = getattr(event, "pos", pygame.mouse.get_pos())
             if self.world_viewport.collidepoint(pos) and not any(
@@ -226,7 +234,7 @@ class GameScreen:
         color = PAPER if app.screen == "game" and app.simulation.phase == "night" else INK
         app.window.blit(app.small_font.render(app.simulation.phase_label, True, color), (774, 27))
         if paused:
-            label = app.small_font.render("Simulation paused", True, color)
+            label = app.small_font.render("Paused", True, color)
             app.window.blit(label, label.get_rect(midright=(584, self.pause_button.rect.centery)))
 
     def advance_conversation(self, app):
@@ -315,6 +323,7 @@ class GameScreen:
         self.save_button.draw(app.window, app.small_font)
         self.draw_clock(app)
         self.feed.draw(app)
+        self.request_status.draw(app)
         if app.simulation.snake.retry_request:
             self.snake_retry.draw(app.window, app.small_font, enabled=not app.simulation.paused)
         pending = app.simulation.pending_arrival_days

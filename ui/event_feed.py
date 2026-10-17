@@ -26,9 +26,10 @@ class EventFeed:
         return self.header if self.collapsed else self.header.union(self.body)
 
     def keep_visible(self, app):
-        # Leave the top controls and any open dialogue accessible.
+        # Leave the worker display, top controls, and open dialogue accessible.
         viewport = app.game.world_viewport
-        bounds = pygame.Rect(viewport.left, 64, viewport.width, viewport.bottom - 64)
+        top = app.game.request_status.rect.bottom + 12
+        bounds = pygame.Rect(viewport.left, top, viewport.width, viewport.bottom - top)
         self.header.topleft = self.rect.clamp(bounds).topleft
         self.body.topleft = self.header.bottomleft
 

@@ -76,7 +76,7 @@ class Application:
         self.settings = SettingsScreen()
         self.setup = SetupScreen()
         self.character = CharacterScreen()
-        self.game = GameScreen()
+        self.game = GameScreen(self.requests.max_requests)
         self.stats = StatsScreen()
         self.ollama_setup = OllamaSetupScreen()
         self.screens = {
