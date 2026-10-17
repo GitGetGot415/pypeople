@@ -198,8 +198,14 @@ RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
         "action": {"type": "string", "enum": ["WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "GIVE_ITEM", "EAT", "SAY"]},
-        "reply": {"type": "string"},
-        "end_conversation": {"type": "boolean"},
+        "end_conversation": {
+            "type": "boolean",
+            "description": "True when you choose to finish talking, the player is done, or they decline your latest offer to keep talking or help. SAY can end a conversation too.",
+        },
+        "reply": {
+            "type": "string",
+            "description": "Your words to the player. If end_conversation is true, give only a brief closing without a question or invitation to continue.",
+        },
         "target": {"type": "string"},
         "item": {"type": "string", "enum": ["", "fruit"]},
         "quantity": {"type": "integer", "minimum": 0},
@@ -397,10 +403,8 @@ your reply is a final acknowledgement to the PLAYER before carrying out the
 action, not the conversation with the target NPC. State what you will do without
 asking another question or inviting a reply. The player reads your words and
 clicks Done; only then does the action start. The requested topic is for
-that NPC to answer. Use false for ordinary SAY replies and
-clarification questions. You may also use true with SAY when saying goodbye or
-ending the exchange to resume your current activity. SAY cannot start a new task,
-so never promise a new task when the action is SAY.
+that NPC to answer. SAY cannot start a new task, so never promise a new task
+when the action is SAY.
 Never target yourself. If the target is missing, ambiguous, or busy, choose SAY
 and ask the player to name an available NPC. For all other actions, target is "".
 Return the required action/reply object. Give a complete reply in your character's
@@ -435,6 +439,27 @@ person (exact npc_name from other_npcs), opinion (integer -100 to 100), and reas
 (at most 400 characters, useful context for later dialogue). Use [] when there
 is nothing new to remember. Never update another NPC's opinions or target yourself.
 For an unknown person, SAY you don't know them yet and return no opinion update."""
+
+PLAYER_DIALOGUE_INSTRUCTION = """Conversation endings:
+Decide end_conversation before writing your reply.
+You are a person in this world and can choose to stop talking. With action SAY,
+set end_conversation true whenever you want to finish: because of your
+personality, mood, interest, current activity, or simply because the exchange
+feels complete. You do not need permission or an explicit goodbye.
+Respect the player's closing signals. If they say they are done, or decline
+your latest offer to keep talking or help, end this exchange now with action
+SAY and end_conversation true. "Nah that's all" means they are done. "No" or
+"no not really" answering whether there is anything else to discuss or whether
+they need assistance means they declined further conversation. Do not ask again.
+world_state.player_dialogue contains recent earlier turns in chronological
+order; last_reply is your previous reply. Interpret a short answer using your
+MOST RECENT question, rather than an older topic. A negative answer to a factual
+question alone does not require ending the conversation.
+When ending, write only a brief, natural closing in your own character's words.
+Do not add a question, offer of help, new topic, or invitation to talk again.
+Use end_conversation false when you actually choose to continue the exchange,
+including when a clarification question is necessary."""
+
 
 CONVERSATION_INSTRUCTION = WORLD_INSTRUCTION + """Write a natural face-to-face conversation between world_state.initiator and
 recipient. They are already together; address each other, not the player.
@@ -584,7 +609,9 @@ def world_context(snapshot):
 
 def build_system_instruction(character):
     """Combine the shared game rules with this NPC's JSON character profile."""
-    return SYSTEM_INSTRUCTION + "\n\n" + EMOTION_INSTRUCTION + "\n\nCharacter profile:\n" + json.dumps(character_context(character), ensure_ascii=False, indent=2)
+    return (SYSTEM_INSTRUCTION + "\n\n" + EMOTION_INSTRUCTION + "\n\nCharacter profile:\n"
+            + json.dumps(character_context(character), ensure_ascii=False, indent=2)
+            + "\n\n" + PLAYER_DIALOGUE_INSTRUCTION)
 
 
 def intent_snapshot(snapshot):

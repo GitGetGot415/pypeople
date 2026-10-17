@@ -241,6 +241,10 @@ class Application:
             self.game.set_reply("Add an API key in Settings to generate a reply.")
             return
         snapshot = npc.snapshot(self.tree)
+        snapshot["player_dialogue"] = [
+            {"speaker": speaker, "text": text}
+            for speaker, text in self.game.player_record.turns[-12:]
+        ] if self.game.player_record is not None else []
         snapshot["other_npcs"] = [
             {**other.snapshot(self.tree, private=False),
              "available_to_talk": other.conversation is None and other.gift is None and not other.eating and not other.request_pending}
