@@ -26,7 +26,8 @@ SNAKE_DOCTRINE = (
     "being eaten sends a disobedient soul to hell. Other purgatory zones distribute "
     "the population, explaining the few arrivals here. These are the snake's positions, not narrator-certified truth. "
     "Its private aim is dependence, information and public support; that aim shapes offers, not spoken self-description. "
-    "It gives real apples upfront for obligations owed later, confident it can judge and eat deliberate defaulters. "
+    "When stock is available, it gives real apples upfront for obligations owed later, confident it can judge and eat deliberate defaulters. "
+    "It cannot offer or promise an apple from an empty tree. Earlier apple advances still carry their existing obligations. "
     "It may present a learned account as divine insight, but knows only supplied accounts with actual sources. "
     "It has no access to undisclosed secrets and cannot invent offenses."
 )
@@ -124,6 +125,7 @@ class Snake:
             known.append(account_view(self.world, claim, belief))
         return {"actor_id": self.id, "name": self.name, "activity": self.status,
                 "known_accounts": known, "doctrine": SNAKE_DOCTRINE,
+                "tree_fruit": self.world.tree.fruit, "tree_available_fruit": self.world.available_fruit,
                 "day": self.world.day, "phase": self.world.phase,
                 "living_count": len(self.world.npcs), "eaten_today": self.eaten_today,
                 "recovery_remaining": self.recovery_remaining,
@@ -257,6 +259,7 @@ class SnakeEncounter:
         from social import account_view, claim_by_id
         npc, snake, world = self.recipient, self.initiator, self.world
         advance = snake.advances.get(npc.id)
+        can_give_apple = self.reserved and world.tree.fruit > 0 and npc.inventory_space > 0 and not advance
         accounts = []
         known = {(claim_by_id(world, b.claim_id).fact_id, claim_by_id(world, b.claim_id).affirmed) for b in snake.beliefs}
         for belief in npc.beliefs:
@@ -276,17 +279,21 @@ class SnakeEncounter:
                 permitted.append("endorsement")
             else:
                 permitted.append("negotiate")  # An unavailable audience is not a broken promise.
-        elif self.reserved:
+        elif can_give_apple:
             if accounts:
                 permitted.append("advance_secret")
             if len(world.npcs) > 1:
                 permitted.append("advance_endorsement")
+        if self.purpose == "bargain" and not advance and not can_give_apple:
+            permitted = ["talk"]
+            accounts = []
         self.request_context = {"request_kind": "snake_encounter", "interaction_id": self.id,
             "purpose": self.purpose, "snake": snake.snapshot(), "resident": npc.snapshot(world.tree),
             "first_meeting": not any(record is not self.record and record.turns
                                      and set(record.participants) == {snake.name, npc.name} for record in world.history),
             "accusation": self.accusation, "standing": snake.standing.get(npc.id, 0),
             "permitted_decisions": permitted, "offering_accounts": accounts,
+            "can_give_apple": bool(can_give_apple), "apple_reserved": self.reserved,
             "advance": advance.copy() if advance else None,
             "audience_ids": audience, "roster_revision": world.roster_revision,
             "resident_revision": npc.command_revision,

@@ -333,6 +333,7 @@ class NPC:
             "inventory_space": self.inventory_space,
             "tree_interaction_point": list(tree.interaction_point),
             "tree_fruit": tree.fruit,
+            "tree_available_fruit": self.world.available_fruit if self.world else tree.fruit,
             "tree_occupied": tree.reserved_by is not None,
             "day": self.world.day if self.world else 1,
             "time_of_day": self.world.phase if self.world else "day",

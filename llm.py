@@ -367,6 +367,12 @@ keep record headers, IDs and profile directions out of speech. Use dates only
 when useful: recorded_at dates garden records, not former-life events. Preserve
 unknown dates and day-one chronology. Use only the speaker's own knowledge;
 specific private memories still need a permitted disclosure.
+Current tree stock is public information in environment.tree. An empty tree
+cannot supply a new apple now: nobody can offer, obtain or hand over its fruit,
+or collect a new payment for an unavailable apple. Unreserved stock excludes
+apples already allocated to an encounter; can_give_apple identifies whether
+this encounter can supply its reserved apple. Carried apples can still be eaten
+or shared, and obligations for an apple already received still apply.
 Satisfaction measures resources/company, not peace about displacement. Known
 danger can disturb calm; experience can ease distress. A new partner resets
 neither. Show this through the present concern without obligatory panic, and
@@ -712,7 +718,8 @@ def world_context(snapshot, *, correction=False):
         if conversation or snapshot.get("request_kind") in ("snake_encounter", "snake_decision"):
             # Rendering and movement bookkeeping do not help write a conversation.
             fields = {"npc_id", "npc_name", "character", "activity", "satisfaction", "inventory",
-                      "inventory_capacity", "inventory_space", "memories", "private_context", "arrival_day"}
+                      "inventory_capacity", "inventory_space", "memories", "private_context", "arrival_day",
+                      "tree_fruit", "tree_available_fruit"}
             person = {key: value for key, value in person.items() if key in fields}
             if correction:
                 person.pop("memories", None)
@@ -757,10 +764,15 @@ def world_context(snapshot, *, correction=False):
         "objects": ["One apple tree", "Apples on the tree and in NPC inventories"],
         "people": "The listed residents, the python, and the player",
     }
+    current = snapshot["initiator"] if conversation else snapshot["snake"] if snake_request else snapshot
+    if "tree_fruit" in current:
+        context["environment"]["tree"] = {
+            "fruit": current["tree_fruit"], "available_fruit": current["tree_available_fruit"],
+        }
     if conversation:
         current = snapshot["initiator"]
         context["day"], context["time_of_day"] = current["day"], current["time_of_day"]
-        context["environment"]["tree"] = {"fruit": current["tree_fruit"], "shaking": current["tree_is_shaking"]}
+        context["environment"]["tree"]["shaking"] = current["tree_is_shaking"]
         if correction and context.get("shared_history"):
             # Keep transcripts for validation, but do not feed replayed lines
             # back to the model when asking it to write a fresh exchange.
@@ -783,9 +795,15 @@ def world_context(snapshot, *, correction=False):
         context["transaction"] = {
             "apple_giver": snapshot["snake"]["name"], "apple_receiver": resident["npc_name"],
             "stage": "judgment of supplied accusation" if snapshot["purpose"] == "judgment" else
-                     "collect existing obligation; no fruit transfer" if snapshot["advance"] else "offer a new upfront apple",
-            "offering_owed_by": resident["npc_name"], "offering_owed_to": snapshot["snake"]["name"],
-            "offering": snapshot["advance"]["offering"] if snapshot["advance"] else "one private recollection or public endorsement, owed later",
+                     "collect existing obligation; no fruit transfer" if snapshot["advance"] else
+                     "offer a new upfront apple" if snapshot["can_give_apple"] else "no new apple bargain is available",
+            "can_give_apple": snapshot["can_give_apple"], "apple_reserved": snapshot["apple_reserved"],
+            "receiver_inventory_space": resident["inventory_space"], "apple_already_received": bool(snapshot["advance"]),
+            "offering_owed_by": resident["npc_name"] if snapshot["advance"] or snapshot["can_give_apple"] else "",
+            "offering_owed_to": snapshot["snake"]["name"] if snapshot["advance"] or snapshot["can_give_apple"] else "",
+            "offering_still_owed": bool(snapshot["advance"]),
+            "offering": snapshot["advance"]["offering"] if snapshot["advance"] else
+                        "one private recollection or public endorsement, owed later" if snapshot["can_give_apple"] else "",
         }
         context["advance"] = offering_view(snapshot["advance"])
     if snake_request:
@@ -850,6 +868,8 @@ def structured_schema(model):
 def validate_snake_decision(result, snapshot):
     if result.interaction_id != snapshot["interaction_id"] or result.decision not in snapshot["permitted_decisions"]:
         raise ValueError("Use this encounter's identity and a locally permitted decision.")
+    if result.decision in ("advance_secret", "advance_endorsement") and not snapshot["can_give_apple"]:
+        raise ValueError("A new apple bargain requires available tree stock reserved for this recipient and carrying space.")
     accounts = {a["claim_id"] for a in snapshot["offering_accounts"]}
     private = result.decision in ("secret", "advance_secret")
     if private and result.account_id not in accounts:
@@ -990,13 +1010,19 @@ def response_contract(snapshot, *, correction=False):
                 "deliberately breaches this agreement. Negotiate waits when fulfillment is unavailable, "
                 "without inventing default or a replacement bargain."
             )
-        elif snapshot["purpose"] == "bargain":
+        elif snapshot["purpose"] == "bargain" and snapshot["can_give_apple"]:
             instruction += (
                 "\nNew bargain: snake turn 0 offers ONE apple NOW for one private recollection or public "
                 "endorsement owed LATER. advance_secret/advance_endorsement accepts that price and "
                 "transfers the apple now. A promised recollection stays unspoken. No audience is needed yet. "
                 "Deliberate default risks judgment and eating. Refuse/challenge means "
                 "the resident declines this offer; no apple changes hands."
+            )
+        elif snapshot["purpose"] == "bargain":
+            instruction += (
+                "\nNo new apple can be given in this encounter. Choose talk to explain availability; "
+                "there is no offer to accept, no new price to collect, and no promise of an apple later. "
+                "Use actual tree stock, reservation and receiver capacity to explain why."
             )
         schema = structured_schema(SnakeDecision)
         properties = schema["properties"]
@@ -1402,10 +1428,31 @@ def _api_error_message(exc):
     return "Gemini could not process this request. Check model access or try another message."
 
 
+def _tree_stock_instruction(context):
+    tree = context.get("environment", {}).get("tree")
+    if tree is None:
+        return ""
+    instruction = (f"\nKnown public tree stock: {tree['fruit']} apples total, "
+                   f"{tree['available_fruit']} unreserved. All participants already know this state. ")
+    if tree["fruit"] == 0:
+        instruction += (
+            "The tree is empty. Answers about obtaining its apples must acknowledge that none can be "
+            "obtained now, rather than treating the stock as unknown or needing inspection. "
+            "Do not offer or promise a new tree apple, collect a new payment, or invent a prior apple bargain. "
+            "Carried apples and actually recorded earlier obligations are separate from the empty tree."
+        )
+    elif tree["available_fruit"] == 0 and not context.get("transaction", {}).get("can_give_apple", False):
+        instruction += "All remaining apples are already allocated; no unreserved tree apple is available for a new bargain."
+    return instruction
+
+
 def _request_gemini(api_key, message, snapshot, *, correction=""):
     instruction, schema, _ = response_contract(snapshot, correction=bool(correction))
+    context = world_context(snapshot, correction=bool(correction))
+    stock_instruction = _tree_stock_instruction(context)
     if correction:
         instruction += "\n\n" + correction
+    instruction += stock_instruction
     try:
         with genai.Client(
             api_key=api_key,
@@ -1418,8 +1465,9 @@ def _request_gemini(api_key, message, snapshot, *, correction=""):
             response = client.models.generate_content(
                 model=MODEL,
                 contents=json.dumps(
-                    {"world_state": world_context(snapshot, correction=bool(correction)), "player_message": message,
-                     **({"correction_request": correction} if correction else {})},
+                    {"world_state": context, "player_message": message,
+                     **({"correction_request": correction} if correction else {}),
+                     **({"resource_constraints": stock_instruction.strip()} if stock_instruction else {})},
                     ensure_ascii=False, separators=(",", ":"),
                 ),
                 config=types.GenerateContentConfig(
@@ -1465,8 +1513,11 @@ def _request_gemini(api_key, message, snapshot, *, correction=""):
 
 def _request_ollama(message, snapshot, model=OLLAMA_MODEL, *, correction=""):
     instruction, schema, _ = response_contract(snapshot, correction=bool(correction))
+    context = world_context(snapshot, correction=bool(correction))
+    stock_instruction = _tree_stock_instruction(context)
     if correction:
         instruction += "\n\n" + correction
+    instruction += stock_instruction
     options = {
         "num_ctx": 16384 if snapshot.get("request_kind") in ("conversation", "snake_decision") else 8192,
         "num_predict": -1,
@@ -1491,8 +1542,9 @@ def _request_ollama(message, snapshot, model=OLLAMA_MODEL, *, correction=""):
                     {
                         "role": "user",
                         "content": json.dumps(
-                            {"world_state": world_context(snapshot, correction=bool(correction)), "player_message": message,
-                             **({"correction_request": correction} if correction else {})},
+                            {"world_state": context, "player_message": message,
+                             **({"correction_request": correction} if correction else {}),
+                             **({"resource_constraints": stock_instruction.strip()} if stock_instruction else {})},
                             ensure_ascii=False, separators=(",", ":"),
                         ),
                     },
@@ -1600,6 +1652,7 @@ def _snake_turn_snapshot(snapshot, decision, turns):
                        view_of_listener={key: attitudes[key] for key in ("belief", "trust", "authority")})
 
     outcome = decision.decision
+    no_new_bargain = snapshot["purpose"] == "bargain" and not snapshot["advance"] and not snapshot["can_give_apple"]
     result_tasks = {
         "advance_secret": "Hand over one real apple now; the accepted private recollection is owed later.",
         "advance_endorsement": "Hand over one real apple now; the accepted public endorsement is owed later.",
@@ -1626,20 +1679,29 @@ def _snake_turn_snapshot(snapshot, decision, turns):
     }
     account = None
     if index == 0:
-        task = ("Present only the supplied accusation; hear the response before announcing judgment."
-                if snapshot["purpose"] == "judgment" else
-                "Ask for the offering already owed for the apple previously given; offer no new apple."
-                if snapshot["advance"] else
-                "Propose one upfront apple for a private recollection or public endorsement owed later; wait for acceptance before handing it over."
-                if snapshot["purpose"] == "bargain" else "Raise the supplied current concern.")
+        if snapshot["purpose"] == "judgment":
+            task = "Present only the supplied accusation; hear the response before announcing judgment."
+        elif snapshot["advance"]:
+            task = "Ask for the offering already owed for the apple previously given; offer no new apple."
+        elif no_new_bargain:
+            task = ("Explain why an apple cannot be provided now, using the actual tree stock, reservation "
+                    "and receiver capacity. Do not offer an apple, ask for a new payment or promise an apple later.")
+        elif snapshot["purpose"] == "bargain":
+            task = "Propose one upfront apple for a private recollection or public endorsement owed later; wait for acceptance before handing it over."
+        else:
+            task = "Raise the supplied current concern."
         if snapshot["first_meeting"]:
             task = "Assert your own divine role directly, then " + task[0].lower() + task[1:]
     elif index == 1:
-        task = response_tasks[outcome]
+        task = ("Respond to the explanation that an apple cannot currently be obtained from the tree. "
+                "Do not accept a new apple bargain or offer payment for unavailable fruit."
+                if no_new_bargain else response_tasks[outcome])
         if outcome == "secret":
             account = next(a for a in snapshot["offering_accounts"] if a["claim_id"] == decision.account_id)
     elif index == 2:
-        task = result_tasks[outcome]
+        task = ("Clarify current apple availability in response to the listener; no apple is handed over "
+                "and no new bargain or obligation is created."
+                if no_new_bargain else result_tasks[outcome])
         if decision.snake_account_id:
             account = next(a for a in snake["known_accounts"] if a["claim_id"] == decision.snake_account_id)
             task += " Also disclose the supplied known account now, retaining its actual owner and source."
@@ -1651,7 +1713,9 @@ def _snake_turn_snapshot(snapshot, decision, turns):
             speaker["stance_on_disclosed_account"] = decision.account_stance
 
     transaction = context["transaction"].copy()
-    transaction.update(owed_account_speaker=resident["npc_name"], owed_account_listener=snake["name"])
+    environment = {**context["environment"], "tree": context["environment"]["tree"].copy()}
+    if snapshot["advance"] or snapshot["can_give_apple"]:
+        transaction.update(owed_account_speaker=resident["npc_name"], owed_account_listener=snake["name"])
     if index >= 2 and outcome in ("secret", "endorsement"):
         transaction.update(stage="resident has supplied the owed offering in the preceding turn",
                            offering_still_owed=False, apple_transferred=False)
@@ -1661,6 +1725,9 @@ def _snake_turn_snapshot(snapshot, decision, turns):
                            offering_still_owed=outcome in ("advance_secret", "advance_endorsement", "negotiate"))
         if outcome in ("advance_secret", "advance_endorsement"):
             speaker["inventory"] = {**resident["inventory"], "fruit": resident["inventory"].get("fruit", 0) + 1}
+            environment["tree"]["fruit"] -= 1
+            transaction.update(can_give_apple=False, apple_reserved=False, apple_already_received=True,
+                               receiver_inventory_space=resident["inventory_space"] - 1)
     if account:
         subject_relation = ("speaker" if account["subject_id"] == speaker["actor_id"] else
                             "listener" if account["subject_id"] == identities[listener_role]["actor_id"]
@@ -1673,7 +1740,7 @@ def _snake_turn_snapshot(snapshot, decision, turns):
         "request_kind": "snake_turn", "turn_index": index, "speaker_role": role,
         "speaker": speaker, "listener": identities[listener_role],
         "day": resident.get("day", snake["day"]), "time_of_day": snake["phase"],
-        "environment": context["environment"], "transaction": transaction, "task": task,
+        "environment": environment, "transaction": transaction, "task": task,
         "accusation": snapshot["accusation"], "audience_ids": snapshot["audience_ids"] if outcome == "endorsement" else [],
         "account_to_share": account,
         "preceding_turns": [{"name": identities[turn.speaker]["name"], "role": turn.speaker, "text": turn.text}

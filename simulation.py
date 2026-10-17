@@ -216,7 +216,7 @@ class Simulation:
     @property
     def available_fruit(self):
         encounter = self.snake.encounter
-        return self.tree.fruit - int(bool(encounter and encounter.active and encounter.reserved))
+        return max(0, self.tree.fruit - int(bool(encounter and encounter.active and encounter.reserved)))
 
     def listeners(self, actor, radius=None):
         from snake import HEARING_RADIUS

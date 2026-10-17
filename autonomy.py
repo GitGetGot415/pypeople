@@ -23,7 +23,7 @@ def target_valid(npc, world):
         return npc.inventory.get("fruit", 0) > 0
     if npc.behavior == Behavior.HARVEST:
         return (npc.target_id == world.tree.id and world.tree.reserved_by is npc
-                and world.tree.fruit > 0 and npc.inventory_space > 0
+                and world.available_fruit > 0 and npc.inventory_space > 0
                 and npc.can_reach(world.tree.interaction_point))
     if npc.behavior in (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING):
         return npc.target_id == world.tree.id and npc.can_reach(world.tree.interaction_point)
@@ -77,7 +77,7 @@ def reconsider(npc, world):
     if npc.inventory.get("fruit", 0) > apples_needed and npc.social <= 100 - APPLE_SATISFACTION:
         candidates.append((130 - npc.social, Behavior.EAT, None, "Eating an apple to improve satisfaction"))
     tree = world.tree
-    if (tree.fruit > 0 and tree.reserved_by in (None, npc) and npc.inventory_space > 0
+    if (world.available_fruit > 0 and tree.reserved_by in (None, npc) and npc.inventory_space > 0
             and tree.id not in npc.cooldowns and npc.can_reach(tree.interaction_point)):
         score = 24 - sum(npc.inventory.values()) * 4 - distance(tree.interaction_point) + (110 if needs_apple else 0)
         candidates.append((score, Behavior.HARVEST, tree.id,
@@ -164,7 +164,7 @@ def social_pair(world):
             continue
         donor = max(donors, key=lambda other: rank(npc, other))
         tree = world.tree
-        if (tree.fruit > 0 and tree.reserved_by is None and npc.can_reach(tree.interaction_point)
+        if (world.available_fruit > 0 and tree.reserved_by is None and npc.can_reach(tree.interaction_point)
                 and math.dist((npc.x, npc.y), tree.interaction_point)
                 < math.dist((npc.x, npc.y), (donor.x, donor.y))):
             continue
