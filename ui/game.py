@@ -115,12 +115,8 @@ class GameScreen:
             return
         if self.feed.handle_event(app, event):
             return
-        if event.type in (pygame.MOUSEWHEEL, pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION):
-            pos = getattr(event, "pos", pygame.mouse.get_pos())
-            if self.request_status.rect.collidepoint(pos):
-                self.pan_start = self.pan_last = None
-                self.panning = False
-                return
+        if self.request_status.handle_event(app, event):
+            return
         if event.type == pygame.MOUSEWHEEL:
             pos = getattr(event, "pos", pygame.mouse.get_pos())
             if self.world_viewport.collidepoint(pos) and not any(
