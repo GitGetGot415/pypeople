@@ -139,7 +139,7 @@ class LeverageUse(BaseModel):
 class SnakeResponse(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
     interaction_id: str
-    decision: Literal["talk", "secret", "endorsement", "refuse", "negotiate", "challenge", "spare", "eat"]
+    decision: Literal["talk", "advance_secret", "advance_endorsement", "secret", "endorsement", "refuse", "negotiate", "challenge", "spare", "eat"]
     turns: list[ConversationTurn] = Field(min_length=4, max_length=6)
     account_id: str
     snake_account_id: str
@@ -356,9 +356,12 @@ Firsthand memories and accounts are events that speaker personally experienced.
 The speaker already knows whether they happened: never describe them as hearsay,
 invent a source for them, or ask another person to verify their occurrence.
 Someone else's uncertainty cannot make the speaker doubt their own experience.
-The python guards all tree apples. Visiting or shaking never awards fruit. A completed
-snake bargain trades one real apple for a new owned account or a public endorsement
-heard by another living resident. Carried apples may still be eaten or shared.
+The python guards all tree apples. Visiting or shaking never awards fruit. An accepted
+snake bargain gives one real apple upfront, with a specific private account or public
+endorsement owed later. An advance is an actual inventory transfer, not a promise of
+an apple. Only a later disclosure or endorsement heard by another living resident
+fulfills the resident's obligation. Refusing that obligation can lead to judgment and
+being eaten. Carried apples may still be eaten or shared while the offering is owed.
 Each resident's character.Details is their full description, including personality,
 former life and private memories. Use those authored recollections; do not generate
 additional backstory or identify remembered people with current residents. A private
@@ -705,8 +708,14 @@ def validate_snake_response(result, snapshot):
         if turn.speaker != ("initiator" if i % 2 == 0 else "recipient"):
             raise ValueError("Alternate snake and resident speech, beginning with the snake.")
     accounts = {a["claim_id"] for a in snapshot["offering_accounts"]}
-    if (result.decision == "secret" and result.account_id not in accounts) or (result.decision != "secret" and result.account_id):
+    private = result.decision in ("secret", "advance_secret")
+    if (private and result.account_id not in accounts) or (not private and result.account_id):
         raise ValueError("A private offering must select exactly one permitted new account.")
+    advance = snapshot["advance"]
+    if result.decision in ("secret", "endorsement") and (
+            not advance or result.decision != advance["offering"]
+            or result.decision == "secret" and result.account_id != advance["account_id"]):
+        raise ValueError("Fulfill exactly the offering owed for the existing apple advance.")
     if result.decision == "endorsement" and not snapshot["audience_ids"]:
         raise ValueError("A public endorsement needs a living listener.")
     if result.snake_account_id and result.snake_account_id not in {a["claim_id"] for a in snapshot["snake"]["known_accounts"]}:
@@ -724,21 +733,35 @@ def response_contract(snapshot, *, correction=False):
             " Generate an encounter with initiator=snake, recipient=resident: four or six alternating turns. "
             "The snake's knowledge is only snake.known_accounts; resident private_context belongs only to "
             "the resident. An account on offering_accounts is a potential price, not knowledge the snake "
-            "already has. Choose a permitted_decision. For secret, disclose exactly account_id in resident "
-            "turn 1; keep it private, and do not reveal any other background facts. For endorsement, resident "
-            "turn 1 publicly supports the snake to audience_ids. Snake turn 2 acknowledges the actual apple "
-            "transfer for those two decisions. Other decisions do not pay, disclose a private price, or "
-            "claim an apple changed hands. Refusal, negotiation and challenging are real alternatives, "
+            "already has. Choose a permitted_decision. For a new bargain, normally choose advance_secret "
+            "or advance_endorsement: snake turn 0 offers an apple upfront, resident turn 1 agrees to the "
+            "offering, snake turn 2 actually hands over the apple now, resident turn 3 acknowledges receipt. "
+            "The apple is transferred immediately, not conditional on performing first. For advance_secret, "
+            "account_id selects the resident's promised account, but no private contents are spoken yet. "
+            "For advance_endorsement, agree to public support later; no listener is required for the advance. "
+            "The snake follows up after 30 active simulation seconds. It can confidently risk an apple "
+            "because deliberate default can lead to being eaten. Refuse or challenge only when the resident "
+            "actually rejects this concrete offer, not as an endless negotiation about a future apple. "
+            "When advance is nonnull, the apple was ALREADY delivered: do not offer, promise, or transfer "
+            "another. For secret, resident turn 1 privately discloses exactly the owed account_id. For "
+            "endorsement, resident turn 1 publicly supports the snake to audience_ids. These settle the "
+            "existing debt without awarding fruit. For refuse or challenge in this follow-up, the resident "
+            "deliberately breaks their accepted agreement; the snake may threaten a real judgment. "
+            "Negotiate is permitted only when the offering cannot currently be performed; wait for a "
+            "listener or another opportunity, with no extra apple and no invented default. Choices are "
             "informed independently by personality, relationships, attitudes, satisfaction and risk. "
             "In judgment, snake turn 0 announces only accusation, resident turn 1 responds or pleads, "
-            "snake turn 2 gives the decision: spare, eat, or an achievable apple offering as remedy. "
+            "snake turn 2 gives the decision: spare, eat, or an owed offering as remedy if permitted. "
+            "For a recorded broken upfront bargain, the snake normally condemns deliberate default, "
+            "rather than giving another apple or imposing a new vague condition. "
             "Eating follows later and must not be described as already completed. Condemnation can be unfair "
             "but must be attributed to the snake's standards. No invented offense. The resident has "
             "come to the guarded tree to seek an apple. On first_meeting introduce the snake's claimed "
             "authority naturally while discussing the price. There is no required sermon or checklist. "
             "If snake_account_id is nonempty, reveal that known account in snake turn 0, keeping its "
             "actual provenance even if the snake calls it revelation; account_stance is the resident's "
-            "interpretation. Otherwise use an empty snake_account_id. account_id is empty unless secret. "
+            "interpretation. Otherwise use an empty snake_account_id. account_id is empty unless secret "
+            "or advance_secret. Only secret actually discloses that private account. "
             "attitudes may be null; any changes need the current exchange as evidence, independent reasons, "
             "and at most six trust points. Generate all speech, with emotion on each part.\n\n"
             + DIALOGUE_VARIETY_INSTRUCTION
@@ -746,9 +769,9 @@ def response_contract(snapshot, *, correction=False):
         schema = structured_schema(SnakeResponse)
         schema["properties"]["decision"]["enum"] = snapshot["permitted_decisions"]
         schema["properties"]["interaction_id"] = {"type": "string", "enum": [snapshot["interaction_id"]]}
-        offering_ids = [a["claim_id"] for a in snapshot["offering_accounts"]] if "secret" in snapshot["permitted_decisions"] else []
+        offering_ids = [a["claim_id"] for a in snapshot["offering_accounts"]] if {"secret", "advance_secret"} & set(snapshot["permitted_decisions"]) else []
         schema["properties"]["account_id"] = {"type": "string", "enum": ["", *offering_ids],
-            "description": "Empty unless decision is secret; then select one offered account ID."}
+            "description": "Empty unless decision is secret or advance_secret; then select one offered account ID."}
         schema["properties"]["snake_account_id"] = {"type": "string", "enum": ["", *[a["claim_id"] for a in snapshot["snake"]["known_accounts"]]]}
         return instruction, schema, SnakeResponse
     if snapshot.get("request_kind") == "intent":
@@ -1209,8 +1232,9 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
                 )
             elif state.get("request_kind") == "snake_encounter":
                 correction += (
-                    "Write exactly four alternating turns. account_id MUST be empty unless decision is secret; "
-                    "only secret selects one offering_accounts claim ID. snake_account_id MUST be empty when "
+                    "Write exactly four alternating turns. account_id MUST be empty unless decision is secret "
+                    "or advance_secret; those select one offering_accounts claim ID. Only secret discloses it; "
+                    "advance_secret promises it later and transfers an apple now. snake_account_id MUST be empty when "
                     "snake.known_accounts is empty. No secret may be spoken for a non-secret decision."
                 )
             else:

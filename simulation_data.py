@@ -15,7 +15,7 @@ from llm import (AcceptedProposal, ConversationPart, ConversationTurn, Disclosur
                  EmotionReaction, LeverageUse, ThirdPartyOpinion)
 from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree, WORLD_HEIGHT, WORLD_WIDTH
 from simulation import DIALOGUE_WAIT_SECONDS, EAT_SECONDS, PendingAction, SHAKE_SECONDS, Simulation
-from snake import SNAKE_FRAME_SECONDS, SNAKE_MARGIN, Snake, SnakeEncounter
+from snake import APPLE_ADVANCE_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_MARGIN, Snake, SnakeEncounter
 from purgatory import Attitudes
 from social import (Belief, Claim, Disclosure, Fact, FactKind, Goal, GoalKind, OpinionEffect, Promise, Proposal,
                     Stance, information_from_dict, phase_index, validate_agreements, validate_information)
@@ -329,6 +329,13 @@ class SnakeRetryState(SaveModel):
     error: str
 
 
+class AppleAdvanceState(SaveModel):
+    offering: Literal["secret", "endorsement"]
+    account_id: str
+    conversation_id: str
+    remaining: float = Field(ge=0, le=APPLE_ADVANCE_SECONDS)
+
+
 class SnakeState(SaveModel):
     id: str = Field(min_length=1)
     x: float = Field(ge=0, le=WORLD_WIDTH)
@@ -342,6 +349,7 @@ class SnakeState(SaveModel):
     beliefs: list[BeliefState]
     standing: dict[str, int]
     offenses: dict[str, str]
+    advances: dict[str, AppleAdvanceState] = Field(default_factory=dict)
     eaten_today: int = Field(ge=0)
     recovery_remaining: float = Field(ge=0, le=20)
     pardons: list[str]
@@ -374,7 +382,7 @@ class SnakeEncounterState(SaveModel):
     wait_elapsed: float = Field(ge=0, le=125.1)
     talking_remaining: float = Field(ge=0, le=4)
     committed: bool
-    outcome: Literal["", "talk", "secret", "endorsement", "refuse", "negotiate", "challenge", "spare", "eat"]
+    outcome: Literal["", "talk", "advance_secret", "advance_endorsement", "secret", "endorsement", "refuse", "negotiate", "challenge", "spare", "eat"]
     outcome_event_id: str | None
     stage: Literal["approach", "waiting", "dialogue", "condemned_approach", "eating"]
     elapsed: float = Field(ge=0, le=1.1)
@@ -611,6 +619,19 @@ class SimulationState(SaveModel):
                 or not set(self.snake.pardons) <= live_ids or not set(self.snake.offenses) <= live_ids
                 or any(f not in facts for f in self.snake.offenses.values())):
             raise ValueError("Invalid snake standing, offenses or pardons.")
+        for resident_id, advance in self.snake.advances.items():
+            record = record_for(advance.conversation_id)
+            if (resident_id not in live_ids or not participant(resident_id, record)
+                    or not participant(self.snake.id, record)
+                    or not any(f.kind == "bargain" and f.conversation_id == record.id
+                               and f.subject_id == self.snake.id and f.object_id == resident_id for f in self.facts)):
+                raise ValueError("An apple advance needs its living recipient and actual handoff record.")
+            if advance.offering == "secret":
+                resident = next(n for n in self.npcs if n.id == resident_id)
+                if advance.account_id not in claims or not any(b.claim_id == advance.account_id for b in resident.beliefs):
+                    raise ValueError("A promised private account must belong to the recipient.")
+            elif advance.account_id:
+                raise ValueError("An endorsement advance cannot select a private account.")
         if self.snake.judged_phase > now or self.snake.retry_request and self.snake.retry_request.resident_id not in live_ids:
             raise ValueError("Invalid snake judgment phase or retry target.")
         for index, npc in enumerate(self.npcs):

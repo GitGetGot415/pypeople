@@ -145,6 +145,13 @@ class StatsScreen:
             for actor_id, score in npc.standing.items():
                 add(f"{app.simulation.actor_by_id(actor_id).name}: {score:+d}")
             gap()
+            add("Upfront apples: offerings still owed", app.heading_font)
+            for actor_id, advance in npc.advances.items():
+                offering = "private information" if advance["offering"] == "secret" else "a public endorsement"
+                add(f"{app.simulation.actor_by_id(actor_id).name} owes {offering}; follow-up in {advance['remaining']:.0f}s.")
+            if not npc.advances:
+                add("No outstanding offerings.", app.small_font, MUTED)
+            gap()
             add("Known accounts (observer inspection)", app.heading_font)
             for account in npc.snapshot()["known_accounts"]:
                 add(account["assertion"], app.small_font)
@@ -169,6 +176,10 @@ class StatsScreen:
             add(f"Satisfaction: {npc.social:.0f}/100")
             inventory_label = "Inventory at departure" if npc.departure else "Carrying"
             add(f"{inventory_label}: {npc.inventory.get('fruit', 0)} fruit / {npc.inventory_capacity} items")
+            advance = app.simulation.snake.advances.get(npc.id)
+            if advance:
+                offering = "private information" if advance["offering"] == "secret" else "a public endorsement"
+                add(f"Received an apple upfront; owes {offering} to the snake.", app.small_font, MUTED)
             add(f"Sociability: {npc.preferences['sociability']:.0%}; generosity: {npc.preferences['generosity']:.0%}", app.small_font, MUTED)
             gap()
             add("Personal objective", app.heading_font)

@@ -399,8 +399,8 @@ class Application:
                 return
             try:
                 conversation.recipient.set_selected(False)
-                replacement = SnakeEncounter(self.simulation, conversation.recipient, "bargain",
-                                             "Retrying an apple bargain at the tree", origin=conversation.origin)
+                replacement = SnakeEncounter(self.simulation, conversation.recipient, conversation.purpose,
+                                             conversation.accusation, origin=conversation.origin)
             except ValueError as exc:
                 conversation.record.error = str(exc)
                 return
@@ -432,7 +432,7 @@ class Application:
             return
         npc.set_selected(False)
         try:
-            replacement = SnakeEncounter(self.simulation, npc, "bargain", "Retrying an apple bargain at the tree", origin=request["origin"])
+            replacement = SnakeEncounter(self.simulation, npc, request["purpose"], request["reason"], origin=request["origin"])
         except ValueError as exc:
             request["error"] = str(exc)
             return

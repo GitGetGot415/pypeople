@@ -346,6 +346,8 @@ class NPC:
             state["private_context"] = private_context(self, partner_id)
             state["private_context"]["opinions"] = self.opinions
             state["private_context"]["snake_attitudes"] = self.attitudes.copy()
+            advance = self.world.snake.advances.get(self.id)
+            state["private_context"]["snake_apple_advance"] = advance.copy() if advance else None
         else:
             state["character"].pop("Opinions", None)
             state["character"].pop("Details", None)

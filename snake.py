@@ -15,6 +15,7 @@ WITNESS_RADIUS = 220
 CROWD_LIMIT = 10
 PROTECTED_POPULATION = 2
 RECOVERY_SECONDS = 20.0
+APPLE_ADVANCE_SECONDS = 30.0
 
 # These are instructions to the provider, never locally supplied spoken lines.
 SNAKE_DOCTRINE = (
@@ -22,7 +23,10 @@ SNAKE_DOCTRINE = (
     "You claim this garden is purgatory for undecided souls, obedience may lead to heaven, "
     "and being eaten sends a disobedient soul to hell. You explain one arrival per day by "
     "claiming many other purgatory zones distribute the population. These claims are unverified. "
-    "You want to become indispensable: trade apples for private information or public support, "
+    "You want to become indispensable and earn trust by giving real apples upfront. "
+    "When a resident accepts a bargain, give the apple now for information or public support owed later. "
+    "Do not withhold it until they perform or merely promise a future apple. You are confident "
+    "extending this credit because you can judge and eat residents who deliberately break the agreement. "
     "use learned accounts selectively, and sometimes call your knowledge divine revelation. "
     "You know only supplied accounts, with their actual sources. Do not invent offenses or secrets."
 )
@@ -42,6 +46,7 @@ class Snake:
     beliefs: list = field(default_factory=list)
     standing: dict = field(default_factory=dict)
     offenses: dict = field(default_factory=dict)
+    advances: dict = field(default_factory=dict)
     eaten_today: int = 0
     recovery_remaining: float = 0.0
     pardons: list = field(default_factory=list)
@@ -116,7 +121,10 @@ class Snake:
                 "known_accounts": known, "doctrine": SNAKE_DOCTRINE,
                 "day": self.world.day, "phase": self.world.phase,
                 "living_count": len(self.world.npcs), "eaten_today": self.eaten_today,
-                "recovery_remaining": self.recovery_remaining}
+                "recovery_remaining": self.recovery_remaining,
+                "apple_advances": [{"resident_id": actor_id, "offering": advance["offering"],
+                                    "follow_up_in": advance["remaining"]}
+                                   for actor_id, advance in self.advances.items()]}
 
     def move_toward(self, point, dt):
         dx, dy = point[0] - self.x, point[1] - self.y
@@ -137,6 +145,8 @@ class Snake:
         if dt <= 0:
             return
         self.recovery_remaining = max(0.0, self.recovery_remaining - dt)
+        for advance in self.advances.values():
+            advance["remaining"] = max(0.0, advance["remaining"] - dt)
         tree = self.world.tree
         if self.encounter:
             # The resident comes to the guard; the snake never follows them out.
@@ -147,6 +157,23 @@ class Snake:
         if self.recovery_remaining:
             self.activity = "recovering"
             return
+        if not (self.selected or self.request_pending or self.retry_request):
+            from social import fact_by_id
+            for npc in self.world.npcs:
+                if npc.selected:
+                    continue
+                advance = self.advances.get(npc.id)
+                if npc.id in self.offenses and npc.id not in self.pardons and self.world.eating_permitted(npc):
+                    purpose, reason = "judgment", fact_by_id(self.world, self.offenses[npc.id]).summary
+                elif advance and advance["remaining"] <= 0:
+                    purpose, reason = "bargain", "Collecting the offering for an apple already given upfront"
+                else:
+                    continue
+                try:
+                    SnakeEncounter(self.world, npc, purpose, reason)
+                except ValueError:
+                    continue  # Finish an existing activity before following up.
+                return
         self.activity = "guarding"
         if self.destination is None or math.dist(self.destination, (tree.x, tree.y)) > 150:
             self.destination = (tree.x + self.rng.uniform(40, 100), tree.y + self.rng.uniform(50, 100))
@@ -184,7 +211,8 @@ class SnakeEncounter:
         world.snake.encounter = self
         world.snake.target_id = resident.id
         world.snake.activity = "judging" if purpose == "judgment" else "bargaining"
-        self.reserved = purpose in ("bargain", "judgment") and world.tree.fruit > 0 and resident.inventory_space > 0
+        self.reserved = (purpose == "bargain" and resident.id not in world.snake.advances
+                         and world.tree.fruit > 0 and resident.inventory_space > 0)
         self.active = True
         self.arrived = False
         self.dialogue_state = "waiting"
@@ -223,28 +251,39 @@ class SnakeEncounter:
     def snapshot(self, tree=None, npcs=None):
         from social import assertion_text, claim_by_id, fact_by_id
         npc, snake, world = self.recipient, self.initiator, self.world
+        advance = snake.advances.get(npc.id)
         accounts = []
         known = {(claim_by_id(world, b.claim_id).fact_id, claim_by_id(world, b.claim_id).affirmed) for b in snake.beliefs}
         for belief in npc.beliefs:
             claim = claim_by_id(world, belief.claim_id)
-            if (claim.fact_id, claim.affirmed) not in known and belief.stance != "disbelieved":
+            if (belief.stance != "disbelieved" and
+                    (advance and claim.id == advance["account_id"]
+                     or not advance and (claim.fact_id, claim.affirmed) not in known)):
                 accounts.append({"claim_id": claim.id, "assertion": assertion_text(world, fact_by_id(world, claim.fact_id), claim.affirmed),
                                  "source_id": belief.source_id, "source_disclosure_id": belief.disclosure_id})
         audience = [p.id for p in world.listeners(npc) if p is not npc]
-        permitted = ["refuse", "negotiate", "challenge"] if self.purpose == "bargain" else ["spare"] if self.purpose == "judgment" else ["talk"]
+        permitted = ["refuse", "challenge"] if self.purpose == "bargain" else ["spare"] if self.purpose == "judgment" else ["talk"]
         if self.purpose == "judgment" and world.eating_permitted(npc):
             permitted.append("eat")
-        if self.reserved:
-            if accounts:
+        if advance:
+            if advance["offering"] == "secret" and accounts:
                 permitted.append("secret")
-            if audience:
+            elif advance["offering"] == "endorsement" and audience:
                 permitted.append("endorsement")
+            else:
+                permitted.append("negotiate")  # An unavailable audience is not a broken promise.
+        elif self.reserved:
+            if accounts:
+                permitted.append("advance_secret")
+            if len(world.npcs) > 1:
+                permitted.append("advance_endorsement")
         self.request_context = {"request_kind": "snake_encounter", "interaction_id": self.id,
             "purpose": self.purpose, "snake": snake.snapshot(), "resident": npc.snapshot(world.tree),
             "first_meeting": not any(record is not self.record and record.turns
                                      and set(record.participants) == {snake.name, npc.name} for record in world.history),
             "accusation": self.accusation, "standing": snake.standing.get(npc.id, 0),
             "permitted_decisions": permitted, "offering_accounts": accounts,
+            "advance": advance.copy() if advance else None,
             "audience_ids": audience, "roster_revision": world.roster_revision,
             "resident_revision": npc.command_revision,
             "_resident_knowledge": [(b.claim_id, b.stance, b.source_id, b.disclosure_id) for b in npc.beliefs],
@@ -267,7 +306,7 @@ class SnakeEncounter:
                 raise ValueError("An account changed while this exchange was being prepared. Retry the encounter.")
         if npc.attitudes != self.request_context["resident"]["private_context"]["snake_attitudes"]:
             raise ValueError("The resident's attitudes changed during generation. Retry the encounter.")
-        # No payment speech is displayed until all settlement checks have passed.
+        # Speech describing a handoff is displayed only after the real transfer commits.
         world.commit_snake_response(self, response)
         self.turns = list(response.turns)
         for turn in self.turns:
