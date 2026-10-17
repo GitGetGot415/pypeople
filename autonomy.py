@@ -5,7 +5,8 @@ import math
 from npc import Behavior
 from conversation_history import memory_bias
 from simulation import APPLE_SATISFACTION, DECISION_SECONDS, SOCIAL_START
-from social import goal_attempt_cooling_down, pair_objective, pending_promises
+from social import (claim_by_id, fact_by_id, goal_attempt_cooling_down, pair_objective,
+                    pending_promises, selected_beliefs)
 
 
 def company_point(npc, partner, spacing=0):
@@ -182,5 +183,13 @@ def social_pair(world):
         return None
     _, npc, partner = max(choices, key=lambda choice: choice[0])
     recollection = next((memory for memory in reversed(npc.memories) if memory.partner_id == partner.id), None)
-    topic = f"Remembering: {recollection.summary}" if recollection else f"The {world.phase} and how things are going"
+    danger = next((belief for belief in selected_beliefs(npc, partner.id)
+                   if belief.stance != "disbelieved" and fact_by_id(world, claim_by_id(world, belief.claim_id).fact_id).kind
+                   in ("eating", "judgment", "defiance")), None)
+    if danger:
+        topic = "Safety around the python after a known alarming event or sourced warning"
+    elif recollection:
+        topic = f"Remembering: {recollection.summary}"
+    else:
+        topic = "The missing memory of arriving here and uncertainty about getting home"
     return npc, partner, "chat", topic, f"Seeking a chat with {partner.name}{memory_reason(npc, partner)}"

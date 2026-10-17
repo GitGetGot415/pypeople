@@ -65,7 +65,16 @@ def relevant_memories(npc, partner_id=None):
     promises = [p for p in npc.world.promises if npc.id in (p.promisor_id, p.recipient_id)
                 and p.status in ("pending", "broken")] if npc.world else []
     partners = {p.recipient_id if p.promisor_id == npc.id else p.promisor_id for p in promises}
+    danger_ids = set()
+    if npc.world:
+        from social import claim_by_id, fact_by_id
+        for belief in npc.beliefs:
+            fact = fact_by_id(npc.world, claim_by_id(npc.world, belief.claim_id).fact_id)
+            if fact.kind in ("eating", "judgment", "defiance"):
+                danger_ids.add(fact.source_id)
+                danger_ids.update(d.event_id for d in npc.world.disclosures if d.id == belief.disclosure_id)
     ranked = sorted(enumerate(npc.memories), key=lambda entry: (
+        entry[1].kind in ("eating", "judgment", "defiance") or entry[1].id in danger_ids,
         entry[1].partner_id in partners and entry[1].kind in ("promise_created", "promise_broken"),
         entry[1].kind in ("heard_claim", "claim_opinion", "leverage"),
         entry[1].partner_id == partner_id, entry[1].partner_id == goal_target,

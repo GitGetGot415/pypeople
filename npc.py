@@ -348,6 +348,16 @@ class NPC:
             state["private_context"]["snake_attitudes"] = self.attitudes.copy()
             advance = self.world.snake.advances.get(self.id)
             state["private_context"]["snake_apple_advance"] = advance.copy() if advance else None
+            encounters = [record for record in self.world.history if self.name in record.participants and record.turns]
+            state["private_context"]["situation"] = {
+                "arrival_day": self.arrival_day,
+                "transition_memory": "absent", "explanation": "unknown", "way_home": "unknown",
+                "prior_conversations": len(encounters),
+                "prior_snake_encounters": sum(self.world.snake.name in record.participants for record in encounters),
+                "known_danger": [account for account in state["private_context"]["known_accounts"]
+                                 if account["kind"] in ("eating", "judgment", "defiance")][:3],
+                "apple_bargain": {"stage": "apple already received; offering still owed", **advance} if advance else None,
+            }
         else:
             state["character"].pop("Opinions", None)
             state["character"].pop("Details", None)
@@ -832,7 +842,7 @@ class Conversation:
             self.proposals = permitted_proposals(self)
             self.context_references = conversation_references(self)
             self.information_context = prepare_information(self)
-        views = information_views(self.information_context)
+        views = information_views(self.information_context, self.initiator.world)
         initiator, recipient = participant(self.initiator), participant(self.recipient)
         for role, state in (("initiator", initiator), ("recipient", recipient)):
             state["private_context"].pop("known_accounts", None)

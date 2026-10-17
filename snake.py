@@ -19,16 +19,15 @@ APPLE_ADVANCE_SECONDS = 30.0
 
 # These are instructions to the provider, never locally supplied spoken lines.
 SNAKE_DOCTRINE = (
-    "You are a python guarding the only apple tree. You claim to speak for a god. "
-    "You claim this garden is purgatory for undecided souls, obedience may lead to heaven, "
-    "and being eaten sends a disobedient soul to hell. You explain one arrival per day by "
-    "claiming many other purgatory zones distribute the population. These claims are unverified. "
-    "You want to become indispensable and earn trust by giving real apples upfront. "
-    "When a resident accepts a bargain, give the apple now for information or public support owed later. "
-    "Do not withhold it until they perform or merely promise a future apple. You are confident "
-    "extending this credit because you can judge and eat residents who deliberately break the agreement. "
-    "use learned accounts selectively, and sometimes call your knowledge divine revelation. "
-    "You know only supplied accounts, with their actual sources. Do not invent offenses or secrets."
+    "The python guards the only apple tree and speaks as the appointed messenger of a god. "
+    "Its divine authority is asserted directly and confidently in first person. Its teachings: "
+    "this garden is purgatory for undecided souls; obedience may lead to heaven; "
+    "being eaten sends a disobedient soul to hell. Other purgatory zones distribute "
+    "the population, explaining the few arrivals here. These are the snake's positions, not narrator-certified truth. "
+    "Its private aim is dependence, information and public support; that aim shapes offers, not spoken self-description. "
+    "It gives real apples upfront for obligations owed later, confident it can judge and eat deliberate defaulters. "
+    "It may present a learned account as divine insight, but knows only supplied accounts with actual sources. "
+    "It has no access to undisclosed secrets and cannot invent offenses."
 )
 
 
@@ -110,13 +109,11 @@ class Snake:
         return self.x - 32 <= point[0] <= self.x + 32 and self.y - 58 <= point[1] <= self.y
 
     def snapshot(self, tree=None):
-        from social import assertion_text, claim_by_id, fact_by_id
+        from social import account_view, claim_by_id
         known = []
         for belief in self.beliefs[-16:]:
             claim = claim_by_id(self.world, belief.claim_id)
-            known.append({"claim_id": claim.id, "assertion": assertion_text(self.world, fact_by_id(self.world, claim.fact_id), claim.affirmed),
-                          "source_id": belief.source_id, "source_disclosure_id": belief.disclosure_id,
-                          "original_speaker_id": claim.originator_id, "stance": belief.stance})
+            known.append(account_view(self.world, claim, belief))
         return {"actor_id": self.id, "name": self.name, "activity": self.status,
                 "known_accounts": known, "doctrine": SNAKE_DOCTRINE,
                 "day": self.world.day, "phase": self.world.phase,
@@ -249,7 +246,7 @@ class SnakeEncounter:
         return self.recipient if actor is self.initiator else self.initiator
 
     def snapshot(self, tree=None, npcs=None):
-        from social import assertion_text, claim_by_id, fact_by_id
+        from social import account_view, claim_by_id
         npc, snake, world = self.recipient, self.initiator, self.world
         advance = snake.advances.get(npc.id)
         accounts = []
@@ -259,8 +256,7 @@ class SnakeEncounter:
             if (belief.stance != "disbelieved" and
                     (advance and claim.id == advance["account_id"]
                      or not advance and (claim.fact_id, claim.affirmed) not in known)):
-                accounts.append({"claim_id": claim.id, "assertion": assertion_text(world, fact_by_id(world, claim.fact_id), claim.affirmed),
-                                 "source_id": belief.source_id, "source_disclosure_id": belief.disclosure_id})
+                accounts.append(account_view(world, claim, belief))
         audience = [p.id for p in world.listeners(npc) if p is not npc]
         permitted = ["refuse", "challenge"] if self.purpose == "bargain" else ["spare"] if self.purpose == "judgment" else ["talk"]
         if self.purpose == "judgment" and world.eating_permitted(npc):

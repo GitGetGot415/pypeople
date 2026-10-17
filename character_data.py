@@ -16,6 +16,13 @@ DIRECTIONS = ("North", "North east", "East", "South east", "South", "South west"
 RANDOM_CONFIG_PATH = Path(__file__).resolve().parent / "assets" / "character_randomization.json"
 
 
+def description_parts(details):
+    """Separate the authored speaking brief from its blank-line-delimited memories."""
+    style, separator, recollections = details.strip().replace("\r\n", "\n").partition("\n\n")
+    # Unstructured custom descriptions cannot safely be classified as style alone.
+    return (style, recollections.strip()) if separator else ("", style)
+
+
 def parse_color(value):
     if not isinstance(value, str):
         raise ValueError("Colors must be hex text such as #FF0000.")

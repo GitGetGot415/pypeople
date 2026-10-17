@@ -178,6 +178,45 @@ def assertion_text(world, fact, affirmed=True):
     return f"{subject.name} did not {action[fact.kind]} {target.name} in the exchange at {phase_label(fact.phase)}."
 
 
+def account_content(world, fact, affirmed=True):
+    """Request prose has no record header; keep UI formatting in assertion_text()."""
+    summary = fact.summary
+    if fact.kind == "former_life":
+        from character_data import description_parts
+        _, marker, description = summary.partition("'s own description: ")
+        _, summary = description_parts(description if marker else summary)
+    if affirmed:
+        return summary
+    subject, target = world.actor_by_id(fact.subject_id), world.actor_by_id(fact.object_id)
+    action = {"apple_given": "give an apple to", "apple_refused": "refuse an apple to",
+              "promise_kept": "keep the apple promise to", "promise_broken": "miss the apple promise to"}
+    if fact.kind == "private_motive":
+        return f"{subject.name} does not have the motive described in this account: {summary}"
+    if fact.kind not in action:
+        return f"An account disputes: {summary}"
+    return f"{subject.name} did not {action[fact.kind]} {target.name} in that exchange."
+
+
+def fact_context(world, fact, affirmed=True):
+    date = {"day": fact.phase // 3 + 1, "phase": ("day", "evening", "night")[fact.phase % 3]}
+    return {"assertion": account_content(world, fact, affirmed), "kind": fact.kind,
+            "recorded_at": date, "event_time": None if fact.kind == "former_life" else date,
+            "time_scope": "remembered former life; event date unknown" if fact.kind == "former_life" else "garden"}
+
+
+def account_view(world, claim, belief):
+    return {**fact_context(world, fact_by_id(world, claim.fact_id), claim.affirmed),
+            "claim_id": claim.id, "subject_id": claim.subject_id,
+            "subject_name": world.actor_by_id(claim.subject_id).name,
+            "knowledge_owner_name": world.actor_by_id(belief.npc_id).name,
+            "original_speaker_id": claim.originator_id, "immediate_source_id": belief.source_id,
+            "original_speaker_name": world.actor_by_id(claim.originator_id).name,
+            "immediate_source_name": world.actor_by_id(belief.source_id).name,
+            "source_disclosure_id": belief.disclosure_id, "stance": belief.stance,
+            "learned_at": {"day": belief.phase // 3 + 1, "phase": ("day", "evening", "night")[belief.phase % 3]},
+            "basis": "firsthand" if belief.direct else "hearsay" if belief.source_id != belief.npc_id else "own assertion"}
+
+
 def add_fact(world, kind, subject, target, source_id, record, summary, witnesses):
     existing = next((fact for fact in world.facts if fact.source_id == source_id and fact.kind == kind), None)
     if existing is not None:
@@ -231,6 +270,7 @@ def selected_beliefs(npc, partner_id=None):
         claim = claim_by_id(world, belief.claim_id)
         fact = fact_by_id(world, claim.fact_id)
         return (bool(goal and goal.claim_id == claim.id),
+                fact.kind in ("eating", "judgment", "defiance"),
                 fact.kind in ("eating", "judgment", "pardon", "snake_claim", "defiance", "bargain", "endorsement", "arrival"),
                 partner_id in (fact.subject_id, fact.object_id, belief.source_id),
                 bool(goal and fact.subject_id == goal.third_npc_id),
@@ -261,7 +301,7 @@ def prepare_information(conversation):
             fact = fact_by_id(world, claim.fact_id)
             options[claim.id] = ClaimOption(claim.id, fact.id, fact.subject_id, claim.originator_id,
                                            claim.affirmed, claim.parent_claim_id, None, fact.kind,
-                                           assertion_text(world, fact, claim.affirmed))
+                                           account_content(world, fact, claim.affirmed))
         if can_deceive(npc):
             bases = [claim_by_id(world, belief.claim_id) for belief in selected
                      if belief.stance == "believed" and claim_by_id(world, belief.claim_id).affirmed]
@@ -269,7 +309,7 @@ def prepare_information(conversation):
                 fact = fact_by_id(world, base.fact_id)
                 option_id = f"{conversation.id}:deny_{role}_{index}"
                 options[option_id] = ClaimOption(option_id, fact.id, fact.subject_id, npc.id, False,
-                                                base.id, npc.id, fact.kind, assertion_text(world, fact, False))
+                                                base.id, npc.id, fact.kind, account_content(world, fact, False))
                 allowed[role].append(option_id)
         if npc.goal and npc.goal.kind == "sabotage_relationship" and npc.goal.status == "active":
             allowed[role].sort(key=lambda claim_id: options[claim_id].creator_id is None)
@@ -286,7 +326,7 @@ def prepare_information(conversation):
          for role, npc in pair.items()}, allowed, conversation.focus_claim_id)
 
 
-def information_views(context):
+def information_views(context, world):
     """Only speaker-owned knowledge reaches prompts; engine truth stays out of them."""
     if context is None:
         return {}
@@ -300,11 +340,17 @@ def information_views(context):
         for claim_id in context.allowed[role]:
             option = options[claim_id]
             belief = beliefs.get(claim_id)
-            view = {"claim_id": claim_id, "subject_id": option.subject_id, "assertion": option.assertion,
+            view = {**fact_context(world, fact_by_id(world, option.fact_id), option.affirmed),
+                    "claim_id": claim_id, "subject_id": option.subject_id,
+                    "subject_name": world.actor_by_id(option.subject_id).name,
+                    "knowledge_owner_name": world.actor_by_id(npc_id).name,
                     "original_speaker_id": option.originator_id,
+                    "original_speaker_name": world.actor_by_id(option.originator_id).name,
                     "permitted_use": "deliberate denial; private to this speaker" if option.creator_id else "known account"}
             if belief:
                 view.update(stance=belief.stance, immediate_source_id=belief.source_id,
+                            immediate_source_name=world.actor_by_id(belief.source_id).name,
+                            learned_at={"day": belief.phase // 3 + 1, "phase": ("day", "evening", "night")[belief.phase % 3]},
                             source_disclosure_id=belief.disclosure_id,
                             basis="firsthand" if belief.direct else "hearsay" if belief.source_id != npc_id else "own assertion",
                             already_assessed=any(b.assessed and options[b.claim_id].fact_id == option.fact_id
@@ -880,12 +926,7 @@ def private_context(npc, partner_id=None):
     if world:
         for belief in selected_beliefs(npc, partner_id):
             claim = claim_by_id(world, belief.claim_id)
-            fact = fact_by_id(world, claim.fact_id)
-            known.append({"claim_id": claim.id, "subject_id": claim.subject_id,
-                          "assertion": assertion_text(world, fact, claim.affirmed), "stance": belief.stance,
-                          "original_speaker_id": claim.originator_id, "immediate_source_id": belief.source_id,
-                          "source_disclosure_id": belief.disclosure_id, "basis": "firsthand" if belief.direct else "hearsay",
-                          "already_assessed": belief.assessed})
+            known.append({**account_view(world, claim, belief), "already_assessed": belief.assessed})
     goal_view = asdict(npc.goal) if npc.goal else None
     if goal_view:
         goal_view.pop("baseline_opinion")
@@ -960,5 +1001,5 @@ def learn_account(world, speaker, listener, claim_id, record, turn, stance, *, p
         existing.source_id, existing.disclosure_id, existing.stance = speaker.id, disclosure.id, stance
     if listener is not world.snake:
         remember(listener, speaker, event, "heard_claim",
-                 f"{speaker.name}'s account, originally from {world.actor_by_id(claim.originator_id).name}: {assertion_text(world, fact, claim.affirmed)}", 0)
+                 f"{speaker.name}'s account, originally from {world.actor_by_id(claim.originator_id).name}: {account_content(world, fact, claim.affirmed)}", 0)
     return disclosure
