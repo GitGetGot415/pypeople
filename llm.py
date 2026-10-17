@@ -8,7 +8,9 @@ from google import genai
 from google.genai import errors, types
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-from constants import DIALOGUE_REPAIR_WORD_LIMIT, SNAKE_TURN_COUNT
+from constants import (DIALOGUE_CORRECTION_PART_MAX_CHARACTERS, DIALOGUE_MAX_PARTS,
+                       DIALOGUE_PART_MAX_CHARACTERS, DIALOGUE_PARTS_PER_TURN,
+                       DIALOGUE_REPAIR_WORD_LIMIT, SNAKE_TURN_COUNT)
 from ollama_manager import DEFAULT_OLLAMA_MODEL
 from social import validate_agreements, validate_information
 from purgatory import Attitudes
@@ -82,11 +84,14 @@ class ConversationPart(BaseModel):
         return self
 
 
-class ConversationTurn(BaseModel):
+class DialoguePartsResponse(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
+    parts: list[ConversationPart] = Field(min_length=1, max_length=DIALOGUE_MAX_PARTS)
+
+
+class ConversationTurn(DialoguePartsResponse):
     speaker: Literal["initiator", "recipient"]
-    parts: list[ConversationPart] = Field(min_length=1, max_length=8)
 
     @model_validator(mode="before")
     @classmethod
@@ -179,8 +184,7 @@ class ConversationResponse(BaseModel):
         return self
 
 
-class DialogueRepairResponse(BaseModel):
-    model_config = ConfigDict(strict=True, extra="forbid")
+class DialogueRepairResponse(DialoguePartsResponse):
     parts: list[ConversationPart] = Field(min_length=1, max_length=1)
 
 
@@ -324,13 +328,13 @@ CONVERSATION_SCHEMA = {
                     "parts": {
                         "type": "array",
                         "minItems": 1,
-                        "maxItems": 8,
+                        "maxItems": DIALOGUE_MAX_PARTS,
                         "description": "Consecutive sections of this single turn for display and emotion changes. Never include this speaker's later turns.",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "text": {
-                                    "type": "string", "minLength": 1, "maxLength": 240,
+                                    "type": "string", "minLength": 1, "maxLength": DIALOGUE_PART_MAX_CHARACTERS,
                                     "description": "Words spoken to the other NPC, never just a speaker name or role label.",
                                 },
                                 "emotion": EMOTION_SCHEMA,
@@ -549,7 +553,7 @@ Use end_conversation false when you actually choose to continue the exchange,
 including when a clarification question is necessary."""
 
 
-CONVERSATION_INSTRUCTION = WORLD_INSTRUCTION + """Write a natural face-to-face conversation between world_state.initiator and
+CONVERSATION_INSTRUCTION = WORLD_INSTRUCTION + f"""Write a natural face-to-face conversation between world_state.initiator and
 recipient. They are already together; address each other, not the player.
 Use each speaker's own speaking_style, opinions, knowledge, and immediate
 objective. Personality and goals shape wording without guaranteeing cooperation.
@@ -558,7 +562,7 @@ needed to resolve the current concern. Keep each turn to one or two short senten
 Use one part per turn unless the speaker's emotion actually changes. Each turn is one stretch
 of speech before the partner replies. Its parts divide that stretch for display
 and emotion changes; later answers belong in later turns. Use short spoken
-sentences, at most 240 characters per part, with emotion for that part's speaker.
+sentences, at most {DIALOGUE_PART_MAX_CHARACTERS} characters per part, with emotion for that part's speaker.
 Text contains spoken words; speaker identifies the role. Keep identities and
 numbered names consistent. Let the exchange develop and end naturally.
 Return both participants' directional opinions of their partner, with the exact
@@ -866,6 +870,15 @@ def structured_schema(model):
     return expand(schema)
 
 
+def _dialogue_parts_schema(*, correction=False):
+    """Use the same display-part limits for resident and snake speech."""
+    parts = deepcopy(CONVERSATION_SCHEMA["properties"]["turns"]["items"]["properties"]["parts"])
+    parts["maxItems"] = 1 if correction else DIALOGUE_PARTS_PER_TURN
+    parts["items"]["properties"]["text"]["maxLength"] = (
+        DIALOGUE_CORRECTION_PART_MAX_CHARACTERS if correction else DIALOGUE_PART_MAX_CHARACTERS)
+    return parts
+
+
 def validate_snake_decision(result, snapshot):
     if result.interaction_id != snapshot["interaction_id"] or result.decision not in snapshot["permitted_decisions"]:
         raise ValueError("Use this encounter's identity and a locally permitted decision.")
@@ -971,14 +984,18 @@ def response_contract(snapshot, *, correction=False):
             "to your listener. Use the supplied subject_relation to keep that person's life with its owner. "
             "Never ask for an account that has already been told or retell the partner's account. "
             "Keep internal mechanics, timers, IDs and task directions out of speech. "
-            "Use one or two short sentences with the speaker's own emotion. Return only parts.\n"
+            "Use one or two short sentences with the speaker's own emotion. Split longer speech into "
+            "consecutive display parts, retaining the complete current task and each part's emotion. "
+            "Later replies belong in later turns. Return only parts.\n"
             + snapshot["_speaker_direction"] + "\n" + EMOTION_INSTRUCTION
             + f"\nCurrent speaker: {snapshot['speaker']['name']}. Listener: {snapshot['listener']['name']}. "
             + "The action is already chosen; personality changes its wording, not whether it happens. "
             "Write the words that perform the task, without reconsidering the choice or quoting the directions. "
             + "Current speech task: " + snapshot["task"]
         )
-        return instruction, structured_schema(DialogueRepairResponse), DialogueRepairResponse
+        schema = structured_schema(DialoguePartsResponse)
+        schema["properties"]["parts"] = _dialogue_parts_schema(correction=correction)
+        return instruction, schema, DialoguePartsResponse
     if kind == "dialogue_repair":
         instruction = (
             SPEAKING_BRIEF + "Write only speaker's next spoken reply to listener in this NPC conversation. Return parts with "
@@ -1084,9 +1101,7 @@ def response_contract(snapshot, *, correction=False):
                             "Every structured effect must refer to one of these turns.")
         else:
             properties["turns"] = {**properties["turns"], "maxItems": 6}
-        parts = properties["turns"]["items"]["properties"]["parts"]
-        parts["maxItems"] = 1 if correction else 2
-        parts["items"]["properties"]["text"]["maxLength"] = 160 if correction else 240
+        properties["turns"]["items"]["properties"]["parts"] = _dialogue_parts_schema(correction=correction)
         turn_limit = properties["turns"]["maxItems"]
         history = snapshot.get("shared_history")
         if history:
@@ -1332,7 +1347,7 @@ def _has_question(text):
 
 def _validate_response(raw, snapshot, model):
     result = model.model_validate_json(raw)
-    if isinstance(result, DialogueRepairResponse):
+    if isinstance(result, DialoguePartsResponse):
         if snapshot.get("request_kind") == "conversation_closing" and any(
                 _has_question(part.text) for part in result.parts):
             raise ValueError("Answer the last question and close without asking another question.")
@@ -1877,7 +1892,7 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
             try:
                 return request(state, correction=correction)
             except InvalidResponseError as retry_error:
-                if isinstance(retry_error.response, DialogueRepairResponse) and retry_error.repeated_turns:
+                if isinstance(retry_error.response, DialoguePartsResponse) and retry_error.repeated_turns:
                     try:
                         report("Recovery: removing duplicate speech")
                         candidate = retry_error.response.model_copy(deep=True)

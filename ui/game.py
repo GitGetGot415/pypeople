@@ -1,5 +1,5 @@
 import pygame
-from constants import EMOTION_THRESHOLD, INK, MUTED, PAPER, WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH
+from constants import DIALOGUE_PAGE_LINES, EMOTION_THRESHOLD, INK, MUTED, PAPER, WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH
 
 from .button import Button
 from .event_feed import EventFeed
@@ -395,7 +395,7 @@ class GameScreen:
         if self._conversation_page_turns is not conversation.turns:
             # Model parts carry distinct reactions; oversized parts are split
             # again to fit the actual font and dialogue box without scrolling.
-            max_lines = max(1, min(3, rect.height // app.font.get_linesize()))
+            max_lines = max(1, min(DIALOGUE_PAGE_LINES, rect.height // app.font.get_linesize()))
             self.conversation_pages = [
                 (turn, part, text)
                 for turn in conversation.turns

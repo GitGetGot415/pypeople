@@ -5,7 +5,7 @@ from constants import ACCENT, EMOTION_THRESHOLD, GRASS, INK, MUTED, PAPER
 from social import assertion_text, claim_by_id, fact_by_id, phase_label, selected_beliefs
 
 from .button import Button
-from .text import wrap_text
+from .text import paginate_text, wrap_text
 from .world import snake_artwork
 
 
@@ -76,20 +76,21 @@ class StatsScreen:
 
         def message(speaker, text, emotion=None):
             npc = next((npc for npc in app.simulation.actors if npc.name == speaker), None)
-            top = height()
             indent = 112 if npc is not None else 0
-            add(speaker, color=ACCENT, indent=indent)
-            add(text, indent=indent)
-            if npc is not None:
-                visible = emotion is not None and emotion["intensity"] >= EMOTION_THRESHOLD
-                expression = emotion["name"] if visible else None
-                label = (expression or "neutral").title() if emotion is not None else "Not recorded"
-                labels = wrap_text(label, app.small_font, 100)
-                self.dialogue_portraits.append((top, npc, expression, labels))
-                portrait_height = 94 + len(labels) * app.small_font.get_linesize()
-                while height() - top < portrait_height:
-                    gap()
-            gap()
+            for page in paginate_text(text, app.font, self.detail_rect.width - 20 - indent):
+                top = height()
+                add(speaker, color=ACCENT, indent=indent)
+                add(page, indent=indent)
+                if npc is not None:
+                    visible = emotion is not None and emotion["intensity"] >= EMOTION_THRESHOLD
+                    expression = emotion["name"] if visible else None
+                    label = (expression or "neutral").title() if emotion is not None else "Not recorded"
+                    labels = wrap_text(label, app.small_font, 100)
+                    self.dialogue_portraits.append((top, npc, expression, labels))
+                    portrait_height = 94 + len(labels) * app.small_font.get_linesize()
+                    while height() - top < portrait_height:
+                        gap()
+                gap()
 
         if self.tab == "Conversations":
             record = self.selected_conversation

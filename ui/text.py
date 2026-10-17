@@ -2,7 +2,7 @@ import re
 
 import pygame
 
-from constants import INK
+from constants import DIALOGUE_PAGE_LINES, DIALOGUE_PART_MAX_CHARACTERS, INK
 
 
 def draw_centered_text(surface, text, font, y, color=INK):
@@ -33,13 +33,16 @@ def wrap_text(text, font, width):
     return lines
 
 
-def paginate_text(text, font, width, max_lines):
+def paginate_text(text, font, width, max_lines=DIALOGUE_PAGE_LINES):
     """Fit dialogue pages, preferring sentence breaks and preserving all words."""
+    def fits(text):
+        return len(text) <= DIALOGUE_PART_MAX_CHARACTERS and len(wrap_text(text, font, width)) <= max_lines
+
     pages = []
     page = ""
     for sentence in re.split(r"(?<=[.!?])\s+", " ".join(text.split())):
         candidate = f"{page} {sentence}" if page else sentence
-        if len(wrap_text(candidate, font, width)) <= max_lines:
+        if fits(candidate):
             page = candidate
             continue
         if page:
@@ -47,7 +50,7 @@ def paginate_text(text, font, width, max_lines):
             page = ""
         for word in sentence.split():
             candidate = f"{page} {word}" if page else word
-            if len(wrap_text(candidate, font, width)) <= max_lines:
+            if fits(candidate):
                 page = candidate
                 continue
             if page:
@@ -55,7 +58,7 @@ def paginate_text(text, font, width, max_lines):
                 page = ""
             # A very long unbroken word also needs to fit a single page.
             for char in word:
-                if page and len(wrap_text(page + char, font, width)) > max_lines:
+                if page and not fits(page + char):
                     pages.append(page)
                     page = ""
                 page += char
