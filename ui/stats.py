@@ -154,7 +154,7 @@ class StatsScreen:
             add("Known accounts (observer inspection)", app.heading_font)
             for account in npc.snapshot()["known_accounts"]:
                 add(account["assertion"], app.small_font)
-                add(f"Source: {app.simulation.actor_by_id(account['source_id']).name}; original: {app.simulation.actor_by_id(account['original_speaker_id']).name}", app.small_font, MUTED)
+                add(f"Source: {account['immediate_source_name']}; original: {account['original_speaker_name']}", app.small_font, MUTED)
             return lines
         if self.tab == "Statistics":
             add("Description", app.heading_font)
