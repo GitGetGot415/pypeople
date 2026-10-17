@@ -292,6 +292,7 @@ class SnakeEncounter:
 
     def set_response(self, response):
         from llm import validate_snake_response
+        from social import claim_by_id
         if not self.accepts_response or not self.request_context:
             return
         validate_snake_response(response, self.request_context)
@@ -299,10 +300,16 @@ class SnakeEncounter:
         if (self.request_context["roster_revision"] != world.roster_revision
                 or self.request_context["resident_revision"] != npc.command_revision):
             raise ValueError("The residents changed while this exchange was being prepared. Retry the encounter.")
+        relevant_facts = {claim_by_id(world, claim_id).fact_id
+                          for claim_id in (response.account_id, response.snake_account_id) if claim_id}
         for key, actor in (("_resident_knowledge", npc), ("_snake_knowledge", self.initiator)):
-            before = [tuple(b) for b in self.request_context[key]]
-            current = [(b.claim_id, b.stance, b.source_id, b.disclosure_id) for b in actor.beliefs]
-            if before != current:
+            before = {b[0]: tuple(b) for b in self.request_context[key]}
+            current = {b.claim_id: (b.claim_id, b.stance, b.source_id, b.disclosure_id) for b in actor.beliefs}
+            # Observing an unrelated new event does not invalidate this reply.
+            # Changed sources/stances or new evidence about a chosen account do.
+            if (any(current.get(claim_id) != belief for claim_id, belief in before.items())
+                    or any(b.claim_id not in before and claim_by_id(world, b.claim_id).fact_id in relevant_facts
+                           for b in actor.beliefs)):
                 raise ValueError("An account changed while this exchange was being prepared. Retry the encounter.")
         if npc.attitudes != self.request_context["resident"]["private_context"]["snake_attitudes"]:
             raise ValueError("The resident's attitudes changed during generation. Retry the encounter.")

@@ -741,11 +741,23 @@ def validate_live_agreements(conversation, response):
         raise ValueError("The conversation participants are no longer available.")
     if conversation.context_references != conversation_references(conversation):
         raise ValueError("An objective or promise changed while the reply was being generated. Please try again.")
-    current_information = prepare_information(conversation)
-    if ((asdict(current_information) if current_information else None)
-            != (asdict(conversation.information_context) if conversation.information_context else None)):
-        raise ValueError("A speaker's knowledge or opinion changed during generation. Please try again.")
-    validate_information(response, conversation.information_context)
+    context = conversation.information_context
+    if context is not None:
+        # Keep the original permitted choices. Reselecting them after a nearby
+        # event rejected valid replies just because new accounts ranked higher.
+        relevant_facts = {option.fact_id for option in context.options
+                          if any(option.id in ids for ids in context.allowed.values())}
+        for role, npc in (("initiator", pair[0]), ("recipient", pair[1])):
+            before = {belief.claim_id: belief for belief in context.beliefs[role]}
+            current = {belief.claim_id: belief for belief in npc.beliefs}
+            changed = any(current.get(claim_id) != belief for claim_id, belief in before.items())
+            related = any(b.claim_id not in before and claim_by_id(world, b.claim_id).fact_id in relevant_facts
+                          for b in npc.beliefs)
+            opinions = {other.id: npc.opinions.get(other.name, {}).get("opinion", 0)
+                        for other in world.actors if other is not npc}
+            if changed or related or opinions != context.opinions[role] or can_deceive(npc) != context.can_lie[role]:
+                raise ValueError("A speaker's knowledge or opinion changed during generation. Please try again.")
+    validate_information(response, context)
     validate_agreements(response.accepted_proposals, [asdict(p) for p in conversation.proposals],
                         response.turns, pair[0].id, pair[1].id)
     pending = [(p.promisor_id, p.recipient_id) for p in pending_promises(world)]

@@ -602,7 +602,10 @@ DIALOGUE_VARIETY_INSTRUCTION = """Every turn must respond to the partner's lates
 forward, using that speaker's own personality and objective. Earlier dialogue is
 context, never a script to copy. Do not reuse substantial passages from earlier
 conversations, repeat a sentence within this exchange, or give both speakers the
-same reply. If nothing remains to discuss, end naturally instead of looping."""
+same reply. Paraphrase supplied account assertions in the speaker's own words;
+they are factual context, not dialogue to recite. Acknowledge a point briefly
+instead of repeating the partner's explanation. If nothing remains to discuss,
+end naturally instead of looping."""
 
 
 def character_context(character):
@@ -711,8 +714,10 @@ def validate_snake_response(result, snapshot):
             raise ValueError("Alternate snake and resident speech, beginning with the snake.")
     accounts = {a["claim_id"] for a in snapshot["offering_accounts"]}
     private = result.decision in ("secret", "advance_secret")
-    if (private and result.account_id not in accounts) or (not private and result.account_id):
-        raise ValueError("A private offering must select exactly one permitted new account.")
+    if private and result.account_id not in accounts:
+        raise ValueError("For secret or advance_secret, account_id must be one exact claim_id from offering_accounts.")
+    if not private and result.account_id:
+        raise ValueError("For this decision, account_id must be an empty string; only secret or advance_secret selects an account.")
     advance = snapshot["advance"]
     if result.decision in ("secret", "endorsement") and (
             not advance or result.decision != advance["offering"]
@@ -765,18 +770,35 @@ def response_contract(snapshot, *, correction=False):
             "actual provenance even if the snake calls it revelation; account_stance is the resident's "
             "interpretation. Otherwise use an empty snake_account_id. account_id is empty unless secret "
             "or advance_secret. Only secret actually discloses that private account. "
+            "Here an account means a story or recollection, never a login or financial account. "
+            "IDs are internal references: never mention account IDs or other JSON fields in speech. "
             "attitudes may be null; any changes need the current exchange as evidence, independent reasons, "
             "and at most six trust points. Generate all speech, with emotion on each part.\n\n"
             + DIALOGUE_VARIETY_INSTRUCTION
         )
         schema = structured_schema(SnakeResponse)
-        schema["properties"]["decision"]["enum"] = snapshot["permitted_decisions"]
-        schema["properties"]["interaction_id"] = {"type": "string", "enum": [snapshot["interaction_id"]]}
-        offering_ids = [a["claim_id"] for a in snapshot["offering_accounts"]] if {"secret", "advance_secret"} & set(snapshot["permitted_decisions"]) else []
-        schema["properties"]["account_id"] = {"type": "string", "enum": ["", *offering_ids],
-            "description": "Empty unless decision is secret or advance_secret; then select one offered account ID."}
-        schema["properties"]["snake_account_id"] = {"type": "string", "enum": ["", *[a["claim_id"] for a in snapshot["snake"]["known_accounts"]]]}
-        return instruction, schema, SnakeResponse
+        properties = schema["properties"]
+        properties["interaction_id"] = {"type": "string", "enum": [snapshot["interaction_id"]]}
+        properties["snake_account_id"] = {"type": "string", "enum": ["", *[a["claim_id"] for a in snapshot["snake"]["known_accounts"]]]}
+        properties["turns"]["items"]["properties"]["parts"]["maxItems"] = 1 if correction else 2
+        if correction:
+            properties["turns"].update(minItems=4, maxItems=4)
+        # Choose the outcome and its account before writing speech. Separate
+        # branches enforce their relationship in both providers' JSON grammars.
+        properties = {key: properties[key] for key in (
+            "interaction_id", "decision", "account_id", "snake_account_id", "account_stance", "attitudes", "turns")}
+        branches = []
+        for private in (True, False):
+            decisions = [decision for decision in snapshot["permitted_decisions"]
+                         if (decision in ("secret", "advance_secret")) == private]
+            if not decisions:
+                continue
+            account_ids = [a["claim_id"] for a in snapshot["offering_accounts"]] if private else [""]
+            branches.append({**schema, "properties": {**properties,
+                "decision": {"type": "string", "enum": decisions},
+                "account_id": {"type": "string", "enum": account_ids},
+            }})
+        return instruction, {"anyOf": branches} if len(branches) > 1 else branches[0], SnakeResponse
     if snapshot.get("request_kind") == "intent":
         targets = [other["npc_name"] for other in snapshot.get("other_npcs", []) if other.get("available_to_talk", True)]
         schema = {**INTENT_SCHEMA, "properties": {**INTENT_SCHEMA["properties"], "target": {"type": "string", "enum": ["", *targets]}}}
@@ -1154,7 +1176,7 @@ def _request_ollama(message, snapshot, model=OLLAMA_MODEL, *, correction=""):
         "num_ctx": 16384 if snapshot.get("request_kind") in ("conversation", "snake_encounter") else 8192,
         "num_predict": -1,
     }
-    if snapshot.get("request_kind") == "conversation":
+    if snapshot.get("request_kind") in ("conversation", "snake_encounter"):
         # Greedy decoding encouraged small models to replay the supplied history.
         # Corrections need fresh wording too; intent routing stays deterministic.
         options["temperature"] = 0.7
