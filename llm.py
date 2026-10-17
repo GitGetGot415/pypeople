@@ -175,6 +175,11 @@ class ConversationResponse(BaseModel):
         return self
 
 
+class DialogueRepairResponse(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    parts: list[ConversationPart] = Field(min_length=1, max_length=1)
+
+
 EMOTION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -640,7 +645,7 @@ def character_context(character):
 
 def world_context(snapshot, *, correction=False):
     """Supply relevant state without exposing other NPCs' private knowledge."""
-    if snapshot.get("request_kind") in ("snake_encounter", "snake_player"):
+    if snapshot.get("request_kind") in ("snake_encounter", "snake_player", "dialogue_repair"):
         return {k: v for k, v in snapshot.items() if not k.startswith("_")}
     conversation = snapshot.get("request_kind") == "conversation"
     info = snapshot.get("_information_validation") or {}
@@ -816,6 +821,19 @@ def disclosure_schema(info, turn_limit, *, opening=False):
 
 def response_contract(snapshot, *, correction=False):
     kind = snapshot.get("request_kind")
+    if kind == "dialogue_repair":
+        instruction = (
+            "Write only speaker's next spoken reply to listener in this NPC conversation. Return parts with "
+            "one short sentence and its emotion. Use speaker's own personality and opinion of listener. "
+            "preceding_turns are earlier speech, not a script to copy. Write a new reaction, question or "
+            "closing without recapping the opening account. Keep the supplied stance on heard accounts. "
+            "Do not invent events, make agreements, disclose private information, speak for the listener, "
+            "or describe an item transfer. Return only JSON."
+        )
+        instruction += f"\nUse at most {snapshot['word_limit']} words."
+        schema = structured_schema(DialogueRepairResponse)
+        schema["properties"]["parts"]["items"]["properties"]["text"]["maxLength"] = 320
+        return instruction, schema, DialogueRepairResponse
     if kind in ("snake_encounter", "snake_player"):
         from snake import SNAKE_DOCTRINE
         instruction = WORLD_INSTRUCTION + SNAKE_DOCTRINE
@@ -1086,36 +1104,46 @@ def validate_dialogue_repetition(turns, recent_dialogue=(), *, factual_context=(
     previous = {phrase for entry in recent_dialogue for _, text in entry["excerpts"]
                 for phrase in _speech_phrases(text)}
     factual = {phrase for text in factual_context for phrase in _speech_phrases(text)}
-    current, signatures = {}, []
-    for turn in turns:
+    current, signatures, repeated = {}, [], set()
+    copied = False
+    for index, turn in enumerate(turns):
         # Joining parts catches loops split across multiple display pages too.
         phrases = list(_speech_phrases(turn.text))
         signature = tuple(_speech_words(turn.text))
         if (len(phrases) != len(set(phrases))
                 or len(signature) >= 12 and signature in signatures):
-            raise ValueError("Dialogue repeats a substantial passage within this exchange. "
-                             "Write distinct replies that advance the conversation instead of looping.")
+            repeated.add(index)
         for phrase in phrases:
             # Two speakers can refer to the same recorded fact while answering
             # each other. Repeating their prose or cycling through it is a loop.
             if phrase in current and (phrase not in factual or current[phrase] >= 2):
-                raise ValueError("Dialogue repeats a substantial passage within this exchange. "
-                                 "Write distinct replies that advance the conversation instead of looping.")
+                repeated.add(index)
             if phrase in previous and phrase not in factual:
-                raise ValueError("Dialogue copies a substantial passage from a previous conversation. "
-                                 "Continue from its outcome with fresh speech instead of replaying its lines.")
+                repeated.add(index)
+                copied = True
             current[phrase] = current.get(phrase, 0) + 1
         signatures.append(signature)
     if sum(map(len, signatures)) >= 24 and any(
             tuple(signatures) == tuple(tuple(_speech_words(text)) for _, text in entry["excerpts"])
             for entry in recent_dialogue):
-        raise ValueError("Dialogue replays a previous conversation. Write a new exchange about the current concern.")
+        repeated.update(range(len(turns)))
+        copied = True
+    if repeated:
+        reason = ("Dialogue copies a substantial passage from a previous conversation." if copied else
+                  "Dialogue repeats a substantial passage within this exchange.")
+        indices = sorted(repeated)
+        raise DialogueRepetitionError(
+            f"{reason} Rewrite repeated turns {', '.join(map(str, indices))} (zero-based) with distinct replies.", indices,
+        )
 
 
 def validate_response(raw, snapshot):
     model = response_contract(snapshot)[2]
     try:
         return _validate_response(raw, snapshot, model)
+    except DialogueRepetitionError as exc:
+        raise InvalidResponseError(str(exc), response=model.model_validate_json(raw),
+                                   repeated_turns=exc.turn_indices) from None
     except ValidationError as exc:
         issue = exc.errors(include_input=False, include_url=False)[0]
         field = issue["loc"][0] if issue["loc"] and issue["loc"][0] in model.model_fields else "response"
@@ -1129,6 +1157,8 @@ def validate_response(raw, snapshot):
 
 def _validate_response(raw, snapshot, model):
     result = model.model_validate_json(raw)
+    if isinstance(result, DialogueRepairResponse):
+        return result
     if isinstance(result, SnakeResponse):
         validate_dialogue_repetition(result.turns)
         validate_snake_response(result, snapshot)
@@ -1184,7 +1214,6 @@ def _validate_response(raw, snapshot, model):
         facts = [option["assertion"] for option in (snapshot.get("_information_validation") or {}).get("options", [])
                  if option["id"] in disclosed]
         facts.extend(event["text"] for event in history.get("confirmed_events", []))
-        validate_dialogue_repetition(result.turns, history.get("recent_dialogue", []), factual_context=facts)
         if snapshot.get("purpose") == "food_request":
             outcome = snapshot["food_request"]["outcome"]
             if (result.accepted_proposals or len(result.turns) != 2 or result.food_outcome != outcome
@@ -1198,6 +1227,7 @@ def _validate_response(raw, snapshot, model):
         ):
             if entry.person.strip().casefold() != partner["npc_name"].casefold():
                 raise ValueError("Conversation opinions must refer to the other participant.")
+        validate_dialogue_repetition(result.turns, history.get("recent_dialogue", []), factual_context=facts)
     return result
 
 
@@ -1207,6 +1237,17 @@ class RequestError(Exception):
 
 class InvalidResponseError(ValueError):
     """An application-authored validation reason that can be sent back for correction."""
+
+    def __init__(self, message, *, response=None, repeated_turns=()):
+        super().__init__(message)
+        self.response = response
+        self.repeated_turns = tuple(repeated_turns)
+
+
+class DialogueRepetitionError(ValueError):
+    def __init__(self, message, turn_indices):
+        super().__init__(message)
+        self.turn_indices = tuple(turn_indices)
 
 
 def _api_error_message(exc):
@@ -1298,7 +1339,7 @@ def _request_ollama(message, snapshot, model=OLLAMA_MODEL, *, correction=""):
         "num_ctx": 16384 if snapshot.get("request_kind") in ("conversation", "snake_encounter") else 8192,
         "num_predict": -1,
     }
-    if snapshot.get("request_kind") in ("conversation", "snake_encounter"):
+    if snapshot.get("request_kind") in ("conversation", "snake_encounter", "dialogue_repair"):
         # Greedy decoding encouraged small models to replay the supplied history.
         # Corrections need fresh wording too; intent routing stays deterministic.
         options["temperature"] = 0.7
@@ -1354,6 +1395,48 @@ def _request_ollama(message, snapshot, model=OLLAMA_MODEL, *, correction=""):
         raise RequestError("Ollama returned an invalid action or reply. Try again.") from None
 
 
+def _deduplicate_dialogue_parts(turn):
+    """Keep generated words while dropping exact repeated parts or long sentences."""
+    parts, seen_parts, seen_sentences = [], set(), set()
+    for part in turn.parts:
+        signature = tuple(_speech_words(part.text))
+        if signature in seen_parts:
+            continue
+        seen_parts.add(signature)
+        sentences = []
+        for sentence in re.split(r"(?<=[.!?])\s+", part.text.strip()):
+            signature = tuple(_speech_words(sentence))
+            if len(signature) >= 12:
+                if signature in seen_sentences:
+                    continue
+                seen_sentences.add(signature)
+            sentences.append(sentence)
+        if sentences:
+            parts.append(part.model_copy(update={"text": " ".join(sentences)}))
+    return parts
+
+
+def _dialogue_repair_snapshot(snapshot, response, index):
+    context = world_context(snapshot, correction=True)
+    role = response.turns[index].speaker
+    speaker = context[role]
+    listener = context["recipient" if role == "initiator" else "initiator"]
+    options = {option["id"]: option for option in (snapshot.get("_information_validation") or {}).get("options", [])}
+    accounts = [{**entry.model_dump(), "assertion": options[entry.claim_id]["assertion"],
+                 "original_speaker_id": options[entry.claim_id]["originator_id"]}
+                for entry in response.disclosures]
+    heard = [account for account in accounts if account["turn"] < index
+             and response.turns[account["turn"]].speaker != role]
+    return {"request_kind": "dialogue_repair", "turn_index": index,
+            "speaker": {"name": speaker["npc_name"], "style": speaker["character"]["Details"].split("\n\n", 1)[0],
+                        "opinion_of_listener": speaker["character"].get("Opinions", {}).get(listener["npc_name"]),
+                        "inventory": speaker["inventory"]},
+            "listener": listener["npc_name"], "environment": context["environment"],
+            "preceding_turns": [{"name": snapshot[turn.speaker]["npc_name"], "text": turn.text}
+                                for turn in response.turns[max(0, index - 2):index]],
+            "heard_accounts": heard, "word_limit": 10}
+
+
 def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAMA_MODEL):
     """Called only by a worker. Does not read or mutate the world or interface."""
     if provider == "gemini":
@@ -1392,9 +1475,38 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
             try:
                 return request(state, correction=correction)
             except InvalidResponseError as retry_error:
+                if isinstance(retry_error.response, ConversationResponse) and retry_error.repeated_turns:
+                    # All structured effects passed validation. Repair only the
+                    # offending speech, keeping every other field and turn fixed.
+                    try:
+                        candidate = retry_error.response.model_copy(deep=True)
+                        for index in retry_error.repeated_turns:
+                            candidate.turns[index].parts = _deduplicate_dialogue_parts(candidate.turns[index])
+                        try:
+                            return validate_response(candidate.model_dump_json(), state)
+                        except InvalidResponseError as remaining:
+                            if not remaining.repeated_turns:
+                                raise
+                            indices = remaining.repeated_turns
+                        # Never paraphrase speech that authorizes a social effect.
+                        protected = {entry.turn for entry in (*candidate.disclosures, *candidate.third_party_opinions,
+                                                              *candidate.leverage)}
+                        protected.update(index for agreement in candidate.accepted_proposals
+                                         for index in (agreement.offer_turn, agreement.accept_turn))
+                        if state.get("purpose") == "food_request":
+                            protected.update(range(len(candidate.turns)))
+                        if protected.intersection(indices):
+                            required = ", ".join(map(str, sorted(protected.intersection(indices))))
+                            raise InvalidResponseError(f"Required action or disclosure speech still repeats in turns {required}; retry the exchange.")
+                        for index in indices:
+                            repair_state = _dialogue_repair_snapshot(state, candidate, index)
+                            candidate.turns[index].parts = request(repair_state).parts
+                        return validate_response(candidate.model_dump_json(), state)
+                    except InvalidResponseError as repair_error:
+                        raise RequestError(f"The model's dialogue still failed validation after targeted repair: {repair_error}") from None
                 raise RequestError(f"The model's reply failed validation after correction: {retry_error}") from None
 
-    if snapshot.get("request_kind") not in ("conversation", "intent", "snake_encounter", "snake_player"):
+    if snapshot.get("request_kind") not in ("conversation", "intent", "snake_encounter", "snake_player", "dialogue_repair"):
         intent = validated_request(intent_snapshot(snapshot))
         # Keep the interpretation with this request for main-thread revalidation.
         snapshot["request_intent"] = intent.model_dump()
