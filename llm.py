@@ -612,6 +612,27 @@ instead of repeating the partner's explanation. If nothing remains to discuss,
 end naturally instead of looping."""
 
 
+CONVERSATION_CORRECTION_INSTRUCTION = """Rewrite this face-to-face exchange using only the supplied world state.
+Each speaker uses their own profile, opinions, private context, and knowledge.
+Keep the actual names and roles: initiator speaks first, then recipient, alternating.
+Write one short sentence per turn. State the current concern once, let the partner
+respond, then move toward an answer or a natural ending. Do not have the listener
+recite the same account or have either speaker repeat an earlier line.
+Facts describe recorded events. Hearing the snake make a supernatural claim does
+not prove that claim. Personal experience is firsthand, not an account heard from
+somebody else. Do not invent shared experiences or disclose another person's
+private context. Speech alone does not transfer apples or execute an activity.
+Return each participant's opinion of the other, preserving their existing view
+unless this exchange gives a reason to change it. Use the exact partner name.
+Optional effect arrays should be empty unless the exchange actually needs them.
+For a new apple promise, choose a permitted proposal: its giver offers first and
+its receiver explicitly accepts in a later turn. Index those turns from zero.
+For gossip, disclose the supplied focus in turn 0 and match its assertion and
+listener stance. The listener should react to it, not repeat the full statement.
+For food requests, keep the supplied outcome, with thanks only for an accepted
+handoff. Include an emotion on every part. Return only the required JSON."""
+
+
 def character_context(character):
     """Copy the profile so prompt preparation cannot modify the character."""
     return character.copy()
@@ -622,6 +643,11 @@ def world_context(snapshot, *, correction=False):
     if snapshot.get("request_kind") in ("snake_encounter", "snake_player"):
         return {k: v for k, v in snapshot.items() if not k.startswith("_")}
     conversation = snapshot.get("request_kind") == "conversation"
+    info = snapshot.get("_information_validation") or {}
+    focus = next((option for option in info.get("options", [])
+                  if option["id"] == info.get("focus_claim_id")), None)
+    relevant_ids = {option["id"] for option in info.get("options", [])
+                    if focus and option["fact_id"] == focus["fact_id"]}
 
     def person_context(person, include_reply=False):
         person = person.copy()
@@ -634,8 +660,24 @@ def world_context(snapshot, *, correction=False):
             fields = {"npc_id", "npc_name", "character", "activity", "satisfaction", "inventory",
                       "inventory_capacity", "inventory_space", "memories", "private_context"}
             person = {key: value for key, value in person.items() if key in fields}
+            if correction:
+                person.pop("memories", None)
             if "private_context" in person:
                 private = person["private_context"].copy()
+                if correction:
+                    # Corrections permit only the focus disclosure. Keep its
+                    # evidence and sources, without unrelated accounts or aliases.
+                    accounts, seen = [], set()
+                    for account in private.get("permitted_accounts", []):
+                        if focus and account["claim_id"] not in relevant_ids:
+                            continue
+                        signature = (account["assertion"], account.get("basis"), account.get("stance"))
+                        if signature in seen:
+                            continue
+                        seen.add(signature)
+                        accounts.append({key: value for key, value in account.items()
+                                         if key not in ("subject_id", "already_assessed", "current_reputation_influence")})
+                    private["permitted_accounts"] = accounts if focus else accounts[:3]
                 if private.get("goal"):
                     private["goal"] = {key: value for key, value in private["goal"].items()
                                        if key not in {"id", "created_phase", "resolution_event_id",
@@ -962,7 +1004,7 @@ def response_contract(snapshot, *, correction=False):
             # Regenerate the whole exchange with fewer optional effects. Required
             # gossip disclosures and permitted apple promises still work.
             for key in ("third_party_opinions", "leverage"):
-                properties[key] = {**properties[key], "maxItems": 0}
+                properties[key] = {"type": "array", "maxItems": 0, "items": {"type": "string"}}
             if snapshot.get("purpose") == "gossip":
                 # Open with the initiator's chosen account, keeping its ownership
                 # unambiguous without prescribing any spoken words.
@@ -970,7 +1012,7 @@ def response_contract(snapshot, *, correction=False):
                 properties["disclosures"] = {**disclosure, "maxItems": 1,
                                              "items": disclosure_schema(info, turn_limit, opening=True)}
             else:
-                properties["disclosures"] = {**properties["disclosures"], "maxItems": 0}
+                properties["disclosures"] = {"type": "array", "maxItems": 0, "items": {"type": "string"}}
         required.extend(("disclosures", "third_party_opinions", "leverage"))
         if food_request:
             accepted = snapshot["food_request"]["outcome"] == "accepted"
@@ -980,6 +1022,8 @@ def response_contract(snapshot, *, correction=False):
                 "items": properties["turns"]["items"]["properties"]["parts"]["items"],
             }
             required.extend(("food_outcome", "handoff_thanks"))
+        if correction:
+            instruction = CONVERSATION_CORRECTION_INSTRUCTION + f"\nWrite exactly {turn_limit} alternating turns."
         instruction += "\nSpeaker identities: " + json.dumps({
             "initiator": snapshot["initiator"]["npc_name"],
             "recipient": snapshot["recipient"]["npc_name"],
@@ -996,8 +1040,8 @@ def response_contract(snapshot, *, correction=False):
                             "do not substitute an older subject or merely promise to discuss it later.")
         if correction:
             instruction += ("\nWrite one brief sentence per turn, with one part of at most 160 characters. "
-                            "Previous dialogue excerpts are omitted for this rewrite. Use the recorded "
-                            "memories and confirmed events for continuity, and write fresh speech.")
+                            "Previous dialogue excerpts are omitted for this rewrite. Use the supplied "
+                            "facts and confirmed events for continuity, and write fresh speech.")
         properties = {key: properties[key] for key in ("disclosures", "third_party_opinions", "leverage") } | {
             key: value for key, value in properties.items() if key not in ("disclosures", "third_party_opinions", "leverage")}
         return instruction, {**CONVERSATION_SCHEMA, "properties": properties, "required": required}, ConversationResponse
@@ -1025,30 +1069,47 @@ def response_contract(snapshot, *, correction=False):
     return instruction, schema, ActionResponse
 
 
-def _speech_phrases(text):
-    # Match substantial copied speech despite casing, punctuation, part breaks,
-    # or curly apostrophes. Short acknowledgments and shared names are fine.
+def _speech_words(text):
     text = unicodedata.normalize("NFKC", text).replace("\u2019", "'").casefold()
-    words = re.findall(r"\w+(?:'\w+)*", text)
+    return re.findall(r"\w+(?:'\w+)*", text)
+
+
+def _speech_phrases(text):
+    # Match copied speech despite punctuation, casing, or display part breaks.
+    words = _speech_words(text)
     size = 12
     return (tuple(words[index:index + size]) for index in range(len(words) - size + 1))
 
 
-def validate_dialogue_repetition(turns, recent_dialogue=()):
+def validate_dialogue_repetition(turns, recent_dialogue=(), *, factual_context=()):
     """Reject copied speech before dialogue or its social effects are committed."""
     previous = {phrase for entry in recent_dialogue for _, text in entry["excerpts"]
                 for phrase in _speech_phrases(text)}
-    current = set()
+    factual = {phrase for text in factual_context for phrase in _speech_phrases(text)}
+    current, signatures = {}, []
     for turn in turns:
         # Joining parts catches loops split across multiple display pages too.
-        for phrase in _speech_phrases(turn.text):
-            if phrase in current:
+        phrases = list(_speech_phrases(turn.text))
+        signature = tuple(_speech_words(turn.text))
+        if (len(phrases) != len(set(phrases))
+                or len(signature) >= 12 and signature in signatures):
+            raise ValueError("Dialogue repeats a substantial passage within this exchange. "
+                             "Write distinct replies that advance the conversation instead of looping.")
+        for phrase in phrases:
+            # Two speakers can refer to the same recorded fact while answering
+            # each other. Repeating their prose or cycling through it is a loop.
+            if phrase in current and (phrase not in factual or current[phrase] >= 2):
                 raise ValueError("Dialogue repeats a substantial passage within this exchange. "
                                  "Write distinct replies that advance the conversation instead of looping.")
-            if phrase in previous:
+            if phrase in previous and phrase not in factual:
                 raise ValueError("Dialogue copies a substantial passage from a previous conversation. "
                                  "Continue from its outcome with fresh speech instead of replaying its lines.")
-            current.add(phrase)
+            current[phrase] = current.get(phrase, 0) + 1
+        signatures.append(signature)
+    if sum(map(len, signatures)) >= 24 and any(
+            tuple(signatures) == tuple(tuple(_speech_words(text)) for _, text in entry["excerpts"])
+            for entry in recent_dialogue):
+        raise ValueError("Dialogue replays a previous conversation. Write a new exchange about the current concern.")
 
 
 def validate_response(raw, snapshot):
@@ -1115,10 +1176,15 @@ def _validate_response(raw, snapshot, model):
         elif result.target:
             raise ValueError("Only conversation and giving actions may have a target.")
     elif isinstance(result, ConversationResponse):
-        validate_dialogue_repetition(result.turns, (snapshot.get("shared_history") or {}).get("recent_dialogue", []))
         validate_information(result, snapshot.get("_information_validation"))
         validate_agreements(result.accepted_proposals, snapshot.get("permitted_proposals", []),
                             result.turns, snapshot["initiator"]["npc_id"], snapshot["recipient"]["npc_id"])
+        history = snapshot.get("shared_history") or {}
+        disclosed = {entry.claim_id for entry in result.disclosures}
+        facts = [option["assertion"] for option in (snapshot.get("_information_validation") or {}).get("options", [])
+                 if option["id"] in disclosed]
+        facts.extend(event["text"] for event in history.get("confirmed_events", []))
+        validate_dialogue_repetition(result.turns, history.get("recent_dialogue", []), factual_context=facts)
         if snapshot.get("purpose") == "food_request":
             outcome = snapshot["food_request"]["outcome"]
             if (result.accepted_proposals or len(result.turns) != 2 or result.food_outcome != outcome
