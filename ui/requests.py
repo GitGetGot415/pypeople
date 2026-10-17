@@ -19,31 +19,35 @@ def _request_worker(session_id, request_id, provider, api_key, message, snapshot
 
 
 class RequestManager:
-    def __init__(self):
-        self.worker = None
-        self.pending_session = None
+    def __init__(self, max_requests=2):
+        self.max_requests = max_requests
+        self.workers = {}
         self.results = queue.Queue()
 
     @property
     def busy(self):
-        # Keep the slot reserved until the queue is polled AND the thread exits.
-        return self.worker is not None
+        return self.available_slots == 0
+
+    @property
+    def available_slots(self):
+        # Keep slots reserved until replies are polled and their workers exit.
+        return max(0, self.max_requests - len(self.workers))
 
     def submit(self, session_id, provider, api_key, message, snapshot, *, request_id=None, ollama_model=DEFAULT_OLLAMA_MODEL):
-        if self.busy:
+        key = (session_id, request_id)
+        if self.busy or key in self.workers:
             return False
-        self.pending_session = session_id
-        self.worker = threading.Thread(
+        worker = threading.Thread(
             target=_request_worker,
             args=(session_id, request_id, provider, api_key, message, snapshot, self.results, ollama_model),
             daemon=True,
             name="NPC-model-request",
         )
+        self.workers[key] = worker
         try:
-            self.worker.start()
+            worker.start()
         except RuntimeError:
-            self.worker = None
-            self.pending_session = None
+            self.workers.pop(key)
             return False
         return True
 
@@ -70,10 +74,8 @@ class RequestManager:
                 replies.append((request_id, None, "The model returned an invalid action or reply. Try again."))
                 continue
             replies.append((request_id, result, None))
-        if self.worker is not None and not self.worker.is_alive():
-            # A result may arrive after draining the queue. Leave it for the
-            # next frame before freeing the request slot.
-            if self.results.empty():
-                self.worker = None
-                self.pending_session = None
+        # A result may arrive after draining the queue; poll it next frame
+        # before freeing the slot that belongs to that result.
+        if self.results.empty():
+            self.workers = {key: worker for key, worker in self.workers.items() if worker.is_alive()}
         return replies

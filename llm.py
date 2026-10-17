@@ -507,7 +507,9 @@ CONVERSATION_INSTRUCTION = WORLD_INSTRUCTION + """Write a natural face-to-face c
 recipient. They are already together; address each other, not the player.
 Use each speaker's own profile Details, opinions, knowledge, and immediate
 objective. Personality and goals shape wording without guaranteeing cooperation.
-Write 4 to 8 alternating turns, starting with initiator. Each turn is one stretch
+Normally write 4 alternating turns, starting with initiator; use 6 only when
+needed to resolve the current concern. Keep each turn to one or two short sentences.
+Use one part per turn unless the speaker's emotion actually changes. Each turn is one stretch
 of speech before the partner replies. Its parts divide that stretch for display
 and emotion changes; later answers belong in later turns. Use short spoken
 sentences, at most 240 characters per part, with emotion for that part's speaker.
@@ -730,7 +732,8 @@ def response_contract(snapshot, *, correction=False):
         if kind == "snake_player":
             return instruction + " Reply directly to the player. Generate speech only in reply. No physical or social action is authorized by this request.", structured_schema(SnakePlayerResponse), SnakePlayerResponse
         instruction += (
-            " Generate an encounter with initiator=snake, recipient=resident: four or six alternating turns. "
+            " Generate an encounter with initiator=snake, recipient=resident: normally four alternating turns; "
+            "use six only if necessary. Keep each turn to one or two short sentences and normally one part. "
             "The snake's knowledge is only snake.known_accounts; resident private_context belongs only to "
             "the resident. An account on offering_accounts is a potential price, not knowledge the snake "
             "already has. Choose a permitted_decision. For a new bargain, normally choose advance_secret "
@@ -789,6 +792,8 @@ def response_contract(snapshot, *, correction=False):
             properties["turns"] = {**properties["turns"], "minItems": turn_count, "maxItems": turn_count}
             instruction += (f"\n\nWrite exactly {turn_count} alternating turns, indexed 0 through {turn_count - 1}. "
                             "Every structured effect must refer to one of these turns.")
+        else:
+            properties["turns"] = {**properties["turns"], "maxItems": 6}
         turn_limit = properties["turns"]["maxItems"]
         history = snapshot.get("shared_history")
         if history:
@@ -1177,6 +1182,7 @@ def _request_ollama(message, snapshot, model=OLLAMA_MODEL, *, correction=""):
                 ],
                 "format": schema,
                 "stream": False,
+                "keep_alive": "15m",
                 # The profiles, rules, schema, and dialogue exceed Ollama's
                 # default context. Truncation can remove the speaker rules.
                 "options": options,

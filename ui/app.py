@@ -55,7 +55,7 @@ class Application:
         self.session_id = 0
         self.npcs = []
         self.request_npc = None
-        self.request_conversation = None
+        self.conversation_requests = {}
         self.request_message = ""
         self.request_history = None
         self.conversation_history = []
@@ -111,7 +111,7 @@ class Application:
         self.session_id += 1
         self.game.reset()
         self.request_npc = None
-        self.request_conversation = None
+        self.conversation_requests.clear()
         self.request_history = None
         self.conversation_history = []
         self.npcs = []
@@ -205,7 +205,7 @@ class Application:
         self.game.reset()
         self.stats.open()
         self.request_npc = None
-        self.request_conversation = None
+        self.conversation_requests.clear()
         self.request_history = None
         self.request_message = ""
         self.simulation = simulation
@@ -226,6 +226,7 @@ class Application:
             self.request_history.outcomes.insert(0, "Left the game before a reply was received.")
             self.request_history = None
         self.session_id += 1
+        self.conversation_requests.clear()
         self.screen = "menu"
         self.menu.message = ""
         self.game.close_dialogue()
@@ -251,7 +252,7 @@ class Application:
         if npc is self.simulation.snake:
             self.submit_snake(message)
             return
-        if self.screen != "game" or npc is None or npc.snake_encounter or npc.end_conversation or npc.conversation is not None or npc.gift is not None or npc.eating or npc.request_pending or not message or self.requests.busy:
+        if self.screen != "game" or npc is None or npc.snake_encounter or npc.end_conversation or npc.conversation is not None or npc.gift is not None or npc.eating or npc.request_pending or not message or self.requests.busy or self.request_history is not None:
             return
         if self.provider == "gemini" and not self.api_key:
             self.game.set_reply("Add an API key in Settings to generate a reply.")
@@ -278,7 +279,6 @@ class Application:
         self.request_revision = npc.command_revision
         self.request_world_revision = self.simulation.roster_revision
         npc.request_pending = True
-        self.request_conversation = None
         self.request_message = message
         if self.game.player_record is None:
             self.game.player_record = ConversationRecord(("You", npc.name), message, "Waiting for reply")
@@ -388,10 +388,7 @@ class Application:
             return
         conversation.error = ""
         conversation.dialogue_state = "pending"
-        self.request_id = conversation.id
-        self.request_conversation = conversation
-        self.request_history = None
-        self.request_npc = conversation.initiator
+        self.conversation_requests[conversation.id] = conversation
 
     def retry_conversation_dialogue(self, conversation):
         if isinstance(conversation, SnakeEncounter):
@@ -444,7 +441,7 @@ class Application:
 
     def submit_snake(self, message):
         snake = self.simulation.snake
-        if self.screen != "game" or not message or self.requests.busy or snake.encounter or snake.request_pending:
+        if self.screen != "game" or not message or self.requests.busy or snake.encounter or snake.request_pending or self.request_history is not None:
             return
         snapshot = {"request_kind": "snake_player", "snake": snake.snapshot(),
                     "player_dialogue": self.game.player_record.turns[-12:] if self.game.player_record else []}
@@ -459,7 +456,6 @@ class Application:
         self.request_history.status = "Waiting for reply"
         self.request_history.turns.append(("You", message))
         self.request_id, self.request_npc = request_id, snake
-        self.request_conversation = None
         self.request_world_revision = self.simulation.roster_revision
         snake.request_pending = True
         self.game.prompt_input.set_value("")
@@ -478,9 +474,7 @@ class Application:
         # Leave completed replies queued so they cannot change a paused world.
         replies = () if session_active and paused else self.requests.poll(active_session)
         for request_id, result, error in replies:
-            if request_id != self.request_id:
-                continue
-            conversation = self.request_conversation
+            conversation = self.conversation_requests.pop(request_id, None)
             if conversation is not None:
                 if conversation.id == request_id and conversation.accepts_response:
                     if error:
@@ -490,6 +484,8 @@ class Application:
                             conversation.set_response(result)
                         except ValueError as exc:
                             conversation.fail_dialogue(str(exc))
+                continue
+            if request_id != self.request_id:
                 continue
             npc = self.request_npc
             if npc is self.simulation.snake:
@@ -507,6 +503,7 @@ class Application:
                 self.request_history = None
                 continue
             if npc is None or self.simulation.npc_by_id(npc.id) is not npc:
+                self.request_history = None
                 continue
             npc.request_pending = False
             record = self.request_history
@@ -609,11 +606,12 @@ class Application:
                              if npc.conversation is not None and npc.conversation.initiator is npc]
             if self.simulation.snake.encounter:
                 conversations.append(self.simulation.snake.encounter)
-            # Player conversations get the first free slot. Composition also reserves it.
+            # Player conversations get the first free slot. While composing,
+            # leave one slot free and let other conversations use the rest.
             composing = self.screen == "game" and self.game.prompt_input.active
             for conversation in sorted(conversations, key=lambda interaction: interaction.origin != "player"):
-                if composing:
-                    continue
+                if composing and self.requests.available_slots <= 1:
+                    break
                 self.request_conversation_dialogue(conversation)
 
     def draw(self):

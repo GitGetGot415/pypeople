@@ -343,12 +343,8 @@ class GameScreen:
         if self.dialogue_open:
             self.draw_portrait(app, self.selected_npc, self.selected_npc.portrait_emotion)
         status = self.selected_npc.status if self.selected_npc is not None else f"{len(app.npcs)} NPCs"
-        if app.requests.busy:
-            if app.requests.pending_session == app.session_id and app.request_npc is not None:
-                prefix = f"Thinking for {app.request_npc.name}..."
-            else:
-                prefix = "Finishing earlier request..."
-            status = f"{prefix} / {status}"
+        if app.request_history is not None and app.request_npc is self.selected_npc:
+            status = f"Thinking for {self.selected_npc.name}... / {status}"
         elif self.selected_npc.end_conversation:
             status = "Click Done when you've finished reading."
         elif self.selected_npc.request_pending:
@@ -364,7 +360,8 @@ class GameScreen:
             self.done_button.draw(app.window, app.font)
         else:
             self.prompt_input.draw(app.window, app.font)
-            self.send_button.draw(app.window, app.font, enabled=not app.requests.busy and not app.simulation.paused)
+            self.send_button.draw(app.window, app.font, enabled=not app.requests.busy and app.request_history is None
+                                  and not self.selected_npc.request_pending and not app.simulation.paused)
         if not closing and self.prompt_input.error:
             app.window.blit(app.small_font.render(self.prompt_input.error, True, MUTED), (self.reply_rect.x, 696))
         else:
@@ -462,4 +459,5 @@ class GameScreen:
         surface.set_clip(previous_clip)
 
     def request_is_current(self, app):
-        return app.requests.busy and app.request_conversation is self.viewed_conversation
+        return (self.viewed_conversation is not None
+                and app.conversation_requests.get(self.viewed_conversation.id) is self.viewed_conversation)
