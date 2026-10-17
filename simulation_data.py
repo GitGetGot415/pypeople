@@ -15,7 +15,7 @@ from llm import (AcceptedProposal, ConversationPart, ConversationTurn, Disclosur
                  EmotionReaction, LeverageUse, ThirdPartyOpinion)
 from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree, WORLD_HEIGHT, WORLD_WIDTH
 from simulation import DIALOGUE_WAIT_SECONDS, EAT_SECONDS, PendingAction, SHAKE_SECONDS, Simulation
-from snake import APPLE_ADVANCE_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_MARGIN, Snake, SnakeEncounter
+from snake import APPLE_ADVANCE_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_MARGIN, SNAKE_NAME, Snake, SnakeEncounter
 from purgatory import Attitudes
 from social import (Belief, Claim, Disclosure, Fact, FactKind, Goal, GoalKind, OpinionEffect, Promise, Proposal,
                     Stance, information_from_dict, phase_index, validate_agreements, validate_information)
@@ -433,7 +433,7 @@ class SimulationState(SaveModel):
         residents = [*self.npcs, *self.archived]
         live_ids = {n.id for n in self.npcs}
         actors = {n.id: (n.display_name or n.character["Name"]) for n in residents}
-        actors[self.snake.id] = "Python"
+        actors[self.snake.id] = SNAKE_NAME
         ids = set(actors)
         now = phase_index(self.day, self.phase)
         if len(ids) != len(residents) + 1 or self.tree.id in ids or len({v.casefold() for v in actors.values()}) != len(ids):

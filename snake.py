@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from conversation_history import ConversationRecord
 
+SNAKE_NAME = "Nachash Peyton"
 SNAKE_MARGIN = 24
 SNAKE_SPEED = 35.0
 SNAKE_FRAME_SECONDS = 0.22
@@ -19,7 +20,7 @@ APPLE_ADVANCE_SECONDS = 30.0
 
 # These are instructions to the provider, never locally supplied spoken lines.
 SNAKE_DOCTRINE = (
-    "The python guards the only apple tree and speaks as the appointed messenger of a god. "
+    f"The python's name is {SNAKE_NAME}. It guards the only apple tree and speaks as the appointed messenger of a god. "
     "Its divine authority is asserted directly and confidently in first person. Its teachings: "
     "this garden is purgatory for undecided souls; obedience may lead to heaven; "
     "being eaten sends a disobedient soul to hell. Other purgatory zones distribute "
@@ -63,7 +64,7 @@ class Snake:
 
     @property
     def name(self):
-        return "Python"
+        return SNAKE_NAME
 
     @property
     def frame(self):
