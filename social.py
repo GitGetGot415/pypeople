@@ -205,9 +205,11 @@ def fact_context(world, fact, affirmed=True):
 
 
 def account_view(world, claim, belief):
-    return {**fact_context(world, fact_by_id(world, claim.fact_id), claim.affirmed),
+    fact = fact_by_id(world, claim.fact_id)
+    return {**fact_context(world, fact, claim.affirmed),
             "claim_id": claim.id, "subject_id": claim.subject_id,
             "subject_name": world.actor_by_id(claim.subject_id).name,
+            "object_id": fact.object_id, "object_name": world.actor_by_id(fact.object_id).name,
             "knowledge_owner_name": world.actor_by_id(belief.npc_id).name,
             "original_speaker_id": claim.originator_id, "immediate_source_id": belief.source_id,
             "original_speaker_name": world.actor_by_id(claim.originator_id).name,
