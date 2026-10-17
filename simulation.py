@@ -409,7 +409,7 @@ class Simulation:
             npc.attitudes["trust"] = min(100, max(npc.attitudes["trust"], trust_before + 4))
             npc.attitudes["trust_reason"] = f"Received a real apple upfront from the snake on day {self.day}, before providing the agreed offering."
         if response.snake_account_id:
-            learn_account(self, snake, npc, response.snake_account_id, encounter.record, 0, response.account_stance)
+            learn_account(self, snake, npc, response.snake_account_id, encounter.record, 2, response.account_stance)
         if encounter.request_context["first_meeting"]:
             self.observed_event("snake_claim", snake, npc,
                 f"{npc.name} heard the snake present its claims about authority and the garden; those claims remain unverified.", encounter.record,

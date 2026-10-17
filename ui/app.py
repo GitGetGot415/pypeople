@@ -473,6 +473,14 @@ class Application:
         active_session = self.session_id if session_active else None
         # Leave completed replies queued so they cannot change a paused world.
         replies = () if session_active and paused else self.requests.poll(active_session)
+        if session_active and not paused:
+            # A progressing snake exchange gets a fresh wait for its next provider call.
+            for (session_id, request_id), worker in self.requests.workers.items():
+                pending = self.conversation_requests.get(request_id)
+                if (session_id == active_session and isinstance(pending, SnakeEncounter)
+                        and getattr(pending, "request_stage", None) != worker.stage):
+                    pending.request_stage = worker.stage
+                    pending.wait_elapsed = 0.0
         for request_id, result, error in replies:
             conversation = self.conversation_requests.pop(request_id, None)
             if conversation is not None:

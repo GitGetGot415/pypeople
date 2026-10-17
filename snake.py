@@ -111,8 +111,15 @@ class Snake:
 
     def snapshot(self, tree=None):
         from social import account_view, claim_by_id
+        # Rehearing an event cannot replace the snake's own firsthand knowledge.
+        by_fact = {}
+        for belief in self.beliefs:
+            claim = claim_by_id(self.world, belief.claim_id)
+            previous = by_fact.get(claim.fact_id)
+            if previous is None or belief.direct or not previous.direct:
+                by_fact[claim.fact_id] = belief
         known = []
-        for belief in self.beliefs[-16:]:
+        for belief in list(by_fact.values())[-16:]:
             claim = claim_by_id(self.world, belief.claim_id)
             known.append(account_view(self.world, claim, belief))
         return {"actor_id": self.id, "name": self.name, "activity": self.status,

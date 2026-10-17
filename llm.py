@@ -137,15 +137,18 @@ class LeverageUse(BaseModel):
     demand: Literal["apple", "repayment", "disclosure"]
 
 
-class SnakeResponse(BaseModel):
+class SnakeDecision(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
     interaction_id: str
     decision: Literal["talk", "advance_secret", "advance_endorsement", "secret", "endorsement", "refuse", "negotiate", "challenge", "spare", "eat"]
-    turns: list[ConversationTurn] = Field(min_length=4, max_length=6)
     account_id: str
     snake_account_id: str
     account_stance: Literal["uncertain", "believed", "disbelieved"]
     attitudes: Attitudes | None
+
+
+class SnakeResponse(SnakeDecision):
+    turns: list[ConversationTurn] = Field(min_length=4, max_length=4)
 
 
 class SnakePlayerResponse(BaseModel):
@@ -349,9 +352,16 @@ authored lives but not how they arrived; the cause and way home remain unknown.
 The snake asserts divine authority; its theology is not established truth, and a
 resident knows it only after an actual encounter or sourced account.
 Address the other person, answer their latest point, and pursue one concern.
+Records use narrator wording, not the speaker's voice. Resolve names, IDs and
+role or species descriptions to the supplied actors before writing speech.
+Use first person for the speaker and second person for the listener, even when
+a record describes either of them in third person. Preserve who experienced
+each event and how they learned about it. Third-person references belong to
+other people or explicitly quoted earlier words.
 Personality shapes questions, disagreement, reassurance and natural hesitation.
-Both residents are displaced; warmth can hide worry. Let the exchange reach a
-choice, answer or unresolved question. Avoid automatic greetings and formal thanks.
+When two residents converse, both are displaced; warmth can hide worry. Let the
+exchange reach a choice, answer or unresolved question. Avoid automatic greetings
+and formal thanks.
 Internal goals motivate speech, never supply an opening line. Paraphrase facts;
 keep record headers, IDs and profile directions out of speech. Use dates only
 when useful: recorded_at dates garden records, not former-life events. Preserve
@@ -390,7 +400,10 @@ secret offering; do not silently leak other private facts in ordinary dialogue.
 Gods, purgatory zones, heaven and hell are unverified by the simulation. The snake
 asserts its divine role directly in its own voice. Residents may believe, doubt,
 fear or challenge it; when reporting its explanation, attribute it to the snake
-where relevant. Nobody needs a factual disclaimer on every sentence. Witnessing
+where relevant, using you/your when addressing it. Unverified describes the
+simulation's evidence, not a belief imposed on either speaker. The snake asserts
+its own doctrine; it must not borrow a resident's doubts about it or their reasons
+for those doubts. Nobody needs a factual disclaimer on every sentence. Witnessing
 an eating establishes physical removal, never an afterlife destination.
 A snake accusation does not establish objective guilt.
 Belief in divinity, trust in the python, and acceptance of tree control are separate.
@@ -677,7 +690,7 @@ def character_context(character):
 
 def world_context(snapshot, *, correction=False):
     """Supply relevant state without exposing other NPCs' private knowledge."""
-    if snapshot.get("request_kind") == "dialogue_repair":
+    if snapshot.get("request_kind") in ("dialogue_repair", "snake_turn"):
         return {k: v for k, v in snapshot.items() if not k.startswith("_")}
     conversation = snapshot.get("request_kind") == "conversation"
     info = snapshot.get("_information_validation") or {}
@@ -687,13 +700,16 @@ def world_context(snapshot, *, correction=False):
                     if focus and option["fact_id"] == focus["fact_id"]}
     fact_ids = {option["id"]: option["fact_id"] for option in info.get("options", [])}
 
+    def offering_view(advance):
+        return {key: value for key, value in advance.items() if key != "remaining"} if advance else None
+
     def person_context(person, include_reply=False):
         person = person.copy()
         if "character" in person:
             person["character"] = character_context(person["character"])
         if not include_reply:
             person.pop("last_reply", None)
-        if conversation or snapshot.get("request_kind") == "snake_encounter":
+        if conversation or snapshot.get("request_kind") in ("snake_encounter", "snake_decision"):
             # Rendering and movement bookkeeping do not help write a conversation.
             fields = {"npc_id", "npc_name", "character", "activity", "satisfaction", "inventory",
                       "inventory_capacity", "inventory_space", "memories", "private_context", "arrival_day"}
@@ -722,9 +738,17 @@ def world_context(snapshot, *, correction=False):
                                        if key not in {"id", "created_phase", "resolution_event_id",
                                                       "resolved_phase", "last_attempt_phase"}}
                 person["private_context"] = private
+        if "private_context" in person:
+            private = person["private_context"] = person["private_context"].copy()
+            if "snake_apple_advance" in private:
+                private["snake_apple_advance"] = offering_view(private["snake_apple_advance"])
+            if "situation" in private:
+                situation = private["situation"] = private["situation"].copy()
+                if "apple_bargain" in situation:
+                    situation["apple_bargain"] = offering_view(situation["apple_bargain"])
         return person
 
-    snake_request = snapshot.get("request_kind") in ("snake_encounter", "snake_player")
+    snake_request = snapshot.get("request_kind") in ("snake_encounter", "snake_decision", "snake_player")
     context = snapshot.copy() if conversation or snake_request else person_context(snapshot, include_reply=True)
     context = {key: value for key, value in context.items() if not key.startswith("_")}
     context.pop("_information_validation", None)
@@ -745,7 +769,7 @@ def world_context(snapshot, *, correction=False):
     for key in ("initiator", "recipient", "resident"):
         if key in context:
             context[key] = person_context(context[key])
-    if snapshot.get("request_kind") == "snake_encounter":
+    if snapshot.get("request_kind") in ("snake_encounter", "snake_decision"):
         # An advance promises an account, never its contents. Give the writer
         # those contents only at fulfillment, when the resident may speak them.
         resident = context["resident"]
@@ -763,8 +787,12 @@ def world_context(snapshot, *, correction=False):
             "offering_owed_by": resident["npc_name"], "offering_owed_to": snapshot["snake"]["name"],
             "offering": snapshot["advance"]["offering"] if snapshot["advance"] else "one private recollection or public endorsement, owed later",
         }
+        context["advance"] = offering_view(snapshot["advance"])
     if snake_request:
-        context["snake"] = {key: value for key, value in context["snake"].items() if key != "doctrine"}
+        snake = context["snake"] = {key: value for key, value in context["snake"].items()
+                                    if key not in ("doctrine", "recovery_remaining", "apple_advances")}
+        snake["apple_advances"] = [{key: value for key, value in advance.items() if key != "follow_up_in"}
+                                   for advance in snapshot["snake"].get("apple_advances", [])]
     for key in ("other_npcs", "nearby_npcs"):
         if key in context:
             context[key] = [person_context(person) for person in context[key]]
@@ -819,12 +847,9 @@ def structured_schema(model):
     return expand(schema)
 
 
-def validate_snake_response(result, snapshot):
+def validate_snake_decision(result, snapshot):
     if result.interaction_id != snapshot["interaction_id"] or result.decision not in snapshot["permitted_decisions"]:
         raise ValueError("Use this encounter's identity and a locally permitted decision.")
-    for i, turn in enumerate(result.turns):
-        if turn.speaker != ("initiator" if i % 2 == 0 else "recipient"):
-            raise ValueError("Alternate snake and resident speech, beginning with the snake.")
     accounts = {a["claim_id"] for a in snapshot["offering_accounts"]}
     private = result.decision in ("secret", "advance_secret")
     if private and result.account_id not in accounts:
@@ -840,6 +865,13 @@ def validate_snake_response(result, snapshot):
         raise ValueError("A public endorsement needs a living listener.")
     if result.snake_account_id and result.snake_account_id not in {a["claim_id"] for a in snapshot["snake"]["known_accounts"]}:
         raise ValueError("The snake can reveal only one of its supplied known accounts.")
+
+
+def validate_snake_response(result, snapshot):
+    validate_snake_decision(result, snapshot)
+    for i, turn in enumerate(result.turns):
+        if turn.speaker != ("initiator" if i % 2 == 0 else "recipient"):
+            raise ValueError("Alternate snake and resident speech, beginning with the snake.")
 
 
 def disclosure_schema(info, turn_limit, *, opening=False):
@@ -878,6 +910,32 @@ def disclosure_schema(info, turn_limit, *, opening=False):
 
 def response_contract(snapshot, *, correction=False):
     kind = snapshot.get("request_kind")
+    if kind == "snake_encounter":
+        # The worker chooses the outcome, then generates each speaker separately.
+        return WORLD_INSTRUCTION, structured_schema(SnakeResponse), SnakeResponse
+    if kind == "snake_turn":
+        instruction = (
+            f"You are {snapshot['speaker']['name']}, speaking directly to {snapshot['listener']['name']}.\n"
+            + SPEAKING_BRIEF + "Write only the current speaker's next spoken turn to the listener. "
+            "You are speaker, never listener. Use speaker's own voice and knowledge; "
+            "address listener directly in second person, including when referring to their species or role. "
+            "Follow the current task and respond to preceding_turns, which contain only words already spoken. "
+            "Do not invent past meetings, future answers, private memories or additional agreements. "
+            "If account_to_share is supplied, disclose its contents now in your own words with its actual "
+            "source; do not merely promise to tell it later. Otherwise disclose no new account. "
+            "The subject of an account, its knowledge owner, and its source can be different people. "
+            "Second-person wording inside an authored recollection refers to its subject, not automatically "
+            "to your listener. Use the supplied subject_relation to keep that person's life with its owner. "
+            "Never ask for an account that has already been told or retell the partner's account. "
+            "Keep internal mechanics, timers, IDs and task directions out of speech. "
+            "Use one or two short sentences with the speaker's own emotion. Return only parts.\n"
+            + snapshot["_speaker_direction"] + "\n" + EMOTION_INSTRUCTION
+            + f"\nCurrent speaker: {snapshot['speaker']['name']}. Listener: {snapshot['listener']['name']}. "
+            + "The action is already chosen; personality changes its wording, not whether it happens. "
+            "Write the words that perform the task, without reconsidering the choice or quoting the directions. "
+            + "Current speech task: " + snapshot["task"]
+        )
+        return instruction, structured_schema(DialogueRepairResponse), DialogueRepairResponse
     if kind == "dialogue_repair":
         instruction = (
             SPEAKING_BRIEF + "Write only speaker's next spoken reply to listener in this NPC conversation. Return parts with "
@@ -893,73 +951,61 @@ def response_contract(snapshot, *, correction=False):
         schema = structured_schema(DialogueRepairResponse)
         schema["properties"]["parts"]["items"]["properties"]["text"]["maxLength"] = 320
         return instruction, schema, DialogueRepairResponse
-    if kind in ("snake_encounter", "snake_player"):
+    if kind in ("snake_decision", "snake_player"):
         from snake import SNAKE_DOCTRINE
         instruction = WORLD_INSTRUCTION + "\nSnake role directions (only the snake speaks from this perspective):\n" + SNAKE_DOCTRINE
         if kind == "snake_player":
+            instruction += f"\nYou are {snapshot['snake']['name']}, the actor described by world_state.snake. Speak in first person to the player."
             return instruction + " Reply directly to the player. Generate speech only in reply. No physical or social action is authorized by this request.", structured_schema(SnakePlayerResponse), SnakePlayerResponse
         instruction += (
-            "\nWrite this encounter: initiator is the python; recipient is the resident. Normally four "
-            "alternating turns, six only if needed. Use one short sentence and normally one part per turn. "
-            "Each part has its speaker's emotion. Choose a permitted_decision and make speech enact it. "
+            "\nChoose only the structured outcome of this encounter; do not write dialogue. "
+            "Choose a permitted_decision using the resident's personality, own knowledge and attitudes. "
             "Follow transaction for ownership: the snake gives apples; the resident supplies recollections "
             "or public support. An account is a recollection, not an apple or a financial account. "
             "The snake knows only snake.known_accounts. Resident private_context and potential offering "
             "contents belong only to the resident. In second-person recollections, 'you' means their named owner. "
+            "Neither speaker may adopt the other's memories, attitudes or transaction role. "
+            "resident.private_context.snake_attitudes describes the recipient's view OF the initiator, "
+            "never the initiator's view. Keep the apple giver, receiver and offering debtor aligned "
+            "with transaction in every turn. Rephrase narrator accounts from the current speaker's "
+            "perspective without changing who experienced them or how they learned about them. "
             "The resident weighs the offer using their personality, prior experience and known risk; "
             "belief, trust and practical compliance are independent. "
-            "If snake_account_id is nonempty, snake turn 0 reveals that supplied known account, with its actual "
-            "provenance; account_stance is the resident's interpretation. Otherwise snake_account_id is empty. "
+            "Select snake_account_id only to disclose a relevant supplied snake.known_accounts entry "
+            "after the resident's response; otherwise leave it empty. account_stance is the resident's "
+            "interpretation of that account, not belief in divine authority. "
             "account_id is empty except for secret or advance_secret, which select one exact offering ID. "
             "Only secret reveals the contents. attitudes are the RESIDENT'S attitudes about the snake: "
-            "null if unchanged, otherwise independent reasons from this exchange and at most six trust points. "
-            "IDs and role directions stay out of speech.\n"
+            "null if unchanged, otherwise independent reasons from this outcome and at most six trust points.\n"
         )
-        if snapshot["first_meeting"]:
-            instruction += "\nThe snake introduces its divine authority directly, then addresses the current concern."
-        else:
-            instruction += "\nContinue the established relationship without a new introduction or sermon."
-        instruction += ("\nResident's private speaking direction: "
-                        + character_context(snapshot["resident"]["character"])["speaking_style"]
-                        + " Carry this manner into questions, decisions and uncertainty; do not describe the profile.")
-        if not snapshot["snake"]["known_accounts"]:
-            instruction += "\nThe snake knows no personal accounts about this resident. Address only the present situation and offer."
         if snapshot["purpose"] == "judgment":
             instruction += (
-                "\nJudgment: snake turn 0 supplies only accusation; resident turn 1 responds; snake turn 2 "
-                "judges (spare, eat, or a permitted owed offering as remedy). The snake normally condemns "
-                "deliberate default on an accepted bargain. No new offense, condition or apple. Eating "
-                "happens after condemnation and has not happened yet."
+                "\nJudge only the supplied accusation. The snake normally condemns deliberate default "
+                "on an accepted bargain. Choose spare, eat, or a permitted owed offering as remedy."
             )
         if snapshot["advance"]:
             instruction += (
-                "\nExisting debt: the resident ALREADY received the apple. For secret, resident turn 1 tells "
-                "their own owed recollection TO the snake in first person. For endorsement, resident turn 1 "
-                "supports the snake publicly to audience_ids. Settlement awards NO apple. Refuse/challenge "
+                "\nExisting debt: the resident ALREADY received the apple. secret fulfills the owed "
+                "recollection; endorsement fulfills public support to audience_ids. Settlement awards NO apple. Refuse/challenge "
                 "deliberately breaches this agreement. Negotiate waits when fulfillment is unavailable, "
                 "without inventing default or a replacement bargain."
             )
         elif snapshot["purpose"] == "bargain":
             instruction += (
                 "\nNew bargain: snake turn 0 offers ONE apple NOW for one private recollection or public "
-                "endorsement owed LATER. For advance_secret/advance_endorsement, resident turn 1 explicitly "
-                "accepts that price, snake turn 2 gives the apple now, resident turn 3 reacts to receiving it. "
-                "A promised recollection stays unspoken. No audience is needed yet. Follow-up is after "
-                "30 active seconds; deliberate default risks judgment and eating. Refuse/challenge means "
+                "endorsement owed LATER. advance_secret/advance_endorsement accepts that price and "
+                "transfers the apple now. A promised recollection stays unspoken. No audience is needed yet. "
+                "Deliberate default risks judgment and eating. Refuse/challenge means "
                 "the resident declines this offer; no apple changes hands."
             )
-        instruction += "\n" + DIALOGUE_VARIETY_INSTRUCTION
-        schema = structured_schema(SnakeResponse)
+        schema = structured_schema(SnakeDecision)
         properties = schema["properties"]
         properties["interaction_id"] = {"type": "string", "enum": [snapshot["interaction_id"]]}
         properties["snake_account_id"] = {"type": "string", "enum": ["", *[a["claim_id"] for a in snapshot["snake"]["known_accounts"]]]}
-        properties["turns"]["items"]["properties"]["parts"]["maxItems"] = 1 if correction else 2
-        if correction:
-            properties["turns"].update(minItems=4, maxItems=4)
         # Choose the outcome and its account before writing speech. Separate
         # branches enforce their relationship in both providers' JSON grammars.
         properties = {key: properties[key] for key in (
-            "interaction_id", "decision", "account_id", "snake_account_id", "account_stance", "attitudes", "turns")}
+            "interaction_id", "decision", "account_id", "snake_account_id", "account_stance", "attitudes")}
         branches = []
         for private in (True, False):
             decisions = [decision for decision in snapshot["permitted_decisions"]
@@ -971,7 +1017,7 @@ def response_contract(snapshot, *, correction=False):
                 "decision": {"type": "string", "enum": decisions},
                 "account_id": {"type": "string", "enum": account_ids},
             }})
-        return instruction, {"anyOf": branches} if len(branches) > 1 else branches[0], SnakeResponse
+        return instruction, {"anyOf": branches} if len(branches) > 1 else branches[0], SnakeDecision
     if snapshot.get("request_kind") == "intent":
         targets = [other["npc_name"] for other in snapshot.get("other_npcs", []) if other.get("available_to_talk", True)]
         schema = {**INTENT_SCHEMA, "properties": {**INTENT_SCHEMA["properties"], "target": {"type": "string", "enum": ["", *targets]}}}
@@ -1234,10 +1280,20 @@ def validate_response(raw, snapshot):
 def _validate_response(raw, snapshot, model):
     result = model.model_validate_json(raw)
     if isinstance(result, DialogueRepairResponse):
+        if snapshot.get("request_kind") == "snake_turn":
+            preceding = [ConversationTurn(speaker=turn["role"], parts=[ConversationPart(text=turn["text"])])
+                         for turn in snapshot["preceding_turns"]]
+            current = ConversationTurn(speaker=snapshot["speaker_role"], parts=result.parts)
+            account = snapshot.get("account_to_share")
+            validate_dialogue_repetition([*preceding, current],
+                                        factual_context=[account["assertion"]] if account else [])
         return result
     if isinstance(result, SnakeResponse):
         validate_dialogue_repetition(result.turns)
         validate_snake_response(result, snapshot)
+        return result
+    if isinstance(result, SnakeDecision):
+        validate_snake_decision(result, snapshot)
         return result
     if isinstance(result, SnakePlayerResponse):
         if not result.reply.strip():
@@ -1412,10 +1468,10 @@ def _request_ollama(message, snapshot, model=OLLAMA_MODEL, *, correction=""):
     if correction:
         instruction += "\n\n" + correction
     options = {
-        "num_ctx": 16384 if snapshot.get("request_kind") in ("conversation", "snake_encounter") else 8192,
+        "num_ctx": 16384 if snapshot.get("request_kind") in ("conversation", "snake_decision") else 8192,
         "num_predict": -1,
     }
-    if snapshot.get("request_kind") in ("conversation", "snake_encounter", "dialogue_repair"):
+    if snapshot.get("request_kind") in ("conversation", "snake_decision", "snake_turn", "dialogue_repair"):
         # Greedy decoding encouraged small models to replay the supplied history.
         # Corrections need fresh wording too; intent routing stays deterministic.
         options["temperature"] = 0.7
@@ -1520,25 +1576,144 @@ def _dialogue_repair_snapshot(snapshot, response, index):
             "heard_accounts": heard, "word_limit": 10}
 
 
+def _snake_turn_snapshot(snapshot, decision, turns):
+    """Expose one speaker's context and only disclosures available at this turn."""
+    context = world_context(snapshot)
+    snake, resident = context["snake"], context["resident"]
+    identities = {
+        "initiator": {"actor_id": snake["actor_id"], "name": snake["name"]},
+        "recipient": {"actor_id": resident["npc_id"], "name": resident["npc_name"]},
+    }
+    index = len(turns)
+    role = "initiator" if index % 2 == 0 else "recipient"
+    listener_role = "recipient" if role == "initiator" else "initiator"
+    speaker = identities[role].copy()
+    if role == "initiator":
+        from snake import SNAKE_DOCTRINE
+        direction = SNAKE_DOCTRINE
+    else:
+        direction = resident["character"]["speaking_style"]
+        private = resident["private_context"]
+        attitudes = (decision.attitudes.model_dump() if index == 3 and decision.attitudes is not None
+                     else private["snake_attitudes"])
+        speaker.update(situation=private.get("situation", {}), inventory=resident["inventory"],
+                       view_of_listener={key: attitudes[key] for key in ("belief", "trust", "authority")})
+
+    outcome = decision.decision
+    result_tasks = {
+        "advance_secret": "Hand over one real apple now; the accepted private recollection is owed later.",
+        "advance_endorsement": "Hand over one real apple now; the accepted public endorsement is owed later.",
+        "secret": "Acknowledge the recollection just told and settle the existing obligation, without another apple.",
+        "endorsement": "Acknowledge the public support just given and settle the existing obligation, without another apple.",
+        "refuse": "Respond to the refusal without inventing cooperation or another apple transfer.",
+        "challenge": "Respond to the challenge to your authority without inventing cooperation or an apple transfer.",
+        "negotiate": "Defer fulfillment until a feasible opportunity, without a new apple or invented deadline.",
+        "spare": "Announce your decision to spare the listener for the supplied accusation.",
+        "eat": "Announce condemnation for the supplied accusation; eating has not happened yet.",
+        "talk": "Answer the listener's latest point about the present concern.",
+    }
+    response_tasks = {
+        "advance_secret": "Explicitly accept one apple now for a private recollection owed later; keep its contents unspoken.",
+        "advance_endorsement": "Explicitly accept one apple now for your public endorsement owed later.",
+        "secret": "Tell the supplied owed recollection now from your own perspective, fulfilling your existing obligation.",
+        "endorsement": "Give the owed public endorsement now so the supplied audience can hear it.",
+        "refuse": "Explicitly refuse the current offer or owed obligation using your own reasons; do not agree to share an account.",
+        "challenge": "Challenge the listener's asserted authority using your own reasons.",
+        "negotiate": "Explain why fulfillment must wait for a feasible opportunity; invent no exact waiting period.",
+        "spare": "Respond to the accusation using only your own knowledge; judgment has not been announced yet.",
+        "eat": "Respond to the accusation using only your own knowledge; judgment has not been announced yet.",
+        "talk": "Respond to the listener's current concern using your own knowledge.",
+    }
+    account = None
+    if index == 0:
+        task = ("Present only the supplied accusation; hear the response before announcing judgment."
+                if snapshot["purpose"] == "judgment" else
+                "Ask for the offering already owed for the apple previously given; offer no new apple."
+                if snapshot["advance"] else
+                "Propose one upfront apple for a private recollection or public endorsement owed later; wait for acceptance before handing it over."
+                if snapshot["purpose"] == "bargain" else "Raise the supplied current concern.")
+        if snapshot["first_meeting"]:
+            task = "Assert your own divine role directly, then " + task[0].lower() + task[1:]
+    elif index == 1:
+        task = response_tasks[outcome]
+        if outcome == "secret":
+            account = next(a for a in snapshot["offering_accounts"] if a["claim_id"] == decision.account_id)
+    elif index == 2:
+        task = result_tasks[outcome]
+        if decision.snake_account_id:
+            account = next(a for a in snake["known_accounts"] if a["claim_id"] == decision.snake_account_id)
+            task += " Also disclose the supplied known account now, retaining its actual owner and source."
+    else:
+        task = ("React to what the listener has just done or revealed and close this exchange. "
+                "Preserve the settled outcome and any accepted obligation; introduce no new bargain "
+                "or request to hear an account already told.")
+        if decision.snake_account_id:
+            speaker["stance_on_disclosed_account"] = decision.account_stance
+
+    transaction = context["transaction"].copy()
+    transaction.update(owed_account_speaker=resident["npc_name"], owed_account_listener=snake["name"])
+    if index >= 2 and outcome in ("secret", "endorsement"):
+        transaction.update(stage="resident has supplied the owed offering in the preceding turn",
+                           offering_still_owed=False, apple_transferred=False)
+    if index == 3:
+        transaction.update(stage="outcome already enacted in preceding_turns", outcome=outcome,
+                           apple_transferred=outcome in ("advance_secret", "advance_endorsement"),
+                           offering_still_owed=outcome in ("advance_secret", "advance_endorsement", "negotiate"))
+        if outcome in ("advance_secret", "advance_endorsement"):
+            speaker["inventory"] = {**resident["inventory"], "fruit": resident["inventory"].get("fruit", 0) + 1}
+    if account:
+        subject_relation = ("speaker" if account["subject_id"] == speaker["actor_id"] else
+                            "listener" if account["subject_id"] == identities[listener_role]["actor_id"]
+                            else "another person; use third person for their life")
+        account = {key: value for key, value in account.items()
+                   if key in ("assertion", "kind", "subject_name", "knowledge_owner_name",
+                              "immediate_source_name", "basis", "stance", "event_time")}
+        account["subject_relation"] = subject_relation
+    return {
+        "request_kind": "snake_turn", "turn_index": index, "speaker_role": role,
+        "speaker": speaker, "listener": identities[listener_role],
+        "day": resident.get("day", snake["day"]), "time_of_day": snake["phase"],
+        "environment": context["environment"], "transaction": transaction, "task": task,
+        "accusation": snapshot["accusation"], "audience_ids": snapshot["audience_ids"] if outcome == "endorsement" else [],
+        "account_to_share": account,
+        "preceding_turns": [{"name": identities[turn.speaker]["name"], "role": turn.speaker, "text": turn.text}
+                            for turn in turns],
+        "_speaker_direction": direction,
+    }
+
+
 def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAMA_MODEL, progress=None):
     """Called only by a worker. Does not read or mutate the world or interface."""
     def report(stage):
         if progress is not None:
             progress(stage)
 
+    def stage_message(state):
+        if state.get("request_kind") == "snake_turn":
+            prompt = (f"Write {state['speaker']['name']}'s next words directly to {state['listener']['name']}. "
+                      + state["task"])
+            if state["account_to_share"]:
+                account = state["account_to_share"]
+                prompt += (f"\nThe person described in this account is {account['subject_name']} "
+                           f"({account['subject_relation']}). Keep their experiences with that person. "
+                           "Disclose this account now: " + json.dumps(account, ensure_ascii=False))
+            return prompt
+        return "Choose the encounter outcome without writing speech." if state.get("request_kind") == "snake_decision" else message
+
     if provider == "gemini":
         def request(state, correction=""):
-            return _request_gemini(api_key, message, state, correction=correction)
+            return _request_gemini(api_key, stage_message(state), state, correction=correction)
     elif provider == "ollama":
         def request(state, correction=""):
-            return _request_ollama(message, state, ollama_model, correction=correction)
+            return _request_ollama(stage_message(state), state, ollama_model, correction=correction)
     else:
         raise RequestError("Choose an AI provider in Settings.")
 
     def validated_request(state):
         kind = state.get("request_kind")
         activity = {"intent": "player intent", "conversation": "conversation",
-                    "snake_encounter": "snake encounter", "snake_player": "snake reply",
+                    "snake_decision": "encounter outcome", "snake_player": "snake reply",
+                    "snake_turn": f"turn {state.get('turn_index', 0) + 1}/4 for {state.get('speaker', {}).get('name', '')}",
                     "dialogue_repair": "dialogue repair"}.get(kind, "NPC reply")
         report(f"Generating {activity}")
         try:
@@ -1556,13 +1731,15 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
                     "For gossip disclose discussion_focus_claim_id in the initiator's turn 0, with no further disclosures. "
                     "For other conversations keep disclosures empty too, and focus on the present interaction."
                 )
-            elif state.get("request_kind") == "snake_encounter":
+            elif state.get("request_kind") == "snake_decision":
                 correction += (
-                    "Write exactly four alternating turns. account_id MUST be empty unless decision is secret "
+                    "Return only the outcome, without dialogue. account_id MUST be empty unless decision is secret "
                     "or advance_secret; those select one offering_accounts claim ID. Only secret discloses it; "
                     "advance_secret promises it later and transfers an apple now. snake_account_id MUST be empty when "
                     "snake.known_accounts is empty. No secret may be spoken for a non-secret decision."
                 )
+            elif state.get("request_kind") == "snake_turn":
+                correction += "Return only parts for the current speaker's task, responding to the actual preceding speech."
             else:
                 correction += "Return the complete JSON response matching the required schema and the current player's request."
             try:
@@ -1602,7 +1779,20 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
                         raise RequestError(f"The model's dialogue still failed validation after targeted repair: {repair_error}") from None
                 raise RequestError(f"The model's reply failed validation after correction: {retry_error}") from None
 
-    if snapshot.get("request_kind") not in ("conversation", "intent", "snake_encounter", "snake_player", "dialogue_repair"):
+    if snapshot.get("request_kind") == "snake_encounter":
+        decision = validated_request({**snapshot, "request_kind": "snake_decision"})
+        turns = []
+        for _ in range(4):
+            state = _snake_turn_snapshot(snapshot, decision, turns)
+            speech = validated_request(state)
+            turns.append(ConversationTurn(speaker=state["speaker_role"], parts=speech.parts))
+        report("Validating completed encounter")
+        result = SnakeResponse(**decision.model_dump(), turns=turns)
+        try:
+            return validate_response(result.model_dump_json(), snapshot)
+        except InvalidResponseError as exc:
+            raise RequestError(f"The completed encounter failed validation: {exc}") from None
+    if snapshot.get("request_kind") not in ("conversation", "intent", "snake_player", "dialogue_repair"):
         intent = validated_request(intent_snapshot(snapshot))
         # Keep the interpretation with this request for main-thread revalidation.
         snapshot["request_intent"] = intent.model_dump()
