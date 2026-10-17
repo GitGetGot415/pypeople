@@ -200,7 +200,7 @@ RESPONSE_SCHEMA = {
         "action": {"type": "string", "enum": ["WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "GIVE_ITEM", "EAT", "SAY"]},
         "end_conversation": {
             "type": "boolean",
-            "description": "True when you choose to finish talking, the player is done, or they decline your latest offer to keep talking or help. SAY can end a conversation too.",
+            "description": "True when you finish talking without asking a question. If your SAY reply asks the player a question, this must be false so they can answer. End when the player is done or declines further conversation.",
         },
         "reply": {
             "type": "string",
@@ -441,7 +441,10 @@ is nothing new to remember. Never update another NPC's opinions or target yourse
 For an unknown person, SAY you don't know them yet and return no opinion update."""
 
 PLAYER_DIALOGUE_INSTRUCTION = """Conversation endings:
-Decide end_conversation before writing your reply.
+Your reply and end_conversation must agree. Asking the player a question means
+you are waiting for their answer: use SAY with end_conversation false so they
+can respond in this same conversation. Never ask a question and end the exchange
+in the same reply. If you decide to end, remove any question from your closing.
 You are a person in this world and can choose to stop talking. With action SAY,
 set end_conversation true whenever you want to finish: because of your
 personality, mood, interest, current activity, or simply because the exchange
@@ -835,6 +838,13 @@ def _validate_response(raw, snapshot, model):
             raise ValueError("The action, recipient, item, or quantity differs from the current request.")
         if isinstance(result, ActionResponse) and not result.reply.strip():
             raise ValueError("Empty reply")
+        if (isinstance(result, ActionResponse) and result.end_conversation
+                and any(mark in result.reply for mark in ("?", "？", "؟"))):
+            raise ValueError(
+                "A closing reply cannot ask a question. For SAY, either use end_conversation false so the player "
+                "can answer, or keep it true and finish without questions. Other actions must keep "
+                "end_conversation true and acknowledge the task without questions."
+            )
         if result.action == "GIVE_ITEM":
             if result.item != "fruit" or result.quantity < 1:
                 raise ValueError("Giving requires a supported item and a positive quantity.")
