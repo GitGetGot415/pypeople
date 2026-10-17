@@ -52,6 +52,7 @@ class Simulation:
         self.roster_revision = 0
         self.day = 1
         self.phase = "day"
+        self.paused = False
         self.pending_actions = []
         self.history = []
         self.events = []
@@ -82,6 +83,8 @@ class Simulation:
 
     def next_phase(self):
         from social import advance_social_phase
+        if self.paused:
+            return
         if self.phase == "day":
             self.phase = "evening"
         elif self.phase == "evening":
@@ -124,7 +127,7 @@ class Simulation:
         return next((npc for npc in self.npcs if npc.id == npc_id), None)
 
     def advance(self, dt, *, active=True, action_handler=None, viewed_conversation=None):
-        if not active:
+        if not active or self.paused:
             return
         if action_handler is not None:
             actions, self.pending_actions = self.pending_actions, []

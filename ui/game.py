@@ -14,6 +14,7 @@ class GameScreen:
         self.menu_button = Button((1144, 16, 112, 38), "Menu")
         self.stats_button = Button((1024, 16, 112, 38), "Stats")
         self.save_button = Button((904, 16, 108, 38), "Save")
+        self.pause_button = Button((600, 16, 108, 38), "Pause")
         self.snake_retry = Button((610, 72, 120, 32), "Retry snake")
         self.arrival_retry = Button((476, 72, 120, 32), "Retry arrival")
         self.clock_button = Button((720, 16, 44, 38), "")
@@ -104,10 +105,11 @@ class GameScreen:
                 self.camera_offset[1] + (WINDOW_SIZE[1] - WORLD_HEIGHT) / 2)
 
     def handle_event(self, app, event):
-        if self.snake_retry.clicked(event):
+        paused = app.simulation.paused
+        if self.snake_retry.clicked(event, enabled=not paused):
             app.retry_snake()
             return
-        if self.arrival_retry.clicked(event):
+        if self.arrival_retry.clicked(event, enabled=not paused):
             app.retry_arrival()
             return
         if self.feed.handle_event(app, event):
@@ -116,7 +118,7 @@ class GameScreen:
             pos = getattr(event, "pos", pygame.mouse.get_pos())
             if self.world_viewport.collidepoint(pos) and not any(
                 button.rect.collidepoint(pos)
-                for button in (self.menu_button, self.stats_button, self.save_button, self.clock_button)
+                for button in (self.menu_button, self.stats_button, self.save_button, self.pause_button, self.clock_button)
             ):
                 self.zoom_at(pos, event.y)
                 return
@@ -124,7 +126,7 @@ class GameScreen:
             return
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if self.world_viewport.collidepoint(event.pos) and not any(
-                button.rect.collidepoint(event.pos) for button in (self.menu_button, self.stats_button, self.save_button)
+                button.rect.collidepoint(event.pos) for button in (self.menu_button, self.stats_button, self.save_button, self.pause_button)
             ):
                 self.pan_start = event.pos
                 self.pan_last = event.pos
@@ -171,15 +173,16 @@ class GameScreen:
                 return
             if self.viewed_conversation is not None:
                 if self.next_button.clicked(event, enabled=bool(self.viewed_conversation.turns)):
-                    self.advance_conversation()
+                    self.advance_conversation(app)
                 elif self.back_button.clicked(event, enabled=self.conversation_page_index > 0):
                     self.rewind_conversation()
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_LEFT:
                     self.rewind_conversation()
                 elif event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE, pygame.K_RIGHT):
-                    self.advance_conversation()
-                elif self.retry_button.clicked(event, enabled=bool(self.viewed_conversation.pending_opinions)
-                                               or bool(self.viewed_conversation.error and not self.viewed_conversation.turns)):
+                    self.advance_conversation(app)
+                elif self.retry_button.clicked(event, enabled=not paused and (
+                        bool(self.viewed_conversation.pending_opinions)
+                        or bool(self.viewed_conversation.error and not self.viewed_conversation.turns))):
                     if self.viewed_conversation.pending_opinions:
                         self.viewed_conversation.remember_opinions()
                     else:
@@ -191,6 +194,8 @@ class GameScreen:
                 ):
                     self.close_dialogue()
                 return
+            if paused:
+                return
             if self.send_button.clicked(event):
                 app.submit()
                 self.prompt_input.focus()
@@ -198,27 +203,41 @@ class GameScreen:
                 app.submit()
 
     def handle_clock_event(self, app, event):
+        if self.pause_button.clicked(event):
+            app.simulation.paused = not app.simulation.paused
+            self.pan_start = self.pan_last = None
+            self.panning = False
+            return True
         if self.clock_button.clicked(event):
-            app.simulation.next_phase()
+            if not app.simulation.paused:
+                app.simulation.next_phase()
             return True
         return False
 
     def draw_clock(self, app):
-        self.clock_button.draw(app.window, app.small_font)
+        paused = app.simulation.paused
+        self.pause_button.label = "Resume" if paused else "Pause"
+        self.pause_button.draw(app.window, app.small_font)
+        self.clock_button.draw(app.window, app.small_font, enabled=not paused)
         x, y = self.clock_button.rect.center
         pygame.draw.circle(app.window, PAPER, (x, y), 12, width=2)
         pygame.draw.line(app.window, PAPER, (x, y), (x, y - 8), 2)
         pygame.draw.line(app.window, PAPER, (x, y), (x + 6, y + 3), 2)
         color = PAPER if app.screen == "game" and app.simulation.phase == "night" else INK
         app.window.blit(app.small_font.render(app.simulation.phase_label, True, color), (774, 27))
+        if paused:
+            label = app.small_font.render("Simulation paused", True, color)
+            app.window.blit(label, label.get_rect(midright=(584, self.pause_button.rect.centery)))
 
-    def advance_conversation(self):
+    def advance_conversation(self, app):
         conversation = self.viewed_conversation
         if conversation is None or not self.conversation_pages:
             return
         if self.conversation_page_index == len(self.conversation_pages) - 1:
             # Done completes the exchange, including any agreed item handoff.
             if conversation.active:
+                if app.simulation.paused:
+                    return
                 conversation.talking_remaining = 0.0
                 conversation.update(0.0)
             self.close_dialogue()
@@ -297,7 +316,7 @@ class GameScreen:
         self.draw_clock(app)
         self.feed.draw(app)
         if app.simulation.snake.retry_request:
-            self.snake_retry.draw(app.window, app.small_font)
+            self.snake_retry.draw(app.window, app.small_font, enabled=not app.simulation.paused)
         pending = app.simulation.pending_arrival_days
         error = app.simulation.arrival_error
         if pending or error:
@@ -305,7 +324,7 @@ class GameScreen:
             label = f"Arrivals waiting: {', '.join(str(d) for d in pending)}" if pending else "Next arrival"
             if error:
                 label += f" / {error}"
-                self.arrival_retry.draw(app.window, app.small_font)
+                self.arrival_retry.draw(app.window, app.small_font, enabled=not app.simulation.paused)
             else:
                 label += " / arriving"
             draw_wrapped_text(app.window, label, app.small_font, color, (476, 110, 550, 64))
@@ -345,7 +364,7 @@ class GameScreen:
             self.done_button.draw(app.window, app.font)
         else:
             self.prompt_input.draw(app.window, app.font)
-            self.send_button.draw(app.window, app.font, enabled=not app.requests.busy)
+            self.send_button.draw(app.window, app.font, enabled=not app.requests.busy and not app.simulation.paused)
         if not closing and self.prompt_input.error:
             app.window.blit(app.small_font.render(self.prompt_input.error, True, MUTED), (self.reply_rect.x, 696))
         else:
@@ -400,9 +419,10 @@ class GameScreen:
         self.back_button.draw(app.window, app.small_font, enabled=self.conversation_page_index > 0)
         last_page = bool(self.conversation_pages) and self.conversation_page_index == len(self.conversation_pages) - 1
         self.next_button.label = "Done" if last_page else "Next"
-        self.next_button.draw(app.window, app.small_font, enabled=bool(self.conversation_pages))
+        can_finish = not (last_page and conversation.active and app.simulation.paused)
+        self.next_button.draw(app.window, app.small_font, enabled=bool(self.conversation_pages) and can_finish)
         if conversation.pending_opinions or (conversation.error and not conversation.turns):
-            self.retry_button.draw(app.window, app.small_font)
+            self.retry_button.draw(app.window, app.small_font, enabled=not app.simulation.paused)
         if not conversation.arrived:
             if conversation.initiator is app.simulation.snake:
                 text = f"{conversation.recipient.name} is walking to the guarded tree..."
@@ -414,7 +434,8 @@ class GameScreen:
             text = "Generating their conversation..." if self.request_is_current(app) else "Waiting to hear their conversation..."
         self.draw_dialogue_lines(app.window, wrap_text(text, app.font, rect.width - 12), app.font, rect)
         if conversation.turns:
-            status = ("Conversation paused while you read." if conversation.active
+            status = ("Simulation paused. Resume to continue." if app.simulation.paused and conversation.active
+                      else "Conversation paused while you read." if conversation.active
                       else f"{conversation.record.status} - recorded dialogue.")
             draw_wrapped_text(app.window, conversation.error or status, app.small_font, MUTED,
                               (rect.x, 696, rect.width - 80, 24))

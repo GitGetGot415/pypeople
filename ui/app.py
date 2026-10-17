@@ -244,6 +244,8 @@ class Application:
         self.screen = "stats"
 
     def submit(self):
+        if self.simulation.paused:
+            return
         message = self.game.prompt_input.text.strip()[:300]
         npc = self.game.selected_npc
         if npc is self.simulation.snake:
@@ -469,9 +471,13 @@ class Application:
         self.screens[self.screen].handle_event(self, event)
 
     def update(self, dt):
-        simulation_active = self.screen in ("game", "stats")
-        active_session = self.session_id if simulation_active or self.screen == "save_sim" else None
-        for request_id, result, error in self.requests.poll(active_session):
+        paused = self.simulation is not None and self.simulation.paused
+        simulation_active = self.screen in ("game", "stats") and not paused
+        session_active = self.screen in ("game", "stats", "save_sim")
+        active_session = self.session_id if session_active else None
+        # Leave completed replies queued so they cannot change a paused world.
+        replies = () if session_active and paused else self.requests.poll(active_session)
+        for request_id, result, error in replies:
             if request_id != self.request_id:
                 continue
             conversation = self.request_conversation
