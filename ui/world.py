@@ -10,6 +10,7 @@ from .theme import INK, PAPER, SHADOW_COLOR, WORLD_COLORS
 
 CHARACTER_SCALE = 0.5
 TREE_SCALE = 0.6
+SNAKE_ARTWORK_SCALE = 4
 TREE_BASE_OFFSET = 64
 APPLE_POINTS = ((38, 58), (83, 28), (112, 60), (65, 84), (96, 111), (33, 101), (111, 32), (46, 30))
 _tree_artwork = None
@@ -35,13 +36,24 @@ def tree_artwork():
     return _tree_artwork
 
 
+@lru_cache(maxsize=16)
+def snake_artwork(facing, frame):
+    direction = ("N", "NE", "E", "SE", "S", "SE", "E", "NE")[facing]
+    path = Path(__file__).resolve().parent.parent / "assets" / "snake" / f"{direction}{frame}.png"
+    artwork = pygame.image.load(str(path)).convert_alpha()
+    # The snake's tiny source sprites need smoother diagonal edges before the
+    # final smoothscale, which also antialiases them at their native world size.
+    artwork = pygame.transform.scale2x(pygame.transform.scale2x(artwork))
+    return pygame.transform.flip(artwork, True, False) if facing > 4 else artwork
+
+
 def _draw_shadow(surface, rect):
     shadow = pygame.Surface(rect.size, pygame.SRCALPHA)
     pygame.draw.ellipse(shadow, SHADOW_COLOR, shadow.get_rect())
     surface.blit(shadow, rect)
 
 
-def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), phase="day", zoom=1.0, viewport=None):
+def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), phase="day", zoom=1.0, viewport=None, snake=None):
     # Scale the ground separately; sprites are drawn from their original artwork.
     scene = pygame.Surface((WORLD_WIDTH, WORLD_HEIGHT))
     _draw_scene(scene, npcs, tree, font, phase)
@@ -54,7 +66,7 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     # Bubbles can extend beyond the ground's rectangle into the surrounding view.
     surface.set_clip(viewport.clip(previous_clip))
     surface.blit(scene, scene_rect)
-    _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, phase, zoom)
+    _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, phase, zoom, snake)
     surface.set_clip(previous_clip)
 
 
@@ -77,7 +89,7 @@ def _draw_scene(surface, npcs, tree, font, phase):
     _draw_shadow(surface, pygame.Rect(tree_x - 43, round(tree.y) + 50, 86, 20))
 
 
-def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, phase, zoom):
+def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, phase, zoom, snake=None):
     def screen_point(point):
         return (round(point[0] * zoom + camera_offset[0]),
                 round(point[1] * zoom + camera_offset[1]))
@@ -91,7 +103,10 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
     map_rect = pygame.Rect(screen_point((0, 0)), (round(WORLD_WIDTH * zoom), round(WORLD_HEIGHT * zoom)))
     tree_image, apple_image = tree_artwork()
     # NPC y is at their feet; use the bottom of the tree's trunk for the same comparison.
-    objects = sorted([tree, *npcs], key=lambda obj: tree.y + TREE_BASE_OFFSET if obj is tree else obj.y)
+    objects = [tree, *npcs]
+    if snake is not None:
+        objects.append(snake)
+    objects.sort(key=lambda obj: tree.y + TREE_BASE_OFFSET if obj is tree else obj.y)
     for obj in objects:
         if obj is tree:
             tree_x = tree.x + tree.offset
@@ -107,6 +122,10 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
                 surface.blit(apple, apple.get_rect(center=center))
             label = name_font.render(f"Fruit {tree.fruit}/{tree.capacity}", True, label_color)
             surface.blit(label, label.get_rect(midtop=screen_point((tree_x, tree.y + 76))))
+            continue
+        if obj is snake:
+            image = resized(snake_artwork(snake.facing, snake.frame), zoom / SNAKE_ARTWORK_SCALE)
+            surface.blit(image, image.get_rect(midbottom=screen_point((snake.x, snake.y))))
             continue
         npc = obj
         position = screen_point((npc.x, npc.y))

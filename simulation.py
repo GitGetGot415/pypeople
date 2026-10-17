@@ -38,9 +38,11 @@ class PendingAction:
 class Simulation:
     def __init__(self, npcs, tree=None, *, assign_goals=True):
         from npc import Tree
+        from snake import Snake
 
         self.npcs = npcs
         self.tree = tree if tree is not None else Tree()
+        self.snake = Snake()
         self.day = 1
         self.phase = "day"
         self.pending_actions = []
@@ -133,6 +135,7 @@ class Simulation:
         from npc import Behavior
 
         self.tree.update(dt)
+        self.snake.update(dt)
         for npc in self.npcs:
             npc.update_cooldowns(dt)
             if npc.pending_social_opinions and npc.decision_remaining == 0:

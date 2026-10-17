@@ -1,0 +1,12 @@
+animation starts on X1 and goes to X2 then back to X1
+
+X in this case refers to the direction
+North
+NorthEast
+East
+SouthEast
+South
+
+all west directions can be mirrored from the east images
+
+when staying still the snake should be on X1, not X2

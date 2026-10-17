@@ -15,6 +15,7 @@ from llm import (AcceptedProposal, ConversationPart, ConversationTurn, Disclosur
                  EmotionReaction, LeverageUse, ThirdPartyOpinion)
 from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree, WORLD_HEIGHT, WORLD_WIDTH
 from simulation import DIALOGUE_WAIT_SECONDS, EAT_SECONDS, PendingAction, SHAKE_SECONDS, Simulation
+from snake import SNAKE_FRAME_SECONDS, SNAKE_MARGIN, Snake
 from social import (Belief, Claim, Disclosure, Fact, FactKind, Goal, GoalKind, OpinionEffect, Promise, Proposal,
                     Stance, information_from_dict, phase_index, validate_agreements, validate_information)
 
@@ -309,6 +310,25 @@ class TreeState(SaveModel):
     reserved_by: str | None
 
 
+class SnakeState(SaveModel):
+    x: float = Field(default=720.0, ge=SNAKE_MARGIN, le=WORLD_WIDTH - SNAKE_MARGIN)
+    y: float = Field(default=330.0, ge=SNAKE_MARGIN, le=WORLD_HEIGHT - SNAKE_MARGIN)
+    destination: tuple[float, float] | None = None
+    facing: int = Field(default=4, ge=0, le=7)
+    pause_remaining: float = Field(default=0.0, ge=0)
+    animation_elapsed: float = Field(default=0.0, ge=0, lt=2 * SNAKE_FRAME_SECONDS)
+
+    @field_validator("destination")
+    @classmethod
+    def validate_destination(cls, value):
+        if value is not None and not (
+            SNAKE_MARGIN <= value[0] <= WORLD_WIDTH - SNAKE_MARGIN
+            and SNAKE_MARGIN <= value[1] <= WORLD_HEIGHT - SNAKE_MARGIN
+        ):
+            raise ValueError("Invalid snake destination.")
+        return value
+
+
 class PendingActionState(SaveModel):
     npc_id: str
     action: Literal["WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "GIVE_ITEM", "EAT"]
@@ -332,6 +352,7 @@ class SimulationState(SaveModel):
     social_rotation: int = Field(ge=0)
     npcs: list[NPCState] = Field(min_length=1)
     tree: TreeState
+    snake: SnakeState = Field(default_factory=SnakeState)
     pending_actions: list[PendingActionState]
     history: list[HistoryState]
     conversations: list[ConversationState]
@@ -965,6 +986,9 @@ def capture_simulation(app):
         facts=[asdict(fact) for fact in world.facts], claims=[asdict(claim) for claim in world.claims],
         disclosures=[asdict(disclosure) for disclosure in world.disclosures],
         social_opportunity=world.social_opportunity, social_rotation=world.social_rotation,
+        snake=SnakeState(x=world.snake.x, y=world.snake.y, destination=world.snake.destination,
+                         facing=world.snake.facing, pause_remaining=world.snake.pause_remaining,
+                         animation_elapsed=world.snake.animation_elapsed),
         npcs=npcs, history=history, conversations=conversations, gifts=gifts,
         tree=TreeState(id=app.tree.id, x=app.tree.x, y=app.tree.y, fruit=app.tree.fruit,
                        capacity=app.tree.capacity,
@@ -1001,6 +1025,7 @@ def restore_simulation(state):
                 shake_elapsed=state.tree.shake_elapsed, shaker=by_id.get(state.tree.shaker),
                 reserved_by=by_id.get(state.tree.reserved_by))
     world = Simulation(npcs, tree, assign_goals=False)
+    world.snake = Snake(**state.snake.model_dump())
     world.day, world.phase = state.day, state.phase
     world.pending_actions = [PendingAction(**action.model_dump()) for action in state.pending_actions]
     for action in world.pending_actions:

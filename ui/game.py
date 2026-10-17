@@ -279,7 +279,7 @@ class GameScreen:
     def draw(self, app):
         draw_world(app.window, app.npcs, app.tree, app.small_font, app.character.renderer,
                    self.view_offset, phase=app.simulation.phase, zoom=self.camera_zoom,
-                   viewport=self.world_viewport)
+                   viewport=self.world_viewport, snake=app.simulation.snake)
         self.menu_button.draw(app.window, app.small_font)
         self.stats_button.draw(app.window, app.small_font)
         self.save_button.draw(app.window, app.small_font)
