@@ -23,7 +23,7 @@ from simulation import (
 WORLD_WIDTH = 960
 WORLD_HEIGHT = 460
 NPC_RADIUS = 18
-EMOTION_THRESHOLD = 5
+EMOTION_THRESHOLD = 75
 
 ACTIVITY_FIELDS = (
     "behavior", "destination", "pause_remaining", "facing", "owner", "target_id",

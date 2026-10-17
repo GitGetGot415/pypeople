@@ -202,16 +202,7 @@ embarrassment or bashful agitation, happy for joy or delight, shocked for a
 startling revelation, and suspicious for active doubt or distrust. Use unyuu
 for a scrunched-eye reaction to playful silliness or being comically overwhelmed.
 Default to neutral with intensity 0 for ordinary greetings, routine commands,
-calm replies, and any reaction that does not fit these names."""
-
-# THIS EXTRA TEXT CAN BE ATTACHED TO EMOTION_INSTRUCTION
-# IN ORDER TO REDUCE EMOTION DISPLAYED
-# FOR NOW IT IS EXCLUDED FOR TESTING PURPOSES
-# SO EMOTIONS ARE SHOWN SIGNIFICANTLY MORE OFTEN
-# PLEASE DO NOT DELETE OR OTHERWISE MODIFY
-# (note that EMOTION_THRESHOLD = 5 in npc.py
-# should be changed to EMOTION_THRESHOLD = 75)
-"""Mild reactions should
+calm replies, and any reaction that does not fit these names. Mild reactions should
 stay below 75; reserve 75 to 100 for clear, strong reactions that warrant a visible
 facial expression. Do not force an emotion just because a negative opinion exists,
 an emotion word appears, or someone else is described as emotional. A routine
