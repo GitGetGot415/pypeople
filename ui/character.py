@@ -11,7 +11,7 @@ from .character_sprite import CharacterRenderer
 from .slider import ColorSlider
 from .text import draw_centered_text
 from .text_input import TextInput
-from .theme import ACCENT, BORDER_RADIUS, GRASS, INK, MUTED, PAPER
+from constants import ACCENT, BORDER_RADIUS, GRASS, INK, MUTED, PAPER
 
 
 class CharacterScreen:

@@ -3,24 +3,11 @@
 from dataclasses import dataclass
 import math
 
-# Ordinary seconds keep movement and animations independent of rendering speed.
-MOVEMENT_SPEED = 90.0
-SHAKE_SECONDS = 1.0
-WANDER_PAUSE = 0.5
-DECISION_SECONDS = 4.0
-DIALOGUE_WAIT_SECONDS = 60.0
-FAILURE_COOLDOWN = 8.0
-PARTNER_COOLDOWN = 25.0
-SATISFACTION_PHASE_LOSS = 5
-APPLE_SATISFACTION = 10
-EAT_SECONDS = 1.0
-COMPANY_SOCIAL_RECOVERY = 0.96
-SOCIAL_RADIUS = 110
-COMPANY_MAX_SECONDS = 100.0
-SOCIAL_START = 48
-SOCIAL_RECOVERED = 82
-INVENTORY_CAPACITY = 3
-FRUIT_PER_PHASE = 2
+from constants import (
+    APPLE_ADVANCE_SECONDS, COMPANY_SOCIAL_RECOVERY, CROWD_LIMIT, DECISION_SECONDS,
+    FAILURE_COOLDOWN, FRUIT_PER_PHASE, HEARING_RADIUS, MAX_SIMULATION_STEP_SECONDS, PROTECTED_POPULATION,
+    RECOVERY_SECONDS, SATISFACTION_PHASE_LOSS, SOCIAL_RADIUS, WITNESS_RADIUS,
+)
 
 
 @dataclass
@@ -126,7 +113,7 @@ class Simulation:
     def npc_by_id(self, npc_id):
         return next((npc for npc in self.npcs if npc.id == npc_id), None)
 
-    def advance(self, dt, *, active=True, action_handler=None, viewed_conversation=None):
+    def advance(self, dt, *, active=True, action_handler=None):
         if not active or self.paused:
             return
         if action_handler is not None:
@@ -139,7 +126,7 @@ class Simulation:
                     continue
                 action_handler(action)
         # Ignore long window stalls; there is no elapsed world time to catch up.
-        self.step(min(0.1, max(0.0, dt)), viewed_conversation=viewed_conversation)
+        self.step(min(MAX_SIMULATION_STEP_SECONDS, max(0.0, dt)))
 
     def company_available(self, npc):
         from npc import Behavior
@@ -150,7 +137,7 @@ class Simulation:
                 and not any(npc.id in (action.npc_id, action.target_id) for action in self.pending_actions)
                 and npc.behavior in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY))
 
-    def step(self, dt, *, viewed_conversation=None):
+    def step(self, dt):
         from autonomy import reconsider, social_pair
         from npc import Behavior
 
@@ -159,7 +146,7 @@ class Simulation:
         self.snake.update(dt)
         encounter = self.snake.encounter
         if encounter is not None:
-            encounter.update(dt, reading=encounter is viewed_conversation)
+            encounter.update(dt)
         for npc in self.npcs:
             npc.update_cooldowns(dt)
             if npc.pending_social_opinions and npc.decision_remaining == 0:
@@ -170,10 +157,7 @@ class Simulation:
         interactions = {id(npc.conversation or npc.gift): npc.conversation or npc.gift
                         for npc in self.npcs if npc.conversation or npc.gift}
         for interaction in interactions.values():
-            if interaction is viewed_conversation:
-                interaction.update(dt, reading=True)
-            else:
-                interaction.update(dt)
+            interaction.update(dt)
         if self.social_opportunity:
             choice = social_pair(self)
             if choice is not None:
@@ -219,14 +203,12 @@ class Simulation:
         return max(0, self.tree.fruit - int(bool(encounter and encounter.active and encounter.reserved)))
 
     def listeners(self, actor, radius=None):
-        from snake import HEARING_RADIUS
         radius = HEARING_RADIUS if radius is None else radius
         return [p for p in self.npcs if math.dist((p.x, p.y), (actor.x, actor.y)) <= radius]
 
     def observed_event(self, kind, subject, target, text, record=None, *, witnesses=None):
         from social import add_fact
         from conversation_history import remember
-        from snake import WITNESS_RADIUS
         if witnesses is None:
             witnesses = [subject, target, *self.listeners(subject, WITNESS_RADIUS)]
             if math.dist((self.snake.x, self.snake.y), (subject.x, subject.y)) <= WITNESS_RADIUS:
@@ -243,7 +225,7 @@ class Simulation:
         return event, fact
 
     def seek_bargain(self, npc):
-        from snake import CROWD_LIMIT, SnakeEncounter
+        from snake import SnakeEncounter
         if self.npc_by_id(npc.id) is not npc or math.dist((npc.x, npc.y), self.tree.interaction_point) > 8:
             return None
         collecting = npc.id in self.snake.advances
@@ -277,7 +259,6 @@ class Simulation:
         return self.seek_bargain(npc)
 
     def eating_permitted(self, target=None, *, encounter=None, reachable=False):
-        from snake import CROWD_LIMIT, PROTECTED_POPULATION
         if len(self.npcs) <= PROTECTED_POPULATION or self.snake.recovery_remaining > 0:
             return False
         if self.snake.eaten_today >= 1 and len(self.npcs) <= CROWD_LIMIT:
@@ -294,7 +275,6 @@ class Simulation:
 
     def commit_snake_response(self, encounter, response):
         from social import claim_by_id, learn_account
-        from snake import APPLE_ADVANCE_SECONDS, HEARING_RADIUS
         npc, snake = encounter.recipient, self.snake
         decision = response.decision
         if not encounter.accepts_response or encounter.committed or not encounter.arrived:
@@ -483,7 +463,6 @@ class Simulation:
                 person.resume_pending = False
 
     def depart_resident(self, target, encounter):
-        from snake import RECOVERY_SECONDS
         from social import resolve_goal
         if target.departure or not self.eating_permitted(target, encounter=encounter, reachable=True):
             return False

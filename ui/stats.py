@@ -1,13 +1,12 @@
 import pygame
 
 from character_data import DEFAULT_COLORS, FIELDS
-from npc import EMOTION_THRESHOLD
+from constants import ACCENT, EMOTION_THRESHOLD, GRASS, INK, MUTED, PAPER
 from social import assertion_text, claim_by_id, fact_by_id, phase_label, selected_beliefs
 
 from .button import Button
 from .text import wrap_text
 from .world import snake_artwork
-from .theme import ACCENT, GRASS, INK, MUTED, PAPER
 
 
 class StatsScreen:

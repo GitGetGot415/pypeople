@@ -1,6 +1,6 @@
 import pygame
 
-from .theme import ACCENT, BORDER_RADIUS, PAPER
+from constants import ACCENT, BORDER_RADIUS, PAPER
 
 
 class Button:

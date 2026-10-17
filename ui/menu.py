@@ -2,7 +2,7 @@ import pygame
 from llm import MODEL
 from .button import Button
 from .text import draw_centered_text, draw_wrapped_text
-from .theme import BORDER_RADIUS, GRASS, MUTED, PAPER, INK
+from constants import BORDER_RADIUS, GRASS, MUTED, PAPER, INK
 
 class MenuScreen:
     def __init__(self):

@@ -2,7 +2,7 @@ import re
 
 import pygame
 
-from .theme import INK
+from constants import INK
 
 
 def draw_centered_text(surface, text, font, y, color=INK):

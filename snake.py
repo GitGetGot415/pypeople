@@ -5,18 +5,14 @@ import math
 import random
 from uuid import uuid4
 
+from constants import (
+    APPLE_ADVANCE_SECONDS, CROWD_LIMIT, HEARING_RADIUS, PARTNER_COOLDOWN, POST_DIALOGUE_SECONDS,
+    RECOVERY_SECONDS, SNAKE_DIALOGUE_WAIT_SECONDS, SNAKE_EAT_SECONDS, SNAKE_FRAME_SECONDS,
+    SNAKE_MARGIN, SNAKE_NAME, SNAKE_SPEED,
+)
 from conversation_history import ConversationRecord
+from interactions import face_each_other, finish_generated_dialogue
 
-SNAKE_NAME = "Nachash Peyton"
-SNAKE_MARGIN = 24
-SNAKE_SPEED = 35.0
-SNAKE_FRAME_SECONDS = 0.22
-HEARING_RADIUS = 150
-WITNESS_RADIUS = 220
-CROWD_LIMIT = 10
-PROTECTED_POPULATION = 2
-RECOVERY_SECONDS = 20.0
-APPLE_ADVANCE_SECONDS = 30.0
 
 # These are instructions to the provider, never locally supplied spoken lines.
 SNAKE_DOCTRINE = (
@@ -224,7 +220,7 @@ class SnakeEncounter:
         self.arrived = False
         self.dialogue_state = "waiting"
         self.wait_elapsed = 0.0
-        self.talking_remaining = 0.0
+        self.talking_remaining = POST_DIALOGUE_SECONDS
         self.turns = []
         self.pending_opinions = []
         self.committed = False
@@ -330,11 +326,9 @@ class SnakeEncounter:
         for turn in self.turns:
             actor = self.initiator if turn.speaker == "initiator" else npc
             self.record.add_turn(actor.name, turn.text, [p.model_dump() for p in turn.parts])
-        self.dialogue_state = "ready"
         self.stage = "dialogue"
         self.record.status = "Judgment announced" if self.purpose == "judgment" else "Dialogue ready"
-        # Release the resident or start the judgment outcome immediately.
-        self.update(0.0)
+        finish_generated_dialogue(self)
 
     def fail_dialogue(self, reason):
         if self.committed or not self.active:
@@ -362,15 +356,15 @@ class SnakeEncounter:
             if self.world.npc_by_id(npc.id) is npc:
                 npc.restore_activity(self.saved_state)
                 npc.resume_pending = True
-                npc.cooldowns[self.initiator.id] = 25.0
-                npc.cooldowns[self.world.tree.id] = 25.0
+                npc.cooldowns[self.initiator.id] = PARTNER_COOLDOWN
+                npc.cooldowns[self.world.tree.id] = PARTNER_COOLDOWN
         if self.initiator.encounter is self:
             self.initiator.encounter = None
             self.initiator.target_id = None
             self.initiator.destination = None
             self.initiator.activity = "recovering" if self.initiator.recovery_remaining else "guarding"
 
-    def update(self, dt, *, reading=False):
+    def update(self, dt):
         if not self.active:
             return
         npc, snake = self.recipient, self.initiator
@@ -392,15 +386,13 @@ class SnakeEncounter:
                 self.record.status = "Waiting for generated dialogue"
             return
         if self.stage == "waiting":
-            self.face_each_other()
+            face_each_other(self.initiator, self.recipient)
             self.wait_elapsed += dt
-            if self.wait_elapsed > 125:
+            if self.wait_elapsed > SNAKE_DIALOGUE_WAIT_SECONDS:
                 self.fail_dialogue("Dialogue generation timed out. Retry to continue.")
             return
         if self.stage == "dialogue":
-            self.face_each_other()
-            if reading and self.turns:
-                return
+            face_each_other(self.initiator, self.recipient)
             self.talking_remaining = max(0, self.talking_remaining - dt)
             if self.talking_remaining:
                 return
@@ -418,11 +410,6 @@ class SnakeEncounter:
                 self.elapsed = 0.0
         elif self.stage == "eating":
             self.elapsed += dt
-            if self.elapsed >= 1.0:
+            if self.elapsed >= SNAKE_EAT_SECONDS:
                 if not self.world.depart_resident(npc, self):
                     self.finish(error="Eating permission changed; the resident was spared.")
-
-    def face_each_other(self):
-        for actor in (self.initiator, self.recipient):
-            other = self.other(actor)
-            actor.facing = math.floor(math.atan2(other.x - actor.x, actor.y - other.y) / (math.pi / 4) + 0.5) % 8

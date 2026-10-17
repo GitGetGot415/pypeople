@@ -3,7 +3,7 @@
 import pygame
 
 from .text import wrap_text
-from .theme import ACCENT, INK, MUTED, PAPER
+from constants import ACCENT, INK, MUTED, PAPER
 
 
 class EventFeed:

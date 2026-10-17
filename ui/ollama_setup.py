@@ -4,7 +4,7 @@ import pygame
 from ollama_manager import open_ollama_download, check_ollama, download_model
 from .button import Button
 from .text import draw_centered_text
-from .theme import GRASS, PAPER, MUTED, BORDER_RADIUS
+from constants import GRASS, PAPER, MUTED, BORDER_RADIUS
 
 
 class OllamaSetupScreen:

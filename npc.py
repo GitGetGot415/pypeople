@@ -14,16 +14,14 @@ from conversation_history import (ConversationRecord, describe_opinion_change, r
 from social import (Goal, check_relationship_goals, commit_agreements, commit_information, conversation_references, gossip_claim,
                     information_views, on_transfer, permitted_proposals, phase_label, prepare_information,
                     private_context, validate_live_agreements)
-from simulation import (
-    APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DIALOGUE_WAIT_SECONDS, EAT_SECONDS, FAILURE_COOLDOWN, INVENTORY_CAPACITY,
-    MOVEMENT_SPEED, PARTNER_COOLDOWN, SHAKE_SECONDS, SOCIAL_RADIUS,
-    SOCIAL_RECOVERED, WANDER_PAUSE,
+from constants import (
+    APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DIALOGUE_WAIT_SECONDS, EAT_SECONDS,
+    EMOTION_THRESHOLD, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, GIFT_SECONDS, INVENTORY_CAPACITY,
+    MOVEMENT_SPEED, NPC_RADIUS, PARTNER_COOLDOWN,
+    POST_DIALOGUE_SECONDS, SHAKE_SECONDS, SOCIAL_RADIUS, SOCIAL_RECOVERED, WANDER_PAUSE, WORLD_HEIGHT, WORLD_WIDTH,
 )
+from interactions import face_each_other, finish_generated_dialogue
 
-WORLD_WIDTH = 960
-WORLD_HEIGHT = 460
-NPC_RADIUS = 18
-EMOTION_THRESHOLD = 75
 
 ACTIVITY_FIELDS = (
     "behavior", "destination", "pause_remaining", "facing", "owner", "target_id",
@@ -278,7 +276,7 @@ class NPC:
             if self.thanking:
                 return f"Thanking {self.gift.initiator.name}"
             if self.gift.initiator is self:
-                if self.gift.elapsed >= 1.0:
+                if self.gift.elapsed >= GIFT_GIVE_SECONDS:
                     return f"Waiting for {self.gift.recipient.name}'s thanks"
                 return f"Giving to {self.gift.recipient.name}" if self.gift.arrived else f"Walking to {self.gift.recipient.name}"
             return f"Receiving from {self.gift.initiator.name}"
@@ -456,11 +454,11 @@ class NPC:
     @property
     def giving(self):
         return (self.gift is not None and self.gift.initiator is self
-                and self.gift.arrived and self.gift.elapsed < 1.0)
+                and self.gift.arrived and self.gift.elapsed < GIFT_GIVE_SECONDS)
 
     @property
     def thanking(self):
-        return self.gift is not None and self.gift.recipient is self and self.gift.elapsed >= 1.0
+        return self.gift is not None and self.gift.recipient is self and self.gift.elapsed >= GIFT_GIVE_SECONDS
 
     def give_items(self, recipient, item, quantity, record=None, spacing=0):
         """Walk over and hand the items to the recipient before transferring them."""
@@ -616,7 +614,7 @@ class Conversation:
             raise ValueError("There is no permitted account to discuss with this person.")
         self.dialogue_state = "waiting"
         self.wait_elapsed = 0.0
-        self.talking_remaining = 0.0
+        self.talking_remaining = POST_DIALOGUE_SECONDS
         self.food_outcome = ""
         self.food_reason = ""
         self.handoff_thanks = []
@@ -694,8 +692,6 @@ class Conversation:
         if any(n.command_revision != self.request_actor_revisions[n.id] for n in (self.initiator, self.recipient)):
             raise ValueError("The participants changed activities before the reply arrived.")
         validate_live_agreements(self, response)
-        self.dialogue_state = "ready"
-        self.talking_remaining = 0.0
         self.turns = response.turns
         self.handoff_thanks = response.handoff_thanks
         for turn in response.turns:
@@ -736,8 +732,7 @@ class Conversation:
         ]
         if self.purpose == "food_request":
             self.record_food_request()
-        # Resume activities or begin the agreed handoff as soon as generation ends.
-        self.update(0.0)
+        finish_generated_dialogue(self)
 
     @property
     def accepts_response(self):
@@ -791,21 +786,11 @@ class Conversation:
             self.pending_opinions.pop(0)
         self.error = ""
 
-    def face_each_other(self):
-        for participant in (self.initiator, self.recipient):
-            other = self.other(participant)
-            angle = math.atan2(other.x - participant.x, participant.y - other.y)
-            participant.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
-
-    def update(self, dt, *, reading=False):
+    def update(self, dt):
         if not self.active:
             return
         if self.arrived:
-            self.face_each_other()
-            # Reading a live exchange holds both participants, not just the selected NPC.
-            # Missing dialogue still reaches its bounded timeout while the view is open.
-            if reading and self.turns:
-                return
+            face_each_other(self.initiator, self.recipient)
             if self.dialogue_state in ("waiting", "pending"):
                 self.wait_elapsed += dt
                 if self.wait_elapsed >= DIALOGUE_WAIT_SECONDS:
@@ -824,7 +809,7 @@ class Conversation:
         if self.arrived:
             self.record.status = "Waiting for dialogue"
             npc.destination = None
-            self.face_each_other()
+            face_each_other(self.initiator, self.recipient)
             if self.purpose == "food_request":
                 self.prepare_food_request()
         elif npc.x != old_x or npc.y != old_y:
@@ -969,12 +954,10 @@ class Gift:
             if self.arrived:
                 giver.destination = None
                 self.record.status = "Giving items"
-                for npc, other in ((giver, recipient), (recipient, giver)):
-                    angle = math.atan2(other.x - npc.x, npc.y - other.y)
-                    npc.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
+                face_each_other(giver, recipient)
             return
         elapsed = self.elapsed + max(0.0, dt)
-        if not self.transferred and elapsed + 1e-9 >= 1.0:
+        if not self.transferred and elapsed + 1e-9 >= GIFT_GIVE_SECONDS:
             if giver.inventory.get(self.item, 0) < self.quantity or recipient.inventory_space < self.quantity:
                 self.finish("The items could not be given because the inventories changed.")
                 return
@@ -993,9 +976,9 @@ class Gift:
                                      [part.model_dump() for part in self.thanks])
             self.record.outcomes[0:1] = [f"Gave {self.quantity} {self.item} to {recipient.name}."]
             self.record.status = "Thanking"
-            elapsed = max(1.0, elapsed)
+            elapsed = max(GIFT_GIVE_SECONDS, elapsed)
         self.elapsed = elapsed
-        if self.elapsed + 1e-9 >= 2.0:
+        if self.elapsed + 1e-9 >= GIFT_SECONDS:
             self.finish()
 
     def finish(self, error=""):

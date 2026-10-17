@@ -3,9 +3,8 @@ from pathlib import Path
 
 import pygame
 
-from npc import WORLD_WIDTH, WORLD_HEIGHT
+from constants import INK, PAPER, SHADOW_COLOR, WORLD_COLORS, WORLD_HEIGHT, WORLD_WIDTH
 
-from .theme import INK, PAPER, SHADOW_COLOR, WORLD_COLORS
 
 
 CHARACTER_SCALE = 0.5

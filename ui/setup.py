@@ -8,7 +8,7 @@ from .button import Button
 from .file_dialog import character_file_dialog
 from .text import draw_centered_text, draw_wrapped_text
 from .text_input import TextInput
-from .theme import ACCENT, BORDER_RADIUS, GRASS, INK, MUTED, PAPER
+from constants import ACCENT, BORDER_RADIUS, GRASS, INK, MUTED, PAPER
 
 
 class SetupScreen:

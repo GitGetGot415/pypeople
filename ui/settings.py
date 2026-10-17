@@ -8,7 +8,7 @@ from ollama_manager import DEFAULT_OLLAMA_MODEL, list_models, save_model
 from .button import Button
 from .text import draw_centered_text, draw_wrapped_text
 from .text_input import TextInput
-from .theme import BORDER_RADIUS, GRASS, INK, MUTED, PAPER
+from constants import BORDER_RADIUS, GRASS, INK, MUTED, PAPER
 
 
 def format_model_size(size):

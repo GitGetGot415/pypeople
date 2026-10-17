@@ -4,7 +4,7 @@ import math
 
 from npc import Behavior
 from conversation_history import memory_bias
-from simulation import APPLE_SATISFACTION, DECISION_SECONDS, SOCIAL_START
+from constants import APPLE_SATISFACTION, DECISION_SECONDS, SOCIAL_START
 from social import (claim_by_id, fact_by_id, goal_attempt_cooling_down, pair_objective,
                     pending_promises, selected_beliefs)
 

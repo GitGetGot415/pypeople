@@ -21,15 +21,15 @@
   - slider.py - handles sliders
   - text_input.py - controls how text input works
   - text.py - displays the text
-  - theme.py - colors and window settings
   - world.py - draws the NPC and the tree
-  
+
+- autonomy.py - local activity priorities, target selection, and decision reasons
 - character_data.py - validates, loads, and locally randomizes character descriptions and appearance
+- constants.py - hardcoded variables are stored here, other files reference them from this centralized location
 - llm.py - makes the llm calls required for the ai to function
 - main.py - starts the code
 - npc.py - backend
+- simulation_data.py - validates, saves, and restores complete simulations
 - simulation.py - day phases, shared activity constants, and world updates
 - snake.py - the guarding python, movement, and generated encounters
 - purgatory.py - initial snake attitudes and private knowledge from character descriptions
-- autonomy.py - local activity priorities, target selection, and decision reasons
-- simulation_data.py - validates, saves, and restores complete simulations

@@ -5,12 +5,12 @@ from dataclasses import asdict, dataclass
 from typing import Literal
 from uuid import uuid4
 
+from constants import GOAL_IMPROVEMENT
 from conversation_history import remember
 
 GoalKind = Literal["obtain_apple", "help_with_apple", "repair_relationship", "sabotage_relationship"]
 FactKind = Literal["apple_given", "apple_refused", "promise_kept", "promise_broken", "private_motive", "former_life", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating"]
 Stance = Literal["uncertain", "believed", "disbelieved"]
-GOAL_IMPROVEMENT = 8
 
 
 def phase_index(day, phase):

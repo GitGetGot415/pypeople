@@ -3,7 +3,7 @@ import pygame
 from .button import Button
 from .text import draw_centered_text, draw_wrapped_text
 from .text_input import TextInput
-from .theme import ACCENT, GRASS, INK, MUTED, PAPER
+from constants import ACCENT, GRASS, INK, MUTED, PAPER
 
 
 class LoadSimScreen:

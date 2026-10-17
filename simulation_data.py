@@ -10,12 +10,17 @@ from types import SimpleNamespace
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from character_data import normalize_character, normalize_opinions
+from constants import (
+    APPLE_ADVANCE_SECONDS, DIALOGUE_WAIT_SECONDS, EAT_SECONDS, GIFT_GIVE_SECONDS, GIFT_SECONDS,
+    MAX_SIMULATION_STEP_SECONDS, SHAKE_SECONDS, SNAKE_DIALOGUE_WAIT_SECONDS, SNAKE_EAT_SECONDS,
+    SNAKE_FRAME_SECONDS, SNAKE_MARGIN, SNAKE_NAME, WORLD_HEIGHT, WORLD_WIDTH,
+)
 from conversation_history import ConversationRecord, Memory, WorldEvent
 from llm import (AcceptedProposal, ConversationPart, ConversationTurn, DisclosureChoice,
                  EmotionReaction, LeverageUse, ThirdPartyOpinion)
-from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree, WORLD_HEIGHT, WORLD_WIDTH
-from simulation import DIALOGUE_WAIT_SECONDS, EAT_SECONDS, PendingAction, SHAKE_SECONDS, Simulation
-from snake import APPLE_ADVANCE_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_MARGIN, SNAKE_NAME, Snake, SnakeEncounter
+from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree
+from simulation import PendingAction, Simulation
+from snake import Snake, SnakeEncounter
 from purgatory import Attitudes
 from social import (Belief, Claim, Disclosure, Fact, FactKind, Goal, GoalKind, OpinionEffect, Promise, Proposal,
                     Stance, information_from_dict, phase_index, validate_agreements, validate_information)
@@ -266,7 +271,7 @@ class ConversationState(SaveModel):
     purpose: Literal["chat", "food_request", "gossip"]
     focus_claim_id: str | None
     dialogue_state: Literal["waiting", "pending", "ready"]
-    wait_elapsed: float = Field(ge=0, le=DIALOGUE_WAIT_SECONDS + 0.1)
+    wait_elapsed: float = Field(ge=0, le=DIALOGUE_WAIT_SECONDS + MAX_SIMULATION_STEP_SECONDS)
     talking_remaining: float = Field(ge=0, le=4)
     food_outcome: Literal["", "accepted", "need", "refused", "unavailable"]
     food_reason: str
@@ -303,7 +308,7 @@ class GiftState(SaveModel):
     item: Literal["fruit"]
     quantity: int = Field(ge=1)
     arrived: bool
-    elapsed: float = Field(ge=0, lt=2)
+    elapsed: float = Field(ge=0, lt=GIFT_SECONDS)
     transferred: bool
     outcome_event_id: str | None
     thanks: list[ConversationPart] = Field(max_length=3)
@@ -379,13 +384,13 @@ class SnakeEncounterState(SaveModel):
     reserved: bool
     arrived: bool
     dialogue_state: Literal["waiting", "pending", "ready"]
-    wait_elapsed: float = Field(ge=0, le=125.1)
+    wait_elapsed: float = Field(ge=0, le=SNAKE_DIALOGUE_WAIT_SECONDS + MAX_SIMULATION_STEP_SECONDS)
     talking_remaining: float = Field(ge=0, le=4)
     committed: bool
     outcome: Literal["", "talk", "advance_secret", "advance_endorsement", "secret", "endorsement", "refuse", "negotiate", "challenge", "spare", "eat"]
     outcome_event_id: str | None
     stage: Literal["approach", "waiting", "dialogue", "condemned_approach", "eating"]
-    elapsed: float = Field(ge=0, le=1.1)
+    elapsed: float = Field(ge=0, le=SNAKE_EAT_SECONDS + MAX_SIMULATION_STEP_SECONDS)
     turns: list[ConversationTurn]
     request_context: dict | None
 
@@ -596,7 +601,7 @@ class SimulationState(SaveModel):
                     validate_information(SimpleNamespace(turns=interaction.turns, disclosures=interaction.accepted_disclosures,
                         third_party_opinions=interaction.third_party_opinions, leverage=interaction.leverage_uses),
                         interaction.information_context.model_dump() if interaction.information_context else None)
-            elif interaction.transferred != (interaction.elapsed >= 1) or interaction.transferred != bool(interaction.outcome_event_id):
+            elif interaction.transferred != (interaction.elapsed >= GIFT_GIVE_SECONDS) or interaction.transferred != bool(interaction.outcome_event_id):
                 raise ValueError("Invalid apple handoff progress.")
         encounter = self.snake_encounter
         if encounter:

@@ -1,6 +1,6 @@
 import pygame
 
-from .theme import ACCENT, GRASS, INK, MUTED, PAPER
+from constants import ACCENT, GRASS, INK, MUTED, PAPER
 
 
 class ColorSlider:

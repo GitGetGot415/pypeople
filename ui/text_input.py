@@ -1,7 +1,7 @@
 import pygame
 import pyperclip
 
-from .theme import ACCENT, BORDER_RADIUS, INK, MUTED
+from constants import ACCENT, BORDER_RADIUS, INK, MUTED
 
 
 class TextInput:

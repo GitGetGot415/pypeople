@@ -5,7 +5,7 @@ from time import monotonic
 
 import pygame
 
-from .theme import ACCENT, INK, MUTED, PAPER
+from constants import ACCENT, INK, MUTED, PAPER
 
 
 class RequestStatus:

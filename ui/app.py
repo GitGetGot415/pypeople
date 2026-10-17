@@ -25,7 +25,7 @@ from .settings import SettingsScreen
 from .setup import SetupScreen
 from .stats import StatsScreen
 from .ollama_setup import OllamaSetupScreen
-from .theme import FPS, WINDOW_SIZE
+from constants import FPS, WINDOW_SIZE
 from .world import CHARACTER_SCALE
 
 
@@ -600,9 +600,7 @@ class Application:
         if self.screen == "setup":
             self.setup.update(dt)
         if self.simulation is not None:
-            viewed = self.game.viewed_conversation if self.screen == "game" and self.game.dialogue_open else None
-            self.simulation.advance(dt, active=simulation_active, action_handler=self.apply_pending_action,
-                                    viewed_conversation=viewed)
+            self.simulation.advance(dt, active=simulation_active, action_handler=self.apply_pending_action)
         if simulation_active:
             if self.game.selected_npc is not None and self.game.selected_npc is not self.simulation.snake and self.simulation.npc_by_id(self.game.selected_npc.id) is not self.game.selected_npc:
                 self.game.close_dialogue()

@@ -1,12 +1,11 @@
 import pygame
-from npc import EMOTION_THRESHOLD, WORLD_HEIGHT, WORLD_WIDTH
+from constants import EMOTION_THRESHOLD, INK, MUTED, PAPER, WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH
 
 from .button import Button
 from .event_feed import EventFeed
 from .request_status import RequestStatus
 from .text import draw_wrapped_text, paginate_text, wrap_text
 from .text_input import TextInput
-from .theme import INK, MUTED, PAPER, WINDOW_SIZE
 from .world import draw_world, snake_artwork
 
 
@@ -242,12 +241,7 @@ class GameScreen:
         if conversation is None or not self.conversation_pages:
             return
         if self.conversation_page_index == len(self.conversation_pages) - 1:
-            # Done completes the exchange, including any agreed item handoff.
-            if conversation.active:
-                if app.simulation.paused:
-                    return
-                conversation.talking_remaining = 0.0
-                conversation.update(0.0)
+            # Transcript navigation does not control the world interaction.
             self.close_dialogue()
         else:
             self.conversation_page_index += 1
