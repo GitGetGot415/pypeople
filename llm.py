@@ -8,6 +8,7 @@ from google import genai
 from google.genai import errors, types
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from constants import DIALOGUE_REPAIR_WORD_LIMIT, SNAKE_TURN_COUNT
 from ollama_manager import DEFAULT_OLLAMA_MODEL
 from social import validate_agreements, validate_information
 from purgatory import Attitudes
@@ -148,7 +149,7 @@ class SnakeDecision(BaseModel):
 
 
 class SnakeResponse(SnakeDecision):
-    turns: list[ConversationTurn] = Field(min_length=4, max_length=5)
+    turns: list[ConversationTurn] = Field(min_length=SNAKE_TURN_COUNT, max_length=SNAKE_TURN_COUNT + 1)
 
 
 class SnakePlayerResponse(BaseModel):
@@ -1661,7 +1662,7 @@ def _dialogue_repair_snapshot(snapshot, response, index, *, closing=False):
             "current_concern": private.get("immediate_objective", ""),
             "preceding_turns": [{"name": snapshot[turn.speaker]["npc_name"], "role": turn.speaker, "text": turn.text}
                                 for turn in response.turns[0 if closing else max(0, index - 2):index]],
-            "heard_accounts": heard, "word_limit": 10}
+            "heard_accounts": heard, "word_limit": DIALOGUE_REPAIR_WORD_LIMIT}
     if closing:
         state["_factual_context"] = [account["assertion"] for account in accounts]
         state["_factual_context"].extend(event["text"] for event in
@@ -1693,7 +1694,7 @@ def _snake_turn_snapshot(snapshot, decision, turns):
     else:
         direction = resident["character"]["speaking_style"]
         private = resident["private_context"]
-        attitudes = (decision.attitudes.model_dump() if index >= 3 and decision.attitudes is not None
+        attitudes = (decision.attitudes.model_dump() if index >= SNAKE_TURN_COUNT - 1 and decision.attitudes is not None
                      else private["snake_attitudes"])
         speaker.update(situation=private.get("situation", {}), inventory=resident["inventory"],
                        view_of_listener={key: attitudes[key] for key in ("belief", "trust", "authority")})
@@ -1753,7 +1754,8 @@ def _snake_turn_snapshot(snapshot, decision, turns):
             account = next(a for a in snake["known_accounts"] if a["claim_id"] == decision.snake_account_id)
             task += " Also disclose the supplied known account now, retaining its actual owner and source."
     else:
-        task = ("React to what the listener has just done or revealed and close this exchange. "
+        task = ("Give one short personal reaction to what the listener has just done or revealed, then close. "
+                "Do not restate the bargain, the listener's explanation, or your earlier reply. "
                 "Preserve the settled outcome and any accepted obligation; introduce no new bargain "
                 "or request to hear an account already told.")
         if decision.snake_account_id and role == "recipient":
@@ -1766,7 +1768,7 @@ def _snake_turn_snapshot(snapshot, decision, turns):
     if index >= 2 and outcome in ("secret", "endorsement"):
         transaction.update(stage="resident has supplied the owed offering in the preceding turn",
                            offering_still_owed=False, apple_transferred=False)
-    if index >= 3:
+    if index >= SNAKE_TURN_COUNT - 1:
         transaction.update(stage="outcome already enacted in preceding_turns", outcome=outcome,
                            apple_transferred=outcome in ("advance_secret", "advance_endorsement"),
                            offering_still_owed=outcome in ("advance_secret", "advance_endorsement", "negotiate"))
@@ -1795,6 +1797,19 @@ def _snake_turn_snapshot(snapshot, decision, turns):
                             for turn in turns],
         "_speaker_direction": direction,
     }
+
+
+def _snake_reaction_repair_snapshot(snapshot):
+    """Repair only the final reaction, retaining the settled transaction and stance."""
+    state = deepcopy(snapshot)
+    state["request_kind"] = "dialogue_repair"
+    state["word_limit"] = DIALOGUE_REPAIR_WORD_LIMIT
+    state["speaker"]["style"] = state.pop("_speaker_direction")
+    # Earlier speech remains in the original snapshot for complete validation.
+    # Supplying only the listener's latest turn reduces copying of one's own reply.
+    state["preceding_turns"] = state["preceding_turns"][-1:]
+    state["task"] += " Give a fresh personal reaction without another question."
+    return state
 
 
 def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAMA_MODEL, progress=None):
@@ -1830,7 +1845,7 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
         kind = state.get("request_kind")
         activity = {"intent": "player intent", "conversation": "conversation",
                     "snake_decision": "encounter outcome", "snake_player": "snake reply",
-                    "snake_turn": f"turn {state.get('turn_index', 0) + 1}/4 for {state.get('speaker', {}).get('name', '')}",
+                    "snake_turn": f"turn {state.get('turn_index', 0) + 1}/{SNAKE_TURN_COUNT} for {state.get('speaker', {}).get('name', '')}",
                     "dialogue_repair": "dialogue repair", "conversation_closing": "closing answer"}.get(kind, "NPC reply")
         report(f"Generating {activity}")
         try:
@@ -1862,6 +1877,26 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
             try:
                 return request(state, correction=correction)
             except InvalidResponseError as retry_error:
+                if isinstance(retry_error.response, DialogueRepairResponse) and retry_error.repeated_turns:
+                    try:
+                        report("Recovery: removing duplicate speech")
+                        candidate = retry_error.response.model_copy(deep=True)
+                        candidate.parts = _deduplicate_dialogue_parts(candidate)
+                        try:
+                            return validate_response(candidate.model_dump_json(), state)
+                        except InvalidResponseError as remaining:
+                            indices = remaining.repeated_turns
+                            # Earlier turns perform the chosen transaction or disclosure.
+                            # Only the last, effect-free personal reaction may be rewritten.
+                            if (kind != "snake_turn" or state["turn_index"] != SNAKE_TURN_COUNT - 1
+                                    or state.get("account_to_share") or indices != (state["turn_index"],)):
+                                raise
+                        report(f"Recovery: rewriting turn {state['turn_index'] + 1}/{SNAKE_TURN_COUNT}")
+                        repair_state = _snake_reaction_repair_snapshot(state)
+                        candidate = request(repair_state)
+                        return validate_response(candidate.model_dump_json(), state)
+                    except InvalidResponseError as repair_error:
+                        raise RequestError(f"The model's dialogue still failed validation after targeted repair: {repair_error}") from None
                 if isinstance(retry_error.response, ConversationResponse) and retry_error.repeated_turns:
                     # All structured effects passed validation. Repair only the
                     # offending speech, keeping every other field and turn fixed.
@@ -1916,7 +1951,7 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
     if snapshot.get("request_kind") == "snake_encounter":
         decision = validated_request({**snapshot, "request_kind": "snake_decision"})
         turns = []
-        for _ in range(4):
+        for _ in range(SNAKE_TURN_COUNT):
             state = _snake_turn_snapshot(snapshot, decision, turns)
             speech = validated_request(state)
             turns.append(ConversationTurn(speaker=state["speaker_role"], parts=speech.parts))
