@@ -4,7 +4,7 @@ from constants import DIALOGUE_PAGE_LINES, EMOTION_THRESHOLD, INK, MUTED, PAPER,
 from .button import Button
 from .event_feed import EventFeed
 from .request_status import RequestStatus
-from .text import draw_wrapped_text, paginate_text, wrap_text
+from .text import draw_wrapped_text, paginate_parts, wrap_text
 from .text_input import TextInput
 from .world import draw_world, snake_artwork
 
@@ -393,14 +393,13 @@ class GameScreen:
         conversation = self.viewed_conversation
         rect = pygame.Rect(self.reply_rect.x, 594, self.reply_rect.width, 96)
         if self._conversation_page_turns is not conversation.turns:
-            # Model parts carry distinct reactions; oversized parts are split
-            # again to fit the actual font and dialogue box without scrolling.
+            # A display part cannot interrupt a sentence from this same turn.
             max_lines = max(1, min(DIALOGUE_PAGE_LINES, rect.height // app.font.get_linesize()))
             self.conversation_pages = [
                 (turn, part, text)
                 for turn in conversation.turns
-                for part in turn.parts
-                for text in paginate_text(part.text, app.font, rect.width - 12, max_lines)
+                for part, text in paginate_parts([(part.text, part) for part in turn.parts],
+                                                 app.font, rect.width - 12, max_lines)
             ]
             self._conversation_page_turns = conversation.turns
             self.conversation_page_index = 0

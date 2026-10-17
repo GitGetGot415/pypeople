@@ -5,7 +5,7 @@ from constants import ACCENT, EMOTION_THRESHOLD, GRASS, INK, MUTED, PAPER
 from social import assertion_text, claim_by_id, fact_by_id, phase_label, selected_beliefs
 
 from .button import Button
-from .text import paginate_text, wrap_text
+from .text import paginate_parts, wrap_text
 from .world import snake_artwork
 
 
@@ -74,10 +74,10 @@ class StatsScreen:
         def height():
             return sum(font.get_linesize() for _, font, _, _ in lines)
 
-        def message(speaker, text, emotion=None):
+        def message(speaker, parts):
             npc = next((npc for npc in app.simulation.actors if npc.name == speaker), None)
             indent = 112 if npc is not None else 0
-            for page in paginate_text(text, app.font, self.detail_rect.width - 20 - indent):
+            for emotion, page in paginate_parts(parts, app.font, self.detail_rect.width - 20 - indent):
                 top = height()
                 add(speaker, color=ACCENT, indent=indent)
                 add(page, indent=indent)
@@ -123,10 +123,9 @@ class StatsScreen:
             for index, (speaker, text) in enumerate(record.turns):
                 parts = record.dialogue_parts.get(index)
                 if parts:
-                    for part in parts:
-                        message(speaker, part["text"], part["emotion"])
+                    message(speaker, [(part["text"], part["emotion"]) for part in parts])
                 else:
-                    message(speaker, text)
+                    message(speaker, [(text, None)])
             return lines
 
         npc = self.selected_npc

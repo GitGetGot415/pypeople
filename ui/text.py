@@ -1,8 +1,7 @@
-import re
-
 import pygame
 
-from constants import DIALOGUE_PAGE_LINES, DIALOGUE_PART_MAX_CHARACTERS, INK
+from constants import DIALOGUE_PAGE_LINES, INK
+from dialogue_text import split_sentences
 
 
 def draw_centered_text(surface, text, font, y, color=INK):
@@ -34,36 +33,36 @@ def wrap_text(text, font, width):
 
 
 def paginate_text(text, font, width, max_lines=DIALOGUE_PAGE_LINES):
-    """Fit dialogue pages, preferring sentence breaks and preserving all words."""
-    def fits(text):
-        return len(text) <= DIALOGUE_PART_MAX_CHARACTERS and len(wrap_text(text, font, width)) <= max_lines
-
+    """Group complete sentences; a long sentence stays together and can scroll."""
     pages = []
     page = ""
-    for sentence in re.split(r"(?<=[.!?])\s+", " ".join(text.split())):
+    for sentence in split_sentences(text):
         candidate = f"{page} {sentence}" if page else sentence
-        if fits(candidate):
-            page = candidate
-            continue
-        if page:
+        if page and len(wrap_text(candidate, font, width)) > max_lines:
             pages.append(page)
-            page = ""
-        for word in sentence.split():
-            candidate = f"{page} {word}" if page else word
-            if fits(candidate):
-                page = candidate
-                continue
-            if page:
-                pages.append(page)
-                page = ""
-            # A very long unbroken word also needs to fit a single page.
-            for char in word:
-                if page and not fits(page + char):
-                    pages.append(page)
-                    page = ""
-                page += char
+            page = sentence
+        else:
+            page = candidate
     if page:
         pages.append(page)
+    return pages
+
+
+def paginate_parts(parts, font, width, max_lines=DIALOGUE_PAGE_LINES):
+    """Rejoin one speaker's part fragments, retaining the source of each page."""
+    texts, sources, offset = [], [], 0
+    for text, source in parts:
+        text = " ".join(text.split())
+        if text:
+            texts.append(text)
+            offset += len(text) + 1
+            sources.append((offset, source))
+    pages, offset, source_index = [], 0, 0
+    for page in paginate_text(" ".join(texts), font, width, max_lines):
+        while offset >= sources[source_index][0]:
+            source_index += 1
+        pages.append((sources[source_index][1], page))
+        offset += len(page) + 1
     return pages
 
 

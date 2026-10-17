@@ -8,9 +8,10 @@ from google import genai
 from google.genai import errors, types
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-from constants import (DIALOGUE_CORRECTION_PART_MAX_CHARACTERS, DIALOGUE_MAX_PARTS,
-                       DIALOGUE_PART_MAX_CHARACTERS, DIALOGUE_PARTS_PER_TURN,
+from constants import (DIALOGUE_CORRECTION_TARGET_CHARACTERS, DIALOGUE_MAX_PARTS,
+                       DIALOGUE_PART_TARGET_CHARACTERS, DIALOGUE_PARTS_PER_TURN,
                        DIALOGUE_REPAIR_WORD_LIMIT, SNAKE_TURN_COUNT)
+from dialogue_text import speech_is_complete
 from ollama_manager import DEFAULT_OLLAMA_MODEL
 from social import validate_agreements, validate_information
 from purgatory import Attitudes
@@ -334,7 +335,7 @@ CONVERSATION_SCHEMA = {
                             "type": "object",
                             "properties": {
                                 "text": {
-                                    "type": "string", "minLength": 1, "maxLength": DIALOGUE_PART_MAX_CHARACTERS,
+                                    "type": "string", "minLength": 1,
                                     "description": "Words spoken to the other NPC, never just a speaker name or role label.",
                                 },
                                 "emotion": EMOTION_SCHEMA,
@@ -559,10 +560,12 @@ Use each speaker's own speaking_style, opinions, knowledge, and immediate
 objective. Personality and goals shape wording without guaranteeing cooperation.
 Normally write 4 alternating turns, starting with initiator; use 6 only when
 needed to resolve the current concern. Keep each turn to one or two short sentences.
-Use one part per turn unless the speaker's emotion actually changes. Each turn is one stretch
+Use one part per turn unless the speaker's emotion changes or another complete sentence needs its own part. Each turn is one stretch
 of speech before the partner replies. Its parts divide that stretch for display
 and emotion changes; later answers belong in later turns. Use short spoken
-sentences, at most {DIALOGUE_PART_MAX_CHARACTERS} characters per part, with emotion for that part's speaker.
+sentences, aiming for about {DIALOGUE_PART_TARGET_CHARACTERS} characters per part, with emotion for that part's speaker.
+Finish every sentence before ending a part or changing speakers. A sentence may exceed
+the size target; never cut it off or defer its ending until after the partner replies.
 Text contains spoken words; speaker identifies the role. Keep identities and
 numbered names consistent. Let the exchange develop and end naturally.
 Return both participants' directional opinions of their partner, with the exact
@@ -871,11 +874,13 @@ def structured_schema(model):
 
 
 def _dialogue_parts_schema(*, correction=False):
-    """Use the same display-part limits for resident and snake speech."""
+    """Share part counts and soft size guidance without clipping sentences."""
     parts = deepcopy(CONVERSATION_SCHEMA["properties"]["turns"]["items"]["properties"]["parts"])
     parts["maxItems"] = 1 if correction else DIALOGUE_PARTS_PER_TURN
-    parts["items"]["properties"]["text"]["maxLength"] = (
-        DIALOGUE_CORRECTION_PART_MAX_CHARACTERS if correction else DIALOGUE_PART_MAX_CHARACTERS)
+    target = DIALOGUE_CORRECTION_TARGET_CHARACTERS if correction else DIALOGUE_PART_TARGET_CHARACTERS
+    parts["items"]["properties"]["text"]["description"] += (
+        f" Prefer about {target} characters, but finish each sentence even if it is longer. "
+        "Never stop mid-sentence to meet a size target. End with sentence punctuation.")
     return parts
 
 
@@ -903,6 +908,7 @@ def validate_snake_decision(result, snapshot):
 
 def validate_snake_response(result, snapshot):
     validate_snake_decision(result, snapshot)
+    validate_dialogue_completion(result.turns)
     for i, turn in enumerate(result.turns):
         if turn.speaker != ("initiator" if i % 2 == 0 else "recipient"):
             raise ValueError("Alternate snake and resident speech, beginning with the snake.")
@@ -967,7 +973,6 @@ def response_contract(snapshot, *, correction=False):
             "and your own views. End without asking any question."
         )
         schema = structured_schema(DialogueRepairResponse)
-        schema["properties"]["parts"]["items"]["properties"]["text"]["maxLength"] = 320
         return instruction, schema, DialogueRepairResponse
     if kind == "snake_turn":
         instruction = (
@@ -986,7 +991,8 @@ def response_contract(snapshot, *, correction=False):
             "Keep internal mechanics, timers, IDs and task directions out of speech. "
             "Use one or two short sentences with the speaker's own emotion. Split longer speech into "
             "consecutive display parts, retaining the complete current task and each part's emotion. "
-            "Later replies belong in later turns. Return only parts.\n"
+            "End parts at complete sentences. Finish the sentence even if it exceeds the size target; "
+            "never leave it for the other speaker or a later turn to finish. Return only parts.\n"
             + snapshot["_speaker_direction"] + "\n" + EMOTION_INSTRUCTION
             + f"\nCurrent speaker: {snapshot['speaker']['name']}. Listener: {snapshot['listener']['name']}. "
             + "The action is already chosen; personality changes its wording, not whether it happens. "
@@ -1009,7 +1015,6 @@ def response_contract(snapshot, *, correction=False):
         )
         instruction += f"\nUse at most {snapshot['word_limit']} words."
         schema = structured_schema(DialogueRepairResponse)
-        schema["properties"]["parts"]["items"]["properties"]["text"]["maxLength"] = 320
         return instruction, schema, DialogueRepairResponse
     if kind in ("snake_decision", "snake_player"):
         from snake import SNAKE_DOCTRINE
@@ -1345,24 +1350,34 @@ def _has_question(text):
     return any(mark in text for mark in ("?", "\uFF1F", "\u061F"))
 
 
+def validate_dialogue_completion(turns, *, start_index=0):
+    incomplete = [index for index, turn in enumerate(turns, start_index) if not speech_is_complete(turn.text)]
+    if incomplete:
+        raise ValueError(
+            f"Speech ends without finishing a sentence in turn(s) {', '.join(map(str, incomplete))}. "
+            "Finish the current speaker's sentence and end with sentence punctuation before the partner replies. "
+            "Rewrite a shorter complete sentence if needed; never clip speech to meet a size target.")
+
+
 def _validate_response(raw, snapshot, model):
     result = model.model_validate_json(raw)
     if isinstance(result, DialoguePartsResponse):
+        current = ConversationTurn(speaker=snapshot.get("speaker_role", "initiator"), parts=result.parts)
+        validate_dialogue_completion([current], start_index=snapshot.get("turn_index", 0))
         if snapshot.get("request_kind") == "conversation_closing" and any(
                 _has_question(part.text) for part in result.parts):
             raise ValueError("Answer the last question and close without asking another question.")
         if snapshot.get("request_kind") in ("snake_turn", "conversation_closing"):
             preceding = [ConversationTurn(speaker=turn["role"], parts=[ConversationPart(text=turn["text"])])
                          for turn in snapshot["preceding_turns"]]
-            current = ConversationTurn(speaker=snapshot["speaker_role"], parts=result.parts)
             account = snapshot.get("account_to_share")
             validate_dialogue_repetition([*preceding, current],
                                         factual_context=([account["assertion"]] if account else
                                                          snapshot.get("_factual_context", [])))
         return result
     if isinstance(result, SnakeResponse):
-        validate_dialogue_repetition(result.turns)
         validate_snake_response(result, snapshot)
+        validate_dialogue_repetition(result.turns)
         return result
     if isinstance(result, SnakeDecision):
         validate_snake_decision(result, snapshot)
@@ -1413,6 +1428,7 @@ def _validate_response(raw, snapshot, model):
         validate_information(result, snapshot.get("_information_validation"))
         validate_agreements(result.accepted_proposals, snapshot.get("permitted_proposals", []),
                             result.turns, snapshot["initiator"]["npc_id"], snapshot["recipient"]["npc_id"])
+        validate_dialogue_completion(result.turns)
         history = snapshot.get("shared_history") or {}
         disclosed = {entry.claim_id for entry in result.disclosures}
         facts = [option["assertion"] for option in (snapshot.get("_information_validation") or {}).get("options", [])
