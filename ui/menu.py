@@ -3,7 +3,6 @@ from llm import MODEL
 from .button import Button
 from .text import draw_centered_text, draw_wrapped_text
 from .theme import BORDER_RADIUS, GRASS, MUTED, PAPER, INK
-from ollama_manager import check_ollama
 
 class MenuScreen:
     def __init__(self):
@@ -14,54 +13,9 @@ class MenuScreen:
         self.exit_button = Button((650, 430, 220, 54), "Exit")
         self.message = ""
 
-        self.confirm_start = False
-
-        self.yes_button = Button(
-            (475, 390, 145, 48),
-            "Yes",
-        )
-
-        self.no_button = Button(
-            (660, 390, 145, 48),
-            "No",
-        )
-
     def handle_event(self, app, event):
-
-        # While the popup is open, ONLY its buttons work.
-        if self.confirm_start:
-
-            if self.yes_button.clicked(event):
-                self.confirm_start = False
-
-                # Original Start button behavior
-                app.screen = "setup"
-
-            elif self.no_button.clicked(event):
-                self.confirm_start = False
-
-            # Block all underlying menu interactions
-            return
-
-        # Check the currently selected AI provider
         if self.start_button.clicked(event):
-
-            if app.provider == "gemini":
-                configured = bool(app.api_key.strip())
-
-            elif app.provider == "ollama":
-                configured = check_ollama()
-
-            else:
-                configured = False
-
-            if configured:
-                # Original Start behavior
-                app.screen = "setup"
-
-            else:
-                # No configured AI: ask for confirmation
-                self.confirm_start = True
+            app.screen = "setup"
 
         elif self.load_button.clicked(event):
             app.open_load_simulations()
@@ -106,54 +60,3 @@ class MenuScreen:
         draw_centered_text(app.window, "(no you can't flirt with the ai yet)", app.small_font, 550, MUTED)
         if self.message:
             draw_wrapped_text(app.window, self.message, app.small_font, MUTED, (420, 580, 440, 40))
-        if self.confirm_start:
-
-            # Darken the background
-            overlay = pygame.Surface(
-                app.window.get_size(),
-                pygame.SRCALPHA,
-            )
-
-            overlay.fill((0, 0, 0, 140))
-
-            app.window.blit(overlay, (0, 0))
-
-            # Popup background
-            popup = pygame.Rect(
-                405, 275, 470, 195
-            )
-
-            pygame.draw.rect(
-                app.window,
-                PAPER,
-                popup,
-                border_radius=BORDER_RADIUS,
-            )
-
-            # Popup text
-            draw_centered_text(
-                app.window,
-                "AI is not configured,",
-                app.heading_font,
-                325,
-                INK,
-            )
-
-            draw_centered_text(
-                app.window,
-                "continue anyways?",
-                app.font,
-                363,
-                INK,
-            )
-
-            # Confirmation buttons
-            self.yes_button.draw(
-                app.window,
-                app.font,
-            )
-
-            self.no_button.draw(
-                app.window,
-                app.font,
-            )

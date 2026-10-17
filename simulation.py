@@ -46,7 +46,6 @@ class Simulation:
         self.snake.world = self
         self.archived = []
         self.arrival_error = ""
-        self.prepared_arrival = None
         self.pending_arrival_days = []
         self.processed_arrival_days = []
         self.introductions = []
@@ -65,7 +64,10 @@ class Simulation:
         for npc in self.npcs:
             npc.world = self
         if assign_goals:
+            from purgatory import remember_description
             from social import assign_goal
+            for npc in self.npcs:
+                remember_description(npc)
             for npc in self.npcs:
                 assign_goal(npc, self)
 
@@ -139,7 +141,7 @@ class Simulation:
     def company_available(self, npc):
         from npc import Behavior
 
-        return (npc.background is not None and npc.departure is None
+        return (npc.departure is None
                 and npc.conversation is None and npc.gift is None and npc.snake_encounter is None and not npc.selected and not npc.request_pending
                 and npc.owner == "autonomous" and not npc.resume_pending
                 and not any(npc.id in (action.npc_id, action.target_id) for action in self.pending_actions)
@@ -471,25 +473,23 @@ class Simulation:
         self.social_opportunity = True
         return True
 
-    def prepare_arrival(self):
-        from character_data import random_character
-        from purgatory import Arrival
-        if self.prepared_arrival is None:
-            self.prepared_arrival = Arrival(random_character())
-        return self.prepared_arrival
-
     def deliver_arrivals(self):
+        from character_data import random_character
         from npc import NPC
-        from purgatory import BackgroundResponse, install_background
+        from purgatory import remember_description
         from social import assign_goal
-        arrival = self.prepared_arrival
-        if not self.pending_arrival_days or arrival is None or arrival.state != "ready":
+        if not self.pending_arrival_days or self.arrival_error:
             return None
         day = self.pending_arrival_days[0]
         if day in self.processed_arrival_days:
             self.pending_arrival_days.pop(0)
             return None
-        npc = NPC(id=arrival.id, character=arrival.character, arrival_day=day)
+        try:
+            character = random_character()
+        except (OSError, ValueError) as exc:
+            self.arrival_error = f"Could not create the next arrival: {exc}"
+            return None
+        npc = NPC(character=character, arrival_day=day)
         npc.sprite_size = self.npcs[0].sprite_size if self.npcs else (40, 70)
         used = {p.name.casefold() for p in self.actors}
         base = npc.character["Name"].strip() or "Resident"
@@ -504,11 +504,10 @@ class Simulation:
                      if math.dist((x, y), (self.tree.x, self.tree.y)) > 160]
         npc.x, npc.y = max(positions, key=lambda point: min((math.dist(point, (p.x, p.y)) for p in self.npcs), default=400))
         npc.world = self
-        install_background(npc, BackgroundResponse(actor_id=npc.id, background=arrival.background, attitudes=arrival.attitudes))
+        remember_description(npc)
         self.npcs.append(npc)  # Keep Application.npcs and Simulation.npcs as one roster.
         self.processed_arrival_days.append(day)
         self.pending_arrival_days.pop(0)
-        self.prepared_arrival = None
         self.roster_revision += 1
         assign_goal(npc, self)
         observers = [npc, *self.listeners(npc, 220)]

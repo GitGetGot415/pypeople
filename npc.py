@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from character_data import DIRECTIONS, normalize_opinions
+from purgatory import initial_attitudes
 from conversation_history import (ConversationRecord, describe_opinion_change, relevant_memories, remember,
                                   shared_conversation_history)
 from social import (Goal, check_relationship_goals, commit_agreements, commit_information, conversation_references, gossip_claim,
@@ -137,12 +138,10 @@ class NPC:
     command_revision: int = 0
     request_pending: bool = False
     world: object = field(default=None, repr=False, compare=False)
-    background: dict | None = None
-    attitudes: dict = field(default_factory=dict)
+    attitudes: dict = field(default_factory=initial_attitudes)
     arrival_day: int = 1
     departure: dict | None = None
     snake_encounter: object = field(default=None, repr=False, compare=False)
-    background_error: str = ""
 
     @property
     def inventory_space(self):
@@ -346,10 +345,10 @@ class NPC:
                                  for memory in relevant_memories(self, partner_id)]
             state["private_context"] = private_context(self, partner_id)
             state["private_context"]["opinions"] = self.opinions
-            state["private_context"]["background"] = self.background
             state["private_context"]["snake_attitudes"] = self.attitudes.copy()
         else:
             state["character"].pop("Opinions", None)
+            state["character"].pop("Details", None)
             for key in ("last_reply", "activity_reason"):
                 state.pop(key, None)
         state["arrival_day"] = self.arrival_day

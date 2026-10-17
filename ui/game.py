@@ -298,9 +298,8 @@ class GameScreen:
         self.feed.draw(app)
         if app.simulation.snake.retry_request:
             self.snake_retry.draw(app.window, app.small_font)
-        arrival = app.simulation.prepared_arrival
         pending = app.simulation.pending_arrival_days
-        error = app.simulation.arrival_error or (arrival.error if arrival else "")
+        error = app.simulation.arrival_error
         if pending or error:
             color = PAPER if app.simulation.phase == "night" else INK
             label = f"Arrivals waiting: {', '.join(str(d) for d in pending)}" if pending else "Next arrival"
@@ -308,7 +307,7 @@ class GameScreen:
                 label += f" / {error}"
                 self.arrival_retry.draw(app.window, app.small_font)
             else:
-                label += " / preparing former life"
+                label += " / arriving"
             draw_wrapped_text(app.window, label, app.small_font, color, (476, 110, 550, 64))
         if self.save_message_remaining:
             color = PAPER if app.simulation.phase == "night" else INK
@@ -326,9 +325,7 @@ class GameScreen:
             self.draw_portrait(app, self.selected_npc, self.selected_npc.portrait_emotion)
         status = self.selected_npc.status if self.selected_npc is not None else f"{len(app.npcs)} NPCs"
         if app.requests.busy:
-            if app.requests.pending_session == app.session_id and app.request_background is not None:
-                prefix = "Preparing the next arrival..."
-            elif app.requests.pending_session == app.session_id and app.request_npc is not None:
+            if app.requests.pending_session == app.session_id and app.request_npc is not None:
                 prefix = f"Thinking for {app.request_npc.name}..."
             else:
                 prefix = "Finishing earlier request..."

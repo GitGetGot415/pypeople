@@ -151,6 +151,9 @@ class StatsScreen:
                 add(f"Source: {app.simulation.actor_by_id(account['source_id']).name}; original: {app.simulation.actor_by_id(account['original_speaker_id']).name}", app.small_font, MUTED)
             return lines
         if self.tab == "Statistics":
+            add("Description", app.heading_font)
+            add(npc.character["Details"] or "Not specified")
+            gap()
             add(f"Arrival: day {npc.arrival_day}")
             add(f"Activity: {npc.status}")
             if npc.departure:
@@ -180,10 +183,6 @@ class StatsScreen:
             self.private_toggle_top = height()
             add(f"{'Hide' if self.show_private else 'Show'} private details (observer only)", app.small_font, ACCENT)
             if self.show_private:
-                add("Former life (private observer inspection)", app.heading_font)
-                for field, value in npc.background.items():
-                    add(f"{field.replace('_', ' ').title()}: {'; '.join(value) if isinstance(value, list) else value}")
-                gap()
                 add("Attitudes toward the snake", app.heading_font)
                 for field in ("belief", "trust", "authority"):
                     add(f"{field.title()}: {npc.attitudes[field]}")
@@ -241,15 +240,9 @@ class StatsScreen:
                 add(f"Influence: {memory.weight:+g}", app.small_font, MUTED)
             gap()
             fields = tuple(field for field in FIELDS if field != "Details")
-            for field in (*fields, "Hair", "Eyes", *DEFAULT_COLORS, "Details"):
+            for field in (*fields, "Hair", "Eyes", *DEFAULT_COLORS):
                 value = npc.name if field == "Name" else npc.character.get(field, "")
-                if field == "Details":
-                    gap()
-                    add("Details", color=MUTED)
-                    add(value or "Not specified")
-                    gap()
-                else:
-                    add(f"{field}: {value or 'Not specified'}")
+                add(f"{field}: {value or 'Not specified'}")
         else:
             add("Opinion scores range from -100 to 100.", app.small_font, MUTED)
             gap()

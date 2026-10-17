@@ -34,7 +34,7 @@ class CharacterScreen:
                 (710, 250 + index * 58, 300, 156 if multiline else 42),
                 max_length=None if multiline else 100,
                 strip_paste=not multiline,
-                placeholder=f"Enter {name.lower()}",
+                placeholder="Personality, former life, memories and concerns" if multiline else f"Enter {name.lower()}",
                 multiline=multiline,
             )
             self.inputs[name].set_value(self.values[name])
@@ -332,7 +332,7 @@ class CharacterScreen:
             for name, text_input in self.inputs.items():
                 if not text_input.rect.colliderect(self.stats_viewport):
                     continue
-                label = app.font.render(name, True, INK)
+                label = app.font.render("Description" if name == "Details" else name, True, INK)
                 label_y = text_input.rect.y + 21 if text_input.multiline else text_input.rect.centery
                 surface.blit(label, label.get_rect(midleft=(590, label_y)))
                 text_input.draw(surface, app.font)

@@ -160,7 +160,7 @@ class SnakeEncounter:
     def __init__(self, world, resident, purpose, reason="", *, origin="autonomous"):
         from npc import Behavior
         if (world.snake.encounter or world.snake.request_pending or resident.snake_encounter
-                or world.npc_by_id(resident.id) is not resident or resident.background is None
+                or world.npc_by_id(resident.id) is not resident
                 or resident.conversation or resident.gift or resident.eating or resident.request_pending
                 or any(resident.id in (action.npc_id, action.target_id) for action in world.pending_actions)):
             raise ValueError("The snake or resident is busy.")

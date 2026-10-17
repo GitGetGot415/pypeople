@@ -13,7 +13,6 @@ from npc import NPC, Tree
 from ollama_manager import load_model
 from simulation_data import InvalidSaveName, SaveStore, capture_simulation, restore_simulation
 from simulation import PendingAction, Simulation
-from purgatory import Arrival, background_snapshot, install_background
 from snake import SnakeEncounter
 
 from .game import GameScreen
@@ -24,7 +23,6 @@ from .save_sim import SaveSimScreen
 from .requests import RequestManager
 from .settings import SettingsScreen
 from .setup import SetupScreen
-from .preparing import PreparingScreen
 from .stats import StatsScreen
 from .ollama_setup import OllamaSetupScreen
 from .theme import FPS, WINDOW_SIZE
@@ -65,7 +63,6 @@ class Application:
         self.simulation = None
         self.request_revision = None
         self.request_id = None
-        self.request_background = None
         self.request_world_revision = None
         self.save_store = SaveStore()
         self.save_id = None
@@ -78,7 +75,6 @@ class Application:
         self.save_sim = SaveSimScreen()
         self.settings = SettingsScreen()
         self.setup = SetupScreen()
-        self.preparing = PreparingScreen()
         self.character = CharacterScreen()
         self.game = GameScreen()
         self.stats = StatsScreen()
@@ -89,7 +85,6 @@ class Application:
             "save_sim": self.save_sim,
             "settings": self.settings,
             "setup": self.setup,
-            "preparing": self.preparing,
             "character": self.character,
             "game": self.game,
             "stats": self.stats,
@@ -151,8 +146,7 @@ class Application:
         self.save_id = None
         self.save_identity = None
         self.simulation_name = "Unsaved simulation"
-        self.request_background = None
-        self.screen = "preparing"
+        self.screen = "game"
         self.menu.message = ""
 
     def sync_save_name(self):
@@ -208,7 +202,6 @@ class Application:
             self.load_sim.message = "Could not load this simulation. The save may be incompatible, damaged, or unavailable."
             return False
         self.session_id += 1
-        self.request_background = None
         self.game.reset()
         self.stats.open()
         self.request_npc = None
@@ -424,51 +417,8 @@ class Application:
         self.game.viewed_conversation = replacement
         self.game._conversation_page_turns = None
 
-    def cancel_preparation(self):
-        self.session_id += 1
-        self.request_background = None
-        self.simulation = None
-        self.npcs = []
-        self.tree = None
-        self.screen = "setup"
-        self.setup.message = "Preparation cancelled."
-
-    def request_background_for(self, actor):
-        if self.requests.busy:
-            return
-        if self.provider == "gemini" and not self.api_key:
-            error = "Add an API key in Settings before preparing backgrounds."
-            if isinstance(actor, Arrival):
-                actor.error, actor.state = error, "failed"
-            else:
-                actor.background_error = error
-            return
-        request_id = uuid4().hex
-        if self.requests.submit(self.session_id, self.provider, self.api_key,
-                "Prepare this character's preserved former life.", background_snapshot(actor),
-                request_id=request_id, ollama_model=self.ollama_model):
-            self.request_id = request_id
-            self.request_background = actor
-            self.request_conversation = self.request_npc = self.request_history = None
-            if isinstance(actor, Arrival):
-                actor.state, actor.error = "pending", ""
-
-    def request_next_arrival(self):
-        if self.simulation.arrival_error:
-            return
-        try:
-            arrival = self.simulation.prepare_arrival()
-        except (OSError, ValueError) as exc:
-            self.simulation.arrival_error = f"Could not prepare the next arrival: {exc}"
-            return
-        if arrival.state == "waiting":
-            self.request_background_for(arrival)
-
     def retry_arrival(self):
         self.simulation.arrival_error = ""
-        arrival = self.simulation.prepared_arrival
-        if arrival and arrival.state == "failed":
-            arrival.state, arrival.error = "waiting", ""
 
     def retry_snake(self):
         request = self.simulation.snake.retry_request
@@ -507,7 +457,7 @@ class Application:
         self.request_history.status = "Waiting for reply"
         self.request_history.turns.append(("You", message))
         self.request_id, self.request_npc = request_id, snake
-        self.request_conversation = self.request_background = None
+        self.request_conversation = None
         self.request_world_revision = self.simulation.roster_revision
         snake.request_pending = True
         self.game.prompt_input.set_value("")
@@ -520,27 +470,9 @@ class Application:
 
     def update(self, dt):
         simulation_active = self.screen in ("game", "stats")
-        active_session = self.session_id if simulation_active or self.screen in ("save_sim", "preparing") else None
+        active_session = self.session_id if simulation_active or self.screen == "save_sim" else None
         for request_id, result, error in self.requests.poll(active_session):
             if request_id != self.request_id:
-                continue
-            background = self.request_background
-            if background is not None:
-                self.request_background = None
-                if isinstance(background, Arrival):
-                    if self.simulation.prepared_arrival is not background:
-                        continue
-                    if error:
-                        background.state, background.error = "failed", error
-                    else:
-                        background.background = result.background.model_dump()
-                        background.attitudes = result.attitudes.model_dump()
-                        background.state, background.error = "ready", ""
-                elif self.screen == "preparing" and background in self.npcs:
-                    if error:
-                        background.background_error = error
-                    else:
-                        install_background(background, result)
                 continue
             conversation = self.request_conversation
             if conversation is not None:
@@ -660,12 +592,6 @@ class Application:
             viewed = self.game.viewed_conversation if self.screen == "game" and self.game.dialogue_open else None
             self.simulation.advance(dt, active=simulation_active, action_handler=self.apply_pending_action,
                                     viewed_conversation=viewed)
-        if self.screen == "preparing":
-            remaining = [npc for npc in self.npcs if npc.background is None]
-            if not remaining:
-                self.screen = "game"
-            elif not self.requests.busy and not remaining[0].background_error:
-                self.request_background_for(remaining[0])
         if simulation_active:
             if self.game.selected_npc is not None and self.game.selected_npc is not self.simulation.snake and self.simulation.npc_by_id(self.game.selected_npc.id) is not self.game.selected_npc:
                 self.game.close_dialogue()
@@ -683,8 +609,6 @@ class Application:
                 if composing:
                     continue
                 self.request_conversation_dialogue(conversation)
-            if not composing and not self.requests.busy:
-                self.request_next_arrival()
 
     def draw(self):
         self.screens[self.screen].draw(self)

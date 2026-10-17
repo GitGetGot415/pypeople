@@ -16,7 +16,7 @@ from llm import (AcceptedProposal, ConversationPart, ConversationTurn, Disclosur
 from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree, WORLD_HEIGHT, WORLD_WIDTH
 from simulation import DIALOGUE_WAIT_SECONDS, EAT_SECONDS, PendingAction, SHAKE_SECONDS, Simulation
 from snake import SNAKE_FRAME_SECONDS, SNAKE_MARGIN, Snake, SnakeEncounter
-from purgatory import Arrival, Attitudes, Background
+from purgatory import Attitudes
 from social import (Belief, Claim, Disclosure, Fact, FactKind, Goal, GoalKind, OpinionEffect, Promise, Proposal,
                     Stance, information_from_dict, phase_index, validate_agreements, validate_information)
 
@@ -214,28 +214,6 @@ class DepartureState(SaveModel):
     event_id: str = Field(min_length=1)
 
 
-class ArrivalState(SaveModel):
-    id: str = Field(min_length=1)
-    character: dict
-    background: Background | None
-    attitudes: Attitudes | None
-    state: Literal["waiting", "pending", "ready", "failed"]
-    error: str
-
-    @field_validator("character")
-    @classmethod
-    def validate_character(cls, value):
-        return normalize_character(value)
-
-    @model_validator(mode="after")
-    def ready_background(self):
-        if (self.background is None) != (self.attitudes is None):
-            raise ValueError("An arrival cannot have a partial background response.")
-        if (self.state == "ready") != (self.background is not None and self.attitudes is not None):
-            raise ValueError("A ready arrival requires one complete preserved background.")
-        return self
-
-
 class NPCState(ActivityState):
     id: str = Field(min_length=1)
     character: dict
@@ -253,7 +231,6 @@ class NPCState(ActivityState):
     pending_social_opinions: list[OpinionEffectState]
     beliefs: list[BeliefState]
     command_revision: int = Field(ge=0)
-    background: Background
     attitudes: Attitudes
     arrival_day: int = Field(ge=1)
     departure: DepartureState | None
@@ -430,7 +407,6 @@ class SimulationState(SaveModel):
     tree: TreeState
     snake: SnakeState
     archived: list[NPCState]
-    prepared_arrival: ArrivalState | None
     arrival_error: str
     pending_arrival_days: list[int]
     processed_arrival_days: list[int]
@@ -660,8 +636,8 @@ class SimulationState(SaveModel):
         arrivals = [n.arrival_day for n in residents if n.arrival_day >= 2]
         if sorted(arrivals) != processed:
             raise ValueError("Completed arrivals must match their preserved residents.")
-        if self.prepared_arrival and self.prepared_arrival.id in ids or not set(self.introductions) <= live_ids:
-            raise ValueError("Invalid prepared arrival or introduction identity.")
+        if not set(self.introductions) <= live_ids:
+            raise ValueError("Invalid introduction identity.")
         return self
 
 
@@ -798,7 +774,7 @@ def capture_resident(npc):
         goal=asdict(npc.goal) if npc.goal else None,
         pending_social_opinions=[asdict(effect) for effect in npc.pending_social_opinions],
         beliefs=[asdict(belief) for belief in npc.beliefs],
-        background=npc.background, attitudes=npc.attitudes,
+        attitudes=npc.attitudes,
         arrival_day=npc.arrival_day, departure=npc.departure,
     )
 
@@ -866,7 +842,6 @@ def capture_simulation(app):
         snake=SnakeState(**{name: ([asdict(b) for b in world.snake.beliefs] if name == "beliefs" else getattr(world.snake, name))
                             for name in SnakeState.model_fields}),
         archived=[capture_resident(npc) for npc in world.archived],
-        prepared_arrival=asdict(world.prepared_arrival) if world.prepared_arrival else None,
         arrival_error=world.arrival_error,
         pending_arrival_days=world.pending_arrival_days.copy(), processed_arrival_days=world.processed_arrival_days.copy(),
         introductions=world.introductions.copy(), roster_revision=world.roster_revision,
@@ -899,7 +874,7 @@ def restore_simulation(state):
             goal=Goal(**saved.goal.model_dump()) if saved.goal else None,
             pending_social_opinions=[OpinionEffect(**effect.model_dump()) for effect in saved.pending_social_opinions],
             beliefs=[Belief(**belief.model_dump()) for belief in saved.beliefs],
-            background=saved.background.model_dump(), attitudes=saved.attitudes.model_dump(),
+            attitudes=saved.attitudes.model_dump(),
             arrival_day=saved.arrival_day, departure=saved.departure.model_dump() if saved.departure else None,
         )
         npc.restore_activity({name: getattr(saved, name) for name in ACTIVITY_FIELDS})
@@ -923,9 +898,6 @@ def restore_simulation(state):
     world.processed_arrival_days = state.processed_arrival_days.copy()
     world.introductions = state.introductions.copy()
     world.roster_revision = state.roster_revision
-    world.prepared_arrival = Arrival(**state.prepared_arrival.model_dump()) if state.prepared_arrival else None
-    if world.prepared_arrival and world.prepared_arrival.state == "pending":
-        world.prepared_arrival.state = "waiting"
     world.day, world.phase = state.day, state.phase
     world.pending_actions = [PendingAction(**action.model_dump()) for action in state.pending_actions]
     for action in world.pending_actions:

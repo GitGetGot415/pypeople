@@ -24,12 +24,12 @@
   - theme.py - colors and window settings
   - world.py - draws the NPC and the tree
   
-- character_data.py - validates and loads character JSON files
+- character_data.py - validates, loads, and locally randomizes character descriptions and appearance
 - llm.py - makes the llm calls required for the ai to function
 - main.py - starts the code
 - npc.py - backend
 - simulation.py - day phases, shared activity constants, and world updates
 - snake.py - the guarding python, movement, and generated encounters
-- purgatory.py - persistent background contracts and prepared arrivals
+- purgatory.py - initial snake attitudes and private knowledge from character descriptions
 - autonomy.py - local activity priorities, target selection, and decision reasons
 - simulation_data.py - validates, saves, and restores complete simulations
