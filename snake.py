@@ -11,7 +11,7 @@ from constants import (
     SNAKE_MARGIN, SNAKE_NAME, SNAKE_SPEED,
 )
 from conversation_history import ConversationRecord
-from interactions import face_each_other, finish_generated_dialogue
+from interactions import dialogue_finished, face_each_other, finish_generated_dialogue
 
 
 # These are instructions to the provider, never locally supplied spoken lines.
@@ -297,7 +297,7 @@ class SnakeEncounter:
             "_snake_knowledge": [(b.claim_id, b.stance, b.source_id, b.disclosure_id) for b in snake.beliefs]}
         return self.request_context
 
-    def set_response(self, response):
+    def set_response(self, response, *, reading=False):
         from llm import validate_snake_response
         from social import claim_by_id
         if not self.accepts_response or not self.request_context:
@@ -328,7 +328,7 @@ class SnakeEncounter:
             self.record.add_turn(actor.name, turn.text, [p.model_dump() for p in turn.parts])
         self.stage = "dialogue"
         self.record.status = "Judgment announced" if self.purpose == "judgment" else "Dialogue ready"
-        finish_generated_dialogue(self)
+        finish_generated_dialogue(self, reading=reading)
 
     def fail_dialogue(self, reason):
         if self.committed or not self.active:
@@ -364,7 +364,7 @@ class SnakeEncounter:
             self.initiator.destination = None
             self.initiator.activity = "recovering" if self.initiator.recovery_remaining else "guarding"
 
-    def update(self, dt):
+    def update(self, dt, *, reading=False):
         if not self.active:
             return
         npc, snake = self.recipient, self.initiator
@@ -393,8 +393,7 @@ class SnakeEncounter:
             return
         if self.stage == "dialogue":
             face_each_other(self.initiator, self.recipient)
-            self.talking_remaining = max(0, self.talking_remaining - dt)
-            if self.talking_remaining:
+            if not dialogue_finished(self, dt, reading=reading):
                 return
             if self.outcome == "eat":
                 self.stage = "condemned_approach"

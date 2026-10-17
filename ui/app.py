@@ -471,6 +471,7 @@ class Application:
         simulation_active = self.screen in ("game", "stats") and not paused
         session_active = self.screen in ("game", "stats", "save_sim")
         active_session = self.session_id if session_active else None
+        viewed = self.game.viewed_conversation if self.screen == "game" and self.game.dialogue_open else None
         # Leave completed replies queued so they cannot change a paused world.
         replies = () if session_active and paused else self.requests.poll(active_session)
         if session_active and not paused:
@@ -489,7 +490,7 @@ class Application:
                         conversation.fail_dialogue(error)
                     else:
                         try:
-                            conversation.set_response(result)
+                            conversation.set_response(result, reading=conversation is viewed)
                         except ValueError as exc:
                             conversation.fail_dialogue(str(exc))
                 continue
@@ -600,7 +601,8 @@ class Application:
         if self.screen == "setup":
             self.setup.update(dt)
         if self.simulation is not None:
-            self.simulation.advance(dt, active=simulation_active, action_handler=self.apply_pending_action)
+            self.simulation.advance(dt, active=simulation_active, action_handler=self.apply_pending_action,
+                                    viewed_conversation=viewed)
         if simulation_active:
             if self.game.selected_npc is not None and self.game.selected_npc is not self.simulation.snake and self.simulation.npc_by_id(self.game.selected_npc.id) is not self.game.selected_npc:
                 self.game.close_dialogue()

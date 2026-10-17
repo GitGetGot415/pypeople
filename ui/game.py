@@ -241,7 +241,11 @@ class GameScreen:
         if conversation is None or not self.conversation_pages:
             return
         if self.conversation_page_index == len(self.conversation_pages) - 1:
-            # Transcript navigation does not control the world interaction.
+            if conversation.active:
+                if app.simulation.paused:
+                    return
+                conversation.talking_remaining = 0.0
+                conversation.update(0.0)
             self.close_dialogue()
         else:
             self.conversation_page_index += 1

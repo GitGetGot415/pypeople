@@ -20,7 +20,7 @@ from constants import (
     MOVEMENT_SPEED, NPC_RADIUS, PARTNER_COOLDOWN,
     POST_DIALOGUE_SECONDS, SHAKE_SECONDS, SOCIAL_RADIUS, SOCIAL_RECOVERED, WANDER_PAUSE, WORLD_HEIGHT, WORLD_WIDTH,
 )
-from interactions import face_each_other, finish_generated_dialogue
+from interactions import dialogue_finished, face_each_other, finish_generated_dialogue
 
 
 ACTIVITY_FIELDS = (
@@ -683,7 +683,7 @@ class Conversation:
     def error(self, message):
         self.record.error = message
 
-    def set_response(self, response):
+    def set_response(self, response, *, reading=False):
         if not self.accepts_response:
             return
         # Reject stale actor snapshots before displaying or committing anything.
@@ -732,7 +732,7 @@ class Conversation:
         ]
         if self.purpose == "food_request":
             self.record_food_request()
-        finish_generated_dialogue(self)
+        finish_generated_dialogue(self, reading=reading)
 
     @property
     def accepts_response(self):
@@ -786,7 +786,7 @@ class Conversation:
             self.pending_opinions.pop(0)
         self.error = ""
 
-    def update(self, dt):
+    def update(self, dt, *, reading=False):
         if not self.active:
             return
         if self.arrived:
@@ -795,13 +795,11 @@ class Conversation:
                 self.wait_elapsed += dt
                 if self.wait_elapsed >= DIALOGUE_WAIT_SECONDS:
                     self.fail_dialogue("Dialogue generation timed out. No dialogue was generated.")
-            else:
-                self.talking_remaining = max(0.0, self.talking_remaining - dt)
-                if self.talking_remaining <= 0:
-                    if self.purpose == "food_request" and self.food_outcome == "accepted":
-                        self.handoff()
-                    else:
-                        self.finish(self.initiator.world.tree)
+            elif dialogue_finished(self, dt, reading=reading):
+                if self.purpose == "food_request" and self.food_outcome == "accepted":
+                    self.handoff()
+                else:
+                    self.finish(self.initiator.world.tree)
             return
         npc = self.initiator
         old_x, old_y = npc.x, npc.y

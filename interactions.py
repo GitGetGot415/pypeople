@@ -6,11 +6,19 @@ from character_data import DIRECTIONS
 from constants import POST_DIALOGUE_SECONDS
 
 
-def finish_generated_dialogue(interaction):
+def finish_generated_dialogue(interaction, *, reading=False):
     """Apply the same completion timing to every generated world conversation."""
     interaction.dialogue_state = "ready"
     interaction.talking_remaining = POST_DIALOGUE_SECONDS
-    interaction.update(0.0)
+    interaction.update(0.0, reading=reading)
+
+
+def dialogue_finished(interaction, dt, *, reading=False):
+    """Hold a viewed exchange until Done, then apply its completion timer."""
+    if reading:
+        return False
+    interaction.talking_remaining = max(0.0, interaction.talking_remaining - dt)
+    return interaction.talking_remaining <= 0.0
 
 
 def face_each_other(first, second):
