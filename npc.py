@@ -695,7 +695,7 @@ class Conversation:
             raise ValueError("The participants changed activities before the reply arrived.")
         validate_live_agreements(self, response)
         self.dialogue_state = "ready"
-        self.talking_remaining = 4.0
+        self.talking_remaining = 0.0
         self.turns = response.turns
         self.handoff_thanks = response.handoff_thanks
         for turn in response.turns:
@@ -736,6 +736,8 @@ class Conversation:
         ]
         if self.purpose == "food_request":
             self.record_food_request()
+        # Resume activities or begin the agreed handoff as soon as generation ends.
+        self.update(0.0)
 
     @property
     def accepts_response(self):

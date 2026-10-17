@@ -224,7 +224,7 @@ class SnakeEncounter:
         self.arrived = False
         self.dialogue_state = "waiting"
         self.wait_elapsed = 0.0
-        self.talking_remaining = 4.0
+        self.talking_remaining = 0.0
         self.turns = []
         self.pending_opinions = []
         self.committed = False
@@ -333,6 +333,8 @@ class SnakeEncounter:
         self.dialogue_state = "ready"
         self.stage = "dialogue"
         self.record.status = "Judgment announced" if self.purpose == "judgment" else "Dialogue ready"
+        # Release the resident or start the judgment outcome immediately.
+        self.update(0.0)
 
     def fail_dialogue(self, reason):
         if self.committed or not self.active:
