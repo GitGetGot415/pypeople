@@ -30,6 +30,7 @@ class GameScreen:
         self.dialogue_open = False
         self.selected_npc = None
         self.reply = ""
+        self.player_record = None
         self.viewed_conversation = None
         self.conversation_tree = None
         self.conversation_page_index = 0
@@ -62,6 +63,7 @@ class GameScreen:
         self.save_message_remaining = 8
 
     def close_dialogue(self):
+        self.player_record = None
         if self.viewed_conversation is not None:
             self.viewed_conversation = None
             self.conversation_tree = None

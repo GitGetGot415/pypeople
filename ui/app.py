@@ -212,7 +212,7 @@ class Application:
             npc.request_pending = any(action.npc_id == npc.id for action in self.simulation.pending_actions)
         if self.request_history is not None:
             self.request_history.status = "Ended before the reply arrived"
-            self.request_history.outcomes = ["Left the game before a reply was received."]
+            self.request_history.outcomes.insert(0, "Left the game before a reply was received.")
             self.request_history = None
         self.session_id += 1
         self.screen = "menu"
@@ -259,10 +259,13 @@ class Application:
         npc.request_pending = True
         self.request_conversation = None
         self.request_message = message
-        self.request_history = ConversationRecord(
-            ("You", npc.name), message, "Waiting for reply", turns=[("You", message)]
-        )
-        self.conversation_history.append(self.request_history)
+        if self.game.player_record is None:
+            self.game.player_record = ConversationRecord(("You", npc.name), message, "Waiting for reply")
+            self.conversation_history.append(self.game.player_record)
+        self.request_history = self.game.player_record
+        self.request_history.status = "Waiting for reply"
+        self.request_history.error = ""
+        self.request_history.turns.append(("You", message))
         self.game.prompt_input.set_value("")
 
     def remember_response_opinions(self, npc, response):
@@ -327,7 +330,7 @@ class Application:
             record.status = "Failed" if error else ("Walking to give" if action.action == "GIVE_ITEM" else "Completed")
             if error:
                 record.error = error
-                record.outcomes = [error]
+                record.outcomes[0:1] = [error]
             else:
                 outcomes = {
                     "WANDER": "Returned to autonomous activities.",
@@ -413,12 +416,12 @@ class Application:
             if not error and (npc.conversation is not None or npc.gift is not None or npc.eating or npc.command_revision != self.request_revision):
                 error = "That reply arrived after the NPC became busy. Please send the request again."
             if record is not None and not error:
-                record.outcomes = [
+                record.outcomes.extend(
                     describe_opinion_change(
                         npc.name, entry.person, npc.opinions.get(entry.person, {}).get("opinion"), entry.opinion, entry.reason
                     )
                     for entry in result.opinion_updates
-                ]
+                )
             if not error:
                 error = self.remember_response_opinions(npc, result)
             if not error:
@@ -459,7 +462,7 @@ class Application:
                 waiting_for_done = npc.request_pending and npc.end_conversation
                 if error:
                     record.status = "Failed"
-                    record.outcomes = [f"The request could not be completed: {error}"]
+                    record.outcomes.insert(0, f"The request could not be completed: {error}")
                 else:
                     if waiting_for_done:
                         record.status = "Waiting for Done"

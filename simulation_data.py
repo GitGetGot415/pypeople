@@ -931,7 +931,7 @@ def capture_simulation(app):
     if app.request_history is not None and id(app.request_history) in records:
         record = history[records[id(app.request_history)]]
         record["status"] = "Reply pending when saved"
-        record["outcomes"] = ["The reply was not saved. Send the request again after loading."]
+        record["outcomes"].insert(0, "The reply was not saved. Send the request again after loading.")
     npcs, conversations, gifts = [], [], []
     for npc in app.npcs:
         npcs.append(NPCState(
