@@ -1,4 +1,6 @@
 import json
+import re
+import unicodedata
 from typing import Literal
 
 from google import genai
@@ -589,6 +591,13 @@ may refer to actual earlier turns in the current exchange. When history is absen
 start from the present circumstances instead of inventing a shared backstory."""
 
 
+DIALOGUE_VARIETY_INSTRUCTION = """Every turn must respond to the partner's latest point and move the exchange
+forward, using that speaker's own personality and objective. Earlier dialogue is
+context, never a script to copy. Do not reuse substantial passages from earlier
+conversations, repeat a sentence within this exchange, or give both speakers the
+same reply. If nothing remains to discuss, end naturally instead of looping."""
+
+
 def character_context(character):
     """Copy the profile so prompt preparation cannot modify the character."""
     return character.copy()
@@ -742,7 +751,8 @@ def response_contract(snapshot, *, correction=False):
             "actual provenance even if the snake calls it revelation; account_stance is the resident's "
             "interpretation. Otherwise use an empty snake_account_id. account_id is empty unless secret. "
             "attitudes may be null; any changes need the current exchange as evidence, independent reasons, "
-            "and at most six trust points. Generate all speech, with emotion on each part."
+            "and at most six trust points. Generate all speech, with emotion on each part.\n\n"
+            + DIALOGUE_VARIETY_INSTRUCTION
         )
         schema = structured_schema(SnakeResponse)
         schema["properties"]["decision"]["enum"] = snapshot["permitted_decisions"]
@@ -760,6 +770,7 @@ def response_contract(snapshot, *, correction=False):
         food_request = snapshot.get("purpose") == "food_request"
         instruction = (FOOD_REQUEST_INSTRUCTION if food_request else CONVERSATION_INSTRUCTION) + "\n\n" + EMOTION_INSTRUCTION
         instruction += "\n\n" + CONVERSATION_HISTORY_INSTRUCTION
+        instruction += "\n\n" + DIALOGUE_VARIETY_INSTRUCTION
         properties = CONVERSATION_SCHEMA["properties"].copy()
         if food_request or correction:
             turn_count = 2 if food_request else 4
@@ -919,6 +930,32 @@ def response_contract(snapshot, *, correction=False):
     return instruction, schema, ActionResponse
 
 
+def _speech_phrases(text):
+    # Match substantial copied speech despite casing, punctuation, part breaks,
+    # or curly apostrophes. Short acknowledgments and shared names are fine.
+    text = unicodedata.normalize("NFKC", text).replace("\u2019", "'").casefold()
+    words = re.findall(r"\w+(?:'\w+)*", text)
+    size = 12
+    return (tuple(words[index:index + size]) for index in range(len(words) - size + 1))
+
+
+def validate_dialogue_repetition(turns, recent_dialogue=()):
+    """Reject copied speech before dialogue or its social effects are committed."""
+    previous = {phrase for entry in recent_dialogue for _, text in entry["excerpts"]
+                for phrase in _speech_phrases(text)}
+    current = set()
+    for turn in turns:
+        # Joining parts catches loops split across multiple display pages too.
+        for phrase in _speech_phrases(turn.text):
+            if phrase in current:
+                raise ValueError("Dialogue repeats a substantial passage within this exchange. "
+                                 "Write distinct replies that advance the conversation instead of looping.")
+            if phrase in previous:
+                raise ValueError("Dialogue copies a substantial passage from a previous conversation. "
+                                 "Continue from its outcome with fresh speech instead of replaying its lines.")
+            current.add(phrase)
+
+
 def validate_response(raw, snapshot):
     model = response_contract(snapshot)[2]
     try:
@@ -941,6 +978,7 @@ def _validate_response(raw, snapshot, model):
             raise ValueError("The background belongs to a different actor.")
         return result
     if isinstance(result, SnakeResponse):
+        validate_dialogue_repetition(result.turns)
         validate_snake_response(result, snapshot)
         return result
     if isinstance(result, SnakePlayerResponse):
@@ -986,6 +1024,7 @@ def _validate_response(raw, snapshot, model):
         elif result.target:
             raise ValueError("Only conversation and giving actions may have a target.")
     elif isinstance(result, ConversationResponse):
+        validate_dialogue_repetition(result.turns, (snapshot.get("shared_history") or {}).get("recent_dialogue", []))
         validate_information(result, snapshot.get("_information_validation"))
         validate_agreements(result.accepted_proposals, snapshot.get("permitted_proposals", []),
                             result.turns, snapshot["initiator"]["npc_id"], snapshot["recipient"]["npc_id"])
@@ -1098,6 +1137,16 @@ def _request_ollama(message, snapshot, model=OLLAMA_MODEL, *, correction=""):
     instruction, schema, _ = response_contract(snapshot, correction=bool(correction))
     if correction:
         instruction += "\n\n" + correction
+    options = {
+        "num_ctx": 16384 if snapshot.get("request_kind") in ("conversation", "snake_encounter") else 8192,
+        "num_predict": -1,
+    }
+    if snapshot.get("request_kind") == "conversation":
+        # Greedy decoding encouraged small models to replay the supplied history.
+        # Corrections need fresh wording too; intent routing stays deterministic.
+        options["temperature"] = 0.7
+    elif correction or snapshot.get("request_kind") == "intent":
+        options["temperature"] = 0
     try:
         response = httpx.post(
             OLLAMA_URL,
@@ -1122,10 +1171,7 @@ def _request_ollama(message, snapshot, model=OLLAMA_MODEL, *, correction=""):
                 "stream": False,
                 # The profiles, rules, schema, and dialogue exceed Ollama's
                 # default context. Truncation can remove the speaker rules.
-                "options": {
-                    "num_ctx": 16384 if snapshot.get("request_kind") in ("conversation", "snake_encounter") else 8192, "num_predict": -1,
-                    **({"temperature": 0} if correction or snapshot.get("request_kind") in ("intent", "conversation") else {}),
-                },
+                "options": options,
             },
             timeout=60.0,
         )

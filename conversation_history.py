@@ -90,10 +90,19 @@ def shared_conversation_history(conversation):
              if event.history in records and event.kind in ("conversation_completed", "food_requested")}
     days = sorted({event.day for event in world.events
                    if event.history in dated and event.kind in ("conversation_completed", "food_requested")})
-    recent_dialogue = [
-        {"excerpts": [(speaker, text[:400]) for speaker, text in world.history[index].turns]}
-        for index in sorted(records)[-2:]
-    ]
+    # Older saves can contain replayed conversations. Feed each transcript only
+    # once so duplicate records do not reinforce the model's repeated wording.
+    recent_dialogue, seen = [], set()
+    for index in sorted(records, reverse=True):
+        excerpts = [(speaker, text[:400]) for speaker, text in world.history[index].turns]
+        signature = tuple((speaker, " ".join(text.casefold().split())) for speaker, text in excerpts)
+        if signature in seen:
+            continue
+        recent_dialogue.append({"excerpts": excerpts})
+        seen.add(signature)
+        if len(recent_dialogue) == 2:
+            break
+    recent_dialogue.reverse()
     pair_ids = {conversation.initiator.id, conversation.recipient.id}
     # These committed interactions are known to both participants. Private goals,
     # beliefs, deception, and opinion changes must stay in their owner's context.
