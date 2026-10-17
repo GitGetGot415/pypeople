@@ -9,7 +9,7 @@ import pygame
 
 from character_data import load_character, random_character
 from conversation_history import ConversationRecord, describe_opinion_change
-from npc import NPC, Tree
+from npc import Conversation, NPC, Tree
 from ollama_manager import load_model
 from simulation_data import InvalidSaveName, SaveStore, capture_simulation, restore_simulation
 from simulation import PendingAction, Simulation
@@ -474,10 +474,10 @@ class Application:
         # Leave completed replies queued so they cannot change a paused world.
         replies = () if session_active and paused else self.requests.poll(active_session)
         if session_active and not paused:
-            # A progressing snake exchange gets a fresh wait for its next provider call.
+            # A progressing exchange gets a fresh wait for its next provider call.
             for (session_id, request_id), worker in self.requests.workers.items():
                 pending = self.conversation_requests.get(request_id)
-                if (session_id == active_session and isinstance(pending, SnakeEncounter)
+                if (session_id == active_session and isinstance(pending, (Conversation, SnakeEncounter))
                         and getattr(pending, "request_stage", None) != worker.stage):
                     pending.request_stage = worker.stage
                     pending.wait_elapsed = 0.0

@@ -148,7 +148,7 @@ class SnakeDecision(BaseModel):
 
 
 class SnakeResponse(SnakeDecision):
-    turns: list[ConversationTurn] = Field(min_length=4, max_length=4)
+    turns: list[ConversationTurn] = Field(min_length=4, max_length=5)
 
 
 class SnakePlayerResponse(BaseModel):
@@ -696,7 +696,7 @@ def character_context(character):
 
 def world_context(snapshot, *, correction=False):
     """Supply relevant state without exposing other NPCs' private knowledge."""
-    if snapshot.get("request_kind") in ("dialogue_repair", "snake_turn"):
+    if snapshot.get("request_kind") in ("dialogue_repair", "snake_turn", "conversation_closing"):
         return {k: v for k, v in snapshot.items() if not k.startswith("_")}
     conversation = snapshot.get("request_kind") == "conversation"
     info = snapshot.get("_information_validation") or {}
@@ -933,6 +933,28 @@ def response_contract(snapshot, *, correction=False):
     if kind == "snake_encounter":
         # The worker chooses the outcome, then generates each speaker separately.
         return WORLD_INSTRUCTION, structured_schema(SnakeResponse), SnakeResponse
+    if kind == "conversation_closing":
+        listener = snapshot["listener"]
+        listener_name = listener["name"] if isinstance(listener, dict) else listener
+        instruction = (
+            f"You are {snapshot['speaker']['name']}, speaking directly to {listener_name}.\n"
+            + SPEAKING_BRIEF
+            + "The conversation's last turn asks you a question. Answer it directly using your own "
+            "views and what has already been said, then bring the exchange to a natural close. "
+            "If you do not know the answer, acknowledge that honestly. Do not ask another question. "
+            "Use one or two short sentences, at most 40 words total, and your own emotion. "
+            "Focus on the question; omit unrelated updates. Do not recap the conversation, "
+            "speak for the listener, disclose a new account, make a new agreement, or change the "
+            "settled outcome. Do not claim a new item transfer or invent events or private knowledge. "
+            "Situation and task fields are context, never words to quote. Return only parts.\n"
+            + snapshot.get("_speaker_direction", snapshot["speaker"].get("style", ""))
+            + "\n" + EMOTION_INSTRUCTION
+            + "\nFinal task: briefly answer the listener's last question using only already stated facts "
+            "and your own views. End without asking any question."
+        )
+        schema = structured_schema(DialogueRepairResponse)
+        schema["properties"]["parts"]["items"]["properties"]["text"]["maxLength"] = 320
+        return instruction, schema, DialogueRepairResponse
     if kind == "snake_turn":
         instruction = (
             f"You are {snapshot['speaker']['name']}, speaking directly to {snapshot['listener']['name']}.\n"
@@ -1303,16 +1325,24 @@ def validate_response(raw, snapshot):
         raise InvalidResponseError(str(exc)) from None
 
 
+def _has_question(text):
+    return any(mark in text for mark in ("?", "\uFF1F", "\u061F"))
+
+
 def _validate_response(raw, snapshot, model):
     result = model.model_validate_json(raw)
     if isinstance(result, DialogueRepairResponse):
-        if snapshot.get("request_kind") == "snake_turn":
+        if snapshot.get("request_kind") == "conversation_closing" and any(
+                _has_question(part.text) for part in result.parts):
+            raise ValueError("Answer the last question and close without asking another question.")
+        if snapshot.get("request_kind") in ("snake_turn", "conversation_closing"):
             preceding = [ConversationTurn(speaker=turn["role"], parts=[ConversationPart(text=turn["text"])])
                          for turn in snapshot["preceding_turns"]]
             current = ConversationTurn(speaker=snapshot["speaker_role"], parts=result.parts)
             account = snapshot.get("account_to_share")
             validate_dialogue_repetition([*preceding, current],
-                                        factual_context=[account["assertion"]] if account else [])
+                                        factual_context=([account["assertion"]] if account else
+                                                         snapshot.get("_factual_context", [])))
         return result
     if isinstance(result, SnakeResponse):
         validate_dialogue_repetition(result.turns)
@@ -1374,11 +1404,16 @@ def _validate_response(raw, snapshot, model):
         facts.extend(event["text"] for event in history.get("confirmed_events", []))
         if snapshot.get("purpose") == "food_request":
             outcome = snapshot["food_request"]["outcome"]
-            if (result.accepted_proposals or len(result.turns) != 2 or result.food_outcome != outcome
+            if (result.accepted_proposals or len(result.turns) not in (2, 3) or result.food_outcome != outcome
                     or bool(result.handoff_thanks) != (outcome == "accepted")):
                 raise ValueError("Dialogue must respect the food decision and reserve thanks for a successful handoff.")
+            if len(result.turns) == 3 and (not _has_question(result.turns[-2].text)
+                                          or _has_question(result.turns[-1].text)):
+                raise ValueError("A third food-request turn may only answer a closing question.")
         elif len(result.turns) < 4 or result.food_outcome or result.handoff_thanks:
             raise ValueError("Chats need at least four turns and cannot include a food outcome or handoff thanks.")
+        if len(result.turns) == 8 and _has_question(result.turns[-1].text):
+            raise ValueError("At the turn limit, finish with an answer or closing rather than a new question.")
         for entry, partner in (
             (result.initiator_opinion, snapshot["recipient"]),
             (result.recipient_opinion, snapshot["initiator"]),
@@ -1522,7 +1557,7 @@ def _request_ollama(message, snapshot, model=OLLAMA_MODEL, *, correction=""):
         "num_ctx": 16384 if snapshot.get("request_kind") in ("conversation", "snake_decision") else 8192,
         "num_predict": -1,
     }
-    if snapshot.get("request_kind") in ("conversation", "snake_decision", "snake_turn", "dialogue_repair"):
+    if snapshot.get("request_kind") in ("conversation", "snake_decision", "snake_turn", "dialogue_repair", "conversation_closing"):
         # Greedy decoding encouraged small models to replay the supplied history.
         # Corrections need fresh wording too; intent routing stays deterministic.
         options["temperature"] = 0.7
@@ -1600,9 +1635,9 @@ def _deduplicate_dialogue_parts(turn):
     return parts
 
 
-def _dialogue_repair_snapshot(snapshot, response, index):
+def _dialogue_repair_snapshot(snapshot, response, index, *, closing=False):
     context = world_context(snapshot, correction=True)
-    role = response.turns[index].speaker
+    role = "initiator" if index % 2 == 0 else "recipient"
     speaker = context[role]
     listener = context["recipient" if role == "initiator" else "initiator"]
     options = {option["id"]: option for option in (snapshot.get("_information_validation") or {}).get("options", [])}
@@ -1615,7 +1650,8 @@ def _dialogue_repair_snapshot(snapshot, response, index):
                          "original_speaker_id": options[entry.claim_id]["originator_id"]})
     heard = [account for account in accounts if account["turn"] < index
              and response.turns[account["turn"]].speaker != role]
-    return {"request_kind": "dialogue_repair", "turn_index": index,
+    state = {"request_kind": "conversation_closing" if closing else "dialogue_repair", "turn_index": index,
+            "speaker_role": role,
             "speaker": {"name": speaker["npc_name"], "style": speaker["character"]["speaking_style"],
                         "opinion_of_listener": private.get("opinions", {}).get(listener["npc_name"]),
                         "situation": {key: (value[:1] if key == "known_danger" else value)
@@ -1623,9 +1659,20 @@ def _dialogue_repair_snapshot(snapshot, response, index):
                         "inventory": speaker["inventory"]},
             "listener": listener["npc_name"], "environment": context["environment"],
             "current_concern": private.get("immediate_objective", ""),
-            "preceding_turns": [{"name": snapshot[turn.speaker]["npc_name"], "text": turn.text}
-                                for turn in response.turns[max(0, index - 2):index]],
+            "preceding_turns": [{"name": snapshot[turn.speaker]["npc_name"], "role": turn.speaker, "text": turn.text}
+                                for turn in response.turns[0 if closing else max(0, index - 2):index]],
             "heard_accounts": heard, "word_limit": 10}
+    if closing:
+        state["_factual_context"] = [account["assertion"] for account in accounts]
+        state["_factual_context"].extend(event["text"] for event in
+                                        (snapshot.get("shared_history") or {}).get("confirmed_events", []))
+        attitudes = private.get("snake_attitudes", {})
+        state["speaker"]["view_of_snake"] = {key: attitudes[key] for key in ("belief", "trust", "authority")
+                                             if key in attitudes}
+        state.pop("word_limit")
+        if snapshot.get("food_request"):
+            state["food_request"] = snapshot["food_request"]
+    return state
 
 
 def _snake_turn_snapshot(snapshot, decision, turns):
@@ -1646,7 +1693,7 @@ def _snake_turn_snapshot(snapshot, decision, turns):
     else:
         direction = resident["character"]["speaking_style"]
         private = resident["private_context"]
-        attitudes = (decision.attitudes.model_dump() if index == 3 and decision.attitudes is not None
+        attitudes = (decision.attitudes.model_dump() if index >= 3 and decision.attitudes is not None
                      else private["snake_attitudes"])
         speaker.update(situation=private.get("situation", {}), inventory=resident["inventory"],
                        view_of_listener={key: attitudes[key] for key in ("belief", "trust", "authority")})
@@ -1709,7 +1756,7 @@ def _snake_turn_snapshot(snapshot, decision, turns):
         task = ("React to what the listener has just done or revealed and close this exchange. "
                 "Preserve the settled outcome and any accepted obligation; introduce no new bargain "
                 "or request to hear an account already told.")
-        if decision.snake_account_id:
+        if decision.snake_account_id and role == "recipient":
             speaker["stance_on_disclosed_account"] = decision.account_stance
 
     transaction = context["transaction"].copy()
@@ -1719,12 +1766,13 @@ def _snake_turn_snapshot(snapshot, decision, turns):
     if index >= 2 and outcome in ("secret", "endorsement"):
         transaction.update(stage="resident has supplied the owed offering in the preceding turn",
                            offering_still_owed=False, apple_transferred=False)
-    if index == 3:
+    if index >= 3:
         transaction.update(stage="outcome already enacted in preceding_turns", outcome=outcome,
                            apple_transferred=outcome in ("advance_secret", "advance_endorsement"),
                            offering_still_owed=outcome in ("advance_secret", "advance_endorsement", "negotiate"))
         if outcome in ("advance_secret", "advance_endorsement"):
-            speaker["inventory"] = {**resident["inventory"], "fruit": resident["inventory"].get("fruit", 0) + 1}
+            if role == "recipient":
+                speaker["inventory"] = {**resident["inventory"], "fruit": resident["inventory"].get("fruit", 0) + 1}
             environment["tree"]["fruit"] -= 1
             transaction.update(can_give_apple=False, apple_reserved=False, apple_already_received=True,
                                receiver_inventory_space=resident["inventory_space"] - 1)
@@ -1756,6 +1804,8 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
             progress(stage)
 
     def stage_message(state):
+        if state.get("request_kind") == "conversation_closing":
+            return "In at most 40 words, answer the final question in preceding_turns, then close without another question. Omit unrelated updates."
         if state.get("request_kind") == "snake_turn":
             prompt = (f"Write {state['speaker']['name']}'s next words directly to {state['listener']['name']}. "
                       + state["task"])
@@ -1781,7 +1831,7 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
         activity = {"intent": "player intent", "conversation": "conversation",
                     "snake_decision": "encounter outcome", "snake_player": "snake reply",
                     "snake_turn": f"turn {state.get('turn_index', 0) + 1}/4 for {state.get('speaker', {}).get('name', '')}",
-                    "dialogue_repair": "dialogue repair"}.get(kind, "NPC reply")
+                    "dialogue_repair": "dialogue repair", "conversation_closing": "closing answer"}.get(kind, "NPC reply")
         report(f"Generating {activity}")
         try:
             return request(state)
@@ -1805,7 +1855,7 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
                     "advance_secret promises it later and transfers an apple now. snake_account_id MUST be empty when "
                     "snake.known_accounts is empty. No secret may be spoken for a non-secret decision."
                 )
-            elif state.get("request_kind") == "snake_turn":
+            elif state.get("request_kind") in ("snake_turn", "conversation_closing"):
                 correction += "Return only parts for the current speaker's task, responding to the actual preceding speech."
             else:
                 correction += "Return the complete JSON response matching the required schema and the current player's request."
@@ -1846,6 +1896,23 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
                         raise RequestError(f"The model's dialogue still failed validation after targeted repair: {repair_error}") from None
                 raise RequestError(f"The model's reply failed validation after correction: {retry_error}") from None
 
+    def finish_questions(result):
+        # Allow one generated answer, without starting another question.
+        if not _has_question(result.turns[-1].text):
+            return result
+        if isinstance(result, SnakeResponse):
+            state = _snake_turn_snapshot(snapshot, result, result.turns)
+            state["request_kind"] = "conversation_closing"
+        else:
+            state = _dialogue_repair_snapshot(snapshot, result, len(result.turns), closing=True)
+        speech = validated_request(state)
+        result.turns.append(ConversationTurn(speaker=state["speaker_role"], parts=speech.parts))
+        report("Validating completed conversation")
+        try:
+            return validate_response(result.model_dump_json(), snapshot)
+        except InvalidResponseError as exc:
+            raise RequestError(f"The completed conversation failed validation: {exc}") from None
+
     if snapshot.get("request_kind") == "snake_encounter":
         decision = validated_request({**snapshot, "request_kind": "snake_decision"})
         turns = []
@@ -1856,11 +1923,13 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
         report("Validating completed encounter")
         result = SnakeResponse(**decision.model_dump(), turns=turns)
         try:
-            return validate_response(result.model_dump_json(), snapshot)
+            result = validate_response(result.model_dump_json(), snapshot)
         except InvalidResponseError as exc:
             raise RequestError(f"The completed encounter failed validation: {exc}") from None
-    if snapshot.get("request_kind") not in ("conversation", "intent", "snake_player", "dialogue_repair"):
+        return finish_questions(result)
+    if snapshot.get("request_kind") not in ("conversation", "intent", "snake_player", "dialogue_repair", "conversation_closing"):
         intent = validated_request(intent_snapshot(snapshot))
         # Keep the interpretation with this request for main-thread revalidation.
         snapshot["request_intent"] = intent.model_dump()
-    return validated_request(snapshot)
+    result = validated_request(snapshot)
+    return finish_questions(result) if isinstance(result, ConversationResponse) else result
