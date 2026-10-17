@@ -66,6 +66,7 @@ WORLD_COLORS = {
     "night": ((64, 77, 98), (77, 92, 111)),
 }
 SHADOW_COLOR = (0, 0, 0, 55)
+MODAL_OVERLAY_COLOR = (0, 0, 0, 140)
 INK = (36, 57, 48)
 MUTED = (92, 110, 99)
 PAPER = (249, 247, 235)

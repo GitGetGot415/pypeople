@@ -1,8 +1,9 @@
 import pygame
 from llm import MODEL
+from ollama_manager import check_ollama
 from .button import Button
 from .text import draw_centered_text, draw_wrapped_text
-from constants import BORDER_RADIUS, GRASS, MUTED, PAPER, INK
+from constants import BORDER_RADIUS, GRASS, MUTED, PAPER, INK, MODAL_OVERLAY_COLOR
 
 class MenuScreen:
     def __init__(self):
@@ -12,10 +13,32 @@ class MenuScreen:
         self.settings_button = Button((410, 430, 220, 54), "Settings")
         self.exit_button = Button((650, 430, 220, 54), "Exit")
         self.message = ""
+        self.start_warning = ""
+        self.configure_button = Button((350, 415, 180, 44), "Settings")
+        self.continue_button = Button((550, 415, 180, 44), "Continue anyway")
+        self.cancel_button = Button((750, 415, 180, 44), "Cancel")
 
     def handle_event(self, app, event):
+        if self.start_warning:
+            if self.cancel_button.clicked(event) or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+                self.start_warning = ""
+            elif self.configure_button.clicked(event):
+                self.start_warning = ""
+                app.open_settings()
+            elif self.continue_button.clicked(event):
+                self.start_warning = ""
+                app.screen = "setup"
+            return
+
         if self.start_button.clicked(event):
-            app.screen = "setup"
+            if app.provider == "gemini":
+                self.start_warning = "" if app.api_key.strip() else "No Gemini API key is configured."
+            elif app.provider == "ollama":
+                self.start_warning = "" if check_ollama(force_refresh=True) else "Ollama is not running or could not be reached."
+            else:
+                self.start_warning = "Choose an AI provider in Settings."
+            if not self.start_warning:
+                app.screen = "setup"
 
         elif self.load_button.clicked(event):
             app.open_load_simulations()
@@ -60,3 +83,16 @@ class MenuScreen:
         draw_centered_text(app.window, "(no you can't flirt with the ai yet)", app.small_font, 550, MUTED)
         if self.message:
             draw_wrapped_text(app.window, self.message, app.small_font, MUTED, (420, 580, 440, 40))
+        if self.start_warning:
+            overlay = pygame.Surface(app.window.get_size(), pygame.SRCALPHA)
+            overlay.fill(MODAL_OVERLAY_COLOR)
+            app.window.blit(overlay, (0, 0))
+            pygame.draw.rect(app.window, PAPER, (315, 240, 650, 240), border_radius=BORDER_RADIUS)
+            draw_centered_text(app.window, "AI setup needed", app.heading_font, 265, INK)
+            draw_wrapped_text(
+                app.window,
+                self.start_warning + " Open Settings to configure AI, or continue without generated dialogue.",
+                app.font, INK, (350, 320, 580, 80),
+            )
+            for button in (self.configure_button, self.continue_button, self.cancel_button):
+                button.draw(app.window, app.small_font)

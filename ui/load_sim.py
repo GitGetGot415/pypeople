@@ -3,7 +3,7 @@ import pygame
 from .button import Button
 from .text import draw_centered_text, draw_wrapped_text
 from .text_input import TextInput
-from constants import ACCENT, GRASS, INK, MUTED, PAPER
+from constants import ACCENT, GRASS, INK, MODAL_OVERLAY_COLOR, MUTED, PAPER
 
 
 class LoadSimScreen:
@@ -164,7 +164,7 @@ class LoadSimScreen:
         draw_wrapped_text(surface, hint, app.small_font, INK, (260, 650, 760, 28))
         if self.confirm_delete:
             overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-            overlay.fill((0, 0, 0, 140))
+            overlay.fill(MODAL_OVERLAY_COLOR)
             surface.blit(overlay, (0, 0))
             pygame.draw.rect(surface, PAPER, (395, 260, 490, 205))
             draw_centered_text(surface, "Delete this simulation?", app.heading_font, 280)
