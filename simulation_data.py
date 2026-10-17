@@ -15,7 +15,8 @@ from llm import (AcceptedProposal, ConversationPart, ConversationTurn, Disclosur
                  EmotionReaction, LeverageUse, ThirdPartyOpinion)
 from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree, WORLD_HEIGHT, WORLD_WIDTH
 from simulation import DIALOGUE_WAIT_SECONDS, EAT_SECONDS, PendingAction, SHAKE_SECONDS, Simulation
-from snake import SNAKE_FRAME_SECONDS, SNAKE_MARGIN, Snake
+from snake import SNAKE_FRAME_SECONDS, SNAKE_MARGIN, Snake, SnakeEncounter
+from purgatory import Arrival, Attitudes, Background
 from social import (Belief, Claim, Disclosure, Fact, FactKind, Goal, GoalKind, OpinionEffect, Promise, Proposal,
                     Stance, information_from_dict, phase_index, validate_agreements, validate_information)
 
@@ -67,7 +68,7 @@ class MemoryState(SaveModel):
     partner_id: str
     kind: Literal["gave_fruit", "received_fruit", "refused", "kept_fruit", "conversation",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
-                  "claim_shared", "heard_claim", "claim_opinion", "leverage"]
+                  "claim_shared", "heard_claim", "claim_opinion", "leverage", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled"]
     summary: str = Field(max_length=400)
     weight: float = Field(ge=-12, le=12)
 
@@ -78,8 +79,8 @@ class EventState(SaveModel):
     phase: Literal["day", "evening", "night"]
     kind: Literal["phase", "food_requested", "food_refused", "fruit_shared", "conversation_completed", "interaction_failed",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
-                  "claim_shared", "claim_assessed", "reputation_changed", "leverage_used"]
-    participants: list[str] = Field(max_length=2)
+                  "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "promise_cancelled"]
+    participants: list[str]
     text: str
     history: int | None = Field(ge=0)
 
@@ -95,7 +96,7 @@ class GoalState(SaveModel):
     created_phase: int = Field(ge=0)
     deadline: int = Field(ge=0)
     baseline_opinion: int = Field(ge=-100, le=100)
-    status: Literal["active", "completed", "failed"]
+    status: Literal["active", "completed", "failed", "cancelled"]
     resolution_event_id: str | None
     resolved_phase: int | None = Field(ge=0)
     outcome: str
@@ -116,7 +117,7 @@ class PromiseState(ProposalState):
     created_phase: int = Field(ge=0)
     item: Literal["fruit"]
     quantity: Literal[1]
-    status: Literal["pending", "fulfilled", "broken"]
+    status: Literal["pending", "fulfilled", "broken", "cancelled"]
     resolution_event_id: str | None
     resolved_phase: int | None = Field(ge=0)
     outcome: str
@@ -143,7 +144,7 @@ class FactState(SaveModel):
     conversation_id: str | None
     phase: int = Field(ge=0)
     summary: str = Field(min_length=1)
-    witness_ids: list[str] = Field(min_length=1, max_length=2)
+    witness_ids: list[str] = Field(min_length=1)
 
 
 class ClaimState(SaveModel):
@@ -206,6 +207,35 @@ class InformationState(SaveModel):
     focus_claim_id: str | None
 
 
+class DepartureState(SaveModel):
+    day: int = Field(ge=1)
+    phase: Literal["day", "evening", "night"]
+    cause: Literal["eaten by the snake"]
+    event_id: str = Field(min_length=1)
+
+
+class ArrivalState(SaveModel):
+    id: str = Field(min_length=1)
+    character: dict
+    background: Background | None
+    attitudes: Attitudes | None
+    state: Literal["waiting", "pending", "ready", "failed"]
+    error: str
+
+    @field_validator("character")
+    @classmethod
+    def validate_character(cls, value):
+        return normalize_character(value)
+
+    @model_validator(mode="after")
+    def ready_background(self):
+        if (self.background is None) != (self.attitudes is None):
+            raise ValueError("An arrival cannot have a partial background response.")
+        if (self.state == "ready") != (self.background is not None and self.attitudes is not None):
+            raise ValueError("A ready arrival requires one complete preserved background.")
+        return self
+
+
 class NPCState(ActivityState):
     id: str = Field(min_length=1)
     character: dict
@@ -223,6 +253,10 @@ class NPCState(ActivityState):
     pending_social_opinions: list[OpinionEffectState]
     beliefs: list[BeliefState]
     command_revision: int = Field(ge=0)
+    background: Background
+    attitudes: Attitudes
+    arrival_day: int = Field(ge=1)
+    departure: DepartureState | None
 
     @field_validator("character")
     @classmethod
@@ -246,7 +280,7 @@ class HistoryState(SaveModel):
     outcomes: list[str]
     error: str
     origin: Literal["player", "autonomous"]
-    purpose: Literal["chat", "food_request", "gossip"]
+    purpose: Literal["chat", "food_request", "gossip", "bargain", "judgment", "introduction", "snake_player"]
 
 
 class ConversationState(SaveModel):
@@ -273,7 +307,7 @@ class ConversationState(SaveModel):
     proposals: list[ProposalState] = Field(max_length=2)
     accepted_proposals: list[AcceptedProposal] = Field(max_length=2)
     social_effects_applied: bool
-    context_references: dict[str, Literal["active", "completed", "failed", "pending", "fulfilled", "broken"]]
+    context_references: dict[str, Literal["active", "completed", "failed", "pending", "fulfilled", "broken", "cancelled"]]
     information_context: InformationState | None
     accepted_disclosures: list[DisclosureChoice] = Field(max_length=4)
     third_party_opinions: list[ThirdPartyOpinion] = Field(max_length=4)
@@ -310,23 +344,65 @@ class TreeState(SaveModel):
     reserved_by: str | None
 
 
+class SnakeRetryState(SaveModel):
+    resident_id: str
+    purpose: Literal["bargain", "judgment", "introduction"]
+    reason: str
+    origin: Literal["player", "autonomous"]
+    error: str
+
+
 class SnakeState(SaveModel):
-    x: float = Field(default=720.0, ge=SNAKE_MARGIN, le=WORLD_WIDTH - SNAKE_MARGIN)
-    y: float = Field(default=330.0, ge=SNAKE_MARGIN, le=WORLD_HEIGHT - SNAKE_MARGIN)
-    destination: tuple[float, float] | None = None
-    facing: int = Field(default=4, ge=0, le=7)
-    pause_remaining: float = Field(default=0.0, ge=0)
-    animation_elapsed: float = Field(default=0.0, ge=0, lt=2 * SNAKE_FRAME_SECONDS)
+    id: str = Field(min_length=1)
+    x: float = Field(ge=0, le=WORLD_WIDTH)
+    y: float = Field(ge=0, le=WORLD_HEIGHT)
+    destination: tuple[float, float] | None
+    facing: int = Field(ge=0, le=7)
+    pause_remaining: float = Field(ge=0)
+    animation_elapsed: float = Field(ge=0, lt=2 * SNAKE_FRAME_SECONDS)
+    activity: Literal["guarding", "recovering", "judging", "bargaining", "introducing", "approaching condemned resident", "eating"]
+    target_id: str | None
+    beliefs: list[BeliefState]
+    standing: dict[str, int]
+    offenses: dict[str, str]
+    eaten_today: int = Field(ge=0)
+    recovery_remaining: float = Field(ge=0, le=20)
+    pardons: list[str]
+    judged_phase: int = Field(ge=-1)
+    decision_remaining: float = Field(ge=0)
+    command_revision: int = Field(ge=0)
+    reply: str
+    retry_request: SnakeRetryState | None
 
     @field_validator("destination")
     @classmethod
     def validate_destination(cls, value):
-        if value is not None and not (
-            SNAKE_MARGIN <= value[0] <= WORLD_WIDTH - SNAKE_MARGIN
-            and SNAKE_MARGIN <= value[1] <= WORLD_HEIGHT - SNAKE_MARGIN
-        ):
+        if value is not None and not (0 <= value[0] <= WORLD_WIDTH and 0 <= value[1] <= WORLD_HEIGHT):
             raise ValueError("Invalid snake destination.")
         return value
+
+
+class SnakeEncounterState(SaveModel):
+    id: str
+    resident_id: str
+    record: int = Field(ge=0)
+    purpose: Literal["bargain", "judgment", "introduction"]
+    origin: Literal["player", "autonomous"]
+    topic: str
+    accusation: str
+    saved_state: ActivityState
+    reserved: bool
+    arrived: bool
+    dialogue_state: Literal["waiting", "pending", "ready"]
+    wait_elapsed: float = Field(ge=0, le=125.1)
+    talking_remaining: float = Field(ge=0, le=4)
+    committed: bool
+    outcome: Literal["", "talk", "secret", "endorsement", "refuse", "negotiate", "challenge", "spare", "eat"]
+    outcome_event_id: str | None
+    stage: Literal["approach", "waiting", "dialogue", "condemned_approach", "eating"]
+    elapsed: float = Field(ge=0, le=1.1)
+    turns: list[ConversationTurn]
+    request_context: dict | None
 
 
 class PendingActionState(SaveModel):
@@ -352,7 +428,15 @@ class SimulationState(SaveModel):
     social_rotation: int = Field(ge=0)
     npcs: list[NPCState] = Field(min_length=1)
     tree: TreeState
-    snake: SnakeState = Field(default_factory=SnakeState)
+    snake: SnakeState
+    archived: list[NPCState]
+    prepared_arrival: ArrivalState | None
+    arrival_error: str
+    pending_arrival_days: list[int]
+    processed_arrival_days: list[int]
+    introductions: list[str]
+    roster_revision: int = Field(ge=0)
+    snake_encounter: SnakeEncounterState | None
     pending_actions: list[PendingActionState]
     history: list[HistoryState]
     conversations: list[ConversationState]
@@ -362,442 +446,222 @@ class SimulationState(SaveModel):
 
     @model_validator(mode="after")
     def validate_references(self):
-        count = len(self.npcs)
-        names = [(npc.display_name or npc.character["Name"]).casefold() for npc in self.npcs]
-        ids = [npc.id for npc in self.npcs]
-        all_ids = ids + [self.tree.id]
-        if len(set(names)) != count or len(set(all_ids)) != len(all_ids):
-            raise ValueError("Names and object IDs must be unique.")
-        if self.tree.fruit > self.tree.capacity:
-            raise ValueError("Invalid fruit resource.")
-        if self.social_rotation >= count:
-            raise ValueError("Invalid social rotation.")
-        event_ids = [event.id for event in self.events]
-        if len(set(event_ids)) != len(event_ids):
-            raise ValueError("Duplicate event IDs.")
+        residents = [*self.npcs, *self.archived]
+        live_ids = {n.id for n in self.npcs}
+        actors = {n.id: (n.display_name or n.character["Name"]) for n in residents}
+        actors[self.snake.id] = "Python"
+        ids = set(actors)
         now = phase_index(self.day, self.phase)
-        history_by_id = {entry.id: entry for entry in self.history}
-        if len(history_by_id) != len(self.history):
-            raise ValueError("Duplicate history IDs.")
-        promise_ids, pending_pairs, pending_counts = set(), set(), {}
-        goal_ids = [npc.goal.id for npc in self.npcs if npc.goal]
-        if len(set(goal_ids)) != len(goal_ids):
-            raise ValueError("Duplicate goal IDs.")
-        retained_events = {event.id: event for event in self.events}
-        facts = {fact.id: fact for fact in self.facts}
-        claims = {claim.id: claim for claim in self.claims}
-        disclosures = {entry.id: entry for entry in self.disclosures}
-        if len(facts) != len(self.facts) or len(claims) != len(self.claims) or len(disclosures) != len(self.disclosures):
-            raise ValueError("Duplicate information record IDs.")
-        if len({(fact.source_id, fact.kind) for fact in self.facts}) != len(self.facts):
-            raise ValueError("Duplicate factual sources.")
-
-        def history_pair(record_id, pair):
-            record = history_by_id.get(record_id)
-            return (record is not None and {name.casefold() for name in record.participants}
-                    == {names[ids.index(npc_id)] for npc_id in pair})
-
+        if len(ids) != len(residents) + 1 or self.tree.id in ids or len({v.casefold() for v in actors.values()}) != len(ids):
+            raise ValueError("Actor IDs and stable display names must be unique.")
+        if self.tree.fruit > self.tree.capacity or self.social_rotation >= len(self.npcs):
+            raise ValueError("Invalid tree stock or social rotation.")
+        if any(n.departure is not None for n in self.npcs) or any(n.departure is None for n in self.archived):
+            raise ValueError("Live and departed rosters disagree.")
+        history = {h.id: h for h in self.history}
+        events = {e.id: e for e in self.events}
+        facts = {f.id: f for f in self.facts}
+        claims = {c.id: c for c in self.claims}
+        disclosures = {d.id: d for d in self.disclosures}
+        for index, source in ((history, self.history), (events, self.events), (facts, self.facts), (claims, self.claims), (disclosures, self.disclosures)):
+            if len(index) != len(source):
+                raise ValueError("Duplicate social record IDs.")
+        if len({(f.source_id, f.kind) for f in self.facts}) != len(self.facts):
+            raise ValueError("Duplicate fact sources.")
+        def record_for(record_id):
+            record = history.get(record_id)
+            if record is None:
+                raise ValueError("Missing source conversation.")
+            return record
+        def participant(actor_id, record):
+            return actor_id in ids and actors[actor_id] in record.participants
+        for event in self.events:
+            if not set(event.participants) <= ids or phase_index(event.day, event.phase) > now:
+                raise ValueError("Invalid event actors or date.")
+            if event.history is not None and event.history >= len(self.history):
+                raise ValueError("Invalid event history link.")
+        for record in self.history:
+            if any(name != "You" and name not in actors.values() for name in record.participants):
+                raise ValueError("Unknown historical speaker.")
+            if any(speaker not in record.participants or not text.strip() for speaker, text in record.turns):
+                raise ValueError("Invalid historical speech.")
+            for index, parts in record.dialogue_parts.items():
+                if index >= len(record.turns) or " ".join(p.text.strip() for p in parts) != record.turns[index][1]:
+                    raise ValueError("Dialogue parts do not match their recorded turn.")
         for fact in self.facts:
             if (fact.subject_id not in ids or fact.object_id not in ids or fact.subject_id == fact.object_id
-                    or fact.phase > now or len(set(fact.witness_ids)) != len(fact.witness_ids)
-                    or set(fact.witness_ids) != ({fact.subject_id} if fact.kind == "private_motive"
-                                                else {fact.subject_id, fact.object_id})):
-                raise ValueError("Invalid fact participants or visibility.")
-            if fact.kind == "private_motive":
-                if fact.conversation_id is not None:
-                    raise ValueError("A private intention is not a conversation event.")
-            elif not history_pair(fact.conversation_id, (fact.subject_id, fact.object_id)):
-                raise ValueError("Invalid factual conversation source.")
-            event = retained_events.get(fact.source_id)
-            if event:
-                expected = {"apple_given": "fruit_shared", "apple_refused": "food_refused",
-                            "promise_kept": "promise_fulfilled", "promise_broken": "promise_broken"}.get(fact.kind)
-                pair = [fact.object_id, fact.subject_id] if fact.kind == "apple_refused" else [fact.subject_id, fact.object_id]
-                if event.kind != expected or event.participants != pair or fact.phase != phase_index(event.day, event.phase):
-                    raise ValueError("Fact does not match its committed event.")
+                    or fact.phase > now or not set(fact.witness_ids) <= ids
+                    or len(set(fact.witness_ids)) != len(fact.witness_ids)):
+                raise ValueError("Invalid fact participants or witnesses.")
+            if fact.kind in ("private_motive", "former_life"):
+                if fact.witness_ids != [fact.subject_id] or fact.conversation_id is not None:
+                    raise ValueError("A private recollection or motive cannot be public.")
+            elif fact.conversation_id is not None:
+                record_for(fact.conversation_id)
+            if fact.source_id in events:
+                event = events[fact.source_id]
+                expected = {"apple_given": "fruit_shared", "apple_refused": "food_refused", "promise_kept": "promise_fulfilled"}.get(fact.kind, fact.kind)
+                if event.kind != expected or fact.phase != phase_index(event.day, event.phase):
+                    raise ValueError("A fact must match its actual source event.")
         for claim in self.claims:
             fact = facts.get(claim.fact_id)
-            if (fact is None or claim.subject_id != fact.subject_id or claim.originator_id not in ids
-                    or not fact.phase <= claim.phase <= now):
+            if fact is None or claim.subject_id != fact.subject_id or claim.originator_id not in ids or not fact.phase <= claim.phase <= now:
                 raise ValueError("Invalid claim references.")
             if claim.parent_claim_id is None:
                 if not claim.affirmed or claim.deliberate or claim.originator_id not in fact.witness_ids:
-                    raise ValueError("An original firsthand account must describe an actual fact.")
+                    raise ValueError("Firsthand accounts require an actual witnessed source.")
             else:
                 parent = claims.get(claim.parent_claim_id)
-                record = history_by_id.get(claim.conversation_id)
-                if (parent is None or parent.fact_id != fact.id or not parent.affirmed
-                        or claim.affirmed or not claim.deliberate or claim.phase < parent.phase
-                        or record is None or names[ids.index(claim.originator_id)] not in {name.casefold() for name in record.participants}):
-                    raise ValueError("A fabricated assertion must negate a known, existing account.")
-        seen_disclosures = set()
-        for entry in self.disclosures:
-            claim = claims.get(entry.claim_id)
-            record = history_by_id.get(entry.conversation_id)
-            if (claim is None or entry.speaker_id == entry.listener_id
-                    or entry.speaker_id not in ids or entry.listener_id not in ids
-                    or not history_pair(entry.conversation_id, (entry.speaker_id, entry.listener_id))
-                    or not claim.phase <= entry.phase <= now or entry.turn >= len(record.turns)
-                    or record.turns[entry.turn][0].casefold() != names[ids.index(entry.speaker_id)]):
-                raise ValueError("Invalid disclosure source or participants.")
-            if entry.source_disclosure_id:
-                source = disclosures.get(entry.source_disclosure_id)
-                if (source is None or source.id not in seen_disclosures or source.listener_id != entry.speaker_id
-                        or source.claim_id not in (claim.id, claim.parent_claim_id)
-                        or source.phase > entry.phase
-                        or source.conversation_id == entry.conversation_id and source.turn >= entry.turn):
+                if parent is None or parent.fact_id != fact.id or not parent.affirmed or claim.affirmed or not claim.deliberate or parent.phase > claim.phase:
+                    raise ValueError("A denial must trace to an existing account.")
+        seen = set()
+        for disclosure in self.disclosures:
+            record = record_for(disclosure.conversation_id)
+            if (disclosure.claim_id not in claims or disclosure.speaker_id == disclosure.listener_id
+                    or not participant(disclosure.speaker_id, record) or disclosure.listener_id not in ids
+                    or disclosure.turn >= len(record.turns) or record.turns[disclosure.turn][0] != actors[disclosure.speaker_id]
+                    or disclosure.phase > now):
+                raise ValueError("Invalid disclosure actor, speech or account.")
+            if disclosure.source_disclosure_id:
+                source = disclosures.get(disclosure.source_disclosure_id)
+                claim = claims[disclosure.claim_id]
+                if source is None or source.id not in seen or source.listener_id != disclosure.speaker_id or source.claim_id not in (claim.id, claim.parent_claim_id):
                     raise ValueError("Disclosure provenance must follow an earlier source.")
-            elif entry.speaker_id != claim.originator_id:
-                raise ValueError("An account repeated by another speaker needs its source.")
-            event = retained_events.get(entry.event_id)
-            if event and (event.kind != "claim_shared" or event.participants != [entry.speaker_id, entry.listener_id]):
-                raise ValueError("Invalid disclosure event.")
-            seen_disclosures.add(entry.id)
-
-        def validate_beliefs(entries, npc_id):
-            if len({belief.claim_id for belief in entries}) != len(entries):
-                raise ValueError("Duplicate personal beliefs.")
-            assessed, totals = set(), {}
-            for belief in entries:
+            elif disclosure.speaker_id != claims[disclosure.claim_id].originator_id:
+                fact = facts[claims[disclosure.claim_id].fact_id]
+                if disclosure.speaker_id not in fact.witness_ids:
+                    raise ValueError("A repeated account requires its actual source.")
+            seen.add(disclosure.id)
+        for actor in [*residents, self.snake]:
+            if len({b.claim_id for b in actor.beliefs}) != len(actor.beliefs):
+                raise ValueError("Duplicate owned account.")
+            for belief in actor.beliefs:
                 claim = claims.get(belief.claim_id)
-                if (belief.npc_id != npc_id or claim is None or belief.source_id not in ids
-                        or not claim.phase <= belief.phase <= now or not belief.assessed and belief.opinion_delta):
-                    raise ValueError("Invalid personal belief references.")
+                if claim is None or belief.npc_id != actor.id or belief.source_id not in ids or belief.phase > now:
+                    raise ValueError("Invalid owned knowledge.")
                 if belief.direct:
-                    if (npc_id not in facts[claim.fact_id].witness_ids or claim.originator_id != npc_id
-                            or not claim.affirmed or belief.stance != "believed"
-                            or belief.source_id != npc_id or belief.disclosure_id is not None):
-                        raise ValueError("Invalid firsthand knowledge.")
-                elif belief.disclosure_id is not None:
+                    if actor.id not in facts[claim.fact_id].witness_ids or belief.disclosure_id is not None:
+                        raise ValueError("Firsthand knowledge requires witnessing.")
+                elif belief.disclosure_id:
                     source = disclosures.get(belief.disclosure_id)
-                    if (source is None or source.listener_id != npc_id or source.claim_id != claim.id
-                            or source.speaker_id != belief.source_id or source.phase < belief.phase):
-                        raise ValueError("Invalid belief provenance.")
-                elif not (claim.deliberate and claim.originator_id == npc_id and belief.source_id == npc_id
-                          and belief.stance == "disbelieved"):
-                    raise ValueError("Hearsay needs a disclosure source.")
-                if belief.assessed:
-                    key = (claim.fact_id, claim.affirmed)
-                    if key in assessed:
-                        raise ValueError("Repeated assertions cannot multiply reputation effects.")
-                    assessed.add(key)
-                totals[claim.fact_id] = totals.get(claim.fact_id, 0) + belief.opinion_delta
-            if any(abs(total) > 6 for total in totals.values()):
-                raise ValueError("Invalid combined reputation influence.")
-
-        def validate_resolution(record, active):
-            if record.created_phase > now or record.deadline < record.created_phase:
-                raise ValueError("Invalid social deadline.")
-            if active:
-                if record.deadline < now or record.resolved_phase is not None or record.resolution_event_id or record.outcome:
-                    raise ValueError("Invalid active social outcome.")
-            elif (record.resolved_phase is None or not record.resolution_event_id or not record.outcome
-                  or not record.created_phase <= record.resolved_phase <= now):
-                raise ValueError("Invalid resolved social outcome.")
-
-        for promise in self.promises:
-            pair = (promise.promisor_id, promise.recipient_id)
-            origin = history_by_id.get(promise.conversation_id)
-            if (promise.id in promise_ids or pair[0] == pair[1] or any(npc_id not in ids for npc_id in pair)
-                    or origin is None or origin.purpose == "food_request"
-                    or {name.casefold() for name in origin.participants} != {names[ids.index(npc_id)] for npc_id in pair}):
-                raise ValueError("Invalid promise references.")
-            validate_resolution(promise, promise.status == "pending")
-            if (promise.consequence_event_id is not None) != (promise.status != "pending"):
-                raise ValueError("Invalid promise consequence reference.")
-            if promise.status == "broken" and promise.resolved_phase <= promise.deadline:
-                raise ValueError("A promise breaks only after its deadline phase.")
-            if promise.status == "fulfilled" and promise.resolved_phase > promise.deadline:
-                raise ValueError("A late gift cannot fulfill an expired promise.")
-            event = retained_events.get(promise.resolution_event_id)
-            if event is not None and (event.kind != ("fruit_shared" if promise.status == "fulfilled" else "promise_broken")
-                                      or event.participants != list(pair)):
-                raise ValueError("Invalid promise resolution event.")
-            event = retained_events.get(promise.consequence_event_id)
-            if event is not None and (event.kind != f"promise_{promise.status}" or event.participants != list(pair)):
-                raise ValueError("Invalid promise consequence event.")
-            if promise.status == "pending":
-                pending_counts[pair[0]] = pending_counts.get(pair[0], 0) + 1
-                if pair in pending_pairs or pending_counts[pair[0]] > 2:
-                    raise ValueError("Invalid outstanding promises.")
-                pending_pairs.add(pair)
-            promise_ids.add(promise.id)
-        for event in self.events:
-            if (any(participant not in ids for participant in event.participants)
-                    or len(set(event.participants)) != len(event.participants)
-                    or (event.history is not None and event.history >= len(self.history))):
-                raise ValueError("Invalid event references.")
-        for npc in self.npcs:
-            if len({memory.id for memory in npc.memories}) != len(npc.memories):
-                raise ValueError("Duplicate memories.")
-            if any(memory.partner_id not in ids or memory.partner_id == npc.id for memory in npc.memories):
-                raise ValueError("Invalid memory partner.")
-            if npc.goal:
-                if npc.goal.target_id not in ids or npc.goal.target_id == npc.id:
-                    raise ValueError("Invalid goal target.")
-                validate_resolution(npc.goal, npc.goal.status == "active")
-                if not any(fact.kind == "private_motive" and fact.source_id == npc.goal.id
-                           and fact.subject_id == npc.id and npc.goal.motive in fact.summary for fact in self.facts):
-                    raise ValueError("A private goal needs its owner-only intention fact.")
-                if npc.goal.kind == "sabotage_relationship":
-                    claim = claims.get(npc.goal.claim_id)
-                    if (npc.goal.third_npc_id not in ids or npc.goal.third_npc_id in (npc.id, npc.goal.target_id)
-                            or claim is None or claim.subject_id != npc.goal.third_npc_id
-                            or npc.goal.claim_id not in {belief.claim_id for belief in npc.beliefs}):
-                        raise ValueError("A sabotage goal needs a known account about a third NPC.")
-                elif npc.goal.third_npc_id is not None or npc.goal.claim_id is not None:
-                    raise ValueError("Unexpected sabotage references.")
-                if npc.goal.last_attempt_phase is not None and not npc.goal.created_phase <= npc.goal.last_attempt_phase <= now:
-                    raise ValueError("Invalid goal attempt phase.")
-                if npc.goal.status == "completed" and npc.goal.resolved_phase > npc.goal.deadline:
-                    raise ValueError("A goal cannot complete after its deadline.")
-                if npc.goal.status == "failed" and npc.goal.resolved_phase <= npc.goal.deadline:
-                    raise ValueError("A goal expires after its deadline phase.")
-                event = retained_events.get(npc.goal.resolution_event_id)
-                if event is not None and (event.kind != f"goal_{npc.goal.status}"
-                                          or event.participants != [npc.id, npc.goal.target_id]):
-                    raise ValueError("Invalid goal resolution event.")
-            if (len({effect.event_id for effect in npc.pending_social_opinions}) != len(npc.pending_social_opinions)
-                    or any(effect.target_id not in ids or effect.target_id == npc.id for effect in npc.pending_social_opinions)):
-                raise ValueError("Invalid pending social opinion effects.")
+                    if source is None or source.listener_id != actor.id or source.claim_id != claim.id or source.speaker_id != belief.source_id:
+                        raise ValueError("Hearsay requires its actual disclosure source.")
+        goal_ids = set()
+        for npc in residents:
+            if npc.arrival_day > self.day or any(m.partner_id not in ids or phase_index(m.day, m.phase) > now for m in npc.memories):
+                raise ValueError("Invalid arrival day or personal memory.")
+            if npc.departure and (phase_index(npc.departure.day, npc.departure.phase) > now or not any(f.source_id == npc.departure.event_id and f.kind == "eating" and f.object_id == npc.id for f in self.facts)):
+                raise ValueError("An archived resident needs its actual departure record.")
+            goal = npc.goal
+            if goal:
+                if goal.id in goal_ids or goal.target_id not in ids or goal.third_npc_id is not None and goal.third_npc_id not in ids or goal.created_phase > now or goal.deadline < goal.created_phase:
+                    raise ValueError("Invalid goal references.")
+                goal_ids.add(goal.id)
+                if goal.status == "active" and (npc.id not in live_ids or goal.target_id not in live_ids or goal.third_npc_id is not None and goal.third_npc_id not in live_ids):
+                    raise ValueError("An active goal can target only living residents.")
+                if (goal.status == "active") != (goal.resolved_phase is None):
+                    raise ValueError("Invalid goal resolution.")
+                if goal.claim_id is not None and goal.claim_id not in claims:
+                    raise ValueError("Unknown goal account.")
             for effect in npc.pending_social_opinions:
-                if effect.claim_id is not None:
-                    claim = claims.get(effect.claim_id)
-                    belief = next((b for b in npc.beliefs if b.claim_id == effect.claim_id), None)
-                    source = next((d for d in self.disclosures if d.conversation_id == effect.conversation_id
-                                   and d.claim_id == effect.claim_id and d.speaker_id == effect.actor_id and d.listener_id == npc.id), None)
-                    if (claim is None or claim.subject_id != effect.target_id or belief is None or not belief.assessed
-                            or belief.opinion_delta != effect.delta or source is None or effect.delta == 0
-                            or effect.phase is None or effect.phase != source.phase):
-                        raise ValueError("A reputation adjustment needs its heard account and assessment.")
-                    continue
-                promise = next((p for p in self.promises if p.consequence_event_id == effect.event_id), None)
-                if (promise is None or promise.recipient_id != npc.id or promise.promisor_id != effect.target_id
-                        or effect.delta != (4 if promise.status == "fulfilled" else -6)
-                        or effect.reason != promise.outcome or effect.actor_id is not None or effect.conversation_id is not None
-                        or effect.phase is not None):
-                    raise ValueError("Opinion effect does not match a committed promise outcome.")
-            validate_beliefs(npc.beliefs, npc.id)
-        if (self.tree.shaker is None) != (self.tree.shake_elapsed is None):
-            raise ValueError("A shaking tree needs a shaker and elapsed time.")
-        if self.tree.reserved_by is not None and self.tree.reserved_by not in ids:
-            raise ValueError("Invalid tree reservation.")
-        if self.tree.shaker is not None and self.tree.shaker != self.tree.reserved_by:
-            raise ValueError("The shaker must own the tree slot.")
-        reserved, records = set(), set()
-        if len({conversation.id for conversation in self.conversations}) != len(self.conversations):
-            raise ValueError("Duplicate interaction IDs.")
-
-        def validate_target(activity, npc):
-            if any(target not in all_ids or target == npc.id for target in activity.cooldowns):
-                raise ValueError("Invalid cooldown target.")
+                if effect.target_id not in ids or effect.claim_id is not None and effect.claim_id not in claims:
+                    raise ValueError("Invalid queued social effect.")
+        promise_ids = set()
+        for promise in self.promises:
+            record = record_for(promise.conversation_id)
+            if promise.id in promise_ids or promise.promisor_id == promise.recipient_id or not all(participant(i, record) for i in (promise.promisor_id, promise.recipient_id)):
+                raise ValueError("Invalid promise participants.")
+            promise_ids.add(promise.id)
+            if promise.status == "pending" and not {promise.promisor_id, promise.recipient_id} <= live_ids:
+                raise ValueError("Impossible obligations must be cancelled.")
+            if promise.deadline < promise.created_phase or promise.created_phase > now or (promise.status == "pending") != (promise.resolved_phase is None):
+                raise ValueError("Invalid promise resolution.")
+        def activity_target(activity, owner):
             target = activity.target_id
-            if activity.behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING):
+            if activity.behavior in (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING, Behavior.HARVEST):
                 if target != self.tree.id:
-                    raise ValueError("Invalid tree target.")
-                point = (self.tree.x - 60, self.tree.y + 50)
-                if activity.destination is not None and activity.destination != point:
-                    raise ValueError("Invalid tree destination.")
-                if activity.behavior in (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE) and activity.destination is None:
-                    raise ValueError("A walking task needs a destination.")
-                if activity.behavior in (Behavior.HARVEST, Behavior.SHAKING) and activity.activity_elapsed > SHAKE_SECONDS:
-                    raise ValueError("Invalid shake progress.")
+                    raise ValueError("Invalid tree task target.")
             elif activity.behavior == Behavior.COMPANY:
-                if target not in ids or target == npc.id:
-                    raise ValueError("Invalid companion.")
+                if target not in live_ids or target == owner.id:
+                    raise ValueError("A company target must be living.")
             elif target is not None:
-                raise ValueError("Unexpected activity target.")
-
-        for conversation in self.conversations:
-            pair = (conversation.initiator, conversation.recipient)
-            if pair[0] == pair[1] or any(index >= count or index in reserved for index in pair):
-                raise ValueError("Invalid conversation participants.")
-            if conversation.record >= len(self.history) or conversation.record in records:
-                raise ValueError("Invalid conversation history reference.")
-            if self.history[conversation.record].id != conversation.id:
-                raise ValueError("Conversation identity does not match its history.")
-            if not conversation.arrived and self.npcs[pair[0]].destination is None:
-                raise ValueError("A meeting in progress needs a destination.")
-            if self.npcs[pair[1]].destination is not None:
-                raise ValueError("The conversation recipient must be waiting.")
-            if conversation.dialogue_state == "pending" and not conversation.arrived:
-                raise ValueError("Dialogue requests start only after meeting.")
-            if any(not reason.strip() or not -4 <= weight <= 4 for reason, weight in conversation.reactions):
-                raise ValueError("Invalid conversation reaction.")
-            if conversation.arrived and any(self.npcs[index].destination is not None for index in pair):
-                raise ValueError("Arrived conversation participants must be still.")
-            if (self.history[conversation.record].origin != conversation.origin
-                    or self.history[conversation.record].purpose != conversation.purpose):
-                raise ValueError("Conversation history purpose does not match.")
-            ready = conversation.dialogue_state == "ready"
-            if conversation.social_effects_applied != ready:
-                raise ValueError("Conversation social effects must match accepted dialogue.")
-            if len({p.id for p in conversation.proposals}) != len(conversation.proposals):
-                raise ValueError("Duplicate proposal IDs.")
-            pair_ids = {self.npcs[index].id for index in pair}
-            context = conversation.information_context
-            if context is not None:
-                roles = {"initiator", "recipient"}
-                if (set(context.participants) != roles or set(context.beliefs) != roles
-                        or set(context.allowed) != roles or set(context.can_lie) != roles or set(context.opinions) != roles
-                        or context.participants != {"initiator": self.npcs[pair[0]].id, "recipient": self.npcs[pair[1]].id}):
-                    raise ValueError("Information context belongs to the wrong speakers.")
-                options = {option.id: option for option in context.options}
-                if len(options) != len(context.options):
-                    raise ValueError("Duplicate permitted accounts.")
-                if context.focus_claim_id is not None and context.focus_claim_id not in context.allowed["initiator"]:
-                    raise ValueError("The gossip focus must be a permitted account.")
-                for option in context.options:
-                    fact = facts.get(option.fact_id)
-                    if (fact is None or option.subject_id != fact.subject_id or option.kind != fact.kind
-                            or option.originator_id not in ids):
-                        raise ValueError("Invalid permitted account references.")
-                    if option.creator_id:
-                        parent = claims.get(option.parent_claim_id)
-                        if (option.creator_id not in pair_ids or option.originator_id != option.creator_id
-                                or option.affirmed or parent is None or not parent.affirmed or parent.fact_id != fact.id):
-                            raise ValueError("Invalid permitted denial.")
-                    else:
-                        claim = claims.get(option.id)
-                        if (claim is None or (claim.fact_id, claim.subject_id, claim.originator_id, claim.affirmed, claim.parent_claim_id)
-                                != (option.fact_id, option.subject_id, option.originator_id, option.affirmed, option.parent_claim_id)):
-                            raise ValueError("Permitted account does not match its saved claim.")
-                for role, npc_id in context.participants.items():
-                    validate_beliefs(context.beliefs[role], npc_id)
-                    known = {b.claim_id for b in context.beliefs[role]}
-                    if not known.issubset(options):
-                        raise ValueError("Information context is missing a known account.")
-                    for claim_id in context.allowed[role]:
-                        option = options.get(claim_id)
-                        if option is None or (claim_id not in known and not
-                                              (option.creator_id == npc_id and option.parent_claim_id in known and context.can_lie[role])):
-                            raise ValueError("Speaker was permitted to disclose an unknown account.")
-                    if (set(context.opinions[role]) != set(ids) - {npc_id}
-                            or any(not -100 <= score <= 100 for score in context.opinions[role].values())):
-                        raise ValueError("Invalid private opinion context.")
-            if conversation.purpose != "food_request" and (ready or conversation.dialogue_state == "pending") and context is None:
-                raise ValueError("A generated chat needs its private information context.")
-            if conversation.purpose == "food_request" and context is not None:
-                raise ValueError("Food requests do not negotiate disclosures.")
-            if conversation.purpose == "gossip":
-                if (conversation.focus_claim_id not in claims or conversation.focus_claim_id not in
-                        {b.claim_id for b in self.npcs[pair[0]].beliefs}):
-                    raise ValueError("Gossip needs an account known by its initiator.")
-            elif conversation.focus_claim_id is not None:
-                raise ValueError("Unexpected gossip focus.")
-            if context is not None and context.focus_claim_id != conversation.focus_claim_id:
-                raise ValueError("Information context has the wrong gossip focus.")
-            if not ready and (conversation.accepted_disclosures or conversation.third_party_opinions or conversation.leverage_uses):
-                raise ValueError("Unaccepted speech cannot have information effects.")
-            if ready:
-                validate_information(SimpleNamespace(turns=conversation.turns, disclosures=conversation.accepted_disclosures,
-                                                     third_party_opinions=conversation.third_party_opinions, leverage=conversation.leverage_uses),
-                                     information_from_dict(context.model_dump()) if context else None)
-            applied = [entry for entry in self.disclosures if entry.conversation_id == conversation.id]
-            if {(entry.turn, entry.claim_id, entry.intent, entry.stance) for entry in applied} != {
-                    (entry.turn, entry.claim_id, entry.intent, entry.listener_stance) for entry in conversation.accepted_disclosures}:
-                raise ValueError("Accepted disclosures do not match applied information effects.")
-            if any({p.promisor_id, p.recipient_id} != pair_ids for p in conversation.proposals):
-                raise ValueError("Invalid proposal participants.")
-            validate_agreements(conversation.accepted_proposals, [p.model_dump() for p in conversation.proposals],
-                                conversation.turns, self.npcs[pair[0]].id, self.npcs[pair[1]].id)
-            if not ready and conversation.accepted_proposals:
-                raise ValueError("Unaccepted dialogue cannot have agreements.")
-            if {p.id for p in self.promises if p.conversation_id == conversation.id} != {
-                    agreement.proposal_id for agreement in conversation.accepted_proposals}:
-                raise ValueError("Conversation agreements do not match applied promises.")
-            for agreement in conversation.accepted_proposals:
-                promise = next((p for p in self.promises if p.id == agreement.proposal_id), None)
-                proposal = next(p for p in conversation.proposals if p.id == agreement.proposal_id)
-                if (promise is None or promise.conversation_id != self.history[conversation.record].id
-                        or (promise.promisor_id, promise.recipient_id, promise.deadline)
-                        != (proposal.promisor_id, proposal.recipient_id, proposal.deadline)):
-                    raise ValueError("Accepted agreement is missing its applied promise.")
-            if ready != bool(conversation.turns) or (ready and not conversation.arrived):
-                raise ValueError("Invalid dialogue progress.")
-            if ready and len(conversation.reactions) != 2:
-                raise ValueError("A generated conversation needs both reactions.")
-            turn_count = len(conversation.turns)
-            if ready and ((conversation.purpose == "food_request" and turn_count != 2)
-                          or (conversation.purpose != "food_request" and turn_count < 4)):
-                raise ValueError("Invalid conversation turn count.")
-            if conversation.purpose == "food_request":
-                if (conversation.proposals or conversation.accepted_proposals
-                        or conversation.origin != "autonomous" or bool(conversation.food_outcome) != conversation.arrived
-                        or bool(conversation.food_reason) != conversation.arrived
-                        or bool(conversation.handoff_thanks) != (ready and conversation.food_outcome == "accepted")
-                        or bool(conversation.outcome_event_id) != (ready and conversation.food_outcome in ("need", "refused", "unavailable"))):
-                    raise ValueError("Invalid food request progress.")
-            elif conversation.food_outcome or conversation.food_reason or conversation.handoff_thanks:
-                raise ValueError("Invalid conversation outcome.")
-            if any(index not in pair for index, _ in conversation.pending_opinions):
-                raise ValueError("Invalid pending opinion participant.")
-            for index, activity in zip(pair, conversation.saved_states):
-                validate_target(activity, self.npcs[index])
+                raise ValueError("Unexpected action target.")
+        reserved = set()
+        for interaction in [*self.conversations, *self.gifts]:
+            pair = (interaction.initiator, interaction.recipient)
+            if pair[0] == pair[1] or any(i >= len(self.npcs) or i in reserved for i in pair) or interaction.record >= len(self.history):
+                raise ValueError("Invalid live interaction participants.")
+            for index, activity in zip(pair, interaction.saved_states):
+                activity_target(activity, self.npcs[index])
+            record = self.history[interaction.record]
+            if set(record.participants) != {actors[self.npcs[i].id] for i in pair}:
+                raise ValueError("An interaction must match its record.")
             reserved.update(pair)
-            records.add(conversation.record)
-        for gift in self.gifts:
-            pair = (gift.initiator, gift.recipient)
-            if pair[0] == pair[1] or any(index >= count or index in reserved for index in pair):
-                raise ValueError("Invalid gift participants.")
-            if gift.record >= len(self.history) or gift.record in records:
-                raise ValueError("Invalid gift history reference.")
-            giver, recipient = (self.npcs[index] for index in pair)
-            if self.history[gift.record].purpose == "food_request" and gift.quantity != 1:
-                raise ValueError("A food request shares exactly one apple.")
-            if bool(gift.thanks) != (self.history[gift.record].purpose == "food_request"):
-                raise ValueError("Food request gifts must carry generated thanks.")
-            if gift.arrived != (giver.destination is None) or (not gift.arrived and gift.elapsed != 0):
-                raise ValueError("Invalid gift progress.")
-            if recipient.destination is not None:
-                raise ValueError("The gift recipient must be waiting.")
-            if gift.transferred != (gift.elapsed >= 1) or gift.transferred != bool(gift.outcome_event_id):
-                raise ValueError("Invalid gift transfer progress.")
-            for index, activity in zip(pair, gift.saved_states):
-                validate_target(activity, self.npcs[index])
-            reserved.update(pair)
-            records.add(gift.record)
+            if isinstance(interaction, ConversationState):
+                ready = interaction.dialogue_state == "ready"
+                if record.id != interaction.id or ready != bool(interaction.turns) or ready != interaction.social_effects_applied:
+                    raise ValueError("Invalid conversation commit progress.")
+                if interaction.information_context:
+                    context = interaction.information_context
+                    if context.participants != {"initiator": self.npcs[pair[0]].id, "recipient": self.npcs[pair[1]].id}:
+                        raise ValueError("Invalid information speakers.")
+                    if any(o.fact_id not in facts for o in context.options):
+                        raise ValueError("Missing snapshot facts.")
+                validate_agreements(interaction.accepted_proposals, [p.model_dump() for p in interaction.proposals], interaction.turns, self.npcs[pair[0]].id, self.npcs[pair[1]].id)
+                if ready:
+                    validate_information(SimpleNamespace(turns=interaction.turns, disclosures=interaction.accepted_disclosures,
+                        third_party_opinions=interaction.third_party_opinions, leverage=interaction.leverage_uses),
+                        interaction.information_context.model_dump() if interaction.information_context else None)
+            elif interaction.transferred != (interaction.elapsed >= 1) or interaction.transferred != bool(interaction.outcome_event_id):
+                raise ValueError("Invalid apple handoff progress.")
+        encounter = self.snake_encounter
+        if encounter:
+            if encounter.resident_id not in live_ids or encounter.record >= len(self.history):
+                raise ValueError("A snake encounter needs a living resident.")
+            resident_index = next(i for i, n in enumerate(self.npcs) if n.id == encounter.resident_id)
+            if resident_index in reserved or self.history[encounter.record].id != encounter.id or self.snake.target_id != encounter.resident_id:
+                raise ValueError("Conflicting snake encounter reservation.")
+            reserved.add(resident_index)
+            if encounter.committed != bool(encounter.turns) or encounter.committed != (encounter.dialogue_state == "ready") or encounter.committed != bool(encounter.outcome):
+                raise ValueError("Invalid snake encounter commit progress.")
+            if encounter.reserved and (encounter.committed or encounter.purpose == "introduction" or self.tree.fruit < 1):
+                raise ValueError("Invalid apple reservation.")
+            if encounter.stage in ("condemned_approach", "eating") and encounter.outcome != "eat":
+                raise ValueError("Eating requires a resolved condemnation.")
+            activity_target(encounter.saved_state, self.npcs[resident_index])
+        elif self.snake.target_id is not None:
+            raise ValueError("A snake target requires an encounter.")
+        if (not set(self.snake.standing) <= ids or any(not -100 <= score <= 100 for score in self.snake.standing.values())
+                or not set(self.snake.pardons) <= live_ids or not set(self.snake.offenses) <= live_ids
+                or any(f not in facts for f in self.snake.offenses.values())):
+            raise ValueError("Invalid snake standing, offenses or pardons.")
+        if self.snake.judged_phase > now or self.snake.retry_request and self.snake.retry_request.resident_id not in live_ids:
+            raise ValueError("Invalid snake judgment phase or retry target.")
         for index, npc in enumerate(self.npcs):
-            if index in reserved:
-                if npc.behavior != Behavior.WAIT or npc.owner != "autonomous" or npc.target_id is not None or npc.resume_pending:
-                    raise ValueError("Invalid activity during an interaction.")
-                if npc.id == self.tree.reserved_by:
-                    raise ValueError("Interaction participants cannot reserve the tree.")
-                continue
-            validate_target(npc, npc)
-            if npc.behavior == Behavior.EAT and npc.inventory.get("fruit", 0) < 1:
-                raise ValueError("Eating needs an apple in inventory.")
-            if npc.resume_pending:
-                if npc.id == self.tree.reserved_by:
-                    raise ValueError("A suspended activity cannot reserve the tree.")
-                continue
-            if npc.behavior in (Behavior.HARVEST, Behavior.SHAKING) and self.tree.reserved_by != npc.id:
-                raise ValueError("An active harvest or shake must reserve the tree.")
-            if npc.behavior == Behavior.HARVEST and (self.tree.fruit == 0 or sum(npc.inventory.values()) >= npc.inventory_capacity):
-                raise ValueError("An active harvest needs available fruit and inventory space.")
-            if self.tree.reserved_by == npc.id:
-                if npc.target_id != self.tree.id or npc.behavior not in (Behavior.HARVEST, Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING):
-                    raise ValueError("Invalid tree owner activity.")
-            if self.tree.shaker == npc.id:
-                if npc.destination is not None or npc.behavior not in (Behavior.HARVEST, Behavior.SHAKING):
-                    raise ValueError("Invalid shaker activity.")
-        pending = set()
+            if index not in reserved:
+                activity_target(npc, npc)
+            if index in reserved and npc.behavior != Behavior.WAIT:
+                raise ValueError("Encounter participants must wait.")
+        for reference in (self.tree.reserved_by, self.tree.shaker):
+            if reference is not None and reference not in live_ids:
+                raise ValueError("A tree reservation requires a living owner.")
+        if self.tree.shaker is not None and self.tree.shaker != self.tree.reserved_by or bool(self.tree.shaker) != (self.tree.shake_elapsed is not None):
+            raise ValueError("Invalid tree shake owner.")
+        pending_owners = set()
         for action in self.pending_actions:
-            if action.npc_id not in ids or action.npc_id in pending:
-                raise ValueError("Invalid pending action participant.")
-            if action.action in ("TALK_TO_NPC", "GIVE_ITEM"):
-                if action.target_id not in ids or action.target_id == action.npc_id:
-                    raise ValueError("Invalid pending recipient.")
-            elif action.target_id is not None:
-                raise ValueError("Unexpected pending action target.")
-            if action.action == "GIVE_ITEM":
-                if action.item != "fruit" or action.quantity < 1:
-                    raise ValueError("Invalid pending gift.")
-            elif action.item or action.quantity:
-                raise ValueError("Only giving actions may include items.")
+            if action.npc_id not in live_ids or action.npc_id in pending_owners or action.target_id is not None and action.target_id not in live_ids:
+                raise ValueError("Queued actions need living actors.")
+            pending_owners.add(action.npc_id)
             if action.record is not None and action.record >= len(self.history):
-                raise ValueError("Invalid pending action history.")
-            pending.add(action.npc_id)
+                raise ValueError("Invalid queued history record.")
+        pending, processed = self.pending_arrival_days, self.processed_arrival_days
+        if pending != sorted(set(pending)) or processed != sorted(set(processed)) or set(pending) & set(processed) or set(pending) | set(processed) != set(range(2, self.day + 1)):
+            raise ValueError("Every dawn must have exactly one pending or completed arrival.")
+        arrivals = [n.arrival_day for n in residents if n.arrival_day >= 2]
+        if sorted(arrivals) != processed:
+            raise ValueError("Completed arrivals must match their preserved residents.")
+        if self.prepared_arrival and self.prepared_arrival.id in ids or not set(self.introductions) <= live_ids:
+            raise ValueError("Invalid prepared arrival or introduction identity.")
         return self
 
 
@@ -923,6 +787,30 @@ class SaveStore:
         self._path(save_id).unlink()
 
 
+def capture_resident(npc):
+    return NPCState(
+        **npc.activity_state(), id=npc.id,
+        character=npc.character, display_name=npc.display_name, x=npc.x, y=npc.y,
+        reply=npc.reply, emotion=EmotionReaction(name=npc.emotion, intensity=npc.emotion_intensity),
+        social=npc.social, inventory=npc.inventory.copy(), inventory_capacity=npc.inventory_capacity,
+        preferences=npc.preferences.copy(), command_revision=npc.command_revision,
+        memories=[asdict(memory) for memory in npc.memories],
+        goal=asdict(npc.goal) if npc.goal else None,
+        pending_social_opinions=[asdict(effect) for effect in npc.pending_social_opinions],
+        beliefs=[asdict(belief) for belief in npc.beliefs],
+        background=npc.background, attitudes=npc.attitudes,
+        arrival_day=npc.arrival_day, departure=npc.departure,
+    )
+
+def capture_snake_encounter(encounter, records):
+    if encounter is None:
+        return None
+    values = {name: getattr(encounter, name) for name in SnakeEncounterState.model_fields
+              if name not in ("resident_id", "record")}
+    values.update(resident_id=encounter.recipient.id, record=records[id(encounter.record)])
+    return SnakeEncounterState(**values)
+
+
 def capture_simulation(app):
     """Capture main-thread state, including accepted actions awaiting a tick."""
     npc_indices = {id(npc): index for index, npc in enumerate(app.npcs)}
@@ -934,18 +822,7 @@ def capture_simulation(app):
         record["outcomes"].insert(0, "The reply was not saved. Send the request again after loading.")
     npcs, conversations, gifts = [], [], []
     for npc in app.npcs:
-        npcs.append(NPCState(
-            **npc.activity_state(), id=npc.id,
-            character=npc.character, display_name=npc.display_name, x=npc.x, y=npc.y,
-            reply=npc.reply, emotion=EmotionReaction(name=npc.emotion, intensity=npc.emotion_intensity),
-            social=npc.social,
-            inventory=npc.inventory.copy(), inventory_capacity=npc.inventory_capacity,
-            preferences=npc.preferences.copy(), command_revision=npc.command_revision,
-            memories=[asdict(memory) for memory in npc.memories],
-            goal=asdict(npc.goal) if npc.goal else None,
-            pending_social_opinions=[asdict(effect) for effect in npc.pending_social_opinions],
-            beliefs=[asdict(belief) for belief in npc.beliefs],
-        ))
+        npcs.append(capture_resident(npc))
         gift = npc.gift
         if gift is not None and gift.initiator is npc:
             gifts.append(GiftState(
@@ -986,9 +863,14 @@ def capture_simulation(app):
         facts=[asdict(fact) for fact in world.facts], claims=[asdict(claim) for claim in world.claims],
         disclosures=[asdict(disclosure) for disclosure in world.disclosures],
         social_opportunity=world.social_opportunity, social_rotation=world.social_rotation,
-        snake=SnakeState(x=world.snake.x, y=world.snake.y, destination=world.snake.destination,
-                         facing=world.snake.facing, pause_remaining=world.snake.pause_remaining,
-                         animation_elapsed=world.snake.animation_elapsed),
+        snake=SnakeState(**{name: ([asdict(b) for b in world.snake.beliefs] if name == "beliefs" else getattr(world.snake, name))
+                            for name in SnakeState.model_fields}),
+        archived=[capture_resident(npc) for npc in world.archived],
+        prepared_arrival=asdict(world.prepared_arrival) if world.prepared_arrival else None,
+        arrival_error=world.arrival_error,
+        pending_arrival_days=world.pending_arrival_days.copy(), processed_arrival_days=world.processed_arrival_days.copy(),
+        introductions=world.introductions.copy(), roster_revision=world.roster_revision,
+        snake_encounter=capture_snake_encounter(world.snake.encounter, records),
         npcs=npcs, history=history, conversations=conversations, gifts=gifts,
         tree=TreeState(id=app.tree.id, x=app.tree.x, y=app.tree.y, fruit=app.tree.fruit,
                        capacity=app.tree.capacity,
@@ -1005,7 +887,8 @@ def restore_simulation(state):
     """Build and validate a complete world before replacing the current simulation."""
     state = SimulationState.model_validate(state.model_dump())
     npcs = []
-    for saved in state.npcs:
+    all_residents = []
+    for saved in [*state.npcs, *state.archived]:
         npc = NPC(
             id=saved.id, character=saved.character, display_name=saved.display_name, x=saved.x, y=saved.y,
             reply=saved.reply, emotion=saved.emotion.name, emotion_intensity=saved.emotion.intensity,
@@ -1016,16 +899,33 @@ def restore_simulation(state):
             goal=Goal(**saved.goal.model_dump()) if saved.goal else None,
             pending_social_opinions=[OpinionEffect(**effect.model_dump()) for effect in saved.pending_social_opinions],
             beliefs=[Belief(**belief.model_dump()) for belief in saved.beliefs],
+            background=saved.background.model_dump(), attitudes=saved.attitudes.model_dump(),
+            arrival_day=saved.arrival_day, departure=saved.departure.model_dump() if saved.departure else None,
         )
         npc.restore_activity({name: getattr(saved, name) for name in ACTIVITY_FIELDS})
-        npcs.append(npc)
+        all_residents.append(npc)
+    npcs = all_residents[:len(state.npcs)]
     by_id = {npc.id: npc for npc in npcs}
     tree = Tree(id=state.tree.id, x=state.tree.x, y=state.tree.y, fruit=state.tree.fruit,
                 capacity=state.tree.capacity,
                 shake_elapsed=state.tree.shake_elapsed, shaker=by_id.get(state.tree.shaker),
                 reserved_by=by_id.get(state.tree.reserved_by))
     world = Simulation(npcs, tree, assign_goals=False)
-    world.snake = Snake(**state.snake.model_dump())
+    world.archived = all_residents[len(state.npcs):]
+    for npc in world.archived:
+        npc.world = world
+    snake_values = state.snake.model_dump()
+    snake_values["beliefs"] = [Belief(**b) for b in snake_values["beliefs"]]
+    world.snake = Snake(**snake_values)
+    world.snake.world = world
+    world.arrival_error = state.arrival_error
+    world.pending_arrival_days = state.pending_arrival_days.copy()
+    world.processed_arrival_days = state.processed_arrival_days.copy()
+    world.introductions = state.introductions.copy()
+    world.roster_revision = state.roster_revision
+    world.prepared_arrival = Arrival(**state.prepared_arrival.model_dump()) if state.prepared_arrival else None
+    if world.prepared_arrival and world.prepared_arrival.state == "pending":
+        world.prepared_arrival.state = "waiting"
     world.day, world.phase = state.day, state.phase
     world.pending_actions = [PendingAction(**action.model_dump()) for action in state.pending_actions]
     for action in world.pending_actions:
@@ -1057,7 +957,8 @@ def restore_simulation(state):
         for npc in (conversation.initiator, conversation.recipient):
             npc.conversation = conversation
         if conversation.dialogue_state == "pending":
-            conversation.fail_dialogue("The outstanding dialogue request was not saved. No dialogue was generated.")
+            conversation.dialogue_state = "waiting"
+            conversation.wait_elapsed = 0.0
     for saved in state.gifts:
         gift = Gift.__new__(Gift)
         gift.initiator, gift.recipient = npcs[saved.initiator], npcs[saved.recipient]
@@ -1069,6 +970,24 @@ def restore_simulation(state):
         gift.saved_states = [activity.model_dump() for activity in saved.saved_states]
         for npc in (gift.initiator, gift.recipient):
             npc.gift = gift
+    saved = state.snake_encounter
+    if saved:
+        encounter = SnakeEncounter.__new__(SnakeEncounter)
+        for name in SnakeEncounterState.model_fields:
+            if name not in ("resident_id", "record", "saved_state"):
+                setattr(encounter, name, getattr(saved, name))
+        encounter.world = world
+        encounter.initiator, encounter.recipient = world.snake, by_id[saved.resident_id]
+        encounter.record = history[saved.record]
+        encounter.saved_state = saved.saved_state.model_dump()
+        encounter.active = True
+        encounter.pending_opinions = []
+        world.snake.encounter = encounter
+        encounter.recipient.snake_encounter = encounter
+        if encounter.dialogue_state == "pending":
+            encounter.dialogue_state = "waiting"
+            encounter.wait_elapsed = 0.0
+            encounter.request_context = None
     # Claims are reacquired through the same safe path as interrupted activities.
     tree.reserved_by = None
     tree.cancel_shake()

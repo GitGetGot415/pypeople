@@ -7,6 +7,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from ollama_manager import DEFAULT_OLLAMA_MODEL
 from social import validate_agreements, validate_information
+from purgatory import Attitudes, BackgroundResponse
 
 MODEL = "gemini-2.5-flash"
 OLLAMA_MODEL = DEFAULT_OLLAMA_MODEL
@@ -131,6 +132,22 @@ class LeverageUse(BaseModel):
     turn: int = Field(ge=0, le=7)
     claim_id: str = Field(min_length=1)
     demand: Literal["apple", "repayment", "disclosure"]
+
+
+class SnakeResponse(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    interaction_id: str
+    decision: Literal["talk", "secret", "endorsement", "refuse", "negotiate", "challenge", "spare", "eat"]
+    turns: list[ConversationTurn] = Field(min_length=4, max_length=6)
+    account_id: str
+    snake_account_id: str
+    account_stance: Literal["uncertain", "believed", "disbelieved"]
+    attitudes: Attitudes | None
+
+
+class SnakePlayerResponse(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    reply: str = Field(min_length=1)
 
 
 class ConversationResponse(BaseModel):
@@ -336,6 +353,21 @@ Firsthand memories and accounts are events that speaker personally experienced.
 The speaker already knows whether they happened: never describe them as hearsay,
 invent a source for them, or ask another person to verify their occurrence.
 Someone else's uncertainty cannot make the speaker doubt their own experience.
+The python guards all tree apples. Visiting or shaking never awards fruit. A completed
+snake bargain trades one real apple for a new owned account or a public endorsement
+heard by another living resident. Carried apples may still be eaten or shared.
+Each resident's private background is immutable former-life recollection: do not
+regenerate its facts or identify remembered people with current residents. A private
+background or motive belongs only to its speaker until explicitly disclosed. Specific
+private details may be spoken only as a permitted structured disclosure or a selected
+secret offering; do not silently leak other private facts in ordinary dialogue.
+Gods, purgatory zones, heaven and hell are unverified. Repeat explanations as claims
+from their actual source. A snake accusation does not establish objective guilt.
+Belief in divinity, trust in the python, and acceptance of tree control are separate.
+Compliance can be fearful or practical. Believers can oppose mistreatment of friends.
+Ordinary conversations can change opinions through the existing opinion fields.
+Belief in divinity and acceptance of tree control can change in a direct encounter
+with the snake; these do not require additional account citations in ordinary dialogue.
 Only supported actions and structured social effects change the simulation.
 
 """
@@ -564,6 +596,8 @@ def character_context(character):
 
 def world_context(snapshot):
     """Supply relevant state without exposing other NPCs' private knowledge."""
+    if snapshot.get("request_kind") in ("background", "snake_encounter", "snake_player"):
+        return {k: v for k, v in snapshot.items() if not k.startswith("_")}
     conversation = snapshot.get("request_kind") == "conversation"
 
     def person_context(person, include_reply=False):
@@ -591,7 +625,7 @@ def world_context(snapshot):
     context["environment"] = {
         "place": "One grassy area",
         "objects": ["One apple tree", "Apples on the tree and in NPC inventories"],
-        "people": "The listed NPCs and the player",
+        "people": "The listed residents, the python, and the player",
     }
     if conversation:
         current = snapshot["initiator"]
@@ -637,7 +671,87 @@ def intent_snapshot(snapshot):
     }
 
 
+def structured_schema(model):
+    """Inline model definitions for the two providers' existing JSON schema path."""
+    schema = model.model_json_schema()
+    definitions = schema.pop("$defs", {})
+    def expand(value):
+        if isinstance(value, list):
+            return [expand(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        if "$ref" in value:
+            return expand(definitions[value["$ref"].split("/")[-1]])
+        return {key: expand(item) for key, item in value.items() if key not in ("title", "default", "additionalProperties")}
+    return expand(schema)
+
+
+def validate_snake_response(result, snapshot):
+    if result.interaction_id != snapshot["interaction_id"] or result.decision not in snapshot["permitted_decisions"]:
+        raise ValueError("Use this encounter's identity and a locally permitted decision.")
+    for i, turn in enumerate(result.turns):
+        if turn.speaker != ("initiator" if i % 2 == 0 else "recipient"):
+            raise ValueError("Alternate snake and resident speech, beginning with the snake.")
+    accounts = {a["claim_id"] for a in snapshot["offering_accounts"]}
+    if (result.decision == "secret" and result.account_id not in accounts) or (result.decision != "secret" and result.account_id):
+        raise ValueError("A private offering must select exactly one permitted new account.")
+    if result.decision == "endorsement" and not snapshot["audience_ids"]:
+        raise ValueError("A public endorsement needs a living listener.")
+    if result.snake_account_id and result.snake_account_id not in {a["claim_id"] for a in snapshot["snake"]["known_accounts"]}:
+        raise ValueError("The snake can reveal only one of its supplied known accounts.")
+
+
 def response_contract(snapshot, *, correction=False):
+    kind = snapshot.get("request_kind")
+    if kind == "background":
+        instruction = (
+            "Generate one compact, varied former life for the supplied actor_id and authored character. "
+            "Preserve identity, Details and personality. Include occupation/life context, two or three concrete "
+            "distinct memories, an unresolved concern, a private matter, and their prior worldview about death "
+            "and goodness. These people and incidents are recollections, not current residents. Do not assign "
+            "everyone the same guilt, faith or life. Initial attitudes reflect that worldview: they have no "
+            "knowledge of this garden, its history or the snake's claims yet. Trust is an initial cautious "
+            "impression and authority may be uncertain. Do not equate belief, trust and acceptance. Return actor_id, "
+            "background, and attitudes with independent reasons. Never create spoken dialogue in this response."
+        )
+        schema = structured_schema(BackgroundResponse)
+        schema["properties"]["actor_id"] = {"type": "string", "enum": [snapshot["actor_id"]]}
+        return instruction, schema, BackgroundResponse
+    if kind in ("snake_encounter", "snake_player"):
+        from snake import SNAKE_DOCTRINE
+        instruction = WORLD_INSTRUCTION + SNAKE_DOCTRINE
+        if kind == "snake_player":
+            return instruction + " Reply directly to the player. Generate speech only in reply. No physical or social action is authorized by this request.", structured_schema(SnakePlayerResponse), SnakePlayerResponse
+        instruction += (
+            " Generate an encounter with initiator=snake, recipient=resident: four or six alternating turns. "
+            "The snake's knowledge is only snake.known_accounts; resident private_context belongs only to "
+            "the resident. An account on offering_accounts is a potential price, not knowledge the snake "
+            "already has. Choose a permitted_decision. For secret, disclose exactly account_id in resident "
+            "turn 1; keep it private, and do not reveal any other background facts. For endorsement, resident "
+            "turn 1 publicly supports the snake to audience_ids. Snake turn 2 acknowledges the actual apple "
+            "transfer for those two decisions. Other decisions do not pay, disclose a private price, or "
+            "claim an apple changed hands. Refusal, negotiation and challenging are real alternatives, "
+            "informed independently by personality, relationships, attitudes, satisfaction and risk. "
+            "In judgment, snake turn 0 announces only accusation, resident turn 1 responds or pleads, "
+            "snake turn 2 gives the decision: spare, eat, or an achievable apple offering as remedy. "
+            "Eating follows later and must not be described as already completed. Condemnation can be unfair "
+            "but must be attributed to the snake's standards. No invented offense. The resident has "
+            "come to the guarded tree to seek an apple. On first_meeting introduce the snake's claimed "
+            "authority naturally while discussing the price. There is no required sermon or checklist. "
+            "If snake_account_id is nonempty, reveal that known account in snake turn 0, keeping its "
+            "actual provenance even if the snake calls it revelation; account_stance is the resident's "
+            "interpretation. Otherwise use an empty snake_account_id. account_id is empty unless secret. "
+            "attitudes may be null; any changes need the current exchange as evidence, independent reasons, "
+            "and at most six trust points. Generate all speech, with emotion on each part."
+        )
+        schema = structured_schema(SnakeResponse)
+        schema["properties"]["decision"]["enum"] = snapshot["permitted_decisions"]
+        schema["properties"]["interaction_id"] = {"type": "string", "enum": [snapshot["interaction_id"]]}
+        offering_ids = [a["claim_id"] for a in snapshot["offering_accounts"]] if "secret" in snapshot["permitted_decisions"] else []
+        schema["properties"]["account_id"] = {"type": "string", "enum": ["", *offering_ids],
+            "description": "Empty unless decision is secret; then select one offered account ID."}
+        schema["properties"]["snake_account_id"] = {"type": "string", "enum": ["", *[a["claim_id"] for a in snapshot["snake"]["known_accounts"]]]}
+        return instruction, schema, SnakeResponse
     if snapshot.get("request_kind") == "intent":
         targets = [other["npc_name"] for other in snapshot.get("other_npcs", []) if other.get("available_to_talk", True)]
         schema = {**INTENT_SCHEMA, "properties": {**INTENT_SCHEMA["properties"], "target": {"type": "string", "enum": ["", *targets]}}}
@@ -723,9 +837,9 @@ def response_contract(snapshot, *, correction=False):
                 "listener_stance": {"type": "string", "enum": ["uncertain", "believed", "disbelieved"]},
             }, "required": ["turn", "claim_id", "intent", "listener_stance"]},
         }
-        nearby_ids = {person["npc_id"] for person in snapshot.get("nearby_npcs", [])}
+        pair_ids = {snapshot["initiator"]["npc_id"], snapshot["recipient"]["npc_id"]}
         third_party_accounts = [option for option in info["options"]
-                                if option["id"] in claim_ids and option["subject_id"] in nearby_ids] if info else []
+                                if option["id"] in claim_ids and option["subject_id"] not in pair_ids] if info else []
         subjects = list(dict.fromkeys(option["subject_id"] for option in third_party_accounts))
         third_party_claims = [option["id"] for option in third_party_accounts]
         properties["third_party_opinions"] = {
@@ -822,6 +936,17 @@ def validate_response(raw, snapshot):
 
 def _validate_response(raw, snapshot, model):
     result = model.model_validate_json(raw)
+    if isinstance(result, BackgroundResponse):
+        if result.actor_id != snapshot["actor_id"]:
+            raise ValueError("The background belongs to a different actor.")
+        return result
+    if isinstance(result, SnakeResponse):
+        validate_snake_response(result, snapshot)
+        return result
+    if isinstance(result, SnakePlayerResponse):
+        if not result.reply.strip():
+            raise ValueError("The snake must supply generated speech.")
+        return result
     if isinstance(result, PlayerIntent):
         # Observations and questions cannot issue commands, even if the model
         # also supplied an action or irrelevant recipient/item fields.
@@ -998,7 +1123,7 @@ def _request_ollama(message, snapshot, model=OLLAMA_MODEL, *, correction=""):
                 # The profiles, rules, schema, and dialogue exceed Ollama's
                 # default context. Truncation can remove the speaker rules.
                 "options": {
-                    "num_ctx": 16384 if snapshot.get("request_kind") == "conversation" else 8192, "num_predict": -1,
+                    "num_ctx": 16384 if snapshot.get("request_kind") in ("conversation", "snake_encounter") else 8192, "num_predict": -1,
                     **({"temperature": 0} if correction or snapshot.get("request_kind") in ("intent", "conversation") else {}),
                 },
             },
@@ -1051,6 +1176,12 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
                     "For gossip disclose discussion_focus_claim_id in the initiator's turn 0, with no further disclosures. "
                     "For other conversations keep disclosures empty too, and focus on the present interaction."
                 )
+            elif state.get("request_kind") == "snake_encounter":
+                correction += (
+                    "Write exactly four alternating turns. account_id MUST be empty unless decision is secret; "
+                    "only secret selects one offering_accounts claim ID. snake_account_id MUST be empty when "
+                    "snake.known_accounts is empty. No secret may be spoken for a non-secret decision."
+                )
             else:
                 correction += "Return the complete JSON response matching the required schema and the current player's request."
             try:
@@ -1058,7 +1189,7 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=OLLAM
             except InvalidResponseError as retry_error:
                 raise RequestError(f"The model's reply failed validation after correction: {retry_error}") from None
 
-    if snapshot.get("request_kind") not in ("conversation", "intent"):
+    if snapshot.get("request_kind") not in ("conversation", "intent", "background", "snake_encounter", "snake_player"):
         intent = validated_request(intent_snapshot(snapshot))
         # Keep the interpretation with this request for main-thread revalidation.
         snapshot["request_intent"] = intent.model_dump()

@@ -34,7 +34,7 @@ def target_valid(npc, world):
 
 
 def reconsider(npc, world):
-    if npc.conversation is not None or npc.gift is not None or npc.resume_pending:
+    if npc.conversation is not None or npc.gift is not None or npc.snake_encounter is not None or npc.resume_pending:
         return
     if not target_valid(npc, world):
         npc.finish_activity(world, failed=True)
@@ -80,7 +80,7 @@ def reconsider(npc, world):
             and tree.id not in npc.cooldowns and npc.can_reach(tree.interaction_point)):
         score = 24 - sum(npc.inventory.values()) * 4 - distance(tree.interaction_point) + (110 if needs_apple else 0)
         candidates.append((score, Behavior.HARVEST, tree.id,
-                           "Collecting an apple for a promise or helping goal" if needs_apple else "Collecting fruit for my inventory"))
+                           "Seeking an apple bargain to help someone" if needs_apple else "Seeking an apple bargain with the snake"))
     if npc.social <= SOCIAL_START:
         partners = [other for other in world.npcs if other is not npc and world.company_available(other)
                     and other.id not in npc.cooldowns and company_point(npc, other) is not None]

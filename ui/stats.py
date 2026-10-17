@@ -6,6 +6,7 @@ from social import assertion_text, claim_by_id, fact_by_id, phase_label, selecte
 
 from .button import Button
 from .text import wrap_text
+from .world import snake_artwork
 from .theme import ACCENT, GRASS, INK, MUTED, PAPER
 
 
@@ -49,7 +50,7 @@ class StatsScreen:
                 for index, record in reversed(list(enumerate(app.conversation_history, start=1)))
             ]
         else:
-            entries = [(npc, npc.name) for npc in app.npcs]
+            entries = [(npc, npc.name + (" (departed)" if getattr(npc, "departure", None) else "")) for npc in app.simulation.actors]
         for entry, label in entries:
             lines = wrap_text(label, app.font, self.list_rect.width - 30)
             height = max(48, len(lines) * app.font.get_linesize() + 20)
@@ -75,7 +76,7 @@ class StatsScreen:
             return sum(font.get_linesize() for _, font, _, _ in lines)
 
         def message(speaker, text, emotion=None):
-            npc = next((npc for npc in app.npcs if npc.name == speaker), None)
+            npc = next((npc for npc in app.simulation.actors if npc.name == speaker), None)
             top = height()
             indent = 112 if npc is not None else 0
             add(speaker, color=ACCENT, indent=indent)
@@ -85,7 +86,7 @@ class StatsScreen:
                 expression = emotion["name"] if visible else None
                 label = (expression or "neutral").title() if emotion is not None else "Not recorded"
                 labels = wrap_text(label, app.small_font, 100)
-                self.dialogue_portraits.append((top, npc.character, expression, labels))
+                self.dialogue_portraits.append((top, npc, expression, labels))
                 portrait_height = 94 + len(labels) * app.small_font.get_linesize()
                 while height() - top < portrait_height:
                     gap()
@@ -134,15 +135,37 @@ class StatsScreen:
             return lines
         add(npc.name, app.heading_font)
         gap()
-        if self.tab == "Statistics":
+        if npc is app.simulation.snake:
             add(f"Activity: {npc.status}")
+            add(f"Eaten today: {npc.eaten_today}; recovery: {npc.recovery_remaining:.1f}s")
+            add(f"Tree stock: {app.tree.fruit}; unreserved: {app.simulation.available_fruit}")
+            add("The python claims divine authority. Its claims about destinations and other zones are unverified.", app.small_font, MUTED)
+            gap()
+            add("Resident standing (the snake's standards)", app.heading_font)
+            for actor_id, score in npc.standing.items():
+                add(f"{app.simulation.actor_by_id(actor_id).name}: {score:+d}")
+            gap()
+            add("Known accounts (observer inspection)", app.heading_font)
+            for account in npc.snapshot()["known_accounts"]:
+                add(account["assertion"], app.small_font)
+                add(f"Source: {app.simulation.actor_by_id(account['source_id']).name}; original: {app.simulation.actor_by_id(account['original_speaker_id']).name}", app.small_font, MUTED)
+            return lines
+        if self.tab == "Statistics":
+            add(f"Arrival: day {npc.arrival_day}")
+            add(f"Activity: {npc.status}")
+            if npc.departure:
+                source = next(f for f in app.simulation.facts if f.source_id == npc.departure["event_id"] and f.kind == "eating")
+                top = height()
+                add("View departure encounter", app.small_font, ACCENT)
+                self.promise_links.append((top, height(), source.conversation_id))
             add(f"Why: {npc.decision_reason}")
             add(f"Control: {npc.owner.replace('_', ' ')}", app.small_font, MUTED)
             if npc.request_pending:
                 add("Player request pending; new decisions are deferred.", app.small_font, MUTED)
             gap()
             add(f"Satisfaction: {npc.social:.0f}/100")
-            add(f"Carrying: {npc.inventory.get('fruit', 0)} fruit / {npc.inventory_capacity} items")
+            inventory_label = "Inventory at departure" if npc.departure else "Carrying"
+            add(f"{inventory_label}: {npc.inventory.get('fruit', 0)} fruit / {npc.inventory_capacity} items")
             add(f"Sociability: {npc.preferences['sociability']:.0%}; generosity: {npc.preferences['generosity']:.0%}", app.small_font, MUTED)
             gap()
             add("Personal objective", app.heading_font)
@@ -157,6 +180,15 @@ class StatsScreen:
             self.private_toggle_top = height()
             add(f"{'Hide' if self.show_private else 'Show'} private details (observer only)", app.small_font, ACCENT)
             if self.show_private:
+                add("Former life (private observer inspection)", app.heading_font)
+                for field, value in npc.background.items():
+                    add(f"{field.replace('_', ' ').title()}: {'; '.join(value) if isinstance(value, list) else value}")
+                gap()
+                add("Attitudes toward the snake", app.heading_font)
+                for field in ("belief", "trust", "authority"):
+                    add(f"{field.title()}: {npc.attitudes[field]}")
+                    add(npc.attitudes[field + "_reason"], app.small_font, MUTED)
+                gap()
                 if goal:
                     add(f"Motive: {goal.motive}")
                     add(f"Approach: {goal.approach}")
@@ -167,8 +199,8 @@ class StatsScreen:
                 for belief in selected_beliefs(npc):
                     claim = claim_by_id(app.simulation, belief.claim_id)
                     fact = fact_by_id(app.simulation, claim.fact_id)
-                    source = app.simulation.npc_by_id(belief.source_id)
-                    originator = app.simulation.npc_by_id(claim.originator_id)
+                    source = app.simulation.actor_by_id(belief.source_id)
+                    originator = app.simulation.actor_by_id(claim.originator_id)
                     add(assertion_text(app.simulation, fact, claim.affirmed), app.small_font)
                     add(f"{belief.stance.title()} / {'firsthand' if belief.direct else 'personal assertion' if belief.source_id == npc.id else 'hearsay'}", app.small_font, MUTED)
                     add(f"Immediate source: {source.name}; original account: {originator.name}", app.small_font, MUTED)
@@ -189,8 +221,8 @@ class StatsScreen:
             if not promises:
                 add("No promises yet.", color=MUTED)
             for promise in promises[:8]:
-                giver = app.simulation.npc_by_id(promise.promisor_id)
-                recipient = app.simulation.npc_by_id(promise.recipient_id)
+                giver = app.simulation.actor_by_id(promise.promisor_id)
+                recipient = app.simulation.actor_by_id(promise.recipient_id)
                 top = height()
                 add(f"{giver.name} -> {recipient.name}: one apple / {promise.status} [view]", app.small_font, ACCENT)
                 bottom = height()
@@ -332,7 +364,7 @@ class StatsScreen:
         app.game.draw_clock(app)
         pygame.draw.rect(surface, PAPER, (184, 134, 296, 506))
         pygame.draw.rect(surface, PAPER, (496, 134, 600, 506))
-        list_title = f"Conversations ({len(app.conversation_history)})" if self.tab == "Conversations" else f"NPCs ({len(app.npcs)})"
+        list_title = f"Conversations ({len(app.conversation_history)})" if self.tab == "Conversations" else f"Living {len(app.npcs)} / Departed {len(app.simulation.archived)}"
         surface.blit(app.font.render(list_title, True, INK), (200, 150))
         for name, button in self.tabs.items():
             button.draw(surface, app.small_font)
@@ -362,12 +394,17 @@ class StatsScreen:
             if self.detail_rect.top - font.get_linesize() < y < self.detail_rect.bottom:
                 surface.blit(font.render(line, True, color), (self.detail_rect.x + indent, y))
             y += font.get_linesize()
-        for top, character, emotion, labels in self.dialogue_portraits:
+        for top, actor, emotion, labels in self.dialogue_portraits:
             rect = pygame.Rect(self.detail_rect.x, self.detail_rect.top + top - self.detail_scroll, 88, 88)
             if rect.bottom + 6 + len(labels) * app.small_font.get_linesize() < self.detail_rect.top or rect.top >= self.detail_rect.bottom:
                 continue
             pygame.draw.rect(surface, GRASS, rect)
-            portrait = app.character.renderer.render_portrait(character, rect.inflate(-8, -8).size, emotion=emotion)
+            if actor is app.simulation.snake:
+                art = snake_artwork(4, 1)
+                ratio = min(80 / art.get_width(), 80 / art.get_height())
+                portrait = pygame.transform.scale(art, (round(art.get_width() * ratio), round(art.get_height() * ratio)))
+            else:
+                portrait = app.character.renderer.render_portrait(actor.character, rect.inflate(-8, -8).size, emotion=emotion)
             surface.blit(portrait, portrait.get_rect(center=rect.center))
             for index, label in enumerate(labels):
                 surface.blit(app.small_font.render(label, True, MUTED),

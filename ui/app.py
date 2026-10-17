@@ -9,10 +9,12 @@ import pygame
 
 from character_data import load_character, random_character
 from conversation_history import ConversationRecord, describe_opinion_change
-from npc import NPC, Tree, assign_npc_names
+from npc import NPC, Tree
 from ollama_manager import load_model
 from simulation_data import InvalidSaveName, SaveStore, capture_simulation, restore_simulation
 from simulation import PendingAction, Simulation
+from purgatory import Arrival, background_snapshot, install_background
+from snake import SnakeEncounter
 
 from .game import GameScreen
 from .character import CharacterScreen
@@ -22,6 +24,7 @@ from .save_sim import SaveSimScreen
 from .requests import RequestManager
 from .settings import SettingsScreen
 from .setup import SetupScreen
+from .preparing import PreparingScreen
 from .stats import StatsScreen
 from .ollama_setup import OllamaSetupScreen
 from .theme import FPS, WINDOW_SIZE
@@ -62,6 +65,8 @@ class Application:
         self.simulation = None
         self.request_revision = None
         self.request_id = None
+        self.request_background = None
+        self.request_world_revision = None
         self.save_store = SaveStore()
         self.save_id = None
         self.save_identity = None
@@ -73,6 +78,7 @@ class Application:
         self.save_sim = SaveSimScreen()
         self.settings = SettingsScreen()
         self.setup = SetupScreen()
+        self.preparing = PreparingScreen()
         self.character = CharacterScreen()
         self.game = GameScreen()
         self.stats = StatsScreen()
@@ -83,6 +89,7 @@ class Application:
             "save_sim": self.save_sim,
             "settings": self.settings,
             "setup": self.setup,
+            "preparing": self.preparing,
             "character": self.character,
             "game": self.game,
             "stats": self.stats,
@@ -128,14 +135,24 @@ class Application:
             sprite = self.character.renderer.render(character, npc.facing, CHARACTER_SCALE)
             npc.sprite_size = sprite.get_size()
             self.npcs.append(npc)
-        assign_npc_names(self.npcs)
+        # Only new labels are assigned. Existing residents are never renamed later.
+        used = {"python"}
+        for npc in self.npcs:
+            base = npc.character["Name"].strip() or "Resident"
+            label, number = base, 2
+            while label.casefold() in used:
+                label = f"{base} ({number})"
+                number += 1
+            npc.display_name = label
+            used.add(label.casefold())
         self.tree = Tree()
         self.simulation = Simulation(self.npcs, self.tree)
         self.conversation_history = self.simulation.history
         self.save_id = None
         self.save_identity = None
         self.simulation_name = "Unsaved simulation"
-        self.screen = "game"
+        self.request_background = None
+        self.screen = "preparing"
         self.menu.message = ""
 
     def sync_save_name(self):
@@ -188,9 +205,10 @@ class Application:
                 sprite = self.character.renderer.render(npc.character, npc.facing, CHARACTER_SCALE)
                 npc.sprite_size = sprite.get_size()
         except (OSError, ValueError):
-            self.load_sim.message = "Could not load this simulation. The save may be damaged or unavailable."
+            self.load_sim.message = "Could not load this simulation. The save may be incompatible, damaged, or unavailable."
             return False
         self.session_id += 1
+        self.request_background = None
         self.game.reset()
         self.stats.open()
         self.request_npc = None
@@ -235,7 +253,10 @@ class Application:
     def submit(self):
         message = self.game.prompt_input.text.strip()[:300]
         npc = self.game.selected_npc
-        if self.screen != "game" or npc is None or npc.end_conversation or npc.conversation is not None or npc.gift is not None or npc.eating or npc.request_pending or not message or self.requests.busy:
+        if npc is self.simulation.snake:
+            self.submit_snake(message)
+            return
+        if self.screen != "game" or npc is None or npc.snake_encounter or npc.end_conversation or npc.conversation is not None or npc.gift is not None or npc.eating or npc.request_pending or not message or self.requests.busy:
             return
         if self.provider == "gemini" and not self.api_key:
             self.game.set_reply("Add an API key in Settings to generate a reply.")
@@ -247,7 +268,7 @@ class Application:
         ] if self.game.player_record is not None else []
         snapshot["other_npcs"] = [
             {**other.snapshot(self.tree, private=False),
-             "available_to_talk": other.conversation is None and other.gift is None and not other.eating and not other.request_pending}
+             "available_to_talk": other.conversation is None and other.gift is None and not other.eating and not other.request_pending and not other.snake_encounter}
             for other in self.npcs if other is not npc
         ]
         request_id = uuid4().hex
@@ -260,6 +281,7 @@ class Application:
         self.request_npc = npc
         self.request_id = request_id
         self.request_revision = npc.command_revision
+        self.request_world_revision = self.simulation.roster_revision
         npc.request_pending = True
         self.request_conversation = None
         self.request_message = message
@@ -309,7 +331,7 @@ class Application:
             return
         npc.request_pending = False
         error = ""
-        if npc.conversation is not None or npc.gift is not None or npc.eating or npc.command_revision != action.revision:
+        if npc.conversation is not None or npc.gift is not None or npc.snake_encounter or npc.eating or npc.command_revision != action.revision:
             error = "That request is no longer available because the NPC's activity changed."
         elif action.action == "TALK_TO_NPC":
             target = self.simulation.npc_by_id(action.target_id)
@@ -377,6 +399,19 @@ class Application:
         self.request_npc = conversation.initiator
 
     def retry_conversation_dialogue(self, conversation):
+        if isinstance(conversation, SnakeEncounter):
+            if self.requests.busy or conversation.active or self.simulation.npc_by_id(conversation.recipient.id) is None:
+                return
+            try:
+                conversation.recipient.set_selected(False)
+                replacement = SnakeEncounter(self.simulation, conversation.recipient, "bargain",
+                                             "Retrying an apple bargain at the tree", origin=conversation.origin)
+            except ValueError as exc:
+                conversation.record.error = str(exc)
+                return
+            self.game.viewed_conversation = replacement
+            self.game._conversation_page_turns = None
+            return
         if conversation.active or conversation.turns or self.requests.busy:
             return
         try:
@@ -389,6 +424,94 @@ class Application:
         self.game.viewed_conversation = replacement
         self.game._conversation_page_turns = None
 
+    def cancel_preparation(self):
+        self.session_id += 1
+        self.request_background = None
+        self.simulation = None
+        self.npcs = []
+        self.tree = None
+        self.screen = "setup"
+        self.setup.message = "Preparation cancelled."
+
+    def request_background_for(self, actor):
+        if self.requests.busy:
+            return
+        if self.provider == "gemini" and not self.api_key:
+            error = "Add an API key in Settings before preparing backgrounds."
+            if isinstance(actor, Arrival):
+                actor.error, actor.state = error, "failed"
+            else:
+                actor.background_error = error
+            return
+        request_id = uuid4().hex
+        if self.requests.submit(self.session_id, self.provider, self.api_key,
+                "Prepare this character's preserved former life.", background_snapshot(actor),
+                request_id=request_id, ollama_model=self.ollama_model):
+            self.request_id = request_id
+            self.request_background = actor
+            self.request_conversation = self.request_npc = self.request_history = None
+            if isinstance(actor, Arrival):
+                actor.state, actor.error = "pending", ""
+
+    def request_next_arrival(self):
+        if self.simulation.arrival_error:
+            return
+        try:
+            arrival = self.simulation.prepare_arrival()
+        except (OSError, ValueError) as exc:
+            self.simulation.arrival_error = f"Could not prepare the next arrival: {exc}"
+            return
+        if arrival.state == "waiting":
+            self.request_background_for(arrival)
+
+    def retry_arrival(self):
+        self.simulation.arrival_error = ""
+        arrival = self.simulation.prepared_arrival
+        if arrival and arrival.state == "failed":
+            arrival.state, arrival.error = "waiting", ""
+
+    def retry_snake(self):
+        request = self.simulation.snake.retry_request
+        if not request or self.requests.busy or self.simulation.snake.encounter:
+            return
+        npc = self.simulation.npc_by_id(request["resident_id"])
+        if npc is None:
+            self.simulation.snake.retry_request = None
+            return
+        npc.set_selected(False)
+        try:
+            replacement = SnakeEncounter(self.simulation, npc, "bargain", "Retrying an apple bargain at the tree", origin=request["origin"])
+        except ValueError as exc:
+            request["error"] = str(exc)
+            return
+        self.game.close_dialogue()
+        self.game.dialogue_open = True
+        self.game.selected_npc = self.simulation.snake
+        self.simulation.snake.set_selected(True)
+        self.game.viewed_conversation = replacement
+
+    def submit_snake(self, message):
+        snake = self.simulation.snake
+        if self.screen != "game" or not message or self.requests.busy or snake.encounter or snake.request_pending:
+            return
+        snapshot = {"request_kind": "snake_player", "snake": snake.snapshot(),
+                    "player_dialogue": self.game.player_record.turns[-12:] if self.game.player_record else []}
+        request_id = uuid4().hex
+        if not self.requests.submit(self.session_id, self.provider, self.api_key, message, snapshot,
+                                    request_id=request_id, ollama_model=self.ollama_model):
+            return
+        if self.game.player_record is None:
+            self.game.player_record = ConversationRecord(("You", snake.name), message, "Waiting for reply", purpose="snake_player")
+            self.conversation_history.append(self.game.player_record)
+        self.request_history = self.game.player_record
+        self.request_history.status = "Waiting for reply"
+        self.request_history.turns.append(("You", message))
+        self.request_id, self.request_npc = request_id, snake
+        self.request_conversation = self.request_background = None
+        self.request_world_revision = self.simulation.roster_revision
+        snake.request_pending = True
+        self.game.prompt_input.set_value("")
+
     def handle_event(self, event):
         if event.type == pygame.QUIT:
             self.running = False
@@ -397,9 +520,27 @@ class Application:
 
     def update(self, dt):
         simulation_active = self.screen in ("game", "stats")
-        active_session = self.session_id if simulation_active or self.screen == "save_sim" else None
+        active_session = self.session_id if simulation_active or self.screen in ("save_sim", "preparing") else None
         for request_id, result, error in self.requests.poll(active_session):
             if request_id != self.request_id:
+                continue
+            background = self.request_background
+            if background is not None:
+                self.request_background = None
+                if isinstance(background, Arrival):
+                    if self.simulation.prepared_arrival is not background:
+                        continue
+                    if error:
+                        background.state, background.error = "failed", error
+                    else:
+                        background.background = result.background.model_dump()
+                        background.attitudes = result.attitudes.model_dump()
+                        background.state, background.error = "ready", ""
+                elif self.screen == "preparing" and background in self.npcs:
+                    if error:
+                        background.background_error = error
+                    else:
+                        install_background(background, result)
                 continue
             conversation = self.request_conversation
             if conversation is not None:
@@ -413,11 +554,25 @@ class Application:
                             conversation.fail_dialogue(str(exc))
                 continue
             npc = self.request_npc
-            if npc is None:
+            if npc is self.simulation.snake:
+                npc.request_pending = False
+                record = self.request_history
+                if self.request_world_revision != self.simulation.roster_revision or npc.encounter:
+                    error = "The world changed before the reply arrived. Send the message again."
+                if record:
+                    record.status, record.error = ("Failed", error) if error else ("Completed", "")
+                    if not error:
+                        record.turns.append((npc.name, result.reply))
+                npc.reply = f"Request failed: {error}" if error else result.reply
+                if self.game.selected_npc is npc:
+                    self.game.set_reply(npc.reply)
+                self.request_history = None
+                continue
+            if npc is None or self.simulation.npc_by_id(npc.id) is not npc:
                 continue
             npc.request_pending = False
             record = self.request_history
-            if not error and (npc.conversation is not None or npc.gift is not None or npc.eating or npc.command_revision != self.request_revision):
+            if not error and (npc.conversation is not None or npc.gift is not None or npc.snake_encounter or npc.eating or npc.command_revision != self.request_revision or self.request_world_revision != self.simulation.roster_revision):
                 error = "That reply arrived after the NPC became busy. Please send the request again."
             if record is not None and not error:
                 record.outcomes.extend(
@@ -433,7 +588,7 @@ class Application:
                     target = next((other for other in self.npcs if other.name == result.target), None)
                     if result.action == "EAT" and npc.inventory.get("fruit", 0) < 1:
                         error = "I don't have an apple to eat."
-                    elif result.action in ("TALK_TO_NPC", "GIVE_ITEM") and (target is None or target.conversation is not None or target.gift is not None or target.eating or target.request_pending):
+                    elif result.action in ("TALK_TO_NPC", "GIVE_ITEM") and (target is None or target.conversation is not None or target.gift is not None or target.eating or target.snake_encounter or target.request_pending):
                         error = "That person is busy now. Please try again later."
                     else:
                         if result.action == "GIVE_ITEM":
@@ -450,7 +605,7 @@ class Application:
                                 result.item, result.quantity,
                             ))
                             npc.request_pending = True
-            npc.reply = error or result.reply
+            npc.reply = f"Request failed: {error}" if error else result.reply
             # A reply arriving after the player leaves must not wait for a reader.
             npc.end_conversation = bool(not error and result.end_conversation and npc.selected)
             if error:
@@ -458,10 +613,11 @@ class Application:
             else:
                 npc.set_emotion(result.emotion.name, result.emotion.intensity)
             if record is not None:
-                record.add_turn(npc.name, npc.reply, [{
-                    "text": npc.reply,
-                    "emotion": {"name": npc.emotion, "intensity": npc.emotion_intensity},
-                }])
+                if not error:
+                    record.add_turn(npc.name, npc.reply, [{
+                        "text": npc.reply,
+                        "emotion": {"name": npc.emotion, "intensity": npc.emotion_intensity},
+                    }])
                 record.error = error or ""
                 waiting_for_done = npc.request_pending and npc.end_conversation
                 if error:
@@ -504,15 +660,31 @@ class Application:
             viewed = self.game.viewed_conversation if self.screen == "game" and self.game.dialogue_open else None
             self.simulation.advance(dt, active=simulation_active, action_handler=self.apply_pending_action,
                                     viewed_conversation=viewed)
+        if self.screen == "preparing":
+            remaining = [npc for npc in self.npcs if npc.background is None]
+            if not remaining:
+                self.screen = "game"
+            elif not self.requests.busy and not remaining[0].background_error:
+                self.request_background_for(remaining[0])
         if simulation_active:
+            if self.game.selected_npc is not None and self.game.selected_npc is not self.simulation.snake and self.simulation.npc_by_id(self.game.selected_npc.id) is not self.game.selected_npc:
+                self.game.close_dialogue()
+            # Initialize arriving sprites before the next render.
+            for npc in self.npcs:
+                if npc.sprite_size is None:
+                    npc.sprite_size = self.character.renderer.render(npc.character, npc.facing, CHARACTER_SCALE).get_size()
             conversations = [npc.conversation for npc in self.npcs
                              if npc.conversation is not None and npc.conversation.initiator is npc]
+            if self.simulation.snake.encounter:
+                conversations.append(self.simulation.snake.encounter)
             # Player conversations get the first free slot. Composition also reserves it.
             composing = self.screen == "game" and self.game.prompt_input.active
             for conversation in sorted(conversations, key=lambda interaction: interaction.origin != "player"):
                 if composing:
                     continue
                 self.request_conversation_dialogue(conversation)
+            if not composing and not self.requests.busy:
+                self.request_next_arrival()
 
     def draw(self):
         self.screens[self.screen].draw(self)

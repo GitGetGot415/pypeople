@@ -137,6 +137,12 @@ class NPC:
     command_revision: int = 0
     request_pending: bool = False
     world: object = field(default=None, repr=False, compare=False)
+    background: dict | None = None
+    attitudes: dict = field(default_factory=dict)
+    arrival_day: int = 1
+    departure: dict | None = None
+    snake_encounter: object = field(default=None, repr=False, compare=False)
+    background_error: str = ""
 
     @property
     def inventory_space(self):
@@ -265,6 +271,10 @@ class NPC:
 
     @property
     def status(self):
+        if self.departure:
+            return f"Departed on day {self.departure['day']} ({self.departure['cause']})"
+        if self.snake_encounter is not None:
+            return f"With the snake: {self.snake_encounter.record.status}"
         if self.gift is not None:
             if self.thanking:
                 return f"Thanking {self.gift.initiator.name}"
@@ -291,7 +301,7 @@ class NPC:
             Behavior.GO_TO_TREE: "Walking to tree",
             Behavior.SHAKE_TREE: "Walking to tree",
             Behavior.SHAKING: "Shaking tree",
-            Behavior.HARVEST: "Walking to harvest" if self.destination else "Harvesting fruit",
+            Behavior.HARVEST: "Walking to the guarded tree",
             Behavior.EAT: "Eating an apple",
             Behavior.COMPANY: "Seeking company" if self.destination else "Spending time together",
             Behavior.WAIT: "Waiting",
@@ -336,10 +346,14 @@ class NPC:
                                  for memory in relevant_memories(self, partner_id)]
             state["private_context"] = private_context(self, partner_id)
             state["private_context"]["opinions"] = self.opinions
+            state["private_context"]["background"] = self.background
+            state["private_context"]["snake_attitudes"] = self.attitudes.copy()
         else:
             state["character"].pop("Opinions", None)
             for key in ("last_reply", "activity_reason"):
                 state.pop(key, None)
+        state["arrival_day"] = self.arrival_day
+        state["tree_guarded"] = True
         return state
 
     @property
@@ -385,12 +399,14 @@ class NPC:
             self._face_when_still()
 
     def apply_action(self, action, tree):
+        if self.world is None or self.world.npc_by_id(self.id) is not self:
+            raise ValueError("Only living residents can act in this world.")
         # Reject before changing anything. SAY preserves even an active shake.
         if action == "SAY":
             return
         if action not in ("WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "EAT"):
             raise ValueError("Unsupported NPC action")
-        if self.conversation is not None or self.gift is not None or self.eating:
+        if self.conversation is not None or self.gift is not None or self.snake_encounter is not None or self.eating:
             raise ValueError("This NPC is already in an interaction.")
         if action == "EAT" and self.inventory.get("fruit", 0) < 1:
             raise ValueError("I don't have an apple to eat.")
@@ -407,10 +423,12 @@ class NPC:
             self.begin_activity(Behavior(action), self.world, tree.id, "Player asked me to visit the tree" if action == "GO_TO_TREE" else "Player asked for a cosmetic tree shake", owner="player_task")
 
     def check_gift(self, recipient, item, quantity):
-        if recipient is self or self.world is None or not any(person is recipient for person in self.world.npcs):
+        if (recipient is self or self.world is None or self.world.npc_by_id(self.id) is not self
+                or not any(person is recipient for person in self.world.npcs)):
             raise ValueError("Choose another NPC in this world to receive the items.")
         if (self.conversation is not None or recipient.conversation is not None
-                or self.gift is not None or recipient.gift is not None or self.eating or recipient.eating or recipient.request_pending):
+                or self.gift is not None or recipient.gift is not None or self.snake_encounter or recipient.snake_encounter
+                or self.eating or recipient.eating or recipient.request_pending):
             raise ValueError("That person is busy now. Please try again later.")
         if item != "fruit" or type(quantity) is not int or quantity < 1:
             raise ValueError("Give a positive number of fruit.")
@@ -451,7 +469,7 @@ class NPC:
         return False
 
     def update(self, dt, tree):
-        if self.conversation is not None or self.gift is not None or self.resume_pending:
+        if self.conversation is not None or self.gift is not None or self.snake_encounter is not None or self.resume_pending:
             return
         world = self.world
         old_x, old_y = self.x, self.y
@@ -483,26 +501,24 @@ class NPC:
             if self.destination is not None:
                 if self._move(dt):
                     self.destination = None
-                    if behavior == Behavior.GO_TO_TREE:
+                    if behavior in (Behavior.GO_TO_TREE, Behavior.HARVEST):
                         self.finish_activity(world)
+                        if behavior == Behavior.HARVEST:
+                            world.seek_bargain(self)
                     else:
                         tree.start_shake(self)
                         tree.shake_elapsed = self.activity_elapsed
                         if behavior == Behavior.SHAKE_TREE:
                             self.behavior = Behavior.SHAKING
-            elif behavior in (Behavior.HARVEST, Behavior.SHAKING):
+            elif behavior == Behavior.HARVEST:
+                # A harvest intent is a visit to the guard, never a free transfer.
+                self.destination = tree.interaction_point
+            elif behavior == Behavior.SHAKING:
                 if tree.shaker is not self:
                     tree.start_shake(self)
                     tree.shake_elapsed = self.activity_elapsed
                 self.activity_elapsed += dt
                 if self.activity_elapsed + 1e-9 >= SHAKE_SECONDS:
-                    if behavior == Behavior.HARVEST:
-                        if tree.fruit <= 0 or self.inventory_space <= 0:
-                            self.finish_activity(world, failed=True)
-                            return
-                        # Commit both sides once, on the simulation thread.
-                        tree.fruit -= 1
-                        self.inventory['fruit'] = self.inventory.get('fruit', 0) + 1
                     self.finish_activity(world)
         elif behavior == Behavior.COMPANY:
             from autonomy import company_point
@@ -575,7 +591,8 @@ class Conversation:
 
     def __init__(self, initiator, recipient, topic, tree, spacing=0, *, origin="player", purpose="chat"):
         if (initiator is recipient or initiator.conversation or recipient.conversation
-                or initiator.gift or recipient.gift or initiator.eating or recipient.eating):
+                or initiator.gift or recipient.gift or initiator.snake_encounter or recipient.snake_encounter
+                or initiator.eating or recipient.eating):
             raise ValueError("Choose another NPC who is free to talk.")
         self.initiator = initiator
         self.recipient = recipient
@@ -659,7 +676,11 @@ class Conversation:
     def set_response(self, response):
         if not self.accepts_response:
             return
-        # Reject before displaying any agreement or committing any social effects.
+        # Reject stale actor snapshots before displaying or committing anything.
+        if getattr(self, "request_roster_revision", self.initiator.world.roster_revision) != self.initiator.world.roster_revision:
+            raise ValueError("The resident roster changed while dialogue was being prepared. Retry this meeting.")
+        if any(n.command_revision != self.request_actor_revisions[n.id] for n in (self.initiator, self.recipient)):
+            raise ValueError("The participants changed activities before the reply arrived.")
         validate_live_agreements(self, response)
         self.dialogue_state = "ready"
         self.talking_remaining = 4.0
@@ -706,7 +727,10 @@ class Conversation:
 
     @property
     def accepts_response(self):
-        return self.active and self.dialogue_state in ("waiting", "pending")
+        world = self.initiator.world
+        return (self.active and self.dialogue_state in ("waiting", "pending")
+                and world.npc_by_id(self.initiator.id) is self.initiator
+                and world.npc_by_id(self.recipient.id) is self.recipient)
 
     def fail_dialogue(self, reason):
         if not self.accepts_response:
@@ -794,6 +818,8 @@ class Conversation:
             npc.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
 
     def snapshot(self, tree, npcs):
+        self.request_roster_revision = self.initiator.world.roster_revision
+        self.request_actor_revisions = {n.id: n.command_revision for n in (self.initiator, self.recipient)}
         def participant(npc):
             involved = npc is self.initiator or npc is self.recipient
             state = npc.snapshot(tree, self.other(npc).id) if involved else npc.snapshot(tree, private=False)

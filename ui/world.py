@@ -123,6 +123,11 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
         if obj is snake:
             image = resized(snake_artwork(snake.facing, snake.frame), zoom)
             surface.blit(image, image.get_rect(midbottom=screen_point((snake.x, snake.y))))
+            label = name_font.render(f"{snake.name}: {snake.status}", True, label_color)
+            surface.blit(label, label.get_rect(midtop=screen_point((snake.x, snake.y + 30))))
+            if snake.activity == "eating":
+                bubble = resized(interaction_bubble("Eating"), zoom)
+                surface.blit(bubble, bubble.get_rect(bottomleft=screen_point((snake.x + 26, snake.y - 30))))
             continue
         npc = obj
         position = screen_point((npc.x, npc.y))

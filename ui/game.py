@@ -6,7 +6,7 @@ from .event_feed import EventFeed
 from .text import draw_wrapped_text, paginate_text, wrap_text
 from .text_input import TextInput
 from .theme import INK, MUTED, PAPER, WINDOW_SIZE
-from .world import draw_world
+from .world import draw_world, snake_artwork
 
 
 class GameScreen:
@@ -14,6 +14,8 @@ class GameScreen:
         self.menu_button = Button((1144, 16, 112, 38), "Menu")
         self.stats_button = Button((1024, 16, 112, 38), "Stats")
         self.save_button = Button((904, 16, 108, 38), "Save")
+        self.snake_retry = Button((610, 72, 120, 32), "Retry snake")
+        self.arrival_retry = Button((476, 72, 120, 32), "Retry arrival")
         self.clock_button = Button((720, 16, 44, 38), "")
         self.save_message = ""
         self.save_message_remaining = 0
@@ -102,6 +104,12 @@ class GameScreen:
                 self.camera_offset[1] + (WINDOW_SIZE[1] - WORLD_HEIGHT) / 2)
 
     def handle_event(self, app, event):
+        if self.snake_retry.clicked(event):
+            app.retry_snake()
+            return
+        if self.arrival_retry.clicked(event):
+            app.retry_arrival()
+            return
         if self.feed.handle_event(app, event):
             return
         if event.type == pygame.MOUSEWHEEL:
@@ -254,8 +262,8 @@ class GameScreen:
 
     def select_at(self, app, screen_pos):
         world_pos = self.screen_to_world(screen_pos)
-        npc = next((npc for npc in sorted(app.npcs, key=lambda npc: npc.y, reverse=True) if npc.contains(world_pos)), None)
-        if self.viewed_conversation is not None and npc is not None and npc.conversation is self.viewed_conversation:
+        npc = next((npc for npc in sorted([*app.npcs, app.simulation.snake], key=lambda npc: npc.y, reverse=True) if npc.contains(world_pos)), None)
+        if self.viewed_conversation is not None and npc is not None and (npc.conversation or getattr(npc, "snake_encounter", None)) is self.viewed_conversation:
             # Clicking the other participant keeps the same conversation open.
             if npc is not self.selected_npc:
                 self.selected_npc.set_selected(False)
@@ -270,8 +278,9 @@ class GameScreen:
             self.selected_npc = npc
             npc.set_selected(True)
             self.prompt_input.set_value("")
-            if npc.conversation is not None:
-                self.viewed_conversation = npc.conversation
+            interaction = npc.conversation or getattr(npc, "snake_encounter", None)
+            if interaction is not None:
+                self.viewed_conversation = interaction
                 self.conversation_tree = app.tree
                 self.dialogue_scroll = 0
                 return
@@ -287,6 +296,20 @@ class GameScreen:
         self.save_button.draw(app.window, app.small_font)
         self.draw_clock(app)
         self.feed.draw(app)
+        if app.simulation.snake.retry_request:
+            self.snake_retry.draw(app.window, app.small_font)
+        arrival = app.simulation.prepared_arrival
+        pending = app.simulation.pending_arrival_days
+        error = app.simulation.arrival_error or (arrival.error if arrival else "")
+        if pending or error:
+            color = PAPER if app.simulation.phase == "night" else INK
+            label = f"Arrivals waiting: {', '.join(str(d) for d in pending)}" if pending else "Next arrival"
+            if error:
+                label += f" / {error}"
+                self.arrival_retry.draw(app.window, app.small_font)
+            else:
+                label += " / preparing former life"
+            draw_wrapped_text(app.window, label, app.small_font, color, (476, 110, 550, 64))
         if self.save_message_remaining:
             color = PAPER if app.simulation.phase == "night" else INK
             draw_wrapped_text(app.window, self.save_message, app.small_font, color, (24, 480, 1232, 44))
@@ -303,11 +326,12 @@ class GameScreen:
             self.draw_portrait(app, self.selected_npc, self.selected_npc.portrait_emotion)
         status = self.selected_npc.status if self.selected_npc is not None else f"{len(app.npcs)} NPCs"
         if app.requests.busy:
-            prefix = (
-                f"Thinking for {app.request_npc.name}..."
-                if app.requests.pending_session == app.session_id and app.request_npc is not None
-                else "Finishing earlier request..."
-            )
+            if app.requests.pending_session == app.session_id and app.request_background is not None:
+                prefix = "Preparing the next arrival..."
+            elif app.requests.pending_session == app.session_id and app.request_npc is not None:
+                prefix = f"Thinking for {app.request_npc.name}..."
+            else:
+                prefix = "Finishing earlier request..."
             status = f"{prefix} / {status}"
         elif self.selected_npc.end_conversation:
             status = "Click Done when you've finished reading."
@@ -339,9 +363,14 @@ class GameScreen:
     def draw_portrait(self, app, npc, emotion=None):
         pygame.draw.rect(app.window, (255, 254, 248), self.portrait_rect)
         pygame.draw.rect(app.window, INK, self.portrait_rect, width=2)
-        portrait = app.character.renderer.render_portrait(
-            npc.character, self.portrait_rect.inflate(-12, -12).size, emotion=emotion
-        )
+        if npc is app.simulation.snake:
+            art = snake_artwork(4, 1)
+            ratio = min(136 / art.get_width(), 136 / art.get_height())
+            portrait = pygame.transform.scale(art, (round(art.get_width() * ratio), round(art.get_height() * ratio)))
+        else:
+            portrait = app.character.renderer.render_portrait(
+                npc.character, self.portrait_rect.inflate(-12, -12).size, emotion=emotion
+            )
         app.window.blit(portrait, portrait.get_rect(center=self.portrait_rect.center))
 
     def draw_conversation(self, app):
@@ -378,7 +407,10 @@ class GameScreen:
         if conversation.pending_opinions or (conversation.error and not conversation.turns):
             self.retry_button.draw(app.window, app.small_font)
         if not conversation.arrived:
-            text = f"{conversation.initiator.name} is walking over to {conversation.recipient.name}..."
+            if conversation.initiator is app.simulation.snake:
+                text = f"{conversation.recipient.name} is walking to the guarded tree..."
+            else:
+                text = f"{conversation.initiator.name} is walking over to {conversation.recipient.name}..."
         elif conversation.error and not conversation.turns:
             text = conversation.error
         elif not conversation.turns:

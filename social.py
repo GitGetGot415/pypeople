@@ -8,7 +8,7 @@ from uuid import uuid4
 from conversation_history import remember
 
 GoalKind = Literal["obtain_apple", "help_with_apple", "repair_relationship", "sabotage_relationship"]
-FactKind = Literal["apple_given", "apple_refused", "promise_kept", "promise_broken", "private_motive"]
+FactKind = Literal["apple_given", "apple_refused", "promise_kept", "promise_broken", "private_motive", "former_life", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating"]
 Stance = Literal["uncertain", "believed", "disbelieved"]
 GOAL_IMPROVEMENT = 8
 
@@ -33,7 +33,7 @@ class Goal:
     created_phase: int
     deadline: int
     baseline_opinion: int = 0
-    status: Literal["active", "completed", "failed"] = "active"
+    status: Literal["active", "completed", "failed", "cancelled"] = "active"
     resolution_event_id: str | None = None
     resolved_phase: int | None = None
     outcome: str = ""
@@ -60,7 +60,7 @@ class Promise:
     deadline: int
     item: Literal["fruit"] = "fruit"
     quantity: Literal[1] = 1
-    status: Literal["pending", "fulfilled", "broken"] = "pending"
+    status: Literal["pending", "fulfilled", "broken", "cancelled"] = "pending"
     resolution_event_id: str | None = None
     resolved_phase: int | None = None
     outcome: str = ""
@@ -168,11 +168,13 @@ def claim_by_id(world, claim_id):
 def assertion_text(world, fact, affirmed=True):
     if affirmed:
         return f"At {phase_label(fact.phase)}: {fact.summary}"
-    subject, target = world.npc_by_id(fact.subject_id), world.npc_by_id(fact.object_id)
+    subject, target = world.actor_by_id(fact.subject_id), world.actor_by_id(fact.object_id)
     action = {"apple_given": "give an apple to", "apple_refused": "refuse an apple to",
               "promise_kept": "keep the apple promise to", "promise_broken": "miss the apple promise to"}
     if fact.kind == "private_motive":
         return f"{subject.name} does not have the motive described in this account: {fact.summary}"
+    if fact.kind not in action:
+        return f"An account disputes: {fact.summary}"
     return f"{subject.name} did not {action[fact.kind]} {target.name} in the exchange at {phase_label(fact.phase)}."
 
 
@@ -198,7 +200,7 @@ def add_fact(world, kind, subject, target, source_id, record, summary, witnesses
 def record_intention(npc, world):
     goal = npc.goal
     if goal:
-        add_fact(world, "private_motive", npc, world.npc_by_id(goal.target_id), goal.id, None,
+        add_fact(world, "private_motive", npc, world.actor_by_id(goal.target_id), goal.id, None,
                  f"{npc.name}'s motive for {goal.objective}: {goal.motive}", [npc])
 
 
@@ -208,9 +210,12 @@ def record_event_fact(world, event, record):
     kind = kinds.get(event.kind)
     if kind is None:
         return
-    first, second = [world.npc_by_id(npc_id) for npc_id in event.participants]
+    first, second = [world.actor_by_id(npc_id) for npc_id in event.participants]
     subject, target = (second, first) if kind == "apple_refused" else (first, second)
-    add_fact(world, kind, subject, target, event.id, record, event.text, [subject, target])
+    observers = [subject, target, *world.listeners(subject)]
+    if ((world.snake.x - subject.x) ** 2 + (world.snake.y - subject.y) ** 2) ** 0.5 <= 150:
+        observers.append(world.snake)
+    add_fact(world, kind, subject, target, event.id, record, event.text, list({p.id: p for p in observers}.values()))
 
 
 def can_deceive(npc):
@@ -221,14 +226,16 @@ def can_deceive(npc):
 def selected_beliefs(npc, partner_id=None):
     world = npc.world
     goal = npc.goal
+    order = {id(b): i for i, b in enumerate(npc.beliefs)}
     def rank(belief):
         claim = claim_by_id(world, belief.claim_id)
         fact = fact_by_id(world, claim.fact_id)
         return (bool(goal and goal.claim_id == claim.id),
+                fact.kind in ("eating", "judgment", "pardon", "snake_claim", "defiance", "bargain", "endorsement", "arrival"),
                 partner_id in (fact.subject_id, fact.object_id, belief.source_id),
                 bool(goal and fact.subject_id == goal.third_npc_id),
                 fact.kind == "promise_broken" or fact.kind == "private_motive" and fact.subject_id != npc.id,
-                fact.kind != "private_motive" or fact.subject_id != npc.id, belief.phase)
+                fact.kind != "private_motive" or fact.subject_id != npc.id, belief.phase, order[id(belief)])
     selected = sorted(npc.beliefs, key=rank, reverse=True)[:6]
     if goal:
         motive = next((b for b in npc.beliefs if fact_by_id(world, claim_by_id(world, b.claim_id).fact_id).source_id == goal.id), None)
@@ -275,7 +282,7 @@ def prepare_information(conversation):
         {role: npc.id for role, npc in pair.items()},
         {role: deepcopy(npc.beliefs) for role, npc in pair.items()}, list(options.values()),
         {role: can_deceive(npc) for role, npc in pair.items()},
-        {role: {other.id: npc.opinions.get(other.name, {}).get("opinion", 0) for other in world.npcs if other is not npc}
+        {role: {other.id: npc.opinions.get(other.name, {}).get("opinion", 0) for other in world.actors if other is not npc}
          for role, npc in pair.items()}, allowed, conversation.focus_claim_id)
 
 
@@ -451,12 +458,12 @@ def commit_information(conversation):
             claim = claim_by_id(world, entry.claim_id)
             belief = next(b for b in speaker.beliefs if b.claim_id == entry.claim_id)
             source = heard[speaker.id, entry.claim_id]
-            originator = world.npc_by_id(claim.originator_id)
+            originator = world.actor_by_id(claim.originator_id)
             option = options[claim.id]
             reason = (f"Heard {source.name}'s account (original source: {originator.name}): {option.assertion} "
                       f"Personal assessment: {entry.reason}")[:400]
             event = world.publish("claim_assessed", (source, speaker),
-                                  f"{speaker.name} assessed an allegation about {world.npc_by_id(entry.subject_id).name} from {source.name}.",
+                                  f"{speaker.name} assessed an allegation about {world.actor_by_id(entry.subject_id).name} from {source.name}.",
                                   conversation.record)
             belief.assessed = True
             belief.opinion_delta += entry.delta
@@ -494,7 +501,7 @@ def commit_information(conversation):
                 prior.source_id, prior.disclosure_id = speaker.id, disclosure.id
                 prior.stance = entry.listener_stance
             heard[listener.id, option.id] = speaker
-            originator = world.npc_by_id(option.originator_id)
+            originator = world.actor_by_id(option.originator_id)
             remember(speaker, listener, event, "claim_shared", f"I discussed an account with {listener.name}: {option.assertion}", 0)
             remember(listener, speaker, event, "heard_claim",
                      f"{speaker.name} passed on an account from {originator.name}: {option.assertion} My stance: {entry.listener_stance}.", 0)
@@ -504,21 +511,22 @@ def commit_information(conversation):
 
 
 def check_sabotage_goal(world, effect, listener, actual_delta, record):
-    owner = world.npc_by_id(effect.actor_id)
+    owner = world.actor_by_id(effect.actor_id)
     goal = owner.goal if owner else None
     if (goal and goal.status == "active" and goal.kind == "sabotage_relationship"
             and goal.target_id == listener.id and goal.third_npc_id == effect.target_id and actual_delta < 0
             and effect.phase is not None and goal.created_phase <= effect.phase <= world.phase_index <= goal.deadline
             and claim_by_id(world, goal.claim_id).fact_id == claim_by_id(world, effect.claim_id).fact_id
-            and listener.opinions.get(world.npc_by_id(effect.target_id).name, {}).get("opinion", 0) <= goal.baseline_opinion - 4):
+            and listener.opinions.get(world.actor_by_id(effect.target_id).name, {}).get("opinion", 0) <= goal.baseline_opinion - 4):
         resolve_goal(owner, world, "completed", "A committed opinion change from this exchange weakened the relationship.", record)
 
 
 def trim_information(world):
     """Bound unused accounts while retaining provenance, disputes, and reputation deduplication."""
     claims = {claim.id: claim for claim in world.claims}
-    current_goals = {npc.goal.id for npc in world.npcs if npc.goal}
-    for npc in world.npcs:
+    residents = world.residents
+    current_goals = {npc.goal.id for npc in residents if npc.goal}
+    for npc in residents:
         polarities = {}
         for belief in npc.beliefs:
             claim = claims[belief.claim_id]
@@ -526,17 +534,17 @@ def trim_information(world):
         keep = {b.claim_id for b in npc.beliefs[-24:]}
         for b in npc.beliefs:
             claim = claims[b.claim_id]
-            if b.assessed or len(polarities[claim.fact_id]) > 1 or fact_by_id(world, claim.fact_id).source_id in current_goals:
+            if b.direct or b.assessed or len(polarities[claim.fact_id]) > 1 or fact_by_id(world, claim.fact_id).source_id in current_goals:
                 keep.add(b.claim_id)
         if npc.goal and npc.goal.claim_id:
             keep.add(npc.goal.claim_id)
         if npc.conversation and npc.conversation.initiator is npc and npc.conversation.focus_claim_id:
             keep.add(npc.conversation.focus_claim_id)
         npc.beliefs[:] = [b for b in npc.beliefs if b.claim_id in keep]
-    claim_ids = {b.claim_id for npc in world.npcs for b in npc.beliefs}
-    claim_ids.update(effect.claim_id for npc in world.npcs for effect in npc.pending_social_opinions if effect.claim_id)
-    disclosure_ids = {b.disclosure_id for npc in world.npcs for b in npc.beliefs if b.disclosure_id}
-    disclosure_ids.update(d.id for d in world.disclosures for npc in world.npcs
+    claim_ids = {b.claim_id for npc in world.actors for b in npc.beliefs}
+    claim_ids.update(effect.claim_id for npc in residents for effect in npc.pending_social_opinions if effect.claim_id)
+    disclosure_ids = {b.disclosure_id for npc in world.actors for b in npc.beliefs if b.disclosure_id}
+    disclosure_ids.update(d.id for d in world.disclosures for npc in residents
                           for effect in npc.pending_social_opinions if effect.claim_id == d.claim_id
                           and effect.conversation_id == d.conversation_id and d.listener_id == npc.id)
     disclosure_ids.update(d.id for d in world.disclosures[-100:])
@@ -544,7 +552,7 @@ def trim_information(world):
     disclosure_ids.update(d.id for d in world.disclosures if d.event_id in event_ids)
     fact_ids = {fact.id for fact in world.facts[-100:] if fact.source_id not in current_goals}
     fact_ids.update(fact.id for fact in world.facts if fact.source_id in current_goals)
-    for npc in world.npcs:
+    for npc in residents:
         if npc.conversation and npc.conversation.information_context:
             disclosure_ids.update(b.disclosure_id for entries in npc.conversation.information_context.beliefs.values()
                                   for b in entries if b.disclosure_id)
@@ -606,8 +614,8 @@ def assign_goal(npc, world):
         for belief in npc.beliefs:
             claim = claim_by_id(world, belief.claim_id)
             fact = fact_by_id(world, claim.fact_id)
-            subject = world.npc_by_id(claim.subject_id)
-            if subject is npc or belief.stance == "disbelieved":
+            subject = world.actor_by_id(claim.subject_id)
+            if subject is npc or subject is world.snake or subject.departure or belief.stance == "disbelieved":
                 continue
             for target in candidates:
                 if target is not subject:
@@ -660,14 +668,15 @@ def resolve_goal(npc, world, status, outcome, record=None):
     goal = npc.goal
     if goal is None or goal.status != "active":
         return
-    target = world.npc_by_id(goal.target_id)
+    target = world.actor_by_id(goal.target_id)
     goal.status, goal.outcome = status, outcome
     goal.resolved_phase = world.phase_index
-    event = world.publish("goal_completed" if status == "completed" else "goal_failed",
+    kind = "goal_completed" if status == "completed" else "goal_cancelled" if status == "cancelled" else "goal_failed"
+    event = world.publish(kind,
                           (npc, target), f"{npc.name}: {goal.objective}. {outcome}", record)
     goal.resolution_event_id = event.id
-    remember(npc, target, event, "goal_completed" if status == "completed" else "goal_failed",
-             f"My objective: {goal.objective}. {outcome}", 2 if status == "completed" else -2)
+    remember(npc, target, event, kind,
+             f"My objective: {goal.objective}. {outcome}", 2 if status == "completed" else 0 if status == "cancelled" else -2)
 
 
 def check_relationship_goals(world, opinion_owner, record=None):
@@ -766,7 +775,7 @@ def commit_agreements(conversation):
         promise = Promise(proposal.id, proposal.promisor_id, proposal.recipient_id,
                           conversation.record.id, world.phase_index, proposal.deadline)
         world.promises.append(promise)
-        giver, recipient = world.npc_by_id(promise.promisor_id), world.npc_by_id(promise.recipient_id)
+        giver, recipient = world.actor_by_id(promise.promisor_id), world.actor_by_id(promise.recipient_id)
         text = f"{giver.name} promised {recipient.name} one apple by {phase_label(promise.deadline)}."
         event = world.publish("promise_created", (giver, recipient), text, conversation.record)
         conversation.record.outcomes.append(text)
@@ -777,7 +786,7 @@ def commit_agreements(conversation):
 def apply_opinion_effects(npc):
     while npc.pending_social_opinions:
         effect = npc.pending_social_opinions[0]
-        target = npc.world.npc_by_id(effect.target_id)
+        target = npc.world.actor_by_id(effect.target_id)
         previous = npc.opinions.get(target.name, {"opinion": 0, "reason": ""})
         # Keep the specific unresolved outcome when later impressions are added.
         reason = effect.reason + (f" Earlier: {previous['reason']}" if previous["reason"] else "")
@@ -787,6 +796,9 @@ def apply_opinion_effects(npc):
         except (OSError, ValueError):
             return False
         npc.pending_social_opinions.pop(0)
+        if target is npc.world.snake and npc.attitudes:
+            npc.attitudes["trust"] = max(-100, min(100, npc.attitudes["trust"] + effect.delta))
+            npc.attitudes["trust_reason"] = effect.reason[:400]
         if effect.claim_id:
             record = next(entry for entry in npc.world.history if entry.id == effect.conversation_id)
             actual_delta = npc.opinions[target.name]["opinion"] - previous["opinion"]
@@ -801,7 +813,7 @@ def apply_opinion_effects(npc):
 def resolve_promise(world, promise, status, transfer=None):
     if promise.status != "pending":
         return
-    giver, recipient = world.npc_by_id(promise.promisor_id), world.npc_by_id(promise.recipient_id)
+    giver, recipient = world.actor_by_id(promise.promisor_id), world.actor_by_id(promise.recipient_id)
     record = next(entry for entry in world.history if entry.id == promise.conversation_id)
     promise.status, promise.resolved_phase = status, world.phase_index
     text = (f"{giver.name} kept the apple promise to {recipient.name} with an actual handoff."
@@ -877,7 +889,7 @@ def pair_objective(world, npc, other):
     pending = [p for p in promises if p.status == "pending"]
     if pending:
         promise = min(pending, key=lambda p: p.deadline)
-        giver, recipient = world.npc_by_id(promise.promisor_id), world.npc_by_id(promise.recipient_id)
+        giver, recipient = world.actor_by_id(promise.promisor_id), world.actor_by_id(promise.recipient_id)
         return 3, f"Arrange {giver.name}'s promised apple for {recipient.name}, due {phase_label(promise.deadline)}"
     if promises and promises[-1].status == "broken":
         return 2, f"Discuss the missed apple promise: {promises[-1].outcome} Seek an explanation or practical repair"
@@ -886,7 +898,7 @@ def pair_objective(world, npc, other):
         contrary = [b for b in npc.beliefs if claim_by_id(world, b.claim_id).fact_id == claim.fact_id
                     and claim_by_id(world, b.claim_id).affirmed != claim.affirmed]
         if contrary and other.id in (belief.source_id, claim.originator_id):
-            return 2, f"Ask {other.name} to explain conflicting accounts about {world.npc_by_id(claim.subject_id).name}"
+            return 2, f"Ask {other.name} to explain conflicting accounts about {world.actor_by_id(claim.subject_id).name}"
     goal = npc.goal
     if goal and goal.status == "active" and goal.target_id == other.id:
         return 1, f"{goal.objective}, by {phase_label(goal.deadline)}"
@@ -895,7 +907,7 @@ def pair_objective(world, npc, other):
             and claim_by_id(world, belief.claim_id).subject_id not in (npc.id, other.id)]
     if news:
         claim = claim_by_id(world, news[0].claim_id)
-        subject = world.npc_by_id(claim.subject_id)
+        subject = world.actor_by_id(claim.subject_id)
         firsthand = any(b.direct and claim_by_id(world, b.claim_id).fact_id == claim.fact_id for b in npc.beliefs)
         if firsthand:
             return 0.5, f"Share a firsthand experience about {subject.name}; I already know what happened"
@@ -915,3 +927,24 @@ def gossip_claim(npc, partner):
     known = {b.claim_id for b in partner.beliefs}
     return next((b.claim_id for b in selected_beliefs(npc, partner.id) if b.claim_id not in known
                  and claim_by_id(npc.world, b.claim_id).subject_id not in (npc.id, partner.id)), None)
+
+
+def learn_account(world, speaker, listener, claim_id, record, turn, stance, *, private=False):
+    """Share an existing account with its real source chain, including public listeners."""
+    source = next(b for b in speaker.beliefs if b.claim_id == claim_id)
+    claim = claim_by_id(world, claim_id)
+    fact = fact_by_id(world, claim.fact_id)
+    event = world.publish("claim_shared", (speaker, listener),
+        f"{speaker.name} disclosed {'private information' if private else 'a sourced account'} to {listener.name}.", record)
+    disclosure = Disclosure(uuid4().hex, claim_id, record.id, speaker.id, listener.id, turn,
+                            "share", stance, source.disclosure_id, world.phase_index, event.id)
+    world.disclosures.append(disclosure)
+    existing = next((b for b in listener.beliefs if b.claim_id == claim_id), None)
+    if existing is None:
+        listener.beliefs.append(Belief(listener.id, claim_id, stance, speaker.id, disclosure.id, False, world.phase_index))
+    elif not existing.direct:
+        existing.source_id, existing.disclosure_id, existing.stance = speaker.id, disclosure.id, stance
+    if listener is not world.snake:
+        remember(listener, speaker, event, "heard_claim",
+                 f"{speaker.name}'s account, originally from {world.actor_by_id(claim.originator_id).name}: {assertion_text(world, fact, claim.affirmed)}", 0)
+    return disclosure

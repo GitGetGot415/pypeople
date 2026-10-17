@@ -29,6 +29,7 @@
 - main.py - starts the code
 - npc.py - backend
 - simulation.py - day phases, shared activity constants, and world updates
-- snake.py - wandering and animation for the ambient snake
+- snake.py - the guarding python, movement, and generated encounters
+- purgatory.py - persistent background contracts and prepared arrivals
 - autonomy.py - local activity priorities, target selection, and decision reasons
 - simulation_data.py - validates, saves, and restores complete simulations
