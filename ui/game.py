@@ -17,7 +17,6 @@ class GameScreen:
         self.stats_button = Button((1024, 16, 112, 38), "Stats")
         self.save_button = Button((904, 16, 108, 38), "Save")
         self.pause_button = Button((600, 16, 108, 38), "Pause")
-        self.snake_retry = Button((610, 72, 120, 32), "Retry meeting")
         self.arrival_retry = Button((476, 72, 120, 32), "Retry arrival")
         self.clock_button = Button((720, 16, 44, 38), "")
         self.save_message = ""
@@ -109,9 +108,6 @@ class GameScreen:
 
     def handle_event(self, app, event):
         paused = app.simulation.paused
-        if self.snake_retry.clicked(event, enabled=not paused):
-            app.retry_snake()
-            return
         if self.arrival_retry.clicked(event, enabled=not paused):
             app.retry_arrival()
             return
@@ -320,8 +316,6 @@ class GameScreen:
         self.draw_clock(app)
         self.feed.draw(app)
         self.request_status.draw(app)
-        if app.simulation.snake.retry_request:
-            self.snake_retry.draw(app.window, app.small_font, enabled=not app.simulation.paused)
         pending = app.simulation.pending_arrival_days
         error = app.simulation.arrival_error
         if pending or error:

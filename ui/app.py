@@ -418,26 +418,6 @@ class Application:
     def retry_arrival(self):
         self.simulation.arrival_error = ""
 
-    def retry_snake(self):
-        request = self.simulation.snake.retry_request
-        if not request or self.requests.busy or self.simulation.snake.encounter:
-            return
-        npc = self.simulation.npc_by_id(request["resident_id"])
-        if npc is None:
-            self.simulation.snake.retry_request = None
-            return
-        npc.set_selected(False)
-        try:
-            replacement = SnakeEncounter(self.simulation, npc, request["purpose"], request["reason"], origin=request["origin"])
-        except ValueError as exc:
-            request["error"] = str(exc)
-            return
-        self.game.close_dialogue()
-        self.game.dialogue_open = True
-        self.game.selected_npc = self.simulation.snake
-        self.simulation.snake.set_selected(True)
-        self.game.viewed_conversation = replacement
-
     def submit_snake(self, message):
         snake = self.simulation.snake
         if self.screen != "game" or not message or self.requests.busy or snake.encounter or snake.request_pending or self.request_history is not None:
