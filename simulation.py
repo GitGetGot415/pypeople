@@ -24,11 +24,12 @@ class PendingAction:
 
 
 class Simulation:
-    def __init__(self, npcs, tree=None, *, assign_goals=True):
+    def __init__(self, npcs, tree=None, *, assign_goals=True, npc_trait_mode="normal"):
         from npc import Tree
         from snake import Snake
 
         self.npcs = npcs
+        self.npc_trait_mode = npc_trait_mode
         self.tree = tree if tree is not None else Tree()
         self.snake = Snake()
         self.snake.world = self
@@ -529,7 +530,7 @@ class Simulation:
             self.pending_arrival_days.pop(0)
             return None
         try:
-            character = random_character()
+            character = random_character(trait_mode=self.npc_trait_mode)
         except (OSError, ValueError) as exc:
             self.arrival_error = f"Could not create the next arrival: {exc}"
             return None

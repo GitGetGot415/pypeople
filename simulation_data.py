@@ -423,6 +423,7 @@ class PendingActionState(SaveModel):
 
 class SimulationState(SaveModel):
     day: int = Field(ge=1)
+    npc_trait_mode: Literal["normal", "extreme", "both"] = "normal"
     phase: Literal["day", "evening", "night"]
     events: list[EventState] = Field(max_length=200)
     promises: list[PromiseState]
@@ -862,7 +863,7 @@ def capture_simulation(app):
     world = app.simulation
     encounter = world.snake.encounter
     return SimulationState(
-        day=world.day, phase=world.phase,
+        day=world.day, npc_trait_mode=world.npc_trait_mode, phase=world.phase,
         events=[asdict(event) for event in world.events],
         promises=[asdict(promise) for promise in world.promises],
         facts=[asdict(fact) for fact in world.facts], claims=[asdict(claim) for claim in world.claims],
@@ -913,7 +914,7 @@ def restore_simulation(state):
                 capacity=state.tree.capacity,
                 shake_elapsed=state.tree.shake_elapsed, shaker=by_id.get(state.tree.shaker),
                 reserved_by=by_id.get(state.tree.reserved_by))
-    world = Simulation(npcs, tree, assign_goals=False)
+    world = Simulation(npcs, tree, assign_goals=False, npc_trait_mode=state.npc_trait_mode)
     world.archived = all_residents[len(state.npcs):]
     for npc in world.archived:
         npc.world = world

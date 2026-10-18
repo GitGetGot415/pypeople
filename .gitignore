@@ -1,6 +1,7 @@
 __pycache__
 .venv/
 .env
+app_settings.json
 ollama_settings.json
 ollama_settings.json.tmp
 characters/random_1.json

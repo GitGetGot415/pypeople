@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pygame
 
+from app_settings import load_npc_trait_mode
 from character_data import load_character, random_character
 from conversation_history import ConversationRecord, describe_opinion_change
 from npc import NPC, assign_npc_names
@@ -54,6 +55,7 @@ class Application:
         self.api_key = os.getenv("GEMINI_API_KEY", "").strip()
         self.provider = "gemini"
         self.ollama_model = load_model()
+        self.npc_trait_mode = load_npc_trait_mode()
         self.session_id = 0
         self.request_npc = None
         self.conversation_requests = {}
@@ -125,7 +127,8 @@ class Application:
             # Each simulation owns its profiles and opinions inside its save file.
             for index, source in enumerate(self.setup.sources, start=1):
                 try:
-                    characters.append(random_character() if source is None else load_character(source))
+                    characters.append(random_character(trait_mode=self.npc_trait_mode)
+                                      if source is None else load_character(source))
                 except (OSError, ValueError) as error:
                     raise ValueError(f"NPC {index + 1}: {error}") from error
                 if source is not None and Path(source).resolve() == STARTING_CHARACTER_PATH.resolve():
@@ -153,7 +156,7 @@ class Application:
             npc.sprite_size = sprite.get_size()
             npcs.append(npc)
         assign_npc_names(npcs)
-        self._activate_simulation(Simulation(npcs))
+        self._activate_simulation(Simulation(npcs, npc_trait_mode=self.npc_trait_mode))
         self.menu.message = ""
 
     def sync_save_name(self):
@@ -230,7 +233,7 @@ class Application:
 
     def open_settings(self):
         self.screen = "settings"
-        self.settings.open(self.provider, self.api_key, self.ollama_model)
+        self.settings.open(self.provider, self.api_key, self.ollama_model, self.npc_trait_mode)
 
     def open_stats(self):
         self.game.prompt_input.active = False

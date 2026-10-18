@@ -18,6 +18,7 @@ DEFAULT_COLORS = {
 }
 DIRECTIONS = ("North", "North east", "East", "South east", "South", "South west", "West", "North west")
 RANDOM_CONFIG_PATH = Path(__file__).resolve().parent / "assets" / "character_randomization.json"
+NPC_TRAIT_MODES = ("normal", "extreme", "both")
 
 
 def description_parts(details):
@@ -87,18 +88,33 @@ def load_character(path):
         return normalize_character(json.load(character_file))
 
 
-def random_character(config_path=RANDOM_CONFIG_PATH):
-    """Generate a complete character using the creator's random settings."""
+def random_character(config_path=RANDOM_CONFIG_PATH, *, trait_mode="normal"):
+    """Generate a complete character using the selected random trait pool."""
     with Path(config_path).open(encoding="utf-8") as config_file:
         config = json.load(config_file)
     if not isinstance(config, dict):
         raise ValueError("Random settings must be a JSON object.")
-    for key in ("last_names", "details", "voices", "mannerisms", "backgrounds"):
+    if trait_mode not in NPC_TRAIT_MODES:
+        raise ValueError(f"Trait mode must be one of: {', '.join(NPC_TRAIT_MODES)}.")
+    for key in ("last_names", "backgrounds"):
         choices = config.get(key)
         if not isinstance(choices, list) or not choices or any(
             not isinstance(value, str) or not value.strip() for value in choices
         ):
             raise ValueError(f"{key} must be a nonempty list of text.")
+    trait_choices = {}
+    for key in ("details", "voices", "mannerisms"):
+        groups = config.get(key)
+        if not isinstance(groups, dict):
+            raise ValueError(f"{key} must contain normal and extreme lists.")
+        for mode in ("normal", "extreme"):
+            choices = groups.get(mode)
+            if not isinstance(choices, list) or not choices or any(
+                not isinstance(value, str) or not value.strip() for value in choices
+            ):
+                raise ValueError(f"{key}.{mode} must be a nonempty list of text.")
+        trait_choices[key] = (groups["normal"] + groups["extreme"]
+                              if trait_mode == "both" else groups[trait_mode])
     first_names = config.get("first_names")
     if not isinstance(first_names, dict):
         raise ValueError("first_names must contain separate M and F name lists.")
@@ -121,7 +137,7 @@ def random_character(config_path=RANDOM_CONFIG_PATH):
         if type(low) is not int or type(high) is not int or low > high:
             raise ValueError(f"{name} needs integer limits with min <= max.")
         values[name] = str(random.randint(low, high))
-    values["Details"] = (" ".join(random.choice(config[key]).strip()
+    values["Details"] = (" ".join(random.choice(trait_choices[key]).strip()
                                   for key in ("details", "voices", "mannerisms")) + "\n\n"
                          + config["background_prefix"].strip() + " "
                          + random.choice(config["backgrounds"]).strip())
