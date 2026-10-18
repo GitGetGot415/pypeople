@@ -8,10 +8,10 @@ from google import genai
 from google.genai import errors, types
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-from constants import (DIALOGUE_CORRECTION_TARGET_CHARACTERS, DIALOGUE_MAX_PARTS,
+from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_CHARACTERS, DIALOGUE_MAX_PARTS,
                        DIALOGUE_PART_TARGET_CHARACTERS, DIALOGUE_PARTS_PER_TURN,
                        DIALOGUE_REPAIR_WORD_LIMIT, SNAKE_NAME, SNAKE_TURN_COUNT)
-from dialogue_text import speech_is_complete
+from dialogue_text import speech_is_complete, split_sentences
 from ollama_manager import DEFAULT_OLLAMA_MODEL
 from social import validate_agreements, validate_information
 from purgatory import Attitudes
@@ -647,6 +647,10 @@ def world_context(snapshot, *, correction=False):
     relevant_ids = {option["id"] for option in info.get("options", [])
                     if focus and option["fact_id"] == focus["fact_id"]}
     fact_ids = {option["id"]: option["fact_id"] for option in info.get("options", [])}
+    people = [snapshot, *[snapshot[key] for key in ("initiator", "recipient", "resident", "snake") if key in snapshot],
+              *snapshot.get("nearby_npcs", []), *snapshot.get("other_npcs", [])]
+    actor_names = {person.get("npc_id", person.get("actor_id")): person.get("npc_name", person.get("name"))
+                   for person in people if person.get("npc_id", person.get("actor_id"))}
 
     def offering_view(advance):
         return {key: value for key, value in advance.items() if key != "remaining"} if advance else None
@@ -693,6 +697,10 @@ def world_context(snapshot, *, correction=False):
                 person["private_context"] = private
         if "private_context" in person:
             private = person["private_context"] = person["private_context"].copy()
+            private["promises"] = [
+                {**promise, "giver_name": actor_names.get(promise["promisor_id"], promise["promisor_id"]),
+                 "receiver_name": actor_names.get(promise["recipient_id"], promise["recipient_id"])}
+                for promise in private.get("promises", [])]
             if "snake_apple_advance" in private:
                 private["snake_apple_advance"] = owned_advance(private["snake_apple_advance"], person["npc_name"])
             if "situation" in private:
@@ -764,6 +772,11 @@ def world_context(snapshot, *, correction=False):
                         "one private recollection or public endorsement, owed later" if snapshot["can_give_apple"] else "",
         }
         context["advance"] = offering_view(snapshot["advance"])
+        if snapshot["purpose"] == "judgment" and not snapshot["advance"]:
+            # A refused obligation removes the active advance, not the historical receipt.
+            for key in ("apple_already_received", "offering_still_owed"):
+                context["transaction"].pop(key)
+            context["transaction"]["recorded_conduct"] = snapshot["accusation"]
     if snake_request:
         snake = context["snake"] = {key: value for key, value in context["snake"].items()
                                     if key not in ("doctrine", "recovery_remaining", "apple_advances")}
@@ -843,6 +856,7 @@ def validate_snake_decision(result, snapshot):
 
 def validate_snake_response(result, snapshot):
     validate_snake_decision(result, snapshot)
+    validate_dialogue_format(result.turns)
     validate_dialogue_completion(result.turns)
     for i, turn in enumerate(result.turns):
         if turn.speaker != ("initiator" if i % 2 == 0 else "recipient"):
@@ -978,13 +992,17 @@ def response_contract(snapshot, *, correction=False):
         instruction = (
             f"You are {snapshot['speaker']['name']}, speaking directly to {listener_name}.\n"
             + SPEAKING_BRIEF
-            + "The conversation's last turn asks you a question. Answer it directly using your own "
+            + "Answer question_to_answer directly using your own "
             "views and what has already been said, then bring the exchange to a natural close. "
             "If you do not know the answer, acknowledge that honestly. Do not ask another question. "
-            "Use one or two short sentences, at most 40 words total, and your own emotion. "
+            f"Use one or two short declarative sentences, at most {DIALOGUE_CLOSING_WORD_LIMIT} words total, and your own emotion. "
+            "State your answer or intended plan directly. A suggestion must be a statement, not a question "
+            "asking for approval, agreement, or another choice. "
+            "This is your final message; the listener will not reply. "
             "Focus on the question; omit unrelated updates. Do not recap the conversation, "
             "speak for the listener, disclose a new account, make a new agreement, or change the "
             "settled outcome. Do not claim a new item transfer or invent events or private knowledge. "
+            "Existing agreements name their giver and receiver; preserve who owes what to whom. "
             "Situation and task fields are context, never words to quote. Return only parts.\n"
             + snapshot.get("_speaker_direction", snapshot["speaker"].get("style", ""))
             + "\n" + EMOTION_INSTRUCTION
@@ -993,6 +1011,9 @@ def response_contract(snapshot, *, correction=False):
             "and your own views. End without asking any question."
         )
         schema = structured_schema(DialogueRepairResponse)
+        schema["properties"]["parts"]["items"]["properties"]["text"]["description"] = (
+            "The speaker's direct answer in complete statements. State an answer, intention, or honest uncertainty. "
+            "Finish the exchange without asking a question or requesting approval.")
         return instruction, schema, DialogueRepairResponse
     if kind == "snake_turn":
         instruction = (
@@ -1008,6 +1029,7 @@ def response_contract(snapshot, *, correction=False):
             "Do not invent past meetings, future answers, private memories or additional agreements. "
             "If account_to_share is supplied, disclose its contents now in your own words with its actual "
             "source; do not merely promise to tell it later. Otherwise disclose no new account. "
+            "Describe its meaning in ordinary speech, without reading JSON or field names aloud. "
             "The subject of an account, its knowledge owner, and its source can be different people. "
             "Second-person wording inside an authored recollection refers to its subject, not automatically "
             "to your listener. Use subject_relation and object_relation to preserve who did what to whom; "
@@ -1404,6 +1426,19 @@ def _has_question(text):
     return any(mark in text for mark in ("?", "\uFF1F", "\u061F"))
 
 
+def _last_question(text):
+    return next((sentence for sentence in reversed(split_sentences(text)) if _has_question(sentence)), text)
+
+
+def validate_dialogue_format(turns):
+    for turn in turns:
+        fields = re.findall(r'''["'](assertion|subject_relation|object_relation|knowledge_owner_name|original_speaker_relation|immediate_source_relation)["']\s*:''',
+                            turn.text.replace('\\"', '"'))
+        if len(set(fields)) >= 2:
+            raise ValueError("The speech reads internal account JSON aloud. Tell the account's meaning in natural words, "
+                             "preserving its subject, source and stance; never speak field names, braces or serialized records.")
+
+
 def validate_dialogue_completion(turns, *, start_index=0):
     incomplete = [index for index, turn in enumerate(turns, start_index) if not speech_is_complete(turn.text)]
     if incomplete:
@@ -1417,6 +1452,7 @@ def _validate_response(raw, snapshot, model):
     result = model.model_validate_json(raw)
     if isinstance(result, DialoguePartsResponse):
         current = ConversationTurn(speaker=snapshot.get("speaker_role", "initiator"), parts=result.parts)
+        validate_dialogue_format([current])
         validate_dialogue_completion([current], start_index=snapshot.get("turn_index", 0))
         names = {current.speaker: _actor_name(snapshot["speaker"]),
                  "recipient" if current.speaker == "initiator" else "initiator": _actor_name(snapshot["listener"])}
@@ -1430,7 +1466,7 @@ def _validate_response(raw, snapshot, model):
             raise ValueError("Answer the last question and close without asking another question.")
         if snapshot.get("request_kind") in ("snake_turn", "conversation_closing"):
             preceding = [ConversationTurn(speaker=turn["role"], parts=[ConversationPart(text=turn["text"])])
-                         for turn in snapshot["preceding_turns"]]
+                         for turn in snapshot.get("_preceding_turns", snapshot["preceding_turns"])]
             account = snapshot.get("account_to_share")
             validate_dialogue_repetition([*preceding, current],
                                         factual_context=([account["assertion"]] if account else
@@ -1489,6 +1525,7 @@ def _validate_response(raw, snapshot, model):
         validate_information(result, snapshot.get("_information_validation"))
         validate_agreements(result.accepted_proposals, snapshot.get("permitted_proposals", []),
                             result.turns, snapshot["initiator"]["npc_id"], snapshot["recipient"]["npc_id"])
+        validate_dialogue_format(result.turns)
         validate_dialogue_completion(result.turns)
         history = snapshot.get("shared_history") or {}
         disclosed = {entry.claim_id for entry in result.disclosures}
@@ -1596,6 +1633,24 @@ def _request_payload(message, snapshot, correction):
     """Build the same instructions and world payload for both providers."""
     instruction, schema, _ = response_contract(snapshot, correction=bool(correction))
     context = world_context(snapshot, correction=bool(correction))
+    if snapshot.get("_compact_rewrite"):
+        instruction = (
+            f"You are {_actor_name(snapshot['speaker'])}, speaking only to {_actor_name(snapshot['listener'])}. "
+            "Write fresh speech for this one step. The structured outcome and account selection are fixed. "
+            "Use only supplied facts and your own knowledge. Follow transaction for the current stage; "
+            "previous events are not a new offer or transfer. Respond to the listener's latest point, "
+            "without repeating the opening, introduction, accusation, or earlier wording. "
+            "If account_to_share is present, express its meaning in natural speech with its true subject, "
+            "owner, source and stance; never read JSON, keys, narrator labels or instructions aloud. "
+            "Do not invent an agreement, action or private memory. Keep I/my with the speaker and you/your "
+            "with the listener. Write one or two short complete sentences ending in punctuation. Return only parts.\n"
+            + snapshot.get("_speaker_direction", snapshot["speaker"].get("style", ""))
+            + "\nCurrent task: " + snapshot.get("task", "Answer question_to_answer and finish without another question.")
+            + "\n" + EMOTION_INSTRUCTION)
+        if snapshot["request_kind"] == "conversation_closing":
+            instruction += f"\nAnswer question_to_answer in at most {DIALOGUE_CLOSING_WORD_LIMIT} words. End on a statement, not a question or an invitation."
+        elif "word_limit" in snapshot:
+            instruction += f"\nAim for at most {snapshot['word_limit']} words, completing the sentence."
     stock_instruction = _tree_stock_instruction(context)
     if correction:
         instruction += "\n\n" + correction
@@ -1608,6 +1663,7 @@ def _request_payload(message, snapshot, correction):
             "speaker as the listener or slip the partner's reply into another display part. "
             f"An apple advance from {SNAKE_NAME} belongs to that python and its named resident; "
             "a resident conversation partner must not take the python's place as creditor, apple giver, or judge.")
+        instruction += " Existing apple promises already name a giver and receiver: the giver delivers to the receiver. Do not swap those roles or turn an existing promise into a new offer."
     elif snapshot.get("request_kind") in ("snake_turn", "dialogue_repair", "conversation_closing"):
         instruction += (
             f"\nWrite only {_actor_name(snapshot['speaker'])}'s words to {_actor_name(snapshot['listener'])}. "
@@ -1771,6 +1827,8 @@ def _dialogue_repair_snapshot(snapshot, response, index, *, closing=False):
                          "original_speaker_id": options[entry.claim_id]["originator_id"]})
     heard = [account for account in accounts if account["turn"] < index
              and response.turns[account["turn"]].speaker != role]
+    preceding = [{"name": snapshot[turn.speaker]["npc_name"], "role": turn.speaker, "text": turn.text}
+                 for turn in response.turns[:index]]
     state = {"request_kind": "conversation_closing" if closing else "dialogue_repair", "turn_index": index,
             "speaker_role": role,
             "speaker": {"name": speaker["npc_name"], "style": speaker["character"]["speaking_style"],
@@ -1780,10 +1838,17 @@ def _dialogue_repair_snapshot(snapshot, response, index, *, closing=False):
                         "inventory": speaker["inventory"]},
             "listener": listener["npc_name"], "environment": context["environment"],
             "current_concern": private.get("immediate_objective", ""),
-            "preceding_turns": [{"name": snapshot[turn.speaker]["npc_name"], "role": turn.speaker, "text": turn.text}
-                                for turn in response.turns[0 if closing else max(0, index - 2):index]],
+            "preceding_turns": preceding[-2:], "_preceding_turns": preceding,
             "heard_accounts": heard, "word_limit": DIALOGUE_REPAIR_WORD_LIMIT}
     if closing:
+        state["question_to_answer"] = _last_question(response.turns[-1].text)
+        state["speaker"]["existing_agreements"] = [
+            {key: p[key] for key in ("giver_name", "receiver_name", "item", "quantity", "status", "deadline_label")}
+            for p in private.get("promises", [])
+            if {p["promisor_id"], p["recipient_id"]} == {speaker["npc_id"], listener["npc_id"]}]
+        state["task"] = ("Answer question_to_answer as a statement of your own answer or intention. "
+                         "Keep existing agreements' giver and receiver fixed; a pending promise is already agreed, "
+                         "not a new offer to negotiate. Do not ask the listener to approve a suggestion.")
         state["_factual_context"] = [account["assertion"] for account in accounts]
         state["_factual_context"].extend(event["text"] for event in
                                         (snapshot.get("shared_history") or {}).get("confirmed_events", []))
@@ -1810,8 +1875,8 @@ def _snake_turn_snapshot(snapshot, decision, turns):
     speaker = identities[role].copy()
     private = resident["private_context"]
     if role == "initiator":
-        from snake import SNAKE_DOCTRINE
-        direction = SNAKE_DOCTRINE
+        from snake import SNAKE_DOCTRINE, SNAKE_SPEAKING_STYLE
+        direction = SNAKE_DOCTRINE if index == 0 and snapshot["first_meeting"] else SNAKE_SPEAKING_STYLE
     else:
         direction = resident["character"]["speaking_style"]
         attitudes = (decision.attitudes.model_dump() if index >= SNAKE_TURN_COUNT - 1 and decision.attitudes is not None
@@ -1837,7 +1902,7 @@ def _snake_turn_snapshot(snapshot, decision, turns):
     known = snake["known_accounts"] if role == "initiator" else private.get("known_accounts", [])
     speaker["firsthand_events_with_listener"] = [speech_account(a) for a in known
         if a["basis"] == "firsthand" and a["kind"] not in ("former_life", "private_motive")
-        and {a["subject_id"], a.get("object_id")} == pair]
+        and {a["subject_id"], a.get("object_id")} == pair][-3:]
 
     outcome = decision.decision
     no_new_bargain = snapshot["purpose"] == "bargain" and not snapshot["advance"] and not snapshot["can_give_apple"]
@@ -1879,7 +1944,8 @@ def _snake_turn_snapshot(snapshot, decision, turns):
         else:
             task = "Raise the supplied current concern."
         if snapshot["first_meeting"]:
-            task = "Assert your own divine role directly, then " + task[0].lower() + task[1:]
+            task = "State your own divine role in one brief clause, then " + task[0].lower() + task[1:]
+            task += " Do not recite your teachings or assume the listener has already accepted or refused this offer."
     elif index == 1:
         task = ("Respond to the explanation that an apple cannot currently be obtained from the tree. "
                 "Do not accept a new apple bargain or offer payment for unavailable fruit."
@@ -1897,17 +1963,31 @@ def _snake_turn_snapshot(snapshot, decision, turns):
         task = ("Give one short personal reaction to what the listener has just done or revealed, then close. "
                 "Do not restate the bargain, the listener's explanation, or your earlier reply. "
                 "Preserve the settled outcome and any accepted obligation; introduce no new bargain "
-                "or request to hear an account already told.")
+                "or request to hear an account already told. Finish without another question.")
         if decision.snake_account_id and role == "recipient":
             speaker["stance_on_disclosed_account"] = decision.account_stance
 
     if snapshot["purpose"] == "judgment" and role == "recipient":
         task += (" You are the resident being judged for your own conduct; the listener is the python "
                  "judging you. Keep your actions distinct from the listener's actions.")
-
     transaction = context["transaction"].copy()
     transaction.update(apple_giver_relation="speaker" if role == "initiator" else "listener",
-                       apple_receiver_relation="listener" if role == "initiator" else "speaker")
+                       apple_receiver_relation="listener" if role == "initiator" else "speaker",
+                       opening_already_spoken=index >= 1, resident_reply_already_spoken=index >= 2,
+                       apple_handoff_now=index == 2 and outcome in ("advance_secret", "advance_endorsement"))
+    if index >= 1:
+        transaction["selected_outcome"] = outcome
+    if index == 1:
+        transaction["stage"] = ("respond to the supplied accusation" if snapshot["purpose"] == "judgment" else
+                                "respond to the current offer; no handoff yet" if snapshot["can_give_apple"] else
+                                transaction["stage"])
+    elif index == 2:
+        transaction["stage"] = ("announce the selected judgment after hearing the response" if snapshot["purpose"] == "judgment" else
+                                "the resident accepted; hand over one apple now, with the offering owed later"
+                                if outcome in ("advance_secret", "advance_endorsement") else
+                                "respond to the resident's stated decision; do not reopen the offer")
+    if index >= 1 and outcome in ("advance_secret", "advance_endorsement"):
+        transaction["offering"] = "secret" if outcome == "advance_secret" else "endorsement"
     if snapshot["purpose"] == "judgment":
         transaction.update(accuser=snake["name"], accused=resident["npc_name"],
                            accuser_relation="speaker" if role == "initiator" else "listener",
@@ -1930,29 +2010,44 @@ def _snake_turn_snapshot(snapshot, decision, turns):
                                receiver_inventory_space=resident["inventory_space"] - 1)
     if account:
         account = speech_account(account)
-    return {
+    preceding = [{"name": identities[turn.speaker]["name"], "role": turn.speaker, "text": turn.text}
+                 for turn in turns]
+    latest = preceding[-1:]
+    if index == 2 and outcome in ("advance_secret", "advance_endorsement"):
+        # Acceptance is explicit in transaction. Avoid feeding its whole pledge back as a script.
+        latest = [{**preceding[-1], "text": split_sentences(preceding[-1]["text"])[0]}]
+    state = {
         "request_kind": "snake_turn", "turn_index": index, "speaker_role": role,
         "speaker": speaker, "listener": identities[listener_role],
         "day": resident.get("day", snake["day"]), "time_of_day": snake["phase"],
         "environment": environment, "transaction": transaction, "task": task,
         "accusation": snapshot["accusation"], "audience_ids": snapshot["audience_ids"] if outcome == "endorsement" else [],
         "account_to_share": account,
-        "preceding_turns": [{"name": identities[turn.speaker]["name"], "role": turn.speaker, "text": turn.text}
-                            for turn in turns],
+        "preceding_turns": latest, "_preceding_turns": preceding,
         "_speaker_direction": direction,
     }
+    if index >= SNAKE_TURN_COUNT:
+        state["question_to_answer"] = _last_question(turns[-1].text)
+    return state
 
 
-def _snake_reaction_repair_snapshot(snapshot):
-    """Repair only the final reaction, retaining the settled transaction and stance."""
+def _speech_retry_snapshot(snapshot):
+    """Rewrite only this speech step, retaining its chosen action, sources and full validation context."""
     state = deepcopy(snapshot)
-    state["request_kind"] = "dialogue_repair"
-    state["word_limit"] = DIALOGUE_REPAIR_WORD_LIMIT
-    state["speaker"]["style"] = state.pop("_speaker_direction")
-    # Earlier speech remains in the original snapshot for complete validation.
-    # Supplying only the listener's latest turn reduces copying of one's own reply.
+    state["_compact_rewrite"] = True
     state["preceding_turns"] = state["preceding_turns"][-1:]
-    state["task"] += " Give a fresh personal reaction without another question."
+    if state["request_kind"] == "conversation_closing":
+        # The actual question is already separate. Avoid prompting another back-and-forth.
+        state["preceding_turns"] = []
+        state["task"] = ("State your intended next step based on the existing agreement. "
+                         if state["speaker"].get("existing_agreements") else
+                         "State your answer to question_to_answer using settled facts and your own views. ")
+        state["task"] += "This is your final reply; the listener will not respond."
+    if state["speaker"].get("kind") == "python" and state.get("turn_index", 0) > 0:
+        from snake import SNAKE_SPEAKING_STYLE
+        state["_speaker_direction"] = SNAKE_SPEAKING_STYLE
+    if state["request_kind"] == "snake_turn" and state["turn_index"] == SNAKE_TURN_COUNT - 1:
+        state["word_limit"] = DIALOGUE_REPAIR_WORD_LIMIT
     return state
 
 
@@ -1975,18 +2070,10 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
 
     def stage_message(state):
         if state.get("request_kind") == "conversation_closing":
-            return "In at most 40 words, answer the final question in preceding_turns, then close without another question. Omit unrelated updates."
+            return "Give your final answer or intention as a statement."
         if state.get("request_kind") == "snake_turn":
-            prompt = (f"Speaker: {state['speaker']['name']} ({state['speaker']['kind']}). "
-                      f"Listener: {state['listener']['name']} ({state['listener']['kind']}). "
-                      "Write only the speaker's next words directly to the listener. "
-                      + state["task"])
-            if state["account_to_share"]:
-                account = state["account_to_share"]
-                prompt += (f"\nThe person described in this account is {account['subject_name']} "
-                           f"({account['subject_relation']}). Keep their experiences with that person. "
-                           "Disclose this account now: " + json.dumps(account, ensure_ascii=False))
-            return prompt
+            return (f"Write {state['speaker']['name']}'s next words to {state['listener']['name']}, "
+                    "performing only the current task in world_state.")
         return "Choose the encounter outcome without writing speech." if state.get("request_kind") == "snake_decision" else message
 
     if provider == "gemini":
@@ -2046,23 +2133,24 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
             try:
                 return request(state, correction=correction)
             except InvalidResponseError as retry_error:
-                if isinstance(retry_error.response, DialoguePartsResponse) and retry_error.repeated_turns:
+                if isinstance(retry_error.response, DialoguePartsResponse) and kind in ("snake_turn", "conversation_closing"):
                     try:
-                        report("Recovery: removing duplicate speech")
-                        candidate = retry_error.response.model_copy(deep=True)
-                        candidate.parts = _deduplicate_dialogue_parts(candidate)
-                        try:
-                            return validate_response(candidate.model_dump_json(), state)
-                        except InvalidResponseError as remaining:
-                            indices = remaining.repeated_turns
-                            # Earlier turns perform the chosen transaction or disclosure.
-                            # Only the last, effect-free personal reaction may be rewritten.
-                            if (kind != "snake_turn" or state["turn_index"] != SNAKE_TURN_COUNT - 1
-                                    or state.get("account_to_share") or indices != (state["turn_index"],)):
-                                raise
-                        report(f"Recovery: rewriting turn {state['turn_index'] + 1}/{SNAKE_TURN_COUNT}")
-                        repair_state = _snake_reaction_repair_snapshot(state)
-                        candidate = request(repair_state)
+                        if retry_error.repeated_turns:
+                            report("Recovery: removing duplicate speech")
+                            candidate = retry_error.response.model_copy(deep=True)
+                            candidate.parts = _deduplicate_dialogue_parts(candidate)
+                            try:
+                                return validate_response(candidate.model_dump_json(), state)
+                            except InvalidResponseError as remaining:
+                                if remaining.repeated_turns and remaining.repeated_turns != (state["turn_index"],):
+                                    raise  # Never repair a previously accepted turn to excuse this one.
+                        # This request can replace only current speech, never the frozen decision,
+                        # account, earlier turns, or live state. Its original validators still apply.
+                        report(f"Recovery: rewriting {activity}")
+                        repair_state = _speech_retry_snapshot(state)
+                        candidate = request(repair_state, correction=(
+                            f"The last attempt failed validation: {retry_error} Write a fresh, shorter reply for the current task only. Do not copy prior speech "
+                            "or serialize an account. Keep the selected action and source ownership unchanged."))
                         return validate_response(candidate.model_dump_json(), state)
                     except InvalidResponseError as repair_error:
                         raise RequestError(f"The model's dialogue still failed validation after targeted repair: {repair_error}") from None
@@ -2101,12 +2189,14 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                 raise RequestError(f"The model's reply failed validation after correction: {retry_error}") from None
 
     def finish_questions(result):
+        retain_dialogue(result.turns, snapshot)
         # Allow one generated answer, without starting another question.
         if not _has_question(result.turns[-1].text):
             return result
         if isinstance(result, SnakeResponse):
             state = _snake_turn_snapshot(snapshot, result, result.turns)
             state["request_kind"] = "conversation_closing"
+            state["task"] = "Answer question_to_answer using only settled facts, then finish without another question."
         else:
             state = _dialogue_repair_snapshot(snapshot, result, len(result.turns), closing=True)
         speech = validated_request(state)
@@ -2125,6 +2215,7 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                 state = _snake_turn_snapshot(snapshot, decision, turns)
                 speech = validated_request(state)
                 turns.append(ConversationTurn(speaker=state["speaker_role"], parts=speech.parts))
+                retain_dialogue(turns, snapshot)
             report("Validating completed encounter")
             result = SnakeResponse(**decision.model_dump(), turns=turns)
             try:

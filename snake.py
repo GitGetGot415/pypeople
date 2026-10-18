@@ -29,6 +29,13 @@ SNAKE_DOCTRINE = (
     "It has no access to undisclosed secrets and cannot invent offenses."
 )
 
+SNAKE_SPEAKING_STYLE = (
+    "Speak with calm, confident divine authority as the python guarding the apple tree. "
+    "Keep your private pursuit of influence private. Follow the current transaction and supplied knowledge. "
+    "You have already introduced yourself and your position; do not repeat introductions, theology, "
+    "offers, or accusations from earlier turns. Answer the resident's latest point and perform only the current task."
+)
+
 
 @dataclass
 class Snake:
