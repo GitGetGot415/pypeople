@@ -123,6 +123,7 @@ def random_character(config_path=RANDOM_CONFIG_PATH):
         values[name] = str(random.randint(low, high))
     values["Details"] = (" ".join(random.choice(config[key]).strip()
                                   for key in ("details", "voices", "mannerisms")) + "\n\n"
+                         + config["background_prefix"].strip() + " "
                          + random.choice(config["backgrounds"]).strip())
     values["Hair"] = random.choice(RANDOM_HAIR_STYLES_BY_SEX[values["Sex"]])
     values["Eyes"] = random.choice(RANDOM_EYE_STYLES_BY_SEX[values["Sex"]])
