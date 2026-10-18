@@ -13,35 +13,35 @@ class MenuScreen:
         self.settings_button = Button((410, 430, 220, 54), "Settings")
         self.exit_button = Button((650, 430, 220, 54), "Exit")
         self.message = ""
-        self.start_warning = ""
+        self.ai_warning = ""
+        self.pending_screen = None
         self.configure_button = Button((350, 415, 180, 44), "Settings")
         self.continue_button = Button((550, 415, 180, 44), "Continue anyway")
         self.cancel_button = Button((750, 415, 180, 44), "Cancel")
 
     def handle_event(self, app, event):
-        if self.start_warning:
+        if self.ai_warning:
             if self.cancel_button.clicked(event) or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
-                self.start_warning = ""
+                self.ai_warning = ""
+                self.pending_screen = None
             elif self.configure_button.clicked(event):
-                self.start_warning = ""
+                self.ai_warning = ""
+                self.pending_screen = None
                 app.open_settings()
             elif self.continue_button.clicked(event):
-                self.start_warning = ""
-                app.screen = "setup"
+                self._open_requested_screen(app)
             return
 
-        if self.start_button.clicked(event):
+        if self.start_button.clicked(event) or self.load_button.clicked(event):
+            self.pending_screen = "load_sim" if self.load_button.clicked(event) else "setup"
             if app.provider == "gemini":
-                self.start_warning = "" if app.api_key.strip() else "No Gemini API key is configured."
+                self.ai_warning = "" if app.api_key.strip() else "No Gemini API key is configured."
             elif app.provider == "ollama":
-                self.start_warning = "" if check_ollama(force_refresh=True) else "Ollama is not running or could not be reached."
+                self.ai_warning = "" if check_ollama(force_refresh=True) else "Ollama is not running or could not be reached."
             else:
-                self.start_warning = "Choose an AI provider in Settings."
-            if not self.start_warning:
-                app.screen = "setup"
-
-        elif self.load_button.clicked(event):
-            app.open_load_simulations()
+                self.ai_warning = "Choose an AI provider in Settings."
+            if not self.ai_warning:
+                self._open_requested_screen(app)
 
         elif self.character_button.clicked(event):
             app.screen = "character"
@@ -51,6 +51,15 @@ class MenuScreen:
 
         elif self.exit_button.clicked(event):
             app.running = False
+
+    def _open_requested_screen(self, app):
+        screen = self.pending_screen
+        self.pending_screen = None
+        self.ai_warning = ""
+        if screen == "load_sim":
+            app.open_load_simulations()
+        else:
+            app.screen = screen
 
     def draw(self, app):
         app.window.fill(GRASS)
@@ -83,7 +92,7 @@ class MenuScreen:
         draw_centered_text(app.window, "(no you can't flirt with the ai yet)", app.small_font, 550, MUTED)
         if self.message:
             draw_wrapped_text(app.window, self.message, app.small_font, MUTED, (420, 580, 440, 40))
-        if self.start_warning:
+        if self.ai_warning:
             overlay = pygame.Surface(app.window.get_size(), pygame.SRCALPHA)
             overlay.fill(MODAL_OVERLAY_COLOR)
             app.window.blit(overlay, (0, 0))
@@ -91,7 +100,7 @@ class MenuScreen:
             draw_centered_text(app.window, "AI setup needed", app.heading_font, 265, INK)
             draw_wrapped_text(
                 app.window,
-                self.start_warning + " Open Settings to configure AI, or continue without generated dialogue.",
+                self.ai_warning + " Open Settings to configure AI, or continue without generated dialogue.",
                 app.font, INK, (350, 320, 580, 80),
             )
             for button in (self.configure_button, self.continue_button, self.cancel_button):
