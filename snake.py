@@ -6,7 +6,7 @@ import random
 from uuid import uuid4
 
 from constants import (
-    DIALOGUE_WAIT_SECONDS, HEARING_RADIUS, POST_DIALOGUE_SECONDS,
+    DIALOGUE_TIMEOUT_SECONDS, HEARING_RADIUS, POST_DIALOGUE_SECONDS,
     SNAKE_EAT_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME, SNAKE_SPEED,
     STARTING_FACING, STARTING_SNAKE_ACTIVITY, STARTING_SNAKE_DECISION_SECONDS, STARTING_SNAKE_POSITION,
 )
@@ -380,7 +380,7 @@ class SnakeEncounter:
         if self.stage == "waiting":
             face_each_other(self.initiator, self.recipient)
             self.wait_elapsed += dt
-            if self.wait_elapsed >= DIALOGUE_WAIT_SECONDS:
+            if self.wait_elapsed >= DIALOGUE_TIMEOUT_SECONDS:
                 self.fail_dialogue("Dialogue generation timed out. Retry to continue.")
             return
         if self.stage == "dialogue":

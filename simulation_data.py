@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from character_data import normalize_character, normalize_opinions
 from constants import (
-    APPLE_ADVANCE_SECONDS, DECISION_SECONDS, DIALOGUE_WAIT_SECONDS, EAT_SECONDS, GIFT_GIVE_SECONDS, GIFT_SECONDS,
+    APPLE_ADVANCE_SECONDS, DECISION_SECONDS, DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, GIFT_GIVE_SECONDS, GIFT_SECONDS,
     MAX_SIMULATION_STEP_SECONDS, SHAKE_SECONDS, SNAKE_EAT_SECONDS,
     POST_DIALOGUE_SECONDS, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME, WORLD_HEIGHT, WORLD_WIDTH,
 )
@@ -283,7 +283,7 @@ class ConversationState(SaveModel):
     purpose: Literal["chat", "food_request", "gossip"]
     focus_claim_id: str | None
     dialogue_state: Literal["waiting", "pending", "ready"]
-    wait_elapsed: float = Field(ge=0, le=DIALOGUE_WAIT_SECONDS + MAX_SIMULATION_STEP_SECONDS)
+    wait_elapsed: float = Field(ge=0, le=DIALOGUE_TIMEOUT_SECONDS + MAX_SIMULATION_STEP_SECONDS)
     talking_remaining: float = Field(ge=0, le=max(POST_DIALOGUE_SECONDS, DECISION_SECONDS))
     food_outcome: Literal["", "accepted", "need", "refused", "unavailable"]
     food_reason: str
@@ -399,7 +399,7 @@ class SnakeEncounterState(SaveModel):
     reserved: bool
     arrived: bool
     dialogue_state: Literal["waiting", "pending", "ready"]
-    wait_elapsed: float = Field(ge=0, le=DIALOGUE_WAIT_SECONDS + MAX_SIMULATION_STEP_SECONDS)
+    wait_elapsed: float = Field(ge=0, le=DIALOGUE_TIMEOUT_SECONDS + MAX_SIMULATION_STEP_SECONDS)
     talking_remaining: float = Field(ge=0, le=max(POST_DIALOGUE_SECONDS, DECISION_SECONDS))
     committed: bool
     outcome: Literal["", "talk", "advance_secret", "advance_endorsement", "secret", "endorsement", "refuse", "negotiate", "challenge", "spare", "eat"]

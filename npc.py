@@ -15,7 +15,7 @@ from social import (Goal, check_relationship_goals, commit_agreements, commit_in
                     information_views, on_transfer, permitted_proposals, phase_label, prepare_information,
                     private_context, validate_live_agreements)
 from constants import (
-    APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DIALOGUE_WAIT_SECONDS, EAT_SECONDS,
+    APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS,
     FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, GIFT_SECONDS, INVENTORY_CAPACITY,
     MOVEMENT_SPEED, NPC_RADIUS, PARTNER_COOLDOWN,
     POST_DIALOGUE_SECONDS, SHAKE_SECONDS, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED, WANDER_PAUSE, WORLD_HEIGHT, WORLD_WIDTH,
@@ -780,7 +780,7 @@ class Conversation:
             face_each_other(self.initiator, self.recipient)
             if self.dialogue_state in ("waiting", "pending"):
                 self.wait_elapsed += dt
-                if self.wait_elapsed >= DIALOGUE_WAIT_SECONDS:
+                if self.wait_elapsed >= DIALOGUE_TIMEOUT_SECONDS:
                     self.fail_dialogue("Dialogue generation timed out. No dialogue was generated.")
             elif dialogue_finished(self, dt, reading=reading):
                 if self.purpose == "food_request" and self.food_outcome == "accepted":

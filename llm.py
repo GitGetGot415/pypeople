@@ -12,7 +12,8 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_CHARACTERS, DIALOGUE_MAX_PARTS,
                        DIALOGUE_PART_TARGET_CHARACTERS, DIALOGUE_PARTS_PER_TURN,
-                       DIALOGUE_REPAIR_WORD_LIMIT, EMOTION_THRESHOLD, FURIOUS_THRESHOLD, SNAKE_NAME, SNAKE_TURN_COUNT)
+                       DIALOGUE_REPAIR_WORD_LIMIT, DIALOGUE_TIMEOUT_SECONDS,
+                       EMOTION_THRESHOLD, FURIOUS_THRESHOLD, SNAKE_NAME, SNAKE_TURN_COUNT)
 from dialogue_text import contains_serialized_dialogue, speech_is_complete, split_sentences
 from dialogue_rules import (mentions_account, named_context, named_references, name_pattern, unquoted_speech,
                            validate_account_speech, validate_apple_roles, validate_continuity,
@@ -2142,6 +2143,10 @@ def _request_payload(message, snapshot, correction):
     return instruction, schema, json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
+def _request_timeout(snapshot):
+    return min(DIALOGUE_TIMEOUT_SECONDS, snapshot.get("_timeout", DIALOGUE_TIMEOUT_SECONDS))
+
+
 def _request_gemini(api_key, message, snapshot, *, correction=""):
     instruction, schema, content = _request_payload(message, snapshot, correction)
     try:
@@ -2149,7 +2154,7 @@ def _request_gemini(api_key, message, snapshot, *, correction=""):
             api_key=api_key,
             vertexai=False,
             http_options=types.HttpOptions(
-                timeout=max(1, int(min(15.0, snapshot.get("_timeout", 15.0)) * 1000)),
+                timeout=max(1, int(_request_timeout(snapshot) * 1000)),
                 retry_options=types.HttpRetryOptions(attempts=1),
             ),
         ) as client:
@@ -2235,7 +2240,7 @@ def _request_ollama(message, snapshot, model=DEFAULT_OLLAMA_MODEL, *, correction
                 # default context. Truncation can remove the speaker rules.
                 "options": options,
             },
-            timeout=min(60.0, snapshot.get("_timeout", 60.0)),
+            timeout=_request_timeout(snapshot),
         )
         if response.status_code == 404:
             raise RequestError(f"Ollama could not find {model}. Run: ollama pull {model}")

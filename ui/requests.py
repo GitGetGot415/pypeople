@@ -5,7 +5,7 @@ from time import monotonic
 
 from pydantic import ValidationError
 
-from constants import DIALOGUE_WAIT_SECONDS
+from constants import DIALOGUE_TIMEOUT_SECONDS
 from llm import (ConversationTurn, InvalidResponseError, RequestError, VoiceRewriteResponse, request_response,
                  request_voice_rewrite, validate_response, validate_voice_rewrite, voice_rewrite_snapshot)
 from ollama_manager import DEFAULT_OLLAMA_MODEL
@@ -42,14 +42,13 @@ def _request_worker(session_id, request_id, provider, api_key, message, snapshot
     """Only communicate through queues; never touch Pygame or live state."""
     def report(stage):
         nonlocal deadline
-        # Match the interaction's progress-based inactivity deadline, including
-        # originals whose several successful provider calls span over two minutes.
-        deadline = monotonic() + DIALOGUE_WAIT_SECONDS
+        # Match the interaction's progress-based inactivity deadline across calls.
+        deadline = monotonic() + DIALOGUE_TIMEOUT_SECONDS
         progress.put((session_id, request_id, stage, None))
 
     stage = "Request failed"
     try:
-        deadline = monotonic() + DIALOGUE_WAIT_SECONDS
+        deadline = monotonic() + DIALOGUE_TIMEOUT_SECONDS
         result = request_response(provider, api_key, message, snapshot, ollama_model=ollama_model, progress=report)
         rewritten = request_voice_rewrite(provider, api_key, result, snapshot, deadline=deadline,
                                           ollama_model=ollama_model, progress=report)
