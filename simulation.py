@@ -354,7 +354,8 @@ class Simulation:
                       "refuse": "declined the current bargain", "negotiate": f"asked to negotiate {SNAKE_NAME}'s price"}[decision]
             broken = advance is not None and decision in ("refuse", "challenge")
             if broken:
-                text = f"{npc.name} refused the agreed offering after receiving an apple upfront from {SNAKE_NAME}. The offering remained unpaid."
+                offering = "private recollection" if advance["offering"] == "secret" else "public endorsement"
+                text = f"{npc.name} refused the agreed {offering} after receiving an apple upfront from {SNAKE_NAME}. The offering remained unpaid."
                 snake.advances.pop(npc.id)
                 next(r for r in self.history if r.id == advance["conversation_id"]).outcomes.append(text)
             elif advance:

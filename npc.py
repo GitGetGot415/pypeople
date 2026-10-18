@@ -384,6 +384,8 @@ class NPC:
                 "transition_memory": "absent", "explanation": "unknown", "way_home": "unknown",
                 "prior_conversations": len(encounters),
                 "prior_snake_encounters": sum(self.world.snake.name in record.participants for record in encounters),
+                "received_snake_apple": any(fact.kind == "bargain" and fact.subject_id == self.world.snake.id
+                                            and fact.object_id == self.id for fact in self.world.facts),
                 "known_danger": [account for account in state["private_context"]["known_accounts"]
                                  if account["kind"] in ("eating", "judgment", "defiance")][:3],
                 "apple_bargain": {"stage": "apple already received; offering still owed", **advance} if advance else None,
