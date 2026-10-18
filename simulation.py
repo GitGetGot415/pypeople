@@ -132,7 +132,7 @@ class Simulation:
         from npc import Behavior
 
         return (npc.departure is None
-                and npc.conversation is None and npc.gift is None and npc.snake_encounter is None and not npc.selected and not npc.request_pending
+                and npc.interaction is None and not npc.selected and not npc.request_pending
                 and npc.owner == "autonomous" and not npc.resume_pending
                 and not any(npc.id in (action.npc_id, action.target_id) for action in self.pending_actions)
                 and npc.behavior in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY))
@@ -517,7 +517,7 @@ class Simulation:
 
     def deliver_arrivals(self):
         from character_data import random_character
-        from npc import NPC
+        from npc import NPC, assign_npc_names
         from purgatory import remember_description
         from social import assign_goal
         if not self.pending_arrival_days or self.arrival_error:
@@ -533,13 +533,7 @@ class Simulation:
             return None
         npc = NPC(character=character, arrival_day=day)
         npc.sprite_size = self.npcs[0].sprite_size if self.npcs else (40, 70)
-        used = {p.name.casefold() for p in self.actors}
-        base = npc.character["Name"].strip() or "Resident"
-        label, number = base, 2
-        while label.casefold() in used:
-            label = f"{base} ({number})"
-            number += 1
-        npc.display_name = label
+        assign_npc_names([npc], used_names=(actor.name for actor in self.actors))
         left, right, top, bottom = npc.movement_bounds
         positions = [(x, y) for y in range(math.ceil(top), math.floor(bottom) + 1, 36)
                      for x in range(math.ceil(left), math.floor(right) + 1, 48)
@@ -547,7 +541,7 @@ class Simulation:
         npc.x, npc.y = max(positions, key=lambda point: min((math.dist(point, (p.x, p.y)) for p in self.npcs), default=400))
         npc.world = self
         remember_description(npc)
-        self.npcs.append(npc)  # Keep Application.npcs and Simulation.npcs as one roster.
+        self.npcs.append(npc)
         self.processed_arrival_days.append(day)
         self.pending_arrival_days.pop(0)
         self.roster_revision += 1

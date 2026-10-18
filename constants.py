@@ -4,6 +4,7 @@
 WORLD_WIDTH = 960
 WORLD_HEIGHT = 460
 NPC_RADIUS = 18
+INTERACTION_GAP = 12
 EMOTION_THRESHOLD = 75
 
 # Resident movement, needs, and activity timing (seconds).

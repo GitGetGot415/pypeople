@@ -6,12 +6,12 @@ import random
 from uuid import uuid4
 
 from constants import (
-    APPLE_ADVANCE_SECONDS, CROWD_LIMIT, HEARING_RADIUS, PARTNER_COOLDOWN, POST_DIALOGUE_SECONDS,
-    RECOVERY_SECONDS, SNAKE_DIALOGUE_WAIT_SECONDS, SNAKE_EAT_SECONDS, SNAKE_FRAME_SECONDS,
-    SNAKE_MARGIN, SNAKE_NAME, SNAKE_SPEED,
+    HEARING_RADIUS, POST_DIALOGUE_SECONDS,
+    SNAKE_DIALOGUE_WAIT_SECONDS, SNAKE_EAT_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME, SNAKE_SPEED,
 )
 from conversation_history import ConversationRecord
-from interactions import dialogue_finished, face_each_other, finish_generated_dialogue
+from interactions import (dialogue_finished, face_each_other, face_toward,
+                          finish_generated_dialogue, move_toward, record_generated_turns)
 
 
 # These are instructions to the provider, never locally supplied spoken lines.
@@ -130,17 +130,11 @@ class Snake:
                                    for actor_id, advance in self.advances.items()]}
 
     def move_toward(self, point, dt):
-        dx, dy = point[0] - self.x, point[1] - self.y
-        distance = math.hypot(dx, dy)
-        if distance:
-            self.facing = math.floor(math.atan2(dx, -dy) / (math.pi / 4) + 0.5) % 8
-        step = SNAKE_SPEED * dt
-        if distance <= step:
-            self.x, self.y = point
+        if (self.x, self.y) != point:
+            face_toward(self, point)
+        if move_toward(self, point, dt, SNAKE_SPEED):
             self.animation_elapsed = 0.0
             return True
-        self.x += dx / distance * step
-        self.y += dy / distance * step
         self.animation_elapsed = (self.animation_elapsed + dt) % (2 * SNAKE_FRAME_SECONDS)
         return False
 
@@ -188,10 +182,9 @@ class SnakeEncounter:
     """One resident, one snake, one reservation, one final commit."""
 
     def __init__(self, world, resident, purpose, reason="", *, origin="autonomous"):
-        from npc import Behavior
         if (world.snake.encounter or world.snake.request_pending or resident.snake_encounter
                 or world.npc_by_id(resident.id) is not resident
-                or resident.conversation or resident.gift or resident.eating or resident.request_pending
+                or resident.busy or resident.request_pending
                 or any(resident.id in (action.npc_id, action.target_id) for action in world.pending_actions)):
             raise ValueError("The snake or resident is busy.")
         self.world = world
@@ -202,14 +195,7 @@ class SnakeEncounter:
         self.accusation = reason
         self.record = ConversationRecord((world.snake.name, resident.name), self.topic,
                                          "Awaiting tree visitor", origin=origin, purpose=purpose, id=self.id)
-        self.saved_state = resident.activity_state()
-        resident.release_claims(world)
-        resident.command_revision += 1
-        resident.behavior, resident.owner = Behavior.WAIT, "autonomous"
-        resident.destination = resident.target_id = None
-        resident.activity_elapsed = 0.0
-        resident.resume_pending = False
-        resident.reason = f"Meeting the snake: {self.topic}"
+        self.saved_state = resident.suspend_activity(f"Meeting the snake: {self.topic}")
         resident.snake_encounter = self
         world.snake.encounter = self
         world.snake.target_id = resident.id
@@ -322,10 +308,7 @@ class SnakeEncounter:
             raise ValueError("The resident's attitudes changed during generation. Retry the encounter.")
         # Speech describing a handoff is displayed only after the real transfer commits.
         world.commit_snake_response(self, response)
-        self.turns = list(response.turns)
-        for turn in self.turns:
-            actor = self.initiator if turn.speaker == "initiator" else npc
-            self.record.add_turn(actor.name, turn.text, [p.model_dump() for p in turn.parts])
+        record_generated_turns(self, response.turns)
         self.stage = "dialogue"
         self.record.status = "Judgment announced" if self.purpose == "judgment" else "Dialogue ready"
         finish_generated_dialogue(self, reading=reading)
@@ -354,10 +337,7 @@ class SnakeEncounter:
         if npc.snake_encounter is self:
             npc.snake_encounter = None
             if self.world.npc_by_id(npc.id) is npc:
-                npc.restore_activity(self.saved_state)
-                npc.resume_pending = True
-                npc.cooldowns[self.initiator.id] = PARTNER_COOLDOWN
-                npc.cooldowns[self.world.tree.id] = PARTNER_COOLDOWN
+                npc.restore_after_interaction(self.saved_state, self.initiator.id, self.world.tree.id)
         if self.initiator.encounter is self:
             self.initiator.encounter = None
             self.initiator.target_id = None
@@ -375,10 +355,7 @@ class SnakeEncounter:
             self.stage, self.arrived = "approach", False
         if self.stage == "approach":
             npc.destination = self.world.tree.interaction_point
-            old_x, old_y = npc.x, npc.y
             at_tree = npc._move(dt)
-            if (npc.x, npc.y) != (old_x, old_y):
-                npc.facing = math.floor(math.atan2(npc.x - old_x, old_y - npc.y) / (math.pi / 4) + 0.5) % 8
             if at_tree and math.dist((snake.x, snake.y), (npc.x, npc.y)) <= HEARING_RADIUS:
                 npc.destination = None
                 self.arrived = True

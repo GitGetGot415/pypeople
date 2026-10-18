@@ -4,18 +4,10 @@ import math
 
 from npc import Behavior
 from conversation_history import memory_bias
-from constants import APPLE_SATISFACTION, DECISION_SECONDS, SOCIAL_START
+from constants import APPLE_SATISFACTION, DECISION_SECONDS, MOVEMENT_SPEED, SOCIAL_START
+from interactions import company_point
 from social import (claim_by_id, fact_by_id, goal_attempt_cooling_down, pair_objective,
                     pending_promises, selected_beliefs)
-
-
-def company_point(npc, partner, spacing=0):
-    left, right, top, bottom = npc.movement_bounds
-    gap = ((npc.sprite_size or (36, 18))[0] + (partner.sprite_size or (36, 18))[0]) / 2 + 12
-    gap = max(gap, spacing)
-    points = [(partner.x - gap, partner.y), (partner.x + gap, partner.y)]
-    points = [point for point in points if left <= point[0] <= right and top <= point[1] <= bottom]
-    return min(points, key=lambda p: math.hypot(p[0] - npc.x, p[1] - npc.y)) if points else None
 
 
 def target_valid(npc, world):
@@ -35,7 +27,7 @@ def target_valid(npc, world):
 
 
 def reconsider(npc, world):
-    if npc.conversation is not None or npc.gift is not None or npc.snake_encounter is not None or npc.resume_pending:
+    if npc.interaction is not None or npc.resume_pending:
         return
     if not target_valid(npc, world):
         npc.finish_activity(world, failed=True)
@@ -71,7 +63,7 @@ def reconsider(npc, world):
         return
 
     def distance(point):
-        return math.hypot(npc.x - point[0], npc.y - point[1]) / 90
+        return math.hypot(npc.x - point[0], npc.y - point[1]) / MOVEMENT_SPEED
 
     candidates = [(1 + npc.rng.random(), Behavior.WANDER, None, "Exploring the world")]
     if npc.inventory.get("fruit", 0) > apples_needed and npc.social <= 100 - APPLE_SATISFACTION:

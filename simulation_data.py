@@ -11,9 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from character_data import normalize_character, normalize_opinions
 from constants import (
-    APPLE_ADVANCE_SECONDS, DIALOGUE_WAIT_SECONDS, EAT_SECONDS, GIFT_GIVE_SECONDS, GIFT_SECONDS,
+    APPLE_ADVANCE_SECONDS, DECISION_SECONDS, DIALOGUE_WAIT_SECONDS, EAT_SECONDS, GIFT_GIVE_SECONDS, GIFT_SECONDS,
     MAX_SIMULATION_STEP_SECONDS, SHAKE_SECONDS, SNAKE_DIALOGUE_WAIT_SECONDS, SNAKE_EAT_SECONDS,
-    SNAKE_FRAME_SECONDS, SNAKE_MARGIN, SNAKE_NAME, WORLD_HEIGHT, WORLD_WIDTH,
+    POST_DIALOGUE_SECONDS, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME, WORLD_HEIGHT, WORLD_WIDTH,
 )
 from conversation_history import ConversationRecord, Memory, WorldEvent
 from llm import (AcceptedProposal, ConversationPart, ConversationTurn, DisclosureChoice,
@@ -272,7 +272,7 @@ class ConversationState(SaveModel):
     focus_claim_id: str | None
     dialogue_state: Literal["waiting", "pending", "ready"]
     wait_elapsed: float = Field(ge=0, le=DIALOGUE_WAIT_SECONDS + MAX_SIMULATION_STEP_SECONDS)
-    talking_remaining: float = Field(ge=0, le=4)
+    talking_remaining: float = Field(ge=0, le=max(POST_DIALOGUE_SECONDS, DECISION_SECONDS))
     food_outcome: Literal["", "accepted", "need", "refused", "unavailable"]
     food_reason: str
     handoff_thanks: list[ConversationPart] = Field(max_length=3)
@@ -356,7 +356,7 @@ class SnakeState(SaveModel):
     offenses: dict[str, str]
     advances: dict[str, AppleAdvanceState] = Field(default_factory=dict)
     eaten_today: int = Field(ge=0)
-    recovery_remaining: float = Field(ge=0, le=20)
+    recovery_remaining: float = Field(ge=0, le=RECOVERY_SECONDS)
     pardons: list[str]
     judged_phase: int = Field(ge=-1)
     decision_remaining: float = Field(ge=0)
@@ -385,7 +385,7 @@ class SnakeEncounterState(SaveModel):
     arrived: bool
     dialogue_state: Literal["waiting", "pending", "ready"]
     wait_elapsed: float = Field(ge=0, le=SNAKE_DIALOGUE_WAIT_SECONDS + MAX_SIMULATION_STEP_SECONDS)
-    talking_remaining: float = Field(ge=0, le=4)
+    talking_remaining: float = Field(ge=0, le=max(POST_DIALOGUE_SECONDS, DECISION_SECONDS))
     committed: bool
     outcome: Literal["", "talk", "advance_secret", "advance_endorsement", "secret", "endorsement", "refuse", "negotiate", "challenge", "spare", "eat"]
     outcome_event_id: str | None
@@ -789,28 +789,26 @@ class SaveStore:
         self._path(save_id).unlink()
 
 
+def _capture_fields(model, source, **overrides):
+    """Use the save model's fields; spell out only reference/type conversions."""
+    return model(**{name: overrides[name] if name in overrides else getattr(source, name)
+                    for name in model.model_fields})
+
+
+def _restore_fields(target, saved, *, exclude=(), **overrides):
+    for name in type(saved).model_fields:
+        if name not in exclude:
+            setattr(target, name, overrides[name] if name in overrides else getattr(saved, name))
+
+
 def capture_resident(npc):
-    return NPCState(
-        **npc.activity_state(), id=npc.id,
-        character=npc.character, display_name=npc.display_name, x=npc.x, y=npc.y,
-        reply=npc.reply, emotion=EmotionReaction(name=npc.emotion, intensity=npc.emotion_intensity),
-        social=npc.social, inventory=npc.inventory.copy(), inventory_capacity=npc.inventory_capacity,
-        preferences=npc.preferences.copy(), command_revision=npc.command_revision,
+    return _capture_fields(
+        NPCState, npc, emotion=EmotionReaction(name=npc.emotion, intensity=npc.emotion_intensity),
         memories=[asdict(memory) for memory in npc.memories],
         goal=asdict(npc.goal) if npc.goal else None,
         pending_social_opinions=[asdict(effect) for effect in npc.pending_social_opinions],
         beliefs=[asdict(belief) for belief in npc.beliefs],
-        attitudes=npc.attitudes,
-        arrival_day=npc.arrival_day, departure=npc.departure,
     )
-
-def capture_snake_encounter(encounter, records):
-    if encounter is None:
-        return None
-    values = {name: getattr(encounter, name) for name in SnakeEncounterState.model_fields
-              if name not in ("resident_id", "record")}
-    values.update(resident_id=encounter.recipient.id, record=records[id(encounter.record)])
-    return SnakeEncounterState(**values)
 
 
 def capture_simulation(app):
@@ -827,37 +825,22 @@ def capture_simulation(app):
         npcs.append(capture_resident(npc))
         gift = npc.gift
         if gift is not None and gift.initiator is npc:
-            gifts.append(GiftState(
+            gifts.append(_capture_fields(GiftState, gift,
                 initiator=npc_indices[id(npc)], recipient=npc_indices[id(gift.recipient)],
-                record=records[id(gift.record)], item=gift.item, quantity=gift.quantity,
-                arrived=gift.arrived, elapsed=gift.elapsed,
-                transferred=gift.transferred, outcome_event_id=gift.outcome_event_id,
-                thanks=gift.thanks,
-                saved_states=[ActivityState(**activity) for activity in gift.saved_states],
+                record=records[id(gift.record)],
             ))
         conversation = npc.conversation
         if conversation is None or conversation.initiator is not npc:
             continue
-        conversations.append(ConversationState(
-            id=conversation.id, origin=conversation.origin, purpose=conversation.purpose,
-            focus_claim_id=conversation.focus_claim_id,
-            dialogue_state=conversation.dialogue_state, wait_elapsed=conversation.wait_elapsed,
-            talking_remaining=conversation.talking_remaining, food_outcome=conversation.food_outcome,
-            food_reason=conversation.food_reason, handoff_thanks=conversation.handoff_thanks,
-            outcome_event_id=conversation.outcome_event_id, reactions=conversation.reactions,
+        conversations.append(_capture_fields(ConversationState, conversation,
             initiator=npc_indices[id(npc)], recipient=npc_indices[id(conversation.recipient)],
-            record=records[id(conversation.record)], topic=conversation.topic,
-            arrived=conversation.arrived, turns=conversation.turns,
-            saved_states=[ActivityState(**activity) for activity in conversation.saved_states],
+            record=records[id(conversation.record)],
             pending_opinions=[(npc_indices[id(person)], opinions) for person, opinions in conversation.pending_opinions],
-            proposals=[asdict(p) for p in conversation.proposals], accepted_proposals=conversation.accepted_proposals,
-            social_effects_applied=conversation.social_effects_applied,
-            context_references=conversation.context_references.copy(),
+            proposals=[asdict(p) for p in conversation.proposals],
             information_context=asdict(conversation.information_context) if conversation.information_context else None,
-            accepted_disclosures=conversation.accepted_disclosures, third_party_opinions=conversation.third_party_opinions,
-            leverage_uses=conversation.leverage_uses,
         ))
     world = app.simulation
+    encounter = world.snake.encounter
     return SimulationState(
         day=world.day, phase=world.phase,
         events=[asdict(event) for event in world.events],
@@ -865,17 +848,16 @@ def capture_simulation(app):
         facts=[asdict(fact) for fact in world.facts], claims=[asdict(claim) for claim in world.claims],
         disclosures=[asdict(disclosure) for disclosure in world.disclosures],
         social_opportunity=world.social_opportunity, social_rotation=world.social_rotation,
-        snake=SnakeState(**{name: ([asdict(b) for b in world.snake.beliefs] if name == "beliefs" else getattr(world.snake, name))
-                            for name in SnakeState.model_fields}),
+        snake=_capture_fields(SnakeState, world.snake, beliefs=[asdict(b) for b in world.snake.beliefs]),
         archived=[capture_resident(npc) for npc in world.archived],
         arrival_error=world.arrival_error,
         pending_arrival_days=world.pending_arrival_days.copy(), processed_arrival_days=world.processed_arrival_days.copy(),
         introductions=world.introductions.copy(), roster_revision=world.roster_revision,
-        snake_encounter=capture_snake_encounter(world.snake.encounter, records),
+        snake_encounter=(_capture_fields(SnakeEncounterState, encounter,
+                         resident_id=encounter.recipient.id, record=records[id(encounter.record)])
+                         if encounter is not None else None),
         npcs=npcs, history=history, conversations=conversations, gifts=gifts,
-        tree=TreeState(id=app.tree.id, x=app.tree.x, y=app.tree.y, fruit=app.tree.fruit,
-                       capacity=app.tree.capacity,
-                       shake_elapsed=app.tree.shake_elapsed,
+        tree=_capture_fields(TreeState, app.tree,
                        shaker=app.tree.shaker.id if app.tree.shaker is not None else None,
                        reserved_by=app.tree.reserved_by.id if app.tree.reserved_by is not None else None),
         pending_actions=[asdict(action) for action in world.pending_actions],
@@ -887,7 +869,6 @@ def capture_simulation(app):
 def restore_simulation(state):
     """Build and validate a complete world before replacing the current simulation."""
     state = SimulationState.model_validate(state.model_dump())
-    npcs = []
     all_residents = []
     for saved in [*state.npcs, *state.archived]:
         npc = NPC(
@@ -939,19 +920,13 @@ def restore_simulation(state):
     for saved in state.conversations:
         # Loading bypasses __init__: it would interrupt the saved activities again.
         conversation = Conversation.__new__(Conversation)
-        for name in ("id", "origin", "purpose", "dialogue_state", "wait_elapsed", "talking_remaining",
-                     "food_outcome", "food_reason", "handoff_thanks", "outcome_event_id", "reactions",
-                     "accepted_proposals", "social_effects_applied", "context_references",
-                     "accepted_disclosures", "third_party_opinions", "leverage_uses", "focus_claim_id"):
-            setattr(conversation, name, getattr(saved, name))
-        conversation.initiator, conversation.recipient = npcs[saved.initiator], npcs[saved.recipient]
-        conversation.topic, conversation.arrived, conversation.active = saved.topic, saved.arrived, True
-        conversation.record = history[saved.record]
-        conversation.turns = saved.turns
-        conversation.proposals = [Proposal(**proposal.model_dump()) for proposal in saved.proposals]
-        conversation.information_context = information_from_dict(saved.information_context.model_dump()) if saved.information_context else None
-        conversation.pending_opinions = [(npcs[index], opinions) for index, opinions in saved.pending_opinions]
-        conversation.saved_states = [activity.model_dump() for activity in saved.saved_states]
+        _restore_fields(conversation, saved,
+            initiator=npcs[saved.initiator], recipient=npcs[saved.recipient], record=history[saved.record],
+            proposals=[Proposal(**proposal.model_dump()) for proposal in saved.proposals],
+            information_context=information_from_dict(saved.information_context.model_dump()) if saved.information_context else None,
+            pending_opinions=[(npcs[index], opinions) for index, opinions in saved.pending_opinions],
+            saved_states=[activity.model_dump() for activity in saved.saved_states])
+        conversation.active = True
         for npc in (conversation.initiator, conversation.recipient):
             npc.conversation = conversation
         if conversation.dialogue_state == "pending":
@@ -959,25 +934,19 @@ def restore_simulation(state):
             conversation.wait_elapsed = 0.0
     for saved in state.gifts:
         gift = Gift.__new__(Gift)
-        gift.initiator, gift.recipient = npcs[saved.initiator], npcs[saved.recipient]
-        gift.item, gift.quantity = saved.item, saved.quantity
-        gift.arrived, gift.elapsed = saved.arrived, saved.elapsed
-        gift.active, gift.transferred, gift.outcome_event_id = True, saved.transferred, saved.outcome_event_id
-        gift.thanks = saved.thanks
-        gift.record = history[saved.record]
-        gift.saved_states = [activity.model_dump() for activity in saved.saved_states]
+        _restore_fields(gift, saved,
+            initiator=npcs[saved.initiator], recipient=npcs[saved.recipient], record=history[saved.record],
+            saved_states=[activity.model_dump() for activity in saved.saved_states])
+        gift.active = True
         for npc in (gift.initiator, gift.recipient):
             npc.gift = gift
     saved = state.snake_encounter
     if saved:
         encounter = SnakeEncounter.__new__(SnakeEncounter)
-        for name in SnakeEncounterState.model_fields:
-            if name not in ("resident_id", "record", "saved_state"):
-                setattr(encounter, name, getattr(saved, name))
+        _restore_fields(encounter, saved, exclude=("resident_id",),
+                        record=history[saved.record], saved_state=saved.saved_state.model_dump())
         encounter.world = world
         encounter.initiator, encounter.recipient = world.snake, by_id[saved.resident_id]
-        encounter.record = history[saved.record]
-        encounter.saved_state = saved.saved_state.model_dump()
         encounter.active = True
         encounter.pending_opinions = []
         world.snake.encounter = encounter
@@ -992,4 +961,4 @@ def restore_simulation(state):
     for npc in npcs:
         if npc.conversation is None and npc.gift is None and npc.target_id == tree.id:
             npc.resume_pending = True
-    return world, history
+    return world

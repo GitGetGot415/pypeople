@@ -1,4 +1,3 @@
-from collections import Counter
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 import math
@@ -18,9 +17,10 @@ from constants import (
     APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DIALOGUE_WAIT_SECONDS, EAT_SECONDS,
     EMOTION_THRESHOLD, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, GIFT_SECONDS, INVENTORY_CAPACITY,
     MOVEMENT_SPEED, NPC_RADIUS, PARTNER_COOLDOWN,
-    POST_DIALOGUE_SECONDS, SHAKE_SECONDS, SOCIAL_RADIUS, SOCIAL_RECOVERED, WANDER_PAUSE, WORLD_HEIGHT, WORLD_WIDTH,
+    POST_DIALOGUE_SECONDS, SHAKE_SECONDS, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED, WANDER_PAUSE, WORLD_HEIGHT, WORLD_WIDTH,
 )
-from interactions import dialogue_finished, face_each_other, finish_generated_dialogue
+from interactions import (company_point, dialogue_finished, face_each_other, face_toward,
+                          finish_generated_dialogue, move_toward, record_generated_turns)
 
 
 ACTIVITY_FIELDS = (
@@ -145,6 +145,14 @@ class NPC:
     def inventory_space(self):
         return self.inventory_capacity - sum(self.inventory.values())
 
+    @property
+    def interaction(self):
+        return self.conversation or self.gift or self.snake_encounter
+
+    @property
+    def busy(self):
+        return self.interaction is not None or self.eating
+
     def can_reach(self, point):
         left, right, top, bottom = self.movement_bounds
         return left <= point[0] <= right and top <= point[1] <= bottom
@@ -157,6 +165,27 @@ class NPC:
     def restore_activity(self, state):
         for name in ACTIVITY_FIELDS:
             setattr(self, name, state[name].copy() if name == "cooldowns" else state[name])
+
+    def suspend_activity(self, reason):
+        """Save progress and release physical claims before an interaction."""
+        state = self.activity_state()
+        self.release_claims(self.world)
+        self.command_revision += 1
+        self.behavior, self.owner = Behavior.WAIT, "autonomous"
+        self.destination = self.target_id = None
+        self.activity_elapsed = 0.0
+        self.resume_pending = False
+        self.reason = reason
+        return state
+
+    def restore_after_interaction(self, state, *cooldown_ids, preserve_facing=False):
+        facing = self.facing
+        self.restore_activity(state)
+        if preserve_facing:
+            self.facing = facing
+        self.cooldowns.update(dict.fromkeys(cooldown_ids, PARTNER_COOLDOWN))
+        # Reacquire physical claims on the next simulation tick.
+        self.resume_pending = True
 
     def release_claims(self, world):
         world.tree.release(self)
@@ -194,7 +223,6 @@ class NPC:
                 return
             self.destination = world.tree.interaction_point
         elif behavior == Behavior.COMPANY:
-            from autonomy import company_point
             partner = world.npc_by_id(target)
             self.destination = company_point(self, partner) if partner is not None else None
             if self.destination is None:
@@ -212,7 +240,6 @@ class NPC:
                 self.behavior = Behavior.SHAKE_TREE
             self.destination = world.tree.interaction_point
         elif self.behavior == Behavior.COMPANY:
-            from autonomy import company_point
             partner = world.npc_by_id(self.target_id)
             if partner is None or not world.company_available(partner):
                 self.finish_activity(world, failed=True)
@@ -416,7 +443,7 @@ class NPC:
             return
         if action not in ("WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "EAT"):
             raise ValueError("Unsupported NPC action")
-        if self.conversation is not None or self.gift is not None or self.snake_encounter is not None or self.eating:
+        if self.busy:
             raise ValueError("This NPC is already in an interaction.")
         if action == "EAT" and self.inventory.get("fruit", 0) < 1:
             raise ValueError("I don't have an apple to eat.")
@@ -436,9 +463,7 @@ class NPC:
         if (recipient is self or self.world is None or self.world.npc_by_id(self.id) is not self
                 or not any(person is recipient for person in self.world.npcs)):
             raise ValueError("Choose another NPC in this world to receive the items.")
-        if (self.conversation is not None or recipient.conversation is not None
-                or self.gift is not None or recipient.gift is not None or self.snake_encounter or recipient.snake_encounter
-                or self.eating or recipient.eating or recipient.request_pending):
+        if self.busy or recipient.busy or recipient.request_pending:
             raise ValueError("That person is busy now. Please try again later.")
         if item != "fruit" or type(quantity) is not int or quantity < 1:
             raise ValueError("Give a positive number of fruit.")
@@ -466,20 +491,10 @@ class NPC:
         return Gift(self, recipient, item, quantity, record, spacing)
 
     def _move(self, dt):
-        dx = self.destination[0] - self.x
-        dy = self.destination[1] - self.y
-        distance = math.hypot(dx, dy)
-        step = MOVEMENT_SPEED * dt
-        if distance <= step:
-            self.x, self.y = self.destination
-            return True
-        if distance:
-            self.x += dx / distance * step
-            self.y += dy / distance * step
-        return False
+        return move_toward(self, self.destination, dt, MOVEMENT_SPEED)
 
     def update(self, dt, tree):
-        if self.conversation is not None or self.gift is not None or self.snake_encounter is not None or self.resume_pending:
+        if self.interaction is not None or self.resume_pending:
             return
         world = self.world
         old_x, old_y = self.x, self.y
@@ -531,7 +546,6 @@ class NPC:
                 if self.activity_elapsed + 1e-9 >= SHAKE_SECONDS:
                     self.finish_activity(world)
         elif behavior == Behavior.COMPANY:
-            from autonomy import company_point
             partner = world.npc_by_id(self.target_id)
             self.activity_elapsed += dt
             if partner is None or not world.company_available(partner):
@@ -547,8 +561,7 @@ class NPC:
                     if self._move(dt):
                         self.destination = None
                 else:
-                    angle = math.atan2(partner.x - self.x, self.y - partner.y)
-                    self.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
+                    face_toward(self, (partner.x, partner.y))
         elif behavior == Behavior.EAT:
             self.facing = 4
             self.activity_elapsed += dt
@@ -567,42 +580,30 @@ class NPC:
         self.y = min(bottom, max(top, self.y))
         dx, dy = self.x - old_x, self.y - old_y
         if dx or dy:
-            angle = math.atan2(dx, -dy)
-            self.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
+            face_toward(self, (self.x + dx, self.y + dy))
         elif self.behavior != Behavior.COMPANY:
             self._face_when_still()
 
 
 
-def assign_npc_names(npcs):
-    """Give duplicate names distinct labels without editing character profiles."""
-    names = [npc.character["Name"].strip() for npc in npcs]
-    counts = Counter(name.casefold() for name in names)
-    # Reserve original names so a generated label cannot hide another NPC
-    # whose profile already has a name such as "Alex (1)".
-    used_names = set(counts)
-    numbers = Counter()
-    for npc, name in zip(npcs, names):
-        key = name.casefold()
-        npc.display_name = None
-        if counts[key] < 2:
-            continue
-        while True:
-            numbers[key] += 1
-            label = f"{name} ({numbers[key]})"
-            if label.casefold() not in used_names:
-                break
+def assign_npc_names(npcs, *, used_names=()):
+    """Assign new labels without renaming any existing residents."""
+    used = {name.casefold() for name in used_names} | {"python", SNAKE_NAME.casefold()}
+    for npc in npcs:
+        base = npc.character["Name"].strip() or "Resident"
+        label, number = base, 2
+        while label.casefold() in used:
+            label = f"{base} ({number})"
+            number += 1
         npc.display_name = label
-        used_names.add(label.casefold())
+        used.add(label.casefold())
 
 
 class Conversation:
     """Temporarily reserve two NPCs, then restore their interrupted activities."""
 
     def __init__(self, initiator, recipient, topic, tree, spacing=0, *, origin="player", purpose="chat"):
-        if (initiator is recipient or initiator.conversation or recipient.conversation
-                or initiator.gift or recipient.gift or initiator.snake_encounter or recipient.snake_encounter
-                or initiator.eating or recipient.eating):
+        if initiator is recipient or initiator.busy or recipient.busy:
             raise ValueError("Choose another NPC who is free to talk.")
         self.initiator = initiator
         self.recipient = recipient
@@ -623,7 +624,7 @@ class Conversation:
         self.arrived = False
         self.active = True
         self.record = ConversationRecord((initiator.name, recipient.name), topic, "Walking to meet",
-                                         origin=origin, purpose=purpose)
+                                         origin=origin, purpose=purpose, id=self.id)
         self.turns = []
         self.pending_opinions = []
         self.proposals = []
@@ -634,43 +635,20 @@ class Conversation:
         self.accepted_disclosures = []
         self.third_party_opinions = []
         self.leverage_uses = []
-        self.record.id = self.id
         self.error = ""
         self.saved_states = []
-        # Stand side by side with a visible gap, using the side with room.
-        gap = (initiator.sprite_size or (NPC_RADIUS * 2, NPC_RADIUS))[0] / 2
-        gap += (recipient.sprite_size or (NPC_RADIUS * 2, NPC_RADIUS))[0] / 2 + 12
-        gap = max(gap, spacing)
-        left, right, top, bottom = initiator.movement_bounds
-        candidates = [
-            (recipient.x - gap, recipient.y),
-            (recipient.x + gap, recipient.y),
-        ]
-        candidates = [point for point in candidates if left <= point[0] <= right and top <= point[1] <= bottom]
-        if not candidates:
-            # Unusually wide sprites can require separation along the y axis.
-            height = max((npc.sprite_size or (NPC_RADIUS * 2, NPC_RADIUS))[1] for npc in (initiator, recipient)) + 12
-            candidates = [(recipient.x, recipient.y - height), (recipient.x, recipient.y + height)]
-            candidates = [point for point in candidates if left <= point[0] <= right and top <= point[1] <= bottom]
-        if not candidates:
+        destination = company_point(initiator, recipient, spacing, allow_vertical=True)
+        if destination is None:
             raise ValueError("There isn't enough room here for a conversation.")
         for npc in (initiator, recipient):
-            self.saved_states.append(npc.activity_state())
-            npc.release_claims(npc.world)
-            npc.command_revision += 1
-            npc.behavior = Behavior.WAIT
-            npc.owner = "autonomous"
-            npc.destination = None
             if purpose == "food_request":
-                npc.reason = (f"Asking {recipient.name} for an apple" if npc is initiator
-                              else f"Answering {initiator.name}'s request for an apple")
+                reason = (f"Asking {recipient.name} for an apple" if npc is initiator
+                          else f"Answering {initiator.name}'s request for an apple")
             else:
-                npc.reason = "Having an automatic chat" if origin == "autonomous" else "In a player-initiated conversation"
-            npc.target_id = None
-            npc.activity_elapsed = 0.0
-            npc.resume_pending = False
+                reason = "Having an automatic chat" if origin == "autonomous" else "In a player-initiated conversation"
+            self.saved_states.append(npc.suspend_activity(reason))
             npc.conversation = self
-        initiator.destination = min(candidates, key=lambda point: math.hypot(point[0] - initiator.x, point[1] - initiator.y))
+        initiator.destination = destination
 
     def other(self, npc):
         return self.recipient if npc is self.initiator else self.initiator
@@ -692,27 +670,20 @@ class Conversation:
         if any(n.command_revision != self.request_actor_revisions[n.id] for n in (self.initiator, self.recipient)):
             raise ValueError("The participants changed activities before the reply arrived.")
         validate_live_agreements(self, response)
-        self.turns = response.turns
         self.handoff_thanks = response.handoff_thanks
-        for turn in response.turns:
-            speaker = self.initiator if turn.speaker == "initiator" else self.recipient
-            self.record.add_turn(speaker.name, turn.text, [part.model_dump() for part in turn.parts])
+        record_generated_turns(self, response.turns)
+        opinions = ((self.initiator, self.recipient, response.initiator_opinion),
+                    (self.recipient, self.initiator, response.recipient_opinion))
         self.record.outcomes = [
             describe_opinion_change(
                 npc.name, partner.name, npc.opinions.get(partner.name, {}).get("opinion"), entry.opinion, entry.reason
             )
-            for npc, partner, entry in (
-                (self.initiator, self.recipient, response.initiator_opinion),
-                (self.recipient, self.initiator, response.recipient_opinion),
-            )
+            for npc, partner, entry in opinions
         ]
         self.record.status = "Dialogue ready"
         self.pending_opinions = [
             (npc, {partner.name: {"opinion": entry.opinion, "reason": entry.reason}})
-            for npc, partner, entry in (
-                (self.initiator, self.recipient, response.initiator_opinion),
-                (self.recipient, self.initiator, response.recipient_opinion),
-            )
+            for npc, partner, entry in opinions
         ]
         self.accepted_proposals = list(response.accepted_proposals)
         self.accepted_disclosures = list(response.disclosures)
@@ -802,7 +773,6 @@ class Conversation:
                     self.finish(self.initiator.world.tree)
             return
         npc = self.initiator
-        old_x, old_y = npc.x, npc.y
         self.arrived = npc._move(max(0.0, dt))
         if self.arrived:
             self.record.status = "Waiting for dialogue"
@@ -810,9 +780,6 @@ class Conversation:
             face_each_other(self.initiator, self.recipient)
             if self.purpose == "food_request":
                 self.prepare_food_request()
-        elif npc.x != old_x or npc.y != old_y:
-            angle = math.atan2(npc.x - old_x, old_y - npc.y)
-            npc.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
 
     def snapshot(self, tree, npcs):
         self.request_roster_revision = self.initiator.world.roster_revision
@@ -890,11 +857,8 @@ class Conversation:
                                                 self.record.outcomes[0], self.record)
             self.outcome_event_id = event.id
         for npc, state in zip((self.initiator, self.recipient), self.saved_states):
-            state["cooldowns"][self.other(npc).id] = PARTNER_COOLDOWN
             npc.conversation = None
-            npc.restore_activity(state)
-            # Physical resumption and claim acquisition wait for the next update.
-            npc.resume_pending = True
+            npc.restore_after_interaction(state, self.other(npc).id)
 
     def handoff(self):
         """Reverse the roles without restoring activities or reacquiring tree claims."""
@@ -910,8 +874,6 @@ class Gift:
     """Reserve both participants through approach, giving, and thanking."""
 
     def __init__(self, initiator, recipient, item, quantity, record=None, spacing=0, *, saved_states=None, already_met=False, thanks=None):
-        from autonomy import company_point
-
         destination = (initiator.x, initiator.y) if already_met else company_point(initiator, recipient, spacing)
         if destination is None:
             raise ValueError("There isn't enough room here to give the items.")
@@ -924,19 +886,13 @@ class Gift:
         self.thanks = list(thanks) if thanks is not None else []
         self.elapsed = 0.0
         self.record = record or ConversationRecord((initiator.name, recipient.name), "Give items", "Walking to give")
-        self.saved_states = saved_states if saved_states is not None else [initiator.activity_state(), recipient.activity_state()]
+        self.saved_states = []
         self.record.status = "Giving items" if already_met else "Walking to give"
         for npc in (initiator, recipient):
-            npc.release_claims(npc.world)
-            npc.command_revision += 1
-            npc.behavior = Behavior.WAIT
-            npc.owner = "autonomous"
-            npc.destination = None
-            npc.target_id = None
-            npc.activity_elapsed = 0.0
-            npc.resume_pending = False
-            npc.reason = "Giving items" if npc is initiator else "Receiving items"
+            self.saved_states.append(npc.suspend_activity("Giving items" if npc is initiator else "Receiving items"))
             npc.gift = self
+        if saved_states is not None:
+            self.saved_states = saved_states
         initiator.destination = None if already_met else destination
 
     def update(self, dt):
@@ -944,11 +900,7 @@ class Gift:
             return
         giver, recipient = self.initiator, self.recipient
         if not self.arrived:
-            old_x, old_y = giver.x, giver.y
             self.arrived = giver._move(max(0.0, dt))
-            if giver.x != old_x or giver.y != old_y:
-                angle = math.atan2(giver.x - old_x, old_y - giver.y)
-                giver.facing = math.floor(angle / (math.pi / 4) + 0.5) % len(DIRECTIONS)
             if self.arrived:
                 giver.destination = None
                 self.record.status = "Giving items"
@@ -991,9 +943,5 @@ class Gift:
             self.outcome_event_id = event.id
         for npc, state in zip((self.initiator, self.recipient), self.saved_states):
             other = self.recipient if npc is self.initiator else self.initiator
-            state["cooldowns"][other.id] = PARTNER_COOLDOWN
             npc.gift = None
-            facing = npc.facing
-            npc.restore_activity(state)
-            npc.facing = facing
-            npc.resume_pending = True
+            npc.restore_after_interaction(state, other.id, preserve_facing=True)
