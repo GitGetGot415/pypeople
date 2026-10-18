@@ -1,7 +1,8 @@
 import pygame
 
 from character_data import DEFAULT_COLORS, FIELDS
-from constants import ACCENT, GRASS, INK, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER, SNAKE_NAME
+from constants import (ACCENT, FAILED_CONVERSATION_COLOR, FAILED_CONVERSATION_SELECTED_COLOR,
+                       GRASS, INK, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER, SNAKE_NAME)
 from conversation_history import display_parts, usable_rewrite, uses_original_dialogue
 from emotions import portrait_expression
 from social import assertion_text, claim_by_id, fact_by_id, phase_label, selected_beliefs
@@ -418,7 +419,11 @@ class StatsScreen:
                 continue
             selected_entry = self.selected_conversation if self.tab == "Conversations" else self.selected_npc
             selected = entry is selected_entry
-            pygame.draw.rect(surface, ACCENT if selected else GRASS, row)
+            if self.tab == "Conversations" and entry.status == "Failed":
+                color = FAILED_CONVERSATION_SELECTED_COLOR if selected else FAILED_CONVERSATION_COLOR
+            else:
+                color = ACCENT if selected else GRASS
+            pygame.draw.rect(surface, color, row)
             for index, line in enumerate(lines):
                 surface.blit(app.font.render(line, True, PAPER if selected else INK), (row.x + 8, row.y + 10 + index * app.font.get_linesize()))
         surface.set_clip(self.detail_rect.clip(previous_clip))

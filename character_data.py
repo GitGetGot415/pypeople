@@ -1,8 +1,12 @@
 """The character JSON format shared by the creator and the game."""
 
 import json
+from colorsys import hls_to_rgb
 from pathlib import Path
 import random
+
+from constants import (RANDOM_EYE_STYLES_BY_SEX, RANDOM_HAIR_STYLES_BY_SEX,
+                       RANDOM_SKIN_HUE_RANGE, RANDOM_SKIN_LIGHTNESS_RANGE)
 
 
 FIELDS = ("Name", "Age", "Weight", "Height", "Sex", "Details")
@@ -89,16 +93,26 @@ def random_character(config_path=RANDOM_CONFIG_PATH):
         config = json.load(config_file)
     if not isinstance(config, dict):
         raise ValueError("Random settings must be a JSON object.")
-    for key in ("first_names", "last_names", "details", "voices", "mannerisms", "backgrounds"):
+    for key in ("last_names", "details", "voices", "mannerisms", "backgrounds"):
         choices = config.get(key)
         if not isinstance(choices, list) or not choices or any(
             not isinstance(value, str) or not value.strip() for value in choices
         ):
             raise ValueError(f"{key} must be a nonempty list of text.")
+    first_names = config.get("first_names")
+    if not isinstance(first_names, dict):
+        raise ValueError("first_names must contain separate M and F name lists.")
+    for sex in ("M", "F"):
+        choices = first_names.get(sex)
+        if not isinstance(choices, list) or not choices or any(
+            not isinstance(value, str) or not value.strip() for value in choices
+        ):
+            raise ValueError(f"first_names.{sex} must be a nonempty list of text.")
     limits = config.get("limits")
     if not isinstance(limits, dict):
         raise ValueError("Random settings must include numeric limits.")
-    values = {}
+    values = {"Sex": random.choice(("M", "F"))}
+    values["Name"] = f"{random.choice(first_names[values['Sex']]).strip()} {random.choice(config['last_names']).strip()}"
     for name in ("Age", "Weight", "Height"):
         bounds = limits.get(name)
         if not isinstance(bounds, dict):
@@ -107,13 +121,16 @@ def random_character(config_path=RANDOM_CONFIG_PATH):
         if type(low) is not int or type(high) is not int or low > high:
             raise ValueError(f"{name} needs integer limits with min <= max.")
         values[name] = str(random.randint(low, high))
-    values["Name"] = f"{random.choice(config['first_names']).strip()} {random.choice(config['last_names']).strip()}"
-    values["Sex"] = random.choice(("M", "F"))
     values["Details"] = (" ".join(random.choice(config[key]).strip()
                                   for key in ("details", "voices", "mannerisms")) + "\n\n"
                          + random.choice(config["backgrounds"]).strip())
-    values["Hair"] = random.choice(HAIR_STYLES)
-    values["Eyes"] = random.choice(EYE_STYLES)
+    values["Hair"] = random.choice(RANDOM_HAIR_STYLES_BY_SEX[values["Sex"]])
+    values["Eyes"] = random.choice(RANDOM_EYE_STYLES_BY_SEX[values["Sex"]])
     for name in DEFAULT_COLORS:
-        values[name] = "#" + "".join(f"{random.randint(0, 255):02X}" for _ in range(3))
+        if name == "Skin Color":
+            rgb = tuple(round(channel * 255) for channel in hls_to_rgb(
+                random.uniform(*RANDOM_SKIN_HUE_RANGE), random.uniform(*RANDOM_SKIN_LIGHTNESS_RANGE), random.random()))
+        else:
+            rgb = tuple(random.randint(0, 255) for _ in range(3))
+        values[name] = "#" + "".join(f"{channel:02X}" for channel in rgb)
     return normalize_character(values)

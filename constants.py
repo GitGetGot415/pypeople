@@ -30,6 +30,12 @@ STARTING_SNAKE_ACTIVITY = "guarding"
 STARTING_SNAKE_DECISION_SECONDS = 3.0
 STARTING_FACING = 4  # South, shared by residents and the snake.
 
+# Appearance restrictions for random characters only.
+RANDOM_HAIR_STYLES_BY_SEX = {"M": ("one", "four"), "F": ("two", "three")}
+RANDOM_EYE_STYLES_BY_SEX = {"M": ("one",), "F": ("one", "two")}
+RANDOM_SKIN_HUE_RANGE = (0.0, 50.0 / 360.0)  # Red through warm yellow; excludes green, blue and purple.
+RANDOM_SKIN_LIGHTNESS_RANGE = (0.2, 1.0)  # Keep dark eye outlines distinct from random skin.
+
 # Resident movement, needs, and activity timing (seconds).
 MOVEMENT_SPEED = 90.0
 SHAKE_SECONDS = 1.0
@@ -98,6 +104,8 @@ MUTED = (92, 110, 99)
 PAPER = (249, 247, 235)
 ORIGINAL_DIALOGUE_PAPER = (232, 244, 225)
 ACCENT = (52, 111, 78)
+FAILED_CONVERSATION_COLOR = (228, 169, 158)
+FAILED_CONVERSATION_SELECTED_COLOR = (155, 58, 58)
 BORDER_RADIUS = 0
 
 HUD_HEADER_HEIGHT = 30
