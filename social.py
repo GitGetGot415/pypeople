@@ -186,6 +186,11 @@ def account_content(world, fact, affirmed=True):
         from character_data import description_parts
         _, marker, description = summary.partition("'s own description: ")
         _, summary = description_parts(description if marker else summary)
+    elif fact.kind == "private_motive":
+        # The heading describes the goal; the owed private information is why
+        # its owner wants it. Ownership stays in the separate account fields.
+        _, marker, motive = summary.partition(": ")
+        summary = motive if marker else summary
     if affirmed:
         return summary
     subject, target = world.actor_by_id(fact.subject_id), world.actor_by_id(fact.object_id)
@@ -424,11 +429,12 @@ def validate_information(response, context, *, names=(), participant_names=None)
             option = options.get(entry.claim_id)
             if option is None or (role, entry.claim_id) in seen_disclosures:
                 raise ValueError("Unknown or repeated disclosure.")
+            belief = beliefs[role].get(entry.claim_id)
             validate_account_speech(speech.text, option.assertion, names=names,
                                     speaker=(participant_names or {}).get(role),
-                                    listener=(participant_names or {}).get(listener), kind=option.kind)
+                                    listener=(participant_names or {}).get(listener), kind=option.kind,
+                                    firsthand=bool(belief and belief.direct))
             seen_disclosures.add((role, entry.claim_id))
-            belief = beliefs[role].get(entry.claim_id)
             fabricating = option.creator_id is not None and belief is None
             if fabricating:
                 if (option.creator_id != npc_id or entry.intent != "lie" or not context.can_lie[role]

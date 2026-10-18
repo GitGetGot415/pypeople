@@ -14,7 +14,7 @@ from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_C
 from dialogue_text import speech_is_complete, split_sentences
 from dialogue_rules import (mentions_account, named_context, named_references, name_pattern, unquoted_speech,
                            validate_account_speech, validate_apple_roles, validate_continuity,
-                           validate_english, validate_opinion_reason)
+                           validate_claim_source, validate_english, validate_opinion_reason)
 from ollama_manager import DEFAULT_OLLAMA_MODEL
 from social import phase_index, validate_agreements, validate_information
 from purgatory import Attitudes
@@ -316,6 +316,8 @@ Use the supplied people and surroundings; do not invent an audience, other
 trees to visit, or a known route home.
 Conclude in character; never announce that you are following instructions,
 closing without questions, or selecting a concrete event from an account.
+A record can name another hearer of an event that you also witnessed directly.
+Keep your own direct experience; that other hearer is not automatically your source.
 Current tree stock is public information in environment.tree. An empty tree
 cannot supply a new apple now: nobody can offer, obtain or hand over its fruit,
 or collect a new payment for an unavailable apple. Unreserved stock excludes
@@ -1487,7 +1489,7 @@ def _last_question(text):
 def validate_dialogue_format(turns):
     for turn in turns:
         speech = unquoted_speech(turn.text)
-        if re.search(r"\b(?:account_to_share|question_to_answer|preceding_turns|zero-based|unreserved)\b|"
+        if re.search(r"\b(?:account_to_share|question_to_answer|preceding_turns|zero-based|unreserved|new[_ ]apple[_ ]count)\b|"
                      r"\bconcrete event from (?:my|the|a supplied) (?:account|assertion)\b|"
                      r"\b(?:clos(?:e|ing)|end(?:ing)?|finish(?:ing)?) (?:this|the|our) (?:conversation|exchange) "
                      r"without (?:any )?(?:further |another |more )?questions\b", speech, re.I):
@@ -1505,13 +1507,15 @@ def validate_dialogue_format(turns):
 def validate_speech_grounding(text, snapshot):
     """Check this speech before a partner sees it or its effects are committed."""
     speaker, listener = snapshot["speaker"], snapshot["listener"]
-    names = [_actor_name(speaker), _actor_name(listener), SNAKE_NAME]
+    names = [_actor_name(speaker), _actor_name(listener), SNAKE_NAME, *snapshot.get("known_actor_names", [])]
     validate_english(text, names)
     situation = speaker.get("situation", {})
     firsthand = speaker.get("firsthand_events_with_listener", [])
     knows_claims = bool(situation.get("prior_snake_encounters", 0)) or any(
         a.get("kind") == "snake_claim" and a.get("basis") == "firsthand" for a in firsthand)
     validate_continuity(text, day=snapshot.get("day"), situation=situation, knows_claims=knows_claims)
+    if knows_claims:
+        validate_claim_source(text, names=names, speaker=_actor_name(speaker), listener=_actor_name(listener))
     transaction = snapshot.get("transaction")
     if transaction:
         settling = transaction.get("selected_outcome") in ("secret", "endorsement") and snapshot.get("turn_index", 0) >= 1
@@ -1530,11 +1534,15 @@ def validate_speech_grounding(text, snapshot):
     if account:
         account_names = [value for key, value in account.items() if key.endswith("_name") and value]
         validate_account_speech(text, account["assertion"], names=(*names, *account_names),
-                                speaker=_actor_name(speaker), listener=_actor_name(listener), kind=account.get("kind"))
+                                speaker=_actor_name(speaker), listener=_actor_name(listener), kind=account.get("kind"),
+                                firsthand=account.get("basis") == "firsthand")
     if snapshot.get("request_kind") != "snake_turn":
         return
     outcome, index = transaction.get("selected_outcome"), snapshot["turn_index"]
     speech = unquoted_speech(text)
+    if index == 2 and outcome in ("secret", "endorsement") and re.search(
+            r"\b(?:fulfilled|settled|completed)\b[^.!?]{0,45}\bby keeping (?:the|your|an?) apple\b", speech, re.I):
+        raise ValueError("The obligation is settled by the information or endorsement just supplied, not by keeping the apple. Acknowledge what the resident actually told you.")
     if index == 0 and transaction.get("accuser") and snapshot.get("accusation"):
         validate_account_speech(text, snapshot["accusation"], names=names,
                                 speaker=_actor_name(speaker), listener=_actor_name(listener))
@@ -1575,6 +1583,10 @@ def validate_resident_grounding(result, snapshot):
     names = [snapshot[role]["npc_name"] for role in ("initiator", "recipient")]
     names.extend(n["npc_name"] for n in snapshot.get("nearby_npcs", []))
     names.append(SNAKE_NAME)
+    for role in ("initiator", "recipient"):
+        private = snapshot[role].get("private_context", {})
+        names.extend(value for account in private.get("permitted_accounts", private.get("known_accounts", []))
+                     for key, value in account.items() if key.endswith("_name") and isinstance(value, str) and value)
     known = {role: {options[b["claim_id"]]["fact_id"] for b in info.get("beliefs", {}).get(role, [])
                      if b["claim_id"] in options} for role in ("initiator", "recipient")}
     for index, turn in enumerate(result.turns):
@@ -1585,7 +1597,7 @@ def validate_resident_grounding(result, snapshot):
             "speaker": {"name": speaker["npc_name"], "situation": private.get("situation", {}),
                         "firsthand_events_with_listener": private.get("permitted_accounts", private.get("known_accounts", []))},
             "listener": snapshot["recipient" if turn.speaker == "initiator" else "initiator"]["npc_name"],
-            "day": speaker.get("day")})
+            "day": speaker.get("day"), "known_actor_names": names})
         # General beliefs can also be formed in the current discussion. Match
         # concrete recollections separately, including sentences in older accounts.
         private_accounts = [{**a, "assertion": sentence} for a in options.values() if a["kind"] == "former_life"
@@ -1841,6 +1853,22 @@ def _request_payload(message, snapshot, correction):
         elif "word_limit" in snapshot:
             instruction += f"\nAim for at most {snapshot['word_limit']} words, completing the sentence."
     transaction = snapshot.get("transaction", {})
+    if (snapshot.get("request_kind") == "snake_turn" and snapshot.get("speaker_role") == "recipient"
+            and snapshot.get("account_to_share") and transaction.get("selected_outcome") == "secret"):
+        speaker, listener = _actor_name(snapshot["speaker"]), _actor_name(snapshot["listener"])
+        kind = snapshot["account_to_share"]["kind"]
+        content_task = ("Explain your own private reason: what you want and why. This is a present motive, not a remembered life event. "
+                        if kind == "private_motive" else "Tell the supplied account's actual content from its owner's perspective. ")
+        instruction = (f"You are {speaker}, speaking to {listener} in English. You received an apple earlier and now "
+                       "provide the agreed private information to settle that obligation; no new apple is exchanged. "
+                       + content_task + "Use only account_to_share and preserve its people and source. "
+                       "Express its substance in natural words now, without inventing details or promising to tell it later. "
+                       "Public claims about authority do not substitute for a private memory or motive. "
+                       "Use I/you, one or two complete sentences, and your own emotion. Return only parts.\n"
+                       + snapshot["_speaker_direction"] + "\n" + EMOTION_INSTRUCTION)
+        context = {"speaker": {"name": speaker}, "listener": {"name": listener},
+                   "task": snapshot["task"], "account_to_share": context["account_to_share"],
+                   "preceding_turns": snapshot["preceding_turns"]}
     if correction and snapshot.get("request_kind") == "conversation" and snapshot.get("purpose") == "gossip":
         # A failed factual report needs its event and sources, not a second
         # biography, stock announcement, or menu of unrelated apple promises.
@@ -1850,6 +1878,13 @@ def _request_payload(message, snapshot, correction):
             people[role] = {"name": person["npc_name"], "speaking_style": person["character"]["speaking_style"],
                             "opinion_of_listener": person["private_context"].get("opinions", {}).get(context[other]["npc_name"]),
                             "focus_accounts": person["private_context"].get("permitted_accounts", [])}
+            direct_claims = [a for a in people[role]["focus_accounts"]
+                             if a["kind"] == "snake_claim" and a.get("basis") == "firsthand"]
+            if direct_claims:
+                people[role]["direct_hearing"] = {
+                    "hearer": person["npc_name"], "claimant": direct_claims[0]["subject_name"],
+                    "heard_claims_personally": True,
+                    "another_named_hearer_is_not_the_source": True}
         context = {**people, "discussion_focus": context["discussion_focus"]}
         instruction = (
             "Write four alternating spoken turns: initiator, recipient, initiator, recipient. Use English and I/you. "
@@ -1858,6 +1893,8 @@ def _request_payload(message, snapshot, correction):
             "Keep the event subject's receipt and refusal with that person; reporting does not make those the reporter's actions. "
             "Distinguish what_was_received from what_was_refused. An unpaid recollection or endorsement is not a refused apple. "
             "Use focus_accounts for the speaker's actual knowledge, firsthand evidence, source, claim_id and stance. "
+            "direct_hearing means this person heard the claimant themselves, even if the record also names another hearer. "
+            "That is not a rumor; doubt about divine authority does not erase the hearing. Do not invent the other hearer's reaction. "
             "Report personal experience directly; preserve hearsay sources and any permitted denial's actual polarity. "
             "The listener reacts; the last turn closes naturally without a question. Use one short complete sentence per turn "
             "with that speaker's own emotion and voice. Do not invent events, sources, dialogue instructions, or new agreements. "
@@ -2153,6 +2190,11 @@ def _snake_turn_snapshot(snapshot, decision, turns):
                 view[field + "_relation"] = ("speaker" if actor_id == speaker["actor_id"] else
                                              "listener" if actor_id == identities[listener_role]["actor_id"]
                                              else "another person")
+        if account["kind"] == "private_motive":
+            # The goal's target is not evidence that they helped or harmed its
+            # owner. This disclosure concerns only the owner's private reason.
+            for field in ("object_name", "object_relation"):
+                view.pop(field, None)
         return view
 
     # Both participants already experienced these events. Supply the speaker's own
@@ -2168,7 +2210,7 @@ def _snake_turn_snapshot(snapshot, decision, turns):
     result_tasks = {
         "advance_secret": "Hand over one real apple now; the accepted private recollection is owed later.",
         "advance_endorsement": "Hand over one real apple now; the accepted public endorsement is owed later.",
-        "secret": "Acknowledge the recollection just told and settle the existing obligation, without another apple.",
+        "secret": "Acknowledge the private information just shared and settle the obligation for that disclosure, without another apple.",
         "endorsement": "Acknowledge the public support just given and settle the existing obligation, without another apple.",
         "refuse": "Respond to the refusal without inventing cooperation or another apple transfer.",
         "challenge": "Respond to the challenge to your authority without inventing cooperation or an apple transfer.",
@@ -2180,7 +2222,7 @@ def _snake_turn_snapshot(snapshot, decision, turns):
     response_tasks = {
         "advance_secret": "Explicitly accept one apple now for a private recollection owed later; keep its contents unspoken.",
         "advance_endorsement": "Explicitly accept one apple now for your public endorsement owed later.",
-        "secret": "Tell the supplied owed recollection now from your own perspective, fulfilling your existing obligation.",
+        "secret": "Tell the supplied owed private information now from your own perspective, fulfilling your existing obligation.",
         "endorsement": "Give the owed public endorsement now so the supplied audience can hear it.",
         "refuse": "Explicitly refuse the current offer or owed obligation using your own reasons; do not agree to share an account.",
         "challenge": "Challenge the listener's asserted authority using your own reasons.",
@@ -2194,7 +2236,8 @@ def _snake_turn_snapshot(snapshot, decision, turns):
         if snapshot["purpose"] == "judgment":
             task = "Present only the supplied accusation; hear the response before announcing judgment."
         elif snapshot["advance"]:
-            task = "Ask for the offering already owed for the apple previously given; offer no new apple."
+            offering = "private information" if snapshot["advance"]["offering"] == "secret" else "public endorsement"
+            task = f"Ask only for the {offering} owed for the apple previously given. No new apple or return of the earlier apple is requested."
         elif no_new_bargain:
             task = ("Explain why an apple cannot be provided now, using the actual tree stock, reservation "
                     "and receiver capacity. Do not offer an apple, ask for a new payment or promise an apple later.")
@@ -2211,6 +2254,10 @@ def _snake_turn_snapshot(snapshot, decision, turns):
                 if no_new_bargain else response_tasks[outcome])
         if outcome == "secret":
             account = next(a for a in snapshot["offering_accounts"] if a["claim_id"] == decision.account_id)
+            if account["kind"] == "private_motive":
+                task = ("Explain the supplied private motive now in first person: what you want and why. "
+                        "This present private reason fulfills the owed information; do not substitute a former-life "
+                        "memory or public claims about authority.")
     elif index == 2:
         task = ("Clarify current apple availability in response to the listener; no apple is handed over "
                 "and no new bargain or obligation is created."
@@ -2236,7 +2283,6 @@ def _snake_turn_snapshot(snapshot, decision, turns):
                        apple_handoff_now=index == 2 and outcome in ("advance_secret", "advance_endorsement"))
     transaction["apples_owed"] = 0
     if outcome in ("advance_secret", "advance_endorsement"):
-        transaction["new_apple_count"] = 1
         transaction["offering_still_owed"] = index >= 2
     if index >= 1:
         transaction["selected_outcome"] = outcome
@@ -2277,7 +2323,8 @@ def _snake_turn_snapshot(snapshot, decision, turns):
                                receiver_inventory_space=resident["inventory_space"] - 1)
     if account:
         account = speech_account(account)
-        task += " Tell a concrete event from account_to_share.assertion in this reply, keeping its people and source; a promise to tell it later does not disclose it."
+        task += (" Express the substance of account_to_share.assertion now in natural words, preserving its owner and source. "
+                 "Use equivalent wording; a promise to tell it later does not disclose it.")
     preceding = [{"name": identities[turn.speaker]["name"], "role": turn.speaker, "text": turn.text}
                  for turn in turns]
     latest = preceding[-1:]

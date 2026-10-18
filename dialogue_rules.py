@@ -60,8 +60,9 @@ _CONTENT_NOISE = set("""a an the and or but so if while to of in on at by for wi
     former life remember recall""".split())
 _CONCEPTS = (
     {"authority", "control", "controls", "rule", "rules", "govern", "governs", "divine", "god", "messenger"},
-    {"apple", "apples", "fruit"}, {"refuse", "refused", "refusal", "decline", "declined", "reject", "rejected"},
-    {"give", "gave", "given", "hand", "handed", "receive", "received", "accept", "accepted"},
+    {"apple", "apples", "fruit"}, {"refuse", "refused", "refusing", "refusal", "decline", "declined", "declining", "reject", "rejected"},
+    {"give", "gave", "given", "giving", "hand", "handed", "receive", "received", "receiving", "accept", "accepted", "accepting",
+     "take", "took", "taken", "taking", "got", "obtain", "obtained"},
     {"promise", "promised", "agreement", "bargain"}, {"pardon", "pardoned", "spare", "spared", "mercy"},
 )
 _APPLE_REFUSAL = (r"\b(?:refused|declined|rejected)\s+(?:to accept\s+)?(?:the|an?|that)\s+(?:upfront\s+)?apple\b|"
@@ -87,6 +88,22 @@ def mentions_account(text, assertion, names):
     return bool(expected) and len(expected & _content_words(text, names)) >= min(2, len(expected))
 
 
+def _account_words(text, names, kind):
+    # Normalize only the account types whose wording describes the same fact.
+    # Private-memory detection keeps its separate, narrower word comparison.
+    if kind == "snake_claim":
+        text = re.sub(r"\bin charge\b|\bbelong(?:s|ed)? to\b|\bown(?:s|ed)?\b", "authority", text, flags=re.I)
+    elif kind == "private_motive":
+        text = re.sub(r"\b(?:look out for|look after|care[d]? for|care about)\b", "care", text, flags=re.I)
+        text = re.sub(r"\b(?:wanted|need(?:ed)?|hope[d]?)\b", "want", text, flags=re.I)
+    elif kind == "defiance":
+        text = re.sub(r"\bunwilling to\b", "refused to", text, flags=re.I)
+    words = _content_words(text, names)
+    if kind == "snake_claim":
+        words -= {"present", "presented", "presenting", "make", "made", "making", "assert", "asserted", "asserting", "dispute"}
+    return words
+
+
 def _asserts(pattern, text):
     """Match an assertion without treating an explicit nearby negation as assent."""
     for match in re.finditer(pattern, text, re.I):
@@ -97,7 +114,24 @@ def _asserts(pattern, text):
     return False
 
 
-def validate_account_speech(text, assertion, *, names=(), speaker=None, listener=None, kind=None):
+def validate_claim_source(text, *, names=(), speaker=None, listener=None):
+    """Firsthand hearing may be doubted as theology, but not recast as a rumor."""
+    for sentence in split_sentences(unquoted_speech(text)):
+        if not re.search(r"\b(?:claims?|claimed|authority|divine|in charge|belongs?|belonged)\b", sentence, re.I):
+            continue
+        false_source = re.search(
+            rf"\bi heard (?:a|the|some) (?:rumou?r|story) that (?:{name_pattern(SNAKE_NAME)}|he|she|they)\b", sentence, re.I)
+        for name in names:
+            if name not in (speaker, listener, SNAKE_NAME) and re.search(
+                    rf"\bi\s+(?:heard\s+{name_pattern(name)}\s+(?:say|tell)|"
+                    rf"(?:heard|learned|was told)\s+(?:about (?:it|this|that)\s+)?from\s+{name_pattern(name)})\b|"
+                    rf"{name_pattern(name)}\s+told me\b", sentence, re.I):
+                false_source = True
+        if false_source:
+            raise ValueError("The speaker witnessed these claims firsthand. Describe what you heard directly; another named witness is not your source. Doubting the claims' truth is allowed.")
+
+
+def validate_account_speech(text, assertion, *, names=(), speaker=None, listener=None, kind=None, firsthand=False):
     """Require content evidence, rather than an ID or a promise to tell it later.
 
     This is a conservative vocabulary check, not a proof of semantic equivalence.
@@ -110,12 +144,14 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
         subject = assertion.partition(" refused the agreed ")[0]
         if " refused the agreed " in assertion and speaker is not None and subject not in (speaker, listener):
             actor = rf"(?:{name_pattern(subject)}|{name_pattern(subject.split()[0])})"
-            if not re.search(actor + r"\s*,?\s+(?:(?:she|he|they|has|had|have|did|not|never|already|also|then|still|to)\s+){0,4}"
+            adopts_event = re.search(r"\bi\s+(?:received|accepted|got|refused|declined)\b", speech, re.I)
+            if adopts_event and not re.search(actor + r"\s*,?\s+(?:(?:she|he|they|has|had|have|did|not|never|already|also|then|still|to)\s+){0,4}"
                              r"(?:refuse[d]?|decline[d]?|reject(?:ed)?|receive[d]?|accept(?:ed)?|took|got|take|said|told|won['’]t|wouldn['’]t)\b",
                              text, re.I):
                 raise ValueError("Keep the selected account's subject with its action. Describe that person's receipt or refusal; mentioning their name elsewhere does not let the reporter adopt the event as I/my.")
-    sentences = [s for s in split_sentences(text) if not re.search(
-        r"\b(?:will|would|could|might|going to|want to|like to)\s+(?:\w+\s+){0,3}(?:share[d]?|tell|told|disclose[d]?)\b", s, re.I)]
+    sentences = [s for s in split_sentences(text) if not (
+        re.search(r"\b(?:i['’]ll|will|would|could|might|going to|want to|like to)\s+(?:\w+\s+){0,3}(?:share[d]?|tell|told|disclose[d]?)\b", s, re.I)
+        and not re.search(r"\b(?:now|right away|right here)\b|:\s*i\b", s, re.I))]
     if kind == "former_life":
         references = split_sentences(assertion)
         source_words = _content_words(assertion, names)
@@ -134,14 +170,27 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
                 continue
             usable.append(sentence)
         sentences = usable
-    expected = _content_words(assertion, names)
-    actual = _content_words(" ".join(sentences), names)
+    spoken = " ".join(sentences)
+    expected = _account_words(assertion, names, kind)
+    actual = _account_words(spoken, names, kind)
+    if kind == "snake_claim":
+        # Reporting verbs are not the fact being disclosed. "Made claims",
+        # "presented claims" and "said he was in charge" can convey the same event.
+        if not re.search(r"\b(?:claim(?:s|ed)?|assert(?:s|ed)?|say(?:s|ing)?|said|told|stat(?:e[sd]?|ing)|insist(?:s|ed)?|declar(?:e[sd]?|ing))\b", spoken, re.I):
+            actual.clear()
+        if firsthand:
+            validate_claim_source(spoken, names=names, speaker=speaker, listener=listener)
     missing_actor = speaker is not None and any(
         name not in (speaker, listener) and re.search(name_pattern(name), assertion, re.I)
+        and not (kind == "snake_claim" and name != SNAKE_NAME)
         and not re.search(name_pattern(name.split()[0]), " ".join(sentences), re.I) for name in names if name)
     if missing_actor or not expected or len(expected & actual) < min(2, len(expected)):
-        raise ValueError("The selected account is not actually told in this turn. Describe a concrete event or memory "
-                         "from its assertion in your own words; discussing trust or promising to tell it later is insufficient.")
+        direction = ("Explain the supplied private reason and what you want, in your own words. " if kind == "private_motive" else
+                     "Report who made which claims and preserve how you heard them. " if kind == "snake_claim" else
+                     "Describe a concrete event or memory from its assertion in your own words. ")
+        raise ValueError("The selected account is not actually told in this turn. " + direction +
+                         "Discussing trust or promising to tell it later is insufficient. "
+                         f"Expected {kind or 'information'}: {assertion}")
 
 
 def validate_apple_promise(offer, acceptance, deadline, *, current_phase=None):
@@ -201,6 +250,10 @@ def validate_apple_roles(text, *, giver, receiver, speaker, owed_offering=False,
         raise ValueError(f"{giver} gives the apple to {receiver}. Keep the original giver and receiver in their actual roles.")
     if speaker == giver and re.search(r"\bapple\s+you\s+(?:agreed|promised)\s+to\s+(?:give|provide)\b", speech, re.I):
         raise ValueError(f"{giver} provides the apple; {receiver} provides the offering, not another apple.")
+    if speaker == giver and re.search(
+            r"\byou\s+(?:(?:will|should|must|can|shall|need to|have to)\s+)?(?:give|hand|bring|offer)\s+me\s+"
+            r"(?:an?|the|one|your|this)\s+apple\b", speech, re.I):
+        raise ValueError(f"{giver} gives the apple to {receiver}; do not ask the resident to supply it.")
     if speaker == giver and re.search(r"\bi\s+(?:accept|receive|take)\s+(?:the|an?|your|this)\s+apple\b", speech, re.I):
         raise ValueError(f"{giver} gives the apple; only {receiver} accepts it. Preserve the settled handoff.")
     account = r"(?:private\s+)?(?:recollection|secret|information|endorsement|story|offering)"
@@ -218,7 +271,9 @@ def validate_apple_roles(text, *, giver, receiver, speaker, owed_offering=False,
                 rf"(?:with\s+)?you\s+(?:an?|my|the)\s+{account}\b", sentence, re.I)
             or speaker == receiver and re.search(
                 r"\byour promise to share your (?:secrets|recollection)\b|"
-                r"\b(?:hearing|hear|receive) your private recollection\b", sentence, re.I))
+                r"\b(?:look forward to|expect) hearing your private recollection\b|"
+                r"\b(?:thanks|thank you) for (?:the|your) offer of (?:a|your) private recollection\b", sentence, re.I)
+            or speaker == giver and re.search(r"\byou (?:will|shall) hear (?:the|my) (?:story|recollection|secret)\b", sentence, re.I))
         if reversed_price or re.search(r"\bwe owe\s+(?:to\s+)?(?:each other|one another)\b", sentence, re.I):
             raise ValueError(f"{receiver} owes the recollection or endorsement to {giver}. This is not a mutual debt or information owed to the resident.")
     if apple_received:
@@ -232,13 +287,15 @@ def validate_apple_roles(text, *, giver, receiver, speaker, owed_offering=False,
     if offering_pending:
         debtor = "i" if speaker == receiver else "you"
         if re.search(rf"\b{debtor}\s+(?:(?:have|had)\s+)?(?:already\s+)?(?:provided|shared|told|fulfilled)\s+"
-                     rf"(?:you\s+)?(?:the|my|your|that|a)\s+(?:agreed\s+)?{account}\b", speech, re.I):
+                     rf"(?:you\s+)?(?:the|my|your|that|a)\s+(?:agreed\s+)?{account}\b|"
+                     rf"\b{account}\s+(?:that\s+)?{debtor}\s+(?:have\s+)?(?:already\s+)?(?:provided|shared|told)\b", speech, re.I):
             raise ValueError("The offering is still unpaid. Do not claim it has already been provided or settled.")
     if owed_offering:
         for sentence in split_sentences(speech):
             if re.search(r"\b(?:not|never|don't|do not)\s+(?:\w+\s+){0,2}(?:owe|need to return)\b", sentence, re.I):
                 continue
             if re.search(r"\bowe\s+(?:you\s+|me\s+)?(?:an?|the|one)\s+(?:apple|fruit)\b|"
+                         r"\brequest for (?:the|your) apple you (?:previously|already) received\b|"
                          r"\b(?:apple|fruit)\s+(?:you\s+(?:(?:already|previously)\s+)?received\s+)?(?:is|was|remains)\s+(?:(?:still|now)\s+)?owed\b|"
                          r"\b(?:i am|you are)\s+entitled to the apple\b|"
                          r"\b(?:obligation|obliged|required|must)\b[^.!?]{0,35}\breturn\s+(?:it|that|(?:the|an?)\s+(?:apple|fruit))\b", sentence, re.I):
