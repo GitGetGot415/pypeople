@@ -1,6 +1,6 @@
 import pygame
 
-from constants import DIALOGUE_PAGE_LINES, INK
+from constants import DIALOGUE_PAGE_LINES, DIALOGUE_PAGE_WIDTH, INK
 from dialogue_text import split_sentences
 
 
@@ -49,7 +49,7 @@ def paginate_text(text, font, width, max_lines=DIALOGUE_PAGE_LINES):
 
 
 def paginate_parts(parts, font, width, max_lines=DIALOGUE_PAGE_LINES):
-    """Rejoin one speaker's part fragments, retaining the source of each page."""
+    """Keep complete sentences and part emotions on pages shared by both views."""
     texts, sources, offset = [], [], 0
     for text, source in parts:
         text = " ".join(text.split())
@@ -57,13 +57,22 @@ def paginate_parts(parts, font, width, max_lines=DIALOGUE_PAGE_LINES):
             texts.append(text)
             offset += len(text) + 1
             sources.append((offset, source))
-    pages, offset, source_index = [], 0, 0
-    for page in paginate_text(" ".join(texts), font, width, max_lines):
+    sections, offset, source_index = [], 0, 0
+    for sentence in split_sentences(" ".join(texts)):
         while offset >= sources[source_index][0]:
             source_index += 1
-        pages.append((sources[source_index][1], page))
-        offset += len(page) + 1
-    return pages
+        # A part may begin halfway through a sentence. Finish that sentence
+        # with its original emotion, then use the next sentence's source.
+        if sections and sections[-1][0] == source_index:
+            sections[-1][1].append(sentence)
+        else:
+            sections.append((source_index, [sentence]))
+        offset += len(sentence) + 1
+    return [
+        (sources[index][1], page)
+        for index, sentences in sections
+        for page in paginate_text(" ".join(sentences), font, min(width, DIALOGUE_PAGE_WIDTH), max_lines)
+    ]
 
 
 def draw_wrapped_text(surface, text, font, color, rect):

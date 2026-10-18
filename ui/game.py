@@ -1,6 +1,6 @@
 import pygame
 from llm import ConversationTurn
-from constants import DIALOGUE_PAGE_LINES, INK, MUTED, PAPER, WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH
+from constants import INK, MUTED, PAPER, WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH
 from emotions import portrait_expression
 
 from .button import Button
@@ -391,13 +391,11 @@ class GameScreen:
         source = conversation.turns or conversation.record.failed_turns
         failed = bool(source) and not conversation.turns
         if self._conversation_page_turns is not source:
-            # A display part cannot interrupt a sentence from this same turn.
-            max_lines = max(1, min(DIALOGUE_PAGE_LINES, rect.height // app.font.get_linesize()))
             self.conversation_pages = [
                 (turn, part, text)
                 for turn in (conversation.turns or [ConversationTurn.model_validate(turn) for turn in source])
                 for part, text in paginate_parts([(part.text, part) for part in turn.parts],
-                                                 app.font, rect.width - 12, max_lines)
+                                                 app.font, rect.width - 12)
             ]
             self._conversation_page_turns = source
             self.conversation_page_index = 0
