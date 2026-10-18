@@ -64,6 +64,9 @@ _CONCEPTS = (
     {"give", "gave", "given", "giving", "hand", "handed", "receive", "received", "receiving", "accept", "accepted", "accepting",
      "take", "took", "taken", "taking", "got", "obtain", "obtained"},
     {"promise", "promised", "agreement", "bargain"}, {"pardon", "pardoned", "spare", "spared", "mercy"},
+    {"sew", "sewed", "sewn", "sewing"},
+    {"repair", "repaired", "repairing", "repairs", "mend", "mended", "mending", "fix", "fixed", "fixing"},
+    {"clothes", "clothing", "garment", "garments"},
 )
 _APPLE_REFUSAL = (r"\b(?:refused|declined|rejected)\s+(?:to accept\s+)?(?:the|an?|that)\s+(?:upfront\s+)?apple\b|"
                   r"\brefusal (?:to accept|of) (?:the|an?|that) apple\b")
@@ -98,6 +101,8 @@ def _account_words(text, names, kind):
         text = re.sub(r"\b(?:wanted|need(?:ed)?|hope[d]?)\b", "want", text, flags=re.I)
     elif kind == "defiance":
         text = re.sub(r"\bunwilling to\b", "refused to", text, flags=re.I)
+    elif kind == "apple_given":
+        text = re.sub(r"\b(?:share[ds]?|sharing|pass(?:ed|ing)?)\b", "give", text, flags=re.I)
     words = _content_words(text, names)
     if kind == "snake_claim":
         words -= {"present", "presented", "presenting", "make", "made", "making", "assert", "asserted", "asserting", "dispute"}
@@ -163,7 +168,7 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
                 raise ValueError("The recollection invents an additional remembered event outside the selected account. Tell only its supplied memory and your present reaction.")
             reference = max(references, key=lambda s: len(_content_words(s, names) & _content_words(sentence, names)), default="")
             denies_event = re.search(r"\b(?:have not|haven['’]t|had not|hadn['’]t|did not|didn['’]t|never)\s+"
-                                     r"(?:\w+\s+){0,2}(?:received|seen|kept|worked|met|gave|helped|returned)\b", sentence, re.I)
+                                     r"(?:\w+\s+){0,2}(?:received|seen|kept|worked|met|gave|helped|returned|sew(?:ed|n)?|repair(?:ed)?|mend(?:ed)?|fix(?:ed)?)\b", sentence, re.I)
             if denies_event and not re.search(r"\b(?:not|never|couldn['’]t|didn['’]t|cannot|can['’]t)\b", reference, re.I):
                 continue
             if re.search(r"\b(?:await|awaiting|wait for|waiting for|will receive|yet to receive)\b", sentence, re.I):

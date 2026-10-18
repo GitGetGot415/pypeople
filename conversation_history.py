@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from uuid import uuid4
-from dialogue_text import contains_serialized_dialogue
+from dialogue_text import contains_serialized_dialogue, contains_speaker_label
 
 
 @dataclass
@@ -30,7 +30,8 @@ class ConversationRecord:
 def usable_rewrite(parts, rewritten):
     """Old or malformed presentation data falls back without editing saved words."""
     return bool(rewritten) and len(rewritten) == len(parts) and all(
-        isinstance(text, str) and text.strip() and not contains_serialized_dialogue(text)
+        isinstance(text, str) and text.strip()
+        and not contains_serialized_dialogue(text) and not contains_speaker_label(text)
         for text in rewritten)
 
 

@@ -6,6 +6,8 @@
 
 - `qwen2.5:7b` basically the same thing as qwen2.5:3b but slower. However, it does have ever so slightly higher quality output.
 
+## The models below take way too long to run on a normal computer, would not recommend using unless you have a NASA supercomputer
+
 - `gemma4:12b`	Large
 
 - `qwen3.8:27b`	Larger

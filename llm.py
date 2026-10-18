@@ -14,7 +14,7 @@ from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_C
                        DIALOGUE_PART_TARGET_CHARACTERS, DIALOGUE_PARTS_PER_TURN,
                        DIALOGUE_REPAIR_WORD_LIMIT, DIALOGUE_TIMEOUT_SECONDS,
                        EMOTION_THRESHOLD, FURIOUS_THRESHOLD, SNAKE_NAME, SNAKE_TURN_COUNT)
-from dialogue_text import contains_serialized_dialogue, speech_is_complete, split_sentences
+from dialogue_text import contains_serialized_dialogue, contains_speaker_label, speech_is_complete, split_sentences
 from dialogue_rules import (mentions_account, named_context, named_references, name_pattern, unquoted_speech,
                            validate_account_speech, validate_apple_roles, validate_continuity,
                            validate_claim_source, validate_english, validate_opinion_reason)
@@ -187,7 +187,13 @@ class VoiceRewriteResponse(StrictResponse):
     turns: list[list[str]]
 
 
-VOICE_REWRITE_INSTRUCTION = """Rewrite each independent speech slot as expressive, engaging character dialogue.
+VOICE_REWRITE_INSTRUCTION = """Write direct spoken dialogue, as if the listener can hear the speaker talking.
+Each JSON value is ONLY the words coming out of that speaker's mouth. Start immediately with
+the utterance. No narrator, character actions, stage directions, speaker-name prefixes or
+phrases announcing who speaks. Do not wrap the utterance in quotation marks. The interface
+already identifies the speaker. Address the listener as you; describe yourself as I.
+
+Rewrite each independent speech slot as expressive, engaging character dialogue.
 For each part_N, speaker_name speaks ONLY that slot's original words to listener_name.
 Never copy another slot's speech, swap speakers, or give the listener's answer. I/my belongs
 to this speaker; you/your belongs to this listener.
@@ -250,10 +256,10 @@ def validate_voice_rewrite(raw, turns):
     result = VoiceRewriteResponse.model_validate_json(raw)
     if len(result.turns) != len(turns) or any(
         len(rewritten) != len(original["parts"]) or any(
-            not text.strip() or contains_serialized_dialogue(text) for text in rewritten)
+            not text.strip() or contains_serialized_dialogue(text) or contains_speaker_label(text) for text in rewritten)
         for rewritten, original in zip(result.turns, turns)
     ):
-        raise ValueError("A rewrite needs exactly one nonempty spoken text per original part, without serialized JSON.")
+        raise ValueError("A rewrite needs exactly one nonempty spoken text per original part, without serialized JSON or speaker labels.")
     return result
 
 
@@ -1225,6 +1231,7 @@ def response_contract(snapshot, *, correction=False):
             "If account_to_share is supplied, disclose its contents now in your own words with its actual "
             "source; do not merely promise to tell it later. Otherwise disclose no new account. "
             "Describe its meaning in ordinary speech, without reading JSON or field names aloud. "
+            "For firsthand accounts, say what you personally saw or heard, without discussing who owns or stores the account. "
             "The subject of an account, its knowledge owner, and its source can be different people. "
             "Second-person wording inside an authored recollection refers to its subject, not automatically "
             "to your listener. Use subject_relation and object_relation to preserve who did what to whom; "
@@ -1372,7 +1379,8 @@ def response_contract(snapshot, *, correction=False):
                 "person": {"type": "string", "enum": [snapshot[partner]["npc_name"]]},
                 "reason": {**CONVERSATION_OPINION_SCHEMA["properties"]["reason"],
                            "description": f"{snapshot[owner]['npc_name']}'s view of {snapshot[partner]['npc_name']}, "
-                                          "written from the opinion owner's perspective about the partner's actual words or conduct."},
+                                          f"Start with I and explain my view of {snapshot[partner]['npc_name']}'s actual words or conduct. "
+                                          "The owner is the person judging, not the person being judged."},
             }}
         required = list(CONVERSATION_SCHEMA["required"])
         proposals = snapshot.get("permitted_proposals", [])
@@ -1637,9 +1645,13 @@ def validate_dialogue_format(turns):
     for turn in turns:
         if contains_serialized_dialogue(turn.text):
             raise ValueError("The speech reads internal dialogue or account JSON aloud. Return spoken words without serialized records.")
+        if contains_speaker_label(turn.text):
+            raise ValueError("Return only directly spoken words, without narrator or speaker-name prefixes. The interface supplies the speaker label.")
         speech = unquoted_speech(turn.text)
         if re.search(r"\b(?:account_to_share|question_to_answer|preceding_turns|zero-based|unreserved|new[_ ]apple[_ ]count)\b|"
                      r"\bconcrete event from (?:my|the|a supplied) (?:account|assertion)\b|"
+                     r"\b(?:retain|store) this knowledge as\b|\bowner and source of this recollection\b|"
+                     r"\b(?:this|the) (?:account|recollection) (?:is |was )?(?:owned by|sourced from)\b|"
                      r"\b(?:clos(?:e|ing)|end(?:ing)?|finish(?:ing)?) (?:this|the|our) (?:conversation|exchange) "
                      r"without (?:any )?(?:further |another |more )?questions\b", speech, re.I):
             raise ValueError("Keep internal writing instructions and resource field labels out of dialogue. Answer the listener and close naturally in character.")
@@ -1696,9 +1708,12 @@ def validate_speech_grounding(text, snapshot):
         validate_account_speech(text, snapshot["accusation"], names=names,
                                 speaker=_actor_name(speaker), listener=_actor_name(listener))
     if index == 0 and transaction.get("can_give_apple") and not transaction.get("apple_already_received"):
-        if not re.search(r"\b(?:offer(?:ing)?|give|giving|hand|handing|bring|bringing|accept|take|would you like|will you accept|do you want)\s+"
-                         r"(?:you\s+)?(?:an?|one|this|the)\s+(?:(?:upfront|real)\s+)?(?:apple|fruit)\b|"
-                         r"\b(?:the|this|an?|one) apple (?:will|shall|can) be yours\b", speech, re.I):
+        listener = re.escape(_actor_name(snapshot["listener"]))
+        address = rf"(?:(?:to\s+)?you\s*(?:,\s*{listener}\s*,\s*|\s+)|to\s+{listener}\s*,?\s+)?"
+        modifiers = r"(?:(?!(?:for|from|in|to|or|but|if|when|not|give|take|owe|your)\b)[\w'-]+,?\s+){0,8}"
+        if not re.search(r"\b(?:offer(?:ing)?|propose|give|giving|hand|handing|bring|bringing|accept|take|would you like|will you accept|do you want)\s+"
+                         + address + r"(?:an?|one|this|the|my)\s+" + modifiers + r"(?:apple|fruit)\b|"
+                         r"\b(?:the|this|an?|one)\s+" + modifiers + r"apple (?:will|shall|can|is) (?:be )?yours\b", speech, re.I):
             raise ValueError("The current offer gives one apple upfront for a recollection or public endorsement owed later. Offer that apple explicitly.")
     if index == 1 and outcome in ("advance_secret", "advance_endorsement"):
         if (not re.search(r"\b(?:accept|agree|take|yes)\b", speech, re.I)
@@ -2000,7 +2015,7 @@ def _request_payload(message, snapshot, correction):
             part["names_to_avoid"] = [name for name in names if not re.search(name_pattern(name), part["original"])]
         schema = {"type": "object", "properties": {key: {
             "type": "string", "minLength": 1,
-            "description": f"Only {part['speaker_name']}'s rewritten words to {part['listener_name']}. Keep this part's original names unchanged."
+            "description": f"Direct utterance by {part['speaker_name']} to {part['listener_name']}. No speaker label, narration or outer quotes. Keep original names unchanged."
         } for key, part in parts.items()}, "required": list(parts)}
         return (VOICE_REWRITE_INSTRUCTION, schema,
                 json.dumps({"parts": parts},
@@ -2036,6 +2051,8 @@ def _request_payload(message, snapshot, correction):
                        "provide the agreed private information to settle that obligation; no new apple is exchanged. "
                        + content_task + "Use only account_to_share and preserve its people and source. "
                        "Express its substance in natural words now, without inventing details or promising to tell it later. "
+                       "For your own former-life account, use I; keep another person's account with that person and its source. "
+                       "Keep only the supplied memory: no added relatives, places or incidents. "
                        "Public claims about authority do not substitute for a private memory or motive. "
                        "Use I/you, one or two complete sentences, and your own emotion. Return only parts.\n"
                        + snapshot["_speaker_direction"] + "\n" + EMOTION_INSTRUCTION)
@@ -2080,7 +2097,8 @@ def _request_payload(message, snapshot, correction):
         giver, receiver = _actor_name(snapshot["speaker"]), _actor_name(snapshot["listener"])
         instruction = (f"You are {giver}, speaking directly to {receiver} in English. Follow the supplied opening task. "
                        "Propose exactly one apple now in return for the listener's private recollection OR public endorsement later. "
-                       "Name the apple explicitly. You give the apple; the listener would owe YOU the offering. "
+                       "Explicitly offer one ordinary apple as the item. Do not invent an apple name, variety, deity or magical properties. "
+                       "You give the apple; the listener would owe YOU the offering. "
                        "Wait for acceptance. Do not perform the handoff yet or promise your own secrets to the listener. "
                        "If the task calls for an introduction, state your claimed divine role in one brief clause. "
                        "Use I/you, one or two complete sentences and your own emotion. Return only parts.\n"
@@ -2108,6 +2126,23 @@ def _request_payload(message, snapshot, correction):
                                "offering": offering, "offering_due_later": True, "apples_owed_back": 0},
                    "preceding_turns": snapshot["preceding_turns"],
                    "account_to_share": context.get("account_to_share")}
+    if (snapshot.get("request_kind") == "snake_turn" and snapshot["turn_index"] == 2
+            and transaction.get("selected_outcome") in ("secret", "endorsement") and snapshot.get("account_to_share")):
+        from snake import SNAKE_VOICE_BRIEF
+        speaker, listener = _actor_name(snapshot["speaker"]), _actor_name(snapshot["listener"])
+        report = context["account_to_share"]
+        instruction = (f"You are {speaker}, speaking directly to {listener} in English. "
+                       f"Your reply MUST tell this known event now: {report['assertion']} "
+                       "Describe it naturally with I/you for speaker/listener and the actual other people's names. "
+                       "Briefly acknowledge the listener's preceding offering first; that settles the existing obligation. "
+                       "Your event report comes from YOUR knowledge. "
+                       "This report is not what the listener just told you. Keep its actual actors and source. "
+                       "If firsthand, simply say what you saw or heard; otherwise preserve who told you. "
+                       "Say the event now, without announcing a rephrasing or explaining how accounts are owned, stored or sourced. "
+                       "No apple is exchanged, and no new debt is created. Use two short complete sentences and return only parts.\n"
+                       + SNAKE_VOICE_BRIEF + "\n" + EMOTION_INSTRUCTION)
+        context = {"speaker": {"name": speaker}, "listener": {"name": listener},
+                   "task": snapshot["task"], "account_to_share": report, "preceding_turns": snapshot["preceding_turns"]}
     stock_instruction = "" if snapshot.get("request_kind") == "conversation_closing" else _tree_stock_instruction(context)
     if correction:
         instruction += "\n\n" + correction
@@ -2123,11 +2158,15 @@ def _request_payload(message, snapshot, correction):
         instruction += " Existing apple promises already name a giver and receiver: the giver delivers to the receiver. Do not swap those roles or turn an existing promise into a new offer."
         instruction += (" Address the supplied topic and each speaker's immediate_objective; "
                         "an available apple proposal is an option, not an earlier agreement or the topic of every chat. "
-                        "Opinion reasons describe the owner's view of the partner using I/my for the owner.")
+                        "Opinion reasons start with I and describe my view of the partner. "
+                        "initiator_opinion judges the recipient; recipient_opinion judges the initiator. "
+                        "Never write an opinion criticizing its owner as if the owner were the partner.")
         if snapshot.get("purpose") == "gossip":
             instruction += (" In turn 0, convey discussion_focus.assertion with its actual subject and action, "
                             "not merely that someone made claims. Refusing an offering after receiving an apple "
-                            "is different from refusing the apple. Keep those events distinct.")
+                            "is different from refusing the apple. Keep those events distinct. "
+                            "Begin with the actual report, not a greeting or a request to discuss its general topic. "
+                            "Do not move the required disclosure into a later turn.")
     elif snapshot.get("request_kind") in ("snake_turn", "dialogue_repair", "conversation_closing"):
         instruction += (
             f"\nWrite only {_actor_name(snapshot['speaker'])}'s words to {_actor_name(snapshot['listener'])}. "
@@ -2359,7 +2398,7 @@ def _snake_turn_snapshot(snapshot, decision, turns):
 
     def speech_account(account):
         view = {key: value for key, value in account.items()
-                if key in ("assertion", "kind", "subject_name", "object_name", "knowledge_owner_name",
+                if key in ("assertion", "kind", "subject_name", "object_name",
                            "original_speaker_name", "immediate_source_name", "basis", "stance", "event_time")}
         for field in ("subject", "object", "original_speaker", "immediate_source"):
             actor_id = account.get(field + "_id")
@@ -2367,6 +2406,12 @@ def _snake_turn_snapshot(snapshot, decision, turns):
                 view[field + "_relation"] = ("speaker" if actor_id == speaker["actor_id"] else
                                              "listener" if actor_id == identities[listener_role]["actor_id"]
                                              else "another person")
+        if account.get("basis") == "firsthand":
+            # The speaker witnessed this event; naming them again as its owner
+            # or informant encourages a readout of bookkeeping rather than speech.
+            for field in ("original_speaker", "immediate_source"):
+                view.pop(field + "_name", None)
+                view.pop(field + "_relation", None)
         if account["kind"] == "private_motive":
             # The goal's target is not evidence that they helped or harmed its
             # owner. This disclosure concerns only the owner's private reason.
@@ -2501,7 +2546,8 @@ def _snake_turn_snapshot(snapshot, decision, turns):
     if account:
         account = speech_account(account)
         task += (" Express the substance of account_to_share.assertion now in natural words, preserving its owner and source. "
-                 "Use equivalent wording; a promise to tell it later does not disclose it.")
+                 "Use equivalent wording; a promise to tell it later does not disclose it. "
+                 "Simply tell what happened; do not announce a rephrasing, recite ownership labels or say you are storing knowledge.")
     preceding = [{"name": identities[turn.speaker]["name"], "role": turn.speaker, "text": turn.text}
                  for turn in turns]
     latest = preceding[-1:]

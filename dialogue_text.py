@@ -21,6 +21,15 @@ def contains_serialized_dialogue(text):
         return False
 
 
+def contains_speaker_label(text):
+    """Detect transcript prefixes, without changing the generated words."""
+    return bool(re.search(
+        r"(?:^|\n)\s*(?:[\"“']\s*)?(?:"
+        r"[A-Z][\w'-]*(?:\s+[A-Z][\w'-]*){1,3}\s*(?:(?:speaks?|says?|replies?|responds?|asks?|answers?)\s*)?|"
+        r"[A-Z][\w'-]*\s+(?:speaks?|says?|replies?|responds?|asks?|answers?)\s*|"
+        r"(?i:speaker|initiator|recipient)\s*)[:：]", text))
+
+
 def speech_is_complete(text):
     """Detect an unfinished ending without guessing or adding missing speech."""
     text = text.strip().rstrip(_CLOSING_MARKS)
