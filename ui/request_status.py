@@ -6,6 +6,7 @@ from time import monotonic
 import pygame
 
 from constants import ACCENT, HUD_HEADER_HEIGHT, INK, LLM_PANEL_WIDTH, LLM_SLOT_HEIGHT, MUTED, PAPER
+from .button import Button
 
 
 class RequestStatus:
@@ -14,6 +15,10 @@ class RequestStatus:
         self.rect = pygame.Rect(24, 16, LLM_PANEL_WIDTH, self.expanded_height)
         self.header = pygame.Rect(self.rect.x, self.rect.y, self.rect.width, HUD_HEADER_HEIGHT)
         self.collapsed = False
+
+    def output_button(self, slot):
+        y = self.rect.y + HUD_HEADER_HEIGHT + 8 + (slot - 1) * LLM_SLOT_HEIGHT
+        return Button((self.rect.right - 64, y + 23, 54, 26), "View")
 
     def handle_event(self, app, event):
         if event.type not in (pygame.MOUSEWHEEL, pygame.MOUSEBUTTONDOWN,
@@ -24,6 +29,12 @@ class RequestStatus:
             return False
         app.game.pan_start = app.game.pan_last = None
         app.game.panning = False
+        if not self.collapsed:
+            for worker in app.requests.statuses():
+                if worker.log is not None and self.output_button(worker.slot).clicked(event):
+                    app.open_stats()
+                    app.stats.open_log(worker.log)
+                    return True
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.header.collidepoint(pos):
             self.collapsed = not self.collapsed
             self.rect.height = HUD_HEADER_HEIGHT if self.collapsed else self.expanded_height
@@ -76,6 +87,7 @@ class RequestStatus:
             timer_rect = timer.get_rect(topright=(self.rect.right - 12, y))
             surface.blit(timer, timer_rect)
             line(f"Thread {slot}: {state}", x + 18, y, timer_rect.left - x - 28)
-            line(worker.participants, x, y + 20, width)
-            line(worker.topic, x, y + 38, width, MUTED)
+            self.output_button(slot).draw(surface, font, enabled=worker.log is not None)
+            line(worker.participants, x, y + 20, width - 62)
+            line(worker.topic, x, y + 38, width - 62, MUTED)
             line(worker.stage, x, y + 56, width, ACCENT)

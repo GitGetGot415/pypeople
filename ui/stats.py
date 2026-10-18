@@ -1,8 +1,9 @@
 import pygame
+from time import monotonic
 
 from character_data import DEFAULT_COLORS, FIELDS
 from constants import (ACCENT, FAILED_CONVERSATION_COLOR, FAILED_CONVERSATION_SELECTED_COLOR,
-                       GRASS, INK, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER, SNAKE_NAME)
+                       GRASS, INK, MODEL_LOG_REFRESH_SECONDS, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER, SNAKE_NAME)
 from conversation_history import display_parts, usable_rewrite, uses_original_dialogue
 from emotions import portrait_expression
 from social import assertion_text, claim_by_id, fact_by_id, phase_label, selected_beliefs
@@ -13,14 +14,15 @@ from .world import snake_artwork
 
 
 class StatsScreen:
-    """Browse live NPC profiles and the current game's conversation history."""
+    """Browse NPCs, conversation history, and live or saved model diagnostics."""
 
     def __init__(self):
         self.back_button = Button((184, 56, 170, 38), "Back to game")
         self.tabs = {name: Button(rect, name) for name, rect in (
             ("Statistics", (512, 146, 108, 36)), ("Opinions", (628, 146, 100, 36)),
-            ("Conversations", (736, 146, 144, 36)))}
-        self.original_toggle = Button((888, 146, 192, 36), "Original dialogue: Off")
+            ("Conversations", (736, 146, 144, 36)), ("Model logs", (888, 146, 112, 36)))}
+        self.original_toggle = Button((888, 102, 192, 30), "Original dialogue: Off")
+        self.follow_toggle = Button((1008, 146, 72, 36), "Follow")
         self.list_rect = pygame.Rect(200, 184, 264, 440)
         self.detail_rect = pygame.Rect(512, 200, 568, 424)
         self.open()
@@ -28,6 +30,9 @@ class StatsScreen:
     def open(self):
         self.selected_npc = None
         self.selected_conversation = None
+        self.selected_log = None
+        self.follow_log = True
+        self._log_cache = None
         self.tab = "Statistics"
         self.list_scroll = 0
         self.detail_scroll = 0
@@ -44,10 +49,20 @@ class StatsScreen:
         self.detail_scroll = 0
         self.scroll_focus = "detail"
 
+    def open_log(self, log):
+        self.tab = "Model logs"
+        self.selected_log = log
+        self.detail_scroll = 0
+        self.follow_log = True
+        self.scroll_focus = "detail"
+
     def _list_rows(self, app):
         rows = []
         top = 0
-        if self.tab == "Conversations":
+        if self.tab == "Model logs":
+            entries = [(log, f"{log.metadata['participants']}\n{log.metadata['started'][:19]} UTC / Thread {log.metadata['slot']}")
+                       for log in app.requests.debug_logs.history()]
+        elif self.tab == "Conversations":
             entries = [
                 (record, f"{index}. {' & '.join(record.participants)}")
                 for index, record in reversed(list(enumerate(app.conversation_history, start=1)))
@@ -97,6 +112,45 @@ class StatsScreen:
                 if original:
                     self.dialogue_backgrounds.append((top, height()))
                 gap()
+
+        if self.tab == "Model logs":
+            log = self.selected_log
+            if log is None:
+                add("Select a model request to inspect its output, reasoning, stages, and errors.", color=MUTED)
+                add(f"Saved in: {app.requests.debug_logs.directory}", app.small_font, MUTED)
+                if app.requests.debug_logs.read_error:
+                    add(app.requests.debug_logs.read_error, app.small_font, MUTED)
+                return lines
+            revision, events, save_error = log.snapshot()
+            cache_key = (log, revision, save_error)
+            now = monotonic()
+            if self._log_cache is not None:
+                previous_key, previous_lines, refreshed_at = self._log_cache
+                if previous_key == cache_key or (previous_key[0] is log and previous_key[2] == save_error
+                                                and now - refreshed_at < MODEL_LOG_REFRESH_SECONDS):
+                    return previous_lines
+            meta = log.metadata
+            add(meta["participants"], app.heading_font)
+            add(f"{meta['provider']} / {meta['model']} / Thread {meta['slot']}", app.small_font, MUTED)
+            add(f"Started: {meta['started']}", app.small_font, MUTED)
+            add(f"Request: {meta['request_id']} / Session: {meta['session_id']}", app.small_font, MUTED)
+            add(meta["topic"], app.small_font)
+            add(f"Saved in: {log.path}", app.small_font, MUTED)
+            if save_error:
+                add(save_error, color=ACCENT)
+            gap()
+            add("Raw diagnostics; generated output has not necessarily been accepted.", app.small_font, MUTED)
+            add("Reasoning is shown only when supplied by the provider. Gemini supplies summaries.", app.small_font, MUTED)
+            gap()
+            labels = {"output": "Model output", "reasoning": "Reasoning / summary"}
+            for event in events:
+                add(f"{event['elapsed']:.1f}s / {labels.get(event['kind'], event['kind'].title())}", app.small_font, ACCENT)
+                add(event["text"].replace("\x00", "[NUL]"), app.small_font)
+                gap()
+            if not any(event["kind"] in ("output", "reasoning", "finished", "error") for event in events):
+                add("Waiting for provider output; model loading and prompt evaluation may take time.", app.small_font, MUTED)
+            self._log_cache = (cache_key, lines, now)
+            return lines
 
         if self.tab == "Conversations":
             record = self.selected_conversation
@@ -292,10 +346,13 @@ class StatsScreen:
     def _scroll_limits(self, app):
         _, list_height = self._list_rows(app)
         detail_height = sum(font.get_linesize() for _, font, _, _ in self._detail_lines(app))
-        return {
+        limits = {
             "list": max(0, list_height - self.list_rect.height),
             "detail": max(0, detail_height - self.detail_rect.height),
         }
+        if self.tab == "Model logs" and self.follow_log:
+            self.detail_scroll = limits["detail"]
+        return limits
 
     def _scroll(self, pane, value, limits):
         setattr(self, f"{pane}_scroll", max(0, min(round(value), limits[pane])))
@@ -317,14 +374,22 @@ class StatsScreen:
             return
         for name, button in self.tabs.items():
             if button.clicked(event):
-                if (self.tab == "Conversations") != (name == "Conversations"):
+                if self.tab != name and (self.tab not in ("Statistics", "Opinions") or name not in ("Statistics", "Opinions")):
                     self.list_scroll = 0
                 self.tab = name
                 if name == "Conversations" and self.selected_conversation is None and app.conversation_history:
                     self.selected_conversation = app.conversation_history[-1]
+                if name == "Model logs" and self.selected_log is None:
+                    logs = app.requests.debug_logs.history()
+                    if logs:
+                        self.open_log(logs[0])
                 self.detail_scroll = 0
                 self.scroll_focus = "detail"
                 return
+
+        if self.tab == "Model logs" and self.follow_toggle.clicked(event):
+            self.follow_log = not self.follow_log
+            return
 
         if self.tab == "Conversations" and self.original_toggle.clicked(event):
             app.original_dialogue = not app.original_dialogue
@@ -342,6 +407,8 @@ class StatsScreen:
                 self.scroll_focus = pane
                 scroll = getattr(self, f"{pane}_scroll")
                 if event.type == pygame.MOUSEWHEEL:
+                    if pane == "detail" and self.tab == "Model logs":
+                        self.follow_log = False
                     self._scroll(pane, scroll - event.y * 48, limits)
                     return
                 if event.button != 1:
@@ -359,6 +426,8 @@ class StatsScreen:
                             return
                 track, thumb = self._scrollbar(rect, scroll, limits[pane])
                 if limits[pane] and track.collidepoint(pos):
+                    if pane == "detail" and self.tab == "Model logs":
+                        self.follow_log = False
                     offset = pos[1] - track.top - thumb.height / 2
                     self._scroll(pane, offset * limits[pane] / (track.height - thumb.height), limits)
                     return
@@ -368,6 +437,8 @@ class StatsScreen:
                         if top <= pos[1] - rect.top + scroll < top + height:
                             if self.tab == "Conversations":
                                 self.selected_conversation = entry
+                            elif self.tab == "Model logs":
+                                self.open_log(entry)
                             else:
                                 self.selected_npc = entry
                                 self.show_private = False
@@ -384,6 +455,8 @@ class StatsScreen:
                 pygame.K_HOME: -scroll, pygame.K_END: limits[pane] - scroll,
             }
             if event.key in steps:
+                if pane == "detail" and self.tab == "Model logs":
+                    self.follow_log = event.key == pygame.K_END
                 self._scroll(pane, scroll + steps[event.key], limits)
 
     def draw(self, app):
@@ -395,7 +468,9 @@ class StatsScreen:
         app.game.draw_clock(app)
         pygame.draw.rect(surface, PAPER, (184, 134, 296, 506))
         pygame.draw.rect(surface, PAPER, (496, 134, 600, 506))
-        list_title = f"Conversations ({len(app.conversation_history)})" if self.tab == "Conversations" else f"Living {len(app.npcs)} / Departed {len(app.simulation.archived)}"
+        list_title = ("Model requests" if self.tab == "Model logs" else
+                      f"Conversations ({len(app.conversation_history)})" if self.tab == "Conversations" else
+                      f"Living {len(app.npcs)} / Departed {len(app.simulation.archived)}")
         surface.blit(app.font.render(list_title, True, INK), (200, 150))
         for name, button in self.tabs.items():
             button.draw(surface, app.small_font)
@@ -404,6 +479,9 @@ class StatsScreen:
         if self.tab == "Conversations":
             self.original_toggle.label = "Original dialogue: " + ("On" if app.original_dialogue else "Off")
             self.original_toggle.draw(surface, app.small_font)
+        if self.tab == "Model logs":
+            self.follow_toggle.label = "Follow" if self.follow_log else "Paused"
+            self.follow_toggle.draw(surface, app.small_font)
 
         limits = self._scroll_limits(app)
         for pane in limits:
@@ -413,11 +491,14 @@ class StatsScreen:
         rows, _ = self._list_rows(app)
         if not rows and self.tab == "Conversations":
             surface.blit(app.small_font.render("No conversations yet.", True, MUTED), (self.list_rect.x, self.list_rect.y + 12))
+        if not rows and self.tab == "Model logs":
+            surface.blit(app.small_font.render("No model requests yet.", True, MUTED), (self.list_rect.x, self.list_rect.y + 12))
         for entry, top, height, lines in rows:
             row = pygame.Rect(self.list_rect.x, self.list_rect.y + top - self.list_scroll, self.list_rect.width - 14, height)
             if not row.colliderect(self.list_rect):
                 continue
-            selected_entry = self.selected_conversation if self.tab == "Conversations" else self.selected_npc
+            selected_entry = (self.selected_log if self.tab == "Model logs" else
+                              self.selected_conversation if self.tab == "Conversations" else self.selected_npc)
             selected = entry is selected_entry
             if self.tab == "Conversations" and entry.status == "Failed":
                 color = FAILED_CONVERSATION_SELECTED_COLOR if selected else FAILED_CONVERSATION_COLOR

@@ -19,6 +19,7 @@ from dialogue_rules import (mentions_account, named_context, named_references, n
                            validate_account_speech, validate_apple_roles, validate_continuity,
                            validate_claim_source, validate_english, validate_opinion_reason)
 from ollama_manager import DEFAULT_OLLAMA_MODEL
+from model_debug import record_output, streaming_output
 from social import phase_index, validate_agreements, validate_information
 from purgatory import Attitudes
 
@@ -318,6 +319,7 @@ def request_voice_rewrite(provider, api_key, response, snapshot, *, deadline,
     except Exception as exc:
         # Presentation failure must never discard an accepted original or its effects.
         logger.warning("Voice rewrite unavailable; using original dialogue: %s", exc)
+        record_output("validation", f"Voice rewrite unavailable; using original dialogue: {exc}")
         return []
 
 
@@ -2188,6 +2190,9 @@ def _request_timeout(snapshot):
 
 def _request_gemini(api_key, message, snapshot, *, correction=""):
     instruction, schema, content = _request_payload(message, snapshot, correction)
+    record_output("call", snapshot.get("request_kind", "reply"))
+    if correction:
+        record_output("validation", correction)
     try:
         with genai.Client(
             api_key=api_key,
@@ -2197,34 +2202,48 @@ def _request_gemini(api_key, message, snapshot, *, correction=""):
                 retry_options=types.HttpRetryOptions(attempts=1),
             ),
         ) as client:
-            response = client.models.generate_content(
-                model=MODEL,
-                contents=content,
-                config=types.GenerateContentConfig(
-                    system_instruction=instruction,
-                    temperature=0 if (snapshot.get("request_kind") == "intent"
-                                      or snapshot.get("transaction", {}).get("apple_handoff_now")) else None,
-                    response_mime_type="application/json",
-                    response_schema=schema,
-                    candidate_count=1,
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                ),
+            config = types.GenerateContentConfig(
+                system_instruction=instruction,
+                temperature=0 if (snapshot.get("request_kind") == "intent"
+                                  or snapshot.get("transaction", {}).get("apple_handoff_now")) else None,
+                response_mime_type="application/json",
+                response_schema=schema,
+                candidate_count=1,
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             )
-            feedback = response.prompt_feedback
-            if (
-                feedback
-                and feedback.block_reason
-                and feedback.block_reason != types.BlockedReason.BLOCKED_REASON_UNSPECIFIED
-            ):
-                raise RequestError("Gemini blocked this request. Try another message.")
-            if not response.candidates:
-                raise RequestError("Gemini returned an empty reply. Try again.")
-            reason = response.candidates[0].finish_reason
+            live = streaming_output()
+            if live:
+                config.thinking_config = types.ThinkingConfig(include_thoughts=True)
+                responses = client.models.generate_content_stream(model=MODEL, contents=content, config=config)
+            else:
+                responses = [client.models.generate_content(model=MODEL, contents=content, config=config)]
+            chunks, reason = [], None
+            deadline = monotonic() + _request_timeout(snapshot)
+            for response in responses:
+                if monotonic() > deadline:
+                    raise RequestError("Gemini timed out. Check your connection and try again.")
+                feedback = response.prompt_feedback
+                if (feedback and feedback.block_reason
+                        and feedback.block_reason != types.BlockedReason.BLOCKED_REASON_UNSPECIFIED):
+                    raise RequestError("Gemini blocked this request. Try another message.")
+                if not response.candidates:
+                    continue
+                candidate = response.candidates[0]
+                if candidate.finish_reason is not None:
+                    reason = candidate.finish_reason
+                if live:
+                    for part in (candidate.content.parts if candidate.content else ()) or ():
+                        if part.text:
+                            record_output("reasoning" if part.thought else "output", part.text)
+                            if not part.thought:
+                                chunks.append(part.text)
+                elif response.text:
+                    chunks.append(response.text)
             if reason == types.FinishReason.MAX_TOKENS:
                 raise RequestError("Gemini returned an incomplete reply. Try again.")
             if reason != types.FinishReason.STOP:
                 raise RequestError("Gemini could not finish a reply. Try another message.")
-            text = response.text
+            text = "".join(chunks)
             if not text or not text.strip():
                 raise RequestError("Gemini returned an empty reply. Try again.")
             return validate_response(text, snapshot)
@@ -2244,6 +2263,9 @@ def _request_gemini(api_key, message, snapshot, *, correction=""):
 
 def _request_ollama(message, snapshot, model=DEFAULT_OLLAMA_MODEL, *, correction=""):
     instruction, schema, content = _request_payload(message, snapshot, correction)
+    record_output("call", snapshot.get("request_kind", "reply"))
+    if correction:
+        record_output("validation", correction)
     options = {
         "num_ctx": 16384 if snapshot.get("request_kind") in ("conversation", "snake_decision") else 8192,
         "num_predict": -1,
@@ -2257,38 +2279,61 @@ def _request_ollama(message, snapshot, model=DEFAULT_OLLAMA_MODEL, *, correction
     elif correction or snapshot.get("request_kind") == "intent":
         options["temperature"] = 0
     try:
-        response = httpx.post(
-            OLLAMA_URL,
-            json={
-                "model": model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": instruction + "\nReturn only JSON matching this schema: "
-                        + json.dumps(schema, ensure_ascii=False, separators=(",", ":")),
-                    },
-                    {
-                        "role": "user",
-                        "content": content,
-                    },
-                ],
-                "format": schema,
-                "stream": False,
-                "keep_alive": "15m",
-                # The profiles, rules, schema, and dialogue exceed Ollama's
-                # default context. Truncation can remove the speaker rules.
-                "options": options,
-            },
-            timeout=_request_timeout(snapshot),
-        )
-        if response.status_code == 404:
-            raise RequestError(f"Ollama could not find {model}. Run: ollama pull {model}")
-        if response.is_error:
-            raise RequestError(f"Ollama could not process this request. Check that {model} is available.")
-        data = response.json()
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": instruction + "\nReturn only JSON matching this schema: "
+                    + json.dumps(schema, ensure_ascii=False, separators=(",", ":")),
+                },
+                {
+                    "role": "user",
+                    "content": content,
+                },
+            ],
+            "format": schema,
+            "stream": streaming_output(),
+            "keep_alive": "15m",
+            # The profiles, rules, schema, and dialogue exceed Ollama's
+            # default context. Truncation can remove the speaker rules.
+            "options": options,
+        }
+
+        def check_response(response):
+            if response.status_code == 404:
+                raise RequestError(f"Ollama could not find {model}. Run: ollama pull {model}")
+            if response.is_error:
+                raise RequestError(f"Ollama could not process this request. Check that {model} is available.")
+
+        if streaming_output():
+            deadline = monotonic() + _request_timeout(snapshot)
+            chunks, data = [], {}
+            with httpx.stream("POST", OLLAMA_URL, json=payload, timeout=_request_timeout(snapshot)) as response:
+                check_response(response)
+                for line in response.iter_lines():
+                    if monotonic() > deadline:
+                        raise RequestError(f"Ollama timed out. Try again after {model} finishes loading.")
+                    if not line.strip():
+                        continue
+                    data = json.loads(line)
+                    if data.get("error"):
+                        raise RequestError(f"Ollama could not process this request. Check that {model} is available.")
+                    part = data.get("message", {})
+                    record_output("reasoning", part.get("thinking", ""))
+                    text = part.get("content", "")
+                    record_output("output", text)
+                    chunks.append(text)
+                    if data.get("done"):
+                        break
+            content = "".join(chunks)
+        else:
+            response = httpx.post(OLLAMA_URL, json=payload, timeout=_request_timeout(snapshot))
+            check_response(response)
+            data = response.json()
+            content = data["message"]["content"]
         if not data.get("done", False) or data.get("done_reason") not in (None, "stop"):
             raise RequestError("Ollama returned an incomplete reply. Try again.")
-        content = data["message"]["content"]
         return validate_response(content, snapshot)
     except (RequestError, InvalidResponseError):
         raise
