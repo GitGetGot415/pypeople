@@ -36,9 +36,14 @@ def usable_rewrite(parts, rewritten):
 
 def display_parts(parts, rewritten=(), *, original=False):
     """Select presentation text while keeping the original part's metadata."""
-    use_rewrite = not original and usable_rewrite(parts, rewritten)
-    return [(rewritten[index] if use_rewrite else part[0], part[1])
+    use_original = uses_original_dialogue(parts, rewritten, original=original)
+    return [(part[0] if use_original else rewritten[index], part[1])
             for index, part in enumerate(parts)]
+
+
+def uses_original_dialogue(parts, rewritten=(), *, original=False):
+    """Rendering and text selection agree when a missing rewrite falls back."""
+    return original or not usable_rewrite(parts, rewritten)
 
 
 @dataclass

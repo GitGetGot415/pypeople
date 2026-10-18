@@ -1,8 +1,9 @@
 import pygame
 from llm import ConversationTurn
-from constants import INK, MUTED, PAPER, WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH
+from constants import (DIALOGUE_PANEL_HEIGHT, INK, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER,
+                       WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH)
 from emotions import portrait_expression
-from conversation_history import display_parts
+from conversation_history import display_parts, uses_original_dialogue
 
 from .button import Button
 from .event_feed import EventFeed
@@ -101,7 +102,7 @@ class GameScreen:
 
     @property
     def world_viewport(self):
-        height = WINDOW_SIZE[1] - 180 if self.dialogue_open else WINDOW_SIZE[1]
+        height = WINDOW_SIZE[1] - DIALOGUE_PANEL_HEIGHT if self.dialogue_open else WINDOW_SIZE[1]
         return pygame.Rect(0, 0, WINDOW_SIZE[0], height)
 
     @property
@@ -336,12 +337,13 @@ class GameScreen:
 
         if not self.dialogue_open:
             return
-        dialogue_top = self.world_viewport.bottom
-        pygame.draw.rect(app.window, PAPER, (0, dialogue_top, WINDOW_SIZE[0], 180))
-        pygame.draw.line(app.window, (129, 154, 110), (0, dialogue_top), (WINDOW_SIZE[0], dialogue_top), 3)
         if self.viewed_conversation is not None:
             self.draw_conversation(app)
             return
+        rewritten = self.selected_npc.rewritten_reply
+        original = uses_original_dialogue([(self.reply, None)], [rewritten] if rewritten else (),
+                                          original=app.original_dialogue)
+        self.draw_dialogue_background(app, original)
         if self.dialogue_open:
             self.draw_portrait(app, self.selected_npc, self.selected_npc.portrait_emotion)
         status = self.selected_npc.status if self.selected_npc is not None else f"{len(app.npcs)} NPCs"
@@ -354,7 +356,6 @@ class GameScreen:
         rendered_status = app.small_font.render(status, True, MUTED)
         app.window.blit(rendered_status, rendered_status.get_rect(topright=(1256, 558)))
         app.window.blit(app.font.render(self.selected_npc.name, True, INK), (self.reply_rect.x, 557))
-        rewritten = self.selected_npc.rewritten_reply
         reply = display_parts([(self.reply, None)], [rewritten] if rewritten else (), original=app.original_dialogue)[0][0]
         version = (reply, app.original_dialogue)
         if self._reply_version != version:
@@ -380,6 +381,12 @@ class GameScreen:
         if not closing:
             count = app.small_font.render(f"{len(self.prompt_input.text)}/300", True, MUTED)
             app.window.blit(count, count.get_rect(topright=(1256, 696)))
+
+    def draw_dialogue_background(self, app, original):
+        top = WINDOW_SIZE[1] - DIALOGUE_PANEL_HEIGHT
+        color = ORIGINAL_DIALOGUE_PAPER if original else PAPER
+        pygame.draw.rect(app.window, color, (0, top, WINDOW_SIZE[0], DIALOGUE_PANEL_HEIGHT))
+        pygame.draw.line(app.window, (129, 154, 110), (0, top), (WINDOW_SIZE[0], top), 3)
 
     def draw_portrait(self, app, npc, emotion=None):
         pygame.draw.rect(app.window, (255, 254, 248), self.portrait_rect)
@@ -414,6 +421,12 @@ class GameScreen:
             self.dialogue_scroll = 0
         page = self.conversation_pages[self.conversation_page_index] if self.conversation_pages else None
         turn, part, text = page if page is not None else (None, None, "")
+        original = app.original_dialogue or failed
+        if turn is not None and not failed:
+            index = next(index for index, source_turn in enumerate(conversation.turns) if source_turn is turn)
+            original = uses_original_dialogue(turn.parts, conversation.record.rewritten_parts.get(index, ()),
+                                              original=app.original_dialogue)
+        self.draw_dialogue_background(app, original)
         if turn is not None:
             speaker = conversation.initiator if turn.speaker == "initiator" else conversation.recipient
             title = speaker.name + (" - failed draft" if failed else "")

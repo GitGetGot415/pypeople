@@ -186,20 +186,32 @@ class VoiceRewriteResponse(StrictResponse):
     turns: list[list[str]]
 
 
-VOICE_REWRITE_INSTRUCTION = """Rewrite only the supplied original speech in each speaker's own voice.
-Preserve speakers, turn order, part association and overall conversational progression.
+VOICE_REWRITE_INSTRUCTION = """Rewrite each independent speech slot as expressive, engaging character dialogue.
+For each part_N, speaker_name speaks ONLY that slot's original words to listener_name.
+Never copy another slot's speech, swap speakers, or give the listener's answer. I/my belongs
+to this speaker; you/your belongs to this listener.
+
+Preserve every proper name EXACTLY as written in the original, including abbreviated forms.
+Never rename people or places, replace the listener's name with the speaker's, expand or shorten
+names, or alter names for an accent or stutter. Keep names_to_preserve verbatim in this slot;
+do not introduce any of its names_to_avoid, including the speaker's own name when absent from the original.
+
+Make a substantial voice rewrite: rebuild sentence structure, rhythm, cadence and word choice.
+Go beyond synonym swaps, word rearrangement and lightly edited copies. Follow THIS slot's
+speaking_brief; let its personality show in idiom, contractions, humor, hesitation, swearing
+and explicitly specified mannerisms. Use lively, natural spoken phrasing. Prefer everyday words
+over stiff legalistic language unless the brief calls for formality. Warm, clear, concise voices
+should sound approachable. Restrained voices still have individual rhythm. Short natural phrases
+may stay unchanged. Do not force accents, jokes, profanity or a tic into every sentence.
+Let the recorded emotion and intensity subtly influence delivery without replacing the speaker's voice.
+
 Preserve events, chronology, factual claims, uncertainty, negation, agreements, quantities and deadlines.
-Preserve who experienced an event, who reported it, and what each speaker knows.
-Do not invent events, memories, people, locations, disclosures, promises or actions.
-Use each speaker's supplied speaking brief without transferring mannerisms between speakers.
-Let each original part's emotion and intensity subtly affect delivery while the voice remains recognizable.
-Do not turn every angry speaker into the same voice or force a mannerism into every sentence.
-Explicit accents, stutters, spelling choices and swearing in the brief are permitted.
-Return one flat JSON object matching the supplied schema. Each part_N key identifies one
-original part; its value must be ONLY that part's rewritten spoken words as a nonempty string.
-Rewrite the words rather than copying the original unchanged. Include every supplied key exactly once.
-Never put JSON, serialized objects, speaker labels, emotion metadata or formatting fences inside a value.
-Do not add or remove parts, return game outcomes, or recalculate emotions."""
+Keep questions, commitments, who experienced or reported events, and who knows what intact.
+Do not invent events, memories, people, places, disclosures, promises, actions or new questions.
+
+Return ONLY the flat JSON object in the schema, every part_N exactly once. Each value contains
+only that slot's rewritten spoken words: no speaker labels, serialized objects, emotions or fences.
+Keep part association, turn order and progression. Check names and speaker/listener ownership before returning."""
 
 
 def voice_rewrite_snapshot(response, snapshot):
@@ -1969,11 +1981,28 @@ def _tree_stock_instruction(context):
 def _request_payload(message, snapshot, correction):
     """Build the same instructions and world payload for both providers."""
     if snapshot.get("request_kind") == "voice_rewrite":
-        parts = _voice_rewrite_parts(snapshot["turns"])
-        schema = {"type": "object", "properties": {key: {"type": "string", "minLength": 1}
-                  for key in parts}, "required": list(parts)}
+        speakers = snapshot["speakers"]
+        parts = {key: {
+            "speaker_name": speakers[part["speaker"]]["name"],
+            "listener_name": next((person["name"] for role, person in speakers.items()
+                                   if role != part["speaker"]), "You"),
+            "speaking_brief": speakers[part["speaker"]]["speaking_brief"],
+            "emotion": part["emotion"], "original": part["original"],
+        } for key, part in _voice_rewrite_parts(snapshot["turns"]).items()}
+        # Repeat the exact references locally so small models need not resolve
+        # names across other speakers' very similar lines.
+        names = sorted({form for person in speakers.values()
+                        for form in (person["name"], person["name"].split()[0])}, key=lambda name: (-len(name), name))
+        for part in parts.values():
+            part["names_to_preserve"] = list(dict.fromkeys(re.findall(
+                "|".join(name_pattern(name) for name in names), part["original"])))
+            part["names_to_avoid"] = [name for name in names if not re.search(name_pattern(name), part["original"])]
+        schema = {"type": "object", "properties": {key: {
+            "type": "string", "minLength": 1,
+            "description": f"Only {part['speaker_name']}'s rewritten words to {part['listener_name']}. Keep this part's original names unchanged."
+        } for key, part in parts.items()}, "required": list(parts)}
         return (VOICE_REWRITE_INSTRUCTION, schema,
-                json.dumps({"speakers": snapshot["speakers"], "parts": parts},
+                json.dumps({"parts": parts},
                            ensure_ascii=False, separators=(",", ":")))
     instruction, schema, _ = response_contract(snapshot, correction=bool(correction))
     context = world_context(snapshot, correction=bool(correction))

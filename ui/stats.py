@@ -1,8 +1,8 @@
 import pygame
 
 from character_data import DEFAULT_COLORS, FIELDS
-from constants import ACCENT, GRASS, INK, MUTED, PAPER, SNAKE_NAME
-from conversation_history import display_parts, usable_rewrite
+from constants import ACCENT, GRASS, INK, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER, SNAKE_NAME
+from conversation_history import display_parts, usable_rewrite, uses_original_dialogue
 from emotions import portrait_expression
 from social import assertion_text, claim_by_id, fact_by_id, phase_label, selected_beliefs
 
@@ -35,6 +35,7 @@ class StatsScreen:
         self.private_toggle_top = None
         self.promise_links = []
         self.dialogue_portraits = []
+        self.dialogue_backgrounds = []
 
     def open_record(self, record):
         self.tab = "Conversations"
@@ -64,6 +65,7 @@ class StatsScreen:
         self.private_toggle_top = None
         self.promise_links = []
         self.dialogue_portraits = []
+        self.dialogue_backgrounds = []
 
         def add(text, font=app.font, color=INK, indent=0):
             for paragraph in str(text).splitlines() or [""]:
@@ -76,7 +78,7 @@ class StatsScreen:
         def height():
             return sum(font.get_linesize() for _, font, _, _ in lines)
 
-        def message(speaker, parts):
+        def message(speaker, parts, *, original=True):
             npc = next((npc for npc in app.simulation.actors if npc.name == speaker), None)
             indent = 112 if npc is not None else 0
             for emotion, page in paginate_parts(parts, app.font, self.detail_rect.width - 20 - indent):
@@ -91,6 +93,8 @@ class StatsScreen:
                     portrait_height = 94 + len(labels) * app.small_font.get_linesize()
                     while height() - top < portrait_height:
                         gap()
+                if original:
+                    self.dialogue_backgrounds.append((top, height()))
                 gap()
 
         if self.tab == "Conversations":
@@ -131,8 +135,10 @@ class StatsScreen:
             for index, (speaker, text) in enumerate(record.turns):
                 parts = record.dialogue_parts.get(index)
                 if parts:
+                    rewritten = record.rewritten_parts.get(index, ())
                     message(speaker, display_parts([(part["text"], part["emotion"]) for part in parts],
-                        record.rewritten_parts.get(index, ()), original=app.original_dialogue))
+                        rewritten, original=app.original_dialogue),
+                        original=uses_original_dialogue(parts, rewritten, original=app.original_dialogue))
                 else:
                     message(speaker, [(text, None)])
             if record.failed_turns:
@@ -416,8 +422,13 @@ class StatsScreen:
             for index, line in enumerate(lines):
                 surface.blit(app.font.render(line, True, PAPER if selected else INK), (row.x + 8, row.y + 10 + index * app.font.get_linesize()))
         surface.set_clip(self.detail_rect.clip(previous_clip))
+        lines = self._detail_lines(app)
+        for top, bottom in self.dialogue_backgrounds:
+            pygame.draw.rect(surface, ORIGINAL_DIALOGUE_PAPER,
+                (self.detail_rect.x - 4, self.detail_rect.top + top - self.detail_scroll,
+                 self.detail_rect.width - 8, bottom - top))
         y = self.detail_rect.top - self.detail_scroll
-        for line, font, color, indent in self._detail_lines(app):
+        for line, font, color, indent in lines:
             if self.detail_rect.top - font.get_linesize() < y < self.detail_rect.bottom:
                 surface.blit(font.render(line, True, color), (self.detail_rect.x + indent, y))
             y += font.get_linesize()
