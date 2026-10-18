@@ -3,6 +3,7 @@
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from constants import SNAKE_NAME
 
 
 class Attitudes(BaseModel):
@@ -17,18 +18,20 @@ class Attitudes(BaseModel):
 
 def initial_attitudes():
     return {
-        "belief": "uncertain", "belief_reason": "Has not heard the snake's claims yet.",
-        "trust": 0, "trust_reason": "Has not dealt with the snake yet.",
-        "authority": "uncertain", "authority_reason": "Has not encountered the snake's rules yet.",
+        "belief": "uncertain", "belief_reason": f"Has not heard {SNAKE_NAME}'s claims yet.",
+        "trust": 0, "trust_reason": f"Has not dealt with {SNAKE_NAME} yet.",
+        "authority": "uncertain", "authority_reason": f"Has not encountered {SNAKE_NAME}'s rules yet.",
     }
 
 
 def remember_description(npc):
     """The authored description is the only source of former-life knowledge."""
     from social import add_fact
+    from character_data import description_parts
+    from dialogue_text import split_sentences
 
-    description = npc.character["Details"].strip()
-    if description:
+    _, description = description_parts(npc.character["Details"])
+    for index, memory in enumerate(split_sentences(description)):
         add_fact(npc.world, "former_life", npc, npc.world.snake,
-                 f"{npc.id}:description", None,
-                 f"From {npc.name}'s own description: {description}", [npc])
+                 f"{npc.id}:description:{index}", None,
+                 f"From {npc.name}'s own description: {memory}", [npc])

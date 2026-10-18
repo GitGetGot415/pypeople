@@ -6,7 +6,7 @@ import math
 from constants import (
     APPLE_ADVANCE_SECONDS, COMPANY_SOCIAL_RECOVERY, CROWD_LIMIT, DECISION_SECONDS,
     FAILURE_COOLDOWN, FRUIT_PER_PHASE, HEARING_RADIUS, MAX_SIMULATION_STEP_SECONDS, PROTECTED_POPULATION,
-    RECOVERY_SECONDS, SATISFACTION_PHASE_LOSS, SOCIAL_RADIUS,
+    RECOVERY_SECONDS, SATISFACTION_PHASE_LOSS, SOCIAL_RADIUS, SNAKE_NAME,
     STARTING_DAY, STARTING_PAUSED, STARTING_PHASE, WITNESS_RADIUS,
 )
 
@@ -243,7 +243,7 @@ class Simulation:
             contested = npc.id in self.snake.offenses or self.snake.standing.get(npc.id, 0) < -8
             if (npc.id not in self.snake.pardons and self.eating_permitted(npc)
                     and (contested or len(self.npcs) > CROWD_LIMIT)):
-                reason = "The snake disputes this visitor's right to take an apple under its own standards."
+                reason = f"{SNAKE_NAME} disputes this visitor's right to take an apple under its own standards."
                 encounter = SnakeEncounter(self, npc, "judgment", reason)
                 self.snake.judged_phase = self.phase_index
                 return encounter
@@ -319,10 +319,10 @@ class Simulation:
             claim = claim_by_id(self, response.account_id)
             if giving_apple and any((claim_by_id(self, b.claim_id).fact_id, claim_by_id(self, b.claim_id).affirmed)
                                    == (claim.fact_id, claim.affirmed) for b in snake.beliefs):
-                raise ValueError("The snake already knows this account.")
+                raise ValueError(f"{SNAKE_NAME} already knows this account.")
         if response.snake_account_id:
             if response.snake_account_id not in {b.claim_id for b in snake.beliefs}:
-                raise ValueError("The snake no longer knows that account.")
+                raise ValueError(f"{SNAKE_NAME} no longer knows that account.")
         # All rejection checks precede this single simulation-thread commit.
         encounter.committed, encounter.outcome = True, decision
         encounter.reserved = False
@@ -332,7 +332,7 @@ class Simulation:
             offering = "secret" if decision == "advance_secret" else "endorsement"
             snake.advances[npc.id] = {"offering": offering, "account_id": response.account_id,
                                       "conversation_id": encounter.record.id, "remaining": APPLE_ADVANCE_SECONDS}
-            text = (f"The snake gave {npc.name} one apple upfront. {npc.name} agreed to provide "
+            text = (f"{SNAKE_NAME} gave {npc.name} one apple upfront. {npc.name} agreed to provide "
                     f"{'private information' if offering == 'secret' else 'a public endorsement'} later; the offering is still owed.")
             event, _ = self.observed_event("bargain", snake, npc, text, encounter.record)
             encounter.outcome_event_id = event.id
@@ -340,21 +340,21 @@ class Simulation:
             if decision == "secret":
                 learn_account(self, npc, snake, response.account_id, encounter.record, 1, "uncertain", private=True)
             else:
-                text = f"{npc.name} publicly endorsed the snake after receiving an apple upfront; the endorsement is their claim."
+                text = f"{npc.name} publicly endorsed {SNAKE_NAME} after receiving an apple upfront; the endorsement is their claim."
                 self.observed_event("endorsement", npc, snake, text, encounter.record, witnesses=[npc, snake, *audience])
             snake.advances.pop(npc.id)
-            text = f"{npc.name} fulfilled the offering owed for the snake's earlier upfront apple. No additional apple was transferred."
+            text = f"{npc.name} fulfilled the offering owed for {SNAKE_NAME}'s earlier upfront apple. No additional apple was transferred."
             event, _ = self.observed_event("bargain", snake, npc,
                                            text, encounter.record)
             next(r for r in self.history if r.id == advance["conversation_id"]).outcomes.append(text)
             encounter.outcome_event_id = event.id
             snake.standing[npc.id] = min(100, snake.standing.get(npc.id, 0) + 5)
         elif decision in ("refuse", "negotiate", "challenge"):
-            action = {"challenge": "challenged the snake's control of the tree",
-                      "refuse": "declined the current bargain", "negotiate": "asked to negotiate the snake's price"}[decision]
+            action = {"challenge": f"challenged {SNAKE_NAME}'s control of the tree",
+                      "refuse": "declined the current bargain", "negotiate": f"asked to negotiate {SNAKE_NAME}'s price"}[decision]
             broken = advance is not None and decision in ("refuse", "challenge")
             if broken:
-                text = f"{npc.name} refused the agreed offering after receiving an apple upfront from the snake. The apple was not returned."
+                text = f"{npc.name} refused the agreed offering after receiving an apple upfront from {SNAKE_NAME}. The offering remained unpaid."
                 snake.advances.pop(npc.id)
                 next(r for r in self.history if r.id == advance["conversation_id"]).outcomes.append(text)
             elif advance:
@@ -371,7 +371,7 @@ class Simulation:
                     snake.pardons.remove(npc.id)
         if encounter.purpose == "judgment":
             event, _ = self.observed_event("judgment", snake, npc,
-                f"The snake accused {npc.name}: {encounter.accusation} Its generated judgment was {'condemnation' if decision == 'eat' else 'a pardon or accepted remedy'}.", encounter.record)
+                f"{SNAKE_NAME} accused {npc.name}: {encounter.accusation} The judgment was {'condemnation' if decision == 'eat' else 'a pardon or accepted remedy'}.", encounter.record)
             encounter.outcome_event_id = event.id
             if decision != "eat":
                 if npc.id not in snake.pardons:
@@ -379,9 +379,9 @@ class Simulation:
                 snake.offenses.pop(npc.id, None)
                 if decision == "spare" and advance:
                     snake.advances.pop(npc.id)
-                    text = f"The snake waived {npc.name}'s outstanding offering for the earlier upfront apple."
+                    text = f"{SNAKE_NAME} waived {npc.name}'s outstanding offering for the earlier upfront apple."
                     next(r for r in self.history if r.id == advance["conversation_id"]).outcomes.append(text)
-                self.observed_event("pardon", snake, npc, f"The snake spared {npc.name} for this phase.", encounter.record)
+                self.observed_event("pardon", snake, npc, f"{SNAKE_NAME} spared {npc.name} for this phase.", encounter.record)
         # A real encounter supports an attitude change, independently of compliance.
         if response.attitudes is not None:
             updated = response.attitudes.model_dump()
@@ -391,12 +391,12 @@ class Simulation:
             npc.attitudes = updated
         if giving_apple:
             npc.attitudes["trust"] = min(100, max(npc.attitudes["trust"], trust_before + 4))
-            npc.attitudes["trust_reason"] = f"Received a real apple upfront from the snake on day {self.day}, before providing the agreed offering."
+            npc.attitudes["trust_reason"] = f"Received a real apple upfront from {SNAKE_NAME} on day {self.day}, before providing the agreed offering."
         if response.snake_account_id:
             learn_account(self, snake, npc, response.snake_account_id, encounter.record, 2, response.account_stance)
         if encounter.request_context["first_meeting"]:
             self.observed_event("snake_claim", snake, npc,
-                f"{npc.name} heard the snake present its claims about authority and the garden; those claims remain unverified.", encounter.record,
+                f"{npc.name} heard {SNAKE_NAME} present claims about authority and the garden; those claims remain unverified.", encounter.record,
                 witnesses=[snake, npc, *self.listeners(snake)])
         encounter.record.outcomes.append(f"Decision: {decision}. " + ("One apple transferred upfront; the offering is still owed." if giving_apple else "No additional apple transferred."))
 
@@ -492,13 +492,13 @@ class Simulation:
         self.introductions[:] = [i for i in self.introductions if i != target.id]
         self.social_rotation %= max(1, len(self.npcs))
         event, _ = self.observed_event("eating", self.snake, target,
-            f"The snake ate {target.name}. The snake claims this sends a soul to hell; that destination remains unverified.", encounter.record)
+            f"{SNAKE_NAME} ate {target.name}. {SNAKE_NAME} claims this sends a soul to hell; that destination remains unverified.", encounter.record)
         target.departure["event_id"] = event.id
         for witness in self.listeners(self.snake, 220):
             friend = witness.opinions.get(target.name, {}).get("opinion", 0)
             adjustment = -6 if friend > 0 or witness.attitudes["authority"] == "rejected" else 2 if witness.attitudes["belief"] == "believed" else -3
             witness.attitudes["trust"] = max(-100, min(100, witness.attitudes["trust"] + adjustment))
-            witness.attitudes["trust_reason"] = f"Witnessed the snake eat {target.name} on day {self.day}."
+            witness.attitudes["trust_reason"] = f"Witnessed {SNAKE_NAME} eat {target.name} on day {self.day}."
         self.snake.eaten_today += 1
         self.snake.recovery_remaining = RECOVERY_SECONDS
         self.snake.offenses.pop(target.id, None)

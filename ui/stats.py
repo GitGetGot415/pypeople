@@ -1,7 +1,7 @@
 import pygame
 
 from character_data import DEFAULT_COLORS, FIELDS
-from constants import ACCENT, EMOTION_THRESHOLD, GRASS, INK, MUTED, PAPER
+from constants import ACCENT, EMOTION_THRESHOLD, GRASS, INK, MUTED, PAPER, SNAKE_NAME
 from social import assertion_text, claim_by_id, fact_by_id, phase_label, selected_beliefs
 
 from .button import Button
@@ -145,9 +145,9 @@ class StatsScreen:
             add(f"Activity: {npc.status}")
             add(f"Eaten today: {npc.eaten_today}; recovery: {npc.recovery_remaining:.1f}s")
             add(f"Tree stock: {app.tree.fruit}; unreserved: {app.simulation.available_fruit}")
-            add("The python claims divine authority. Its claims about destinations and other zones are unverified.", app.small_font, MUTED)
+            add(f"{SNAKE_NAME} claims divine authority. Claims about destinations and other zones are unverified.", app.small_font, MUTED)
             gap()
-            add("Resident standing (the snake's standards)", app.heading_font)
+            add(f"Resident standing ({SNAKE_NAME}'s standards)", app.heading_font)
             for actor_id, score in npc.standing.items():
                 add(f"{app.simulation.actor_by_id(actor_id).name}: {score:+d}")
             gap()
@@ -185,7 +185,7 @@ class StatsScreen:
             advance = app.simulation.snake.advances.get(npc.id)
             if advance:
                 offering = "private information" if advance["offering"] == "secret" else "a public endorsement"
-                add(f"Received an apple upfront; owes {offering} to the snake.", app.small_font, MUTED)
+                add(f"Received an apple upfront; owes {offering} to {SNAKE_NAME}.", app.small_font, MUTED)
             add(f"Sociability: {npc.preferences['sociability']:.0%}; generosity: {npc.preferences['generosity']:.0%}", app.small_font, MUTED)
             gap()
             add("Personal objective", app.heading_font)
@@ -200,7 +200,7 @@ class StatsScreen:
             self.private_toggle_top = height()
             add(f"{'Hide' if self.show_private else 'Show'} private details (observer only)", app.small_font, ACCENT)
             if self.show_private:
-                add("Attitudes toward the snake", app.heading_font)
+                add(f"Attitudes toward {SNAKE_NAME}", app.heading_font)
                 for field in ("belief", "trust", "authority"):
                     add(f"{field.title()}: {npc.attitudes[field]}")
                     add(npc.attitudes[field + "_reason"], app.small_font, MUTED)

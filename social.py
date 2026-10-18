@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from constants import GOAL_IMPROVEMENT
 from conversation_history import remember
+from dialogue_rules import named_references, validate_account_speech, validate_apple_promise
 
 GoalKind = Literal["obtain_apple", "help_with_apple", "repair_relationship", "sabotage_relationship"]
 FactKind = Literal["apple_given", "apple_refused", "promise_kept", "promise_broken", "private_motive", "former_life", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating"]
@@ -180,7 +181,7 @@ def assertion_text(world, fact, affirmed=True):
 
 def account_content(world, fact, affirmed=True):
     """Request prose has no record header; keep UI formatting in assertion_text()."""
-    summary = fact.summary
+    summary = fact.summary if fact.kind == "former_life" else named_references(fact.summary)
     if fact.kind == "former_life":
         from character_data import description_parts
         _, marker, description = summary.partition("'s own description: ")
@@ -371,7 +372,7 @@ def information_views(context, world):
     return result
 
 
-def validate_information(response, context):
+def validate_information(response, context, *, names=(), participant_names=None):
     """Simulate knowledge in speech order before any real state is touched."""
     if isinstance(context, dict):
         context = information_from_dict(context)
@@ -423,6 +424,9 @@ def validate_information(response, context):
             option = options.get(entry.claim_id)
             if option is None or (role, entry.claim_id) in seen_disclosures:
                 raise ValueError("Unknown or repeated disclosure.")
+            validate_account_speech(speech.text, option.assertion, names=names,
+                                    speaker=(participant_names or {}).get(role),
+                                    listener=(participant_names or {}).get(listener), kind=option.kind)
             seen_disclosures.add((role, entry.claim_id))
             belief = beliefs[role].get(entry.claim_id)
             fabricating = option.creator_id is not None and belief is None
@@ -760,7 +764,7 @@ def permitted_proposals(conversation):
     return proposals
 
 
-def validate_agreements(agreements, proposals, turns, initiator_id, recipient_id):
+def validate_agreements(agreements, proposals, turns, initiator_id, recipient_id, *, current_phase=None):
     """Bound offers and acceptances to ordered speech by the correct participants."""
     permitted = {proposal["id"]: proposal for proposal in proposals}
     seen = set()
@@ -780,6 +784,8 @@ def validate_agreements(agreements, proposals, turns, initiator_id, recipient_id
         if (speakers[turns[agreement.offer_turn].speaker] != proposal["promisor_id"]
                 or speakers[turns[agreement.accept_turn].speaker] != proposal["recipient_id"]):
             raise ValueError("Only the apple's giver can offer and its recipient can accept.")
+        validate_apple_promise(turns[agreement.offer_turn].text, turns[agreement.accept_turn].text, proposal["deadline"],
+                               current_phase=current_phase)
 
 
 def validate_live_agreements(conversation, response):
@@ -805,9 +811,10 @@ def validate_live_agreements(conversation, response):
                         for other in world.actors if other is not npc}
             if changed or related or opinions != context.opinions[role] or can_deceive(npc) != context.can_lie[role]:
                 raise ValueError("A speaker's knowledge or opinion changed during generation. Please try again.")
-    validate_information(response, context)
+    validate_information(response, context, names=[actor.name for actor in world.actors],
+                         participant_names={"initiator": pair[0].name, "recipient": pair[1].name})
     validate_agreements(response.accepted_proposals, [asdict(p) for p in conversation.proposals],
-                        response.turns, pair[0].id, pair[1].id)
+                        response.turns, pair[0].id, pair[1].id, current_phase=world.phase_index)
     pending = [(p.promisor_id, p.recipient_id) for p in pending_promises(world)]
     for agreement in response.accepted_proposals:
         proposal = next(p for p in conversation.proposals if p.id == agreement.proposal_id)

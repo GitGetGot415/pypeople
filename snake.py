@@ -17,11 +17,11 @@ from interactions import (dialogue_finished, face_each_other, face_toward,
 
 # These are instructions to the provider, never locally supplied spoken lines.
 SNAKE_DOCTRINE = (
-    f"The python's name is {SNAKE_NAME}. It guards the only apple tree and speaks as the appointed messenger of a god. "
+    f"{SNAKE_NAME} guards the only apple tree and speaks as the appointed messenger of a god. "
     "Its divine authority is asserted directly and confidently in first person. Its teachings: "
     "this garden is purgatory for undecided souls; obedience may lead to heaven; "
     "being eaten sends a disobedient soul to hell. Other purgatory zones distribute "
-    "the population, explaining the few arrivals here. These are the snake's positions, not narrator-certified truth. "
+    f"the population, explaining the few arrivals here. These are {SNAKE_NAME}'s positions, not narrator-certified truth. "
     "Its private aim is dependence, information and public support; that aim shapes offers, not spoken self-description. "
     "When stock is available, it gives real apples upfront for obligations owed later, confident it can judge and eat deliberate defaulters. "
     "It cannot offer or promise an apple from an empty tree. Earlier apple advances still carry their existing obligations. "
@@ -30,10 +30,10 @@ SNAKE_DOCTRINE = (
 )
 
 SNAKE_SPEAKING_STYLE = (
-    "Speak with calm, confident divine authority as the python guarding the apple tree. "
+    f"Speak with calm, confident divine authority as {SNAKE_NAME}, appointed messenger of a god and guard of the apple tree. "
     "Keep your private pursuit of influence private. Follow the current transaction and supplied knowledge. "
-    "You have already introduced yourself and your position; do not repeat introductions, theology, "
-    "offers, or accusations from earlier turns. Answer the resident's latest point and perform only the current task."
+    "Use a brief introduction only on first contact. Answer the resident's latest point and perform only the current task; "
+    "keep earlier introductions, theology, offers, and accusations out of later replies."
 )
 
 
@@ -194,7 +194,7 @@ class SnakeEncounter:
                 or world.npc_by_id(resident.id) is not resident
                 or resident.busy or resident.request_pending
                 or any(resident.id in (action.npc_id, action.target_id) for action in world.pending_actions)):
-            raise ValueError("The snake or resident is busy.")
+            raise ValueError(f"{SNAKE_NAME} or the resident is busy.")
         self.world = world
         self.initiator, self.recipient = world.snake, resident
         self.id = uuid4().hex
@@ -203,7 +203,7 @@ class SnakeEncounter:
         self.accusation = reason
         self.record = ConversationRecord((world.snake.name, resident.name), self.topic,
                                          "Awaiting tree visitor", origin=origin, purpose=purpose, id=self.id)
-        self.saved_state = resident.suspend_activity(f"Meeting the snake: {self.topic}")
+        self.saved_state = resident.suspend_activity(f"Meeting {SNAKE_NAME}: {self.topic}")
         resident.snake_encounter = self
         world.snake.encounter = self
         world.snake.target_id = resident.id
@@ -330,7 +330,7 @@ class SnakeEncounter:
         self.initiator.retry_request = {"resident_id": self.recipient.id, "purpose": self.purpose,
                                         "reason": self.accusation, "origin": self.origin, "error": reason}
         self.world.publish("interaction_failed", (self.initiator, self.recipient),
-                           f"Snake encounter needs retry: {reason}", self.record)
+                           f"Meeting with {SNAKE_NAME} needs retry: {reason}", self.record)
         self.finish(error=reason)
 
     def finish(self, tree=None, *, error=""):

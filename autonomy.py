@@ -4,7 +4,7 @@ import math
 
 from npc import Behavior
 from conversation_history import memory_bias
-from constants import APPLE_SATISFACTION, DECISION_SECONDS, MOVEMENT_SPEED, SOCIAL_START
+from constants import APPLE_SATISFACTION, DECISION_SECONDS, MOVEMENT_SPEED, SOCIAL_START, SNAKE_NAME
 from interactions import company_point
 from social import (claim_by_id, fact_by_id, goal_attempt_cooling_down, pair_objective,
                     pending_promises, selected_beliefs)
@@ -73,7 +73,7 @@ def reconsider(npc, world):
             and tree.id not in npc.cooldowns and npc.can_reach(tree.interaction_point)):
         score = 24 - sum(npc.inventory.values()) * 4 - distance(tree.interaction_point) + (110 if needs_apple else 0)
         candidates.append((score, Behavior.HARVEST, tree.id,
-                           "Seeking an apple bargain to help someone" if needs_apple else "Seeking an apple bargain with the snake"))
+                           "Seeking an apple bargain to help someone" if needs_apple else f"Seeking an apple bargain with {SNAKE_NAME}"))
     if npc.social <= SOCIAL_START:
         partners = [other for other in world.npcs if other is not npc and world.company_available(other)
                     and other.id not in npc.cooldowns and company_point(npc, other) is not None]
@@ -179,7 +179,7 @@ def social_pair(world):
                    if belief.stance != "disbelieved" and fact_by_id(world, claim_by_id(world, belief.claim_id).fact_id).kind
                    in ("eating", "judgment", "defiance")), None)
     if danger:
-        topic = "Safety around the python after a known alarming event or sourced warning"
+        topic = f"Safety around {SNAKE_NAME} after a known alarming event or sourced warning"
     elif recollection:
         topic = f"Remembering: {recollection.summary}"
     else:

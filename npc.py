@@ -299,9 +299,10 @@ class NPC:
     @property
     def status(self):
         if self.departure:
-            return f"Departed on day {self.departure['day']} ({self.departure['cause']})"
+            from dialogue_rules import named_references
+            return f"Departed on day {self.departure['day']} ({named_references(self.departure['cause'])})"
         if self.snake_encounter is not None:
-            return f"With the snake: {self.snake_encounter.record.status}"
+            return f"With {SNAKE_NAME}: {self.snake_encounter.record.status}"
         if self.gift is not None:
             if self.thanking:
                 return f"Thanking {self.gift.initiator.name}"
@@ -667,12 +668,19 @@ class Conversation:
     def set_response(self, response, *, reading=False):
         if not self.accepts_response:
             return
+        from llm import validate_dialogue_format, validate_dialogue_speakers, validate_resident_grounding
         # Reject stale actor snapshots before displaying or committing anything.
         if getattr(self, "request_roster_revision", self.initiator.world.roster_revision) != self.initiator.world.roster_revision:
             raise ValueError("The resident roster changed while dialogue was being prepared. Retry this meeting.")
         if any(n.command_revision != self.request_actor_revisions[n.id] for n in (self.initiator, self.recipient)):
             raise ValueError("The participants changed activities before the reply arrived.")
         validate_live_agreements(self, response)
+        validate_dialogue_format(response.turns)
+        validate_dialogue_speakers(response.turns, {"initiator": self.initiator.name, "recipient": self.recipient.name})
+        validate_resident_grounding(response, {
+            "initiator": self.initiator.snapshot(self.initiator.world.tree),
+            "recipient": self.recipient.snapshot(self.initiator.world.tree),
+            "_information_validation": asdict(self.information_context) if self.information_context else None})
         self.handoff_thanks = response.handoff_thanks
         record_generated_turns(self, response.turns)
         opinions = ((self.initiator, self.recipient, response.initiator_opinion),
