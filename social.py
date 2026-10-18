@@ -213,7 +213,9 @@ def fact_context(world, fact, affirmed=True):
 def account_view(world, claim, belief):
     fact = fact_by_id(world, claim.fact_id)
     return {**fact_context(world, fact, claim.affirmed),
-            "claim_id": claim.id, "subject_id": claim.subject_id,
+            "claim_id": claim.id, "fact_id": fact.id, "affirmed": claim.affirmed,
+            "deliberate": claim.deliberate, "knowledge_owner_id": belief.npc_id,
+            "subject_id": claim.subject_id,
             "subject_name": world.actor_by_id(claim.subject_id).name,
             "object_id": fact.object_id, "object_name": world.actor_by_id(fact.object_id).name,
             "knowledge_owner_name": world.actor_by_id(belief.npc_id).name,
@@ -348,8 +350,14 @@ def information_views(context, world):
         for claim_id in context.allowed[role]:
             option = options[claim_id]
             belief = beliefs.get(claim_id)
-            view = {**fact_context(world, fact_by_id(world, option.fact_id), option.affirmed),
-                    "claim_id": claim_id, "subject_id": option.subject_id,
+            fact = fact_by_id(world, option.fact_id)
+            view = {**fact_context(world, fact, option.affirmed),
+                    "claim_id": claim_id, "fact_id": option.fact_id, "affirmed": option.affirmed,
+                    "deliberate": option.creator_id is not None or claim_by_id(world, claim_id).deliberate,
+                    "knowledge_owner_id": npc_id,
+                    "subject_id": option.subject_id,
+                    "object_id": fact.object_id,
+                    "object_name": world.actor_by_id(fact.object_id).name,
                     "subject_name": world.actor_by_id(option.subject_id).name,
                     "knowledge_owner_name": world.actor_by_id(npc_id).name,
                     "original_speaker_id": option.originator_id,
