@@ -66,3 +66,8 @@ def record_generated_turns(interaction, turns):
     for turn in interaction.turns:
         actor = interaction.initiator if turn.speaker == "initiator" else interaction.recipient
         interaction.record.add_turn(actor.name, turn.text, [part.model_dump() for part in turn.parts])
+
+
+def record_failed_dialogue(interaction, turns):
+    """Keep rejected speech for inspection, outside committed conversation history."""
+    interaction.record.failed_turns = [turn.model_dump() for turn in turns]

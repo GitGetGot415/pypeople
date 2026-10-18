@@ -23,7 +23,7 @@ from constants import (
     STARTING_TREE_CAPACITY, STARTING_TREE_FRUIT, STARTING_TREE_POSITION,
 )
 from interactions import (company_point, dialogue_finished, face_each_other, face_toward,
-                          finish_generated_dialogue, move_toward, record_generated_turns)
+                          finish_generated_dialogue, move_toward, record_failed_dialogue, record_generated_turns)
 
 
 ACTIVITY_FIELDS = (
@@ -715,9 +715,10 @@ class Conversation:
                 and world.npc_by_id(self.initiator.id) is self.initiator
                 and world.npc_by_id(self.recipient.id) is self.recipient)
 
-    def fail_dialogue(self, reason):
+    def fail_dialogue(self, reason, *, failed_turns=()):
         if not self.accepts_response:
             return
+        record_failed_dialogue(self, failed_turns)
         self.dialogue_state = "failed"
         self.record.error = reason
         self.finish(self.initiator.world.tree)

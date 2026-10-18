@@ -12,7 +12,7 @@ from constants import (
 )
 from conversation_history import ConversationRecord
 from interactions import (dialogue_finished, face_each_other, face_toward,
-                          finish_generated_dialogue, move_toward, record_generated_turns)
+                          finish_generated_dialogue, move_toward, record_failed_dialogue, record_generated_turns)
 
 
 # These are instructions to the provider, never locally supplied spoken lines.
@@ -314,9 +314,10 @@ class SnakeEncounter:
         self.record.status = "Judgment announced" if self.purpose == "judgment" else "Dialogue ready"
         finish_generated_dialogue(self, reading=reading)
 
-    def fail_dialogue(self, reason):
+    def fail_dialogue(self, reason, *, failed_turns=()):
         if self.committed or not self.active:
             return
+        record_failed_dialogue(self, failed_turns)
         self.record.error = reason
         self.dialogue_state = "failed"
         self.initiator.retry_request = {"resident_id": self.recipient.id, "purpose": self.purpose,

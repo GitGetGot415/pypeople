@@ -118,14 +118,21 @@ class StatsScreen:
                 gap()
             add("Dialogue", app.heading_font)
             gap()
-            if not record.turns:
-                add("No dialogue generated yet.", color=MUTED)
+            if not record.turns and not record.failed_turns:
+                add("No generated draft was retained for this failure." if record.error else "No dialogue generated yet.", color=MUTED)
             for index, (speaker, text) in enumerate(record.turns):
                 parts = record.dialogue_parts.get(index)
                 if parts:
                     message(speaker, [(part["text"], part["emotion"]) for part in parts])
                 else:
                     message(speaker, [(text, None)])
+            if record.failed_turns:
+                add("Generated draft (not applied)", app.heading_font)
+                add("Generation failed. These words did not change the simulation.", app.small_font, MUTED)
+                gap()
+                for turn in record.failed_turns:
+                    speaker = record.participants[0 if turn["speaker"] == "initiator" else 1]
+                    message(speaker, [(part["text"], part["emotion"]) for part in turn["parts"]])
             return lines
 
         npc = self.selected_npc

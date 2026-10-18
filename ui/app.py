@@ -468,17 +468,17 @@ class Application:
                         and getattr(pending, "request_stage", None) != worker.stage):
                     pending.request_stage = worker.stage
                     pending.wait_elapsed = 0.0
-        for request_id, result, error in replies:
+        for request_id, result, error, failed_turns in replies:
             conversation = self.conversation_requests.pop(request_id, None)
             if conversation is not None:
                 if conversation.id == request_id and conversation.accepts_response:
                     if error:
-                        conversation.fail_dialogue(error)
+                        conversation.fail_dialogue(error, failed_turns=failed_turns)
                     else:
                         try:
                             conversation.set_response(result, reading=conversation is viewed)
                         except ValueError as exc:
-                            conversation.fail_dialogue(str(exc))
+                            conversation.fail_dialogue(str(exc), failed_turns=result.turns)
                 continue
             if request_id != self.request_id:
                 continue

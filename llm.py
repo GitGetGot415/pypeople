@@ -10,7 +10,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from constants import (DIALOGUE_CORRECTION_TARGET_CHARACTERS, DIALOGUE_MAX_PARTS,
                        DIALOGUE_PART_TARGET_CHARACTERS, DIALOGUE_PARTS_PER_TURN,
-                       DIALOGUE_REPAIR_WORD_LIMIT, SNAKE_TURN_COUNT)
+                       DIALOGUE_REPAIR_WORD_LIMIT, SNAKE_NAME, SNAKE_TURN_COUNT)
 from dialogue_text import speech_is_complete
 from ollama_manager import DEFAULT_OLLAMA_MODEL
 from social import validate_agreements, validate_information
@@ -82,7 +82,7 @@ class ConversationPart(StrictResponse):
 
 class DialoguePartsResponse(StrictResponse):
     parts: list[ConversationPart] = Field(min_length=1, max_length=DIALOGUE_MAX_PARTS,
-        description="Consecutive sections of this single turn for display and emotion changes. Never include this speaker's later turns.")
+        description="Consecutive sections of this one speaker's uninterrupted turn for display and emotion changes. Every part has the same speaker. Never include the listener's answer or this speaker's later turns.")
 
 
 class ConversationTurn(DialoguePartsResponse):
@@ -651,6 +651,10 @@ def world_context(snapshot, *, correction=False):
     def offering_view(advance):
         return {key: value for key, value in advance.items() if key != "remaining"} if advance else None
 
+    def owned_advance(advance, resident):
+        return {**offering_view(advance), "apple_giver": SNAKE_NAME, "apple_receiver": resident,
+                "offering_owed_by": resident, "offering_owed_to": SNAKE_NAME} if advance else None
+
     def person_context(person, include_reply=False):
         person = person.copy()
         if "character" in person:
@@ -690,11 +694,11 @@ def world_context(snapshot, *, correction=False):
         if "private_context" in person:
             private = person["private_context"] = person["private_context"].copy()
             if "snake_apple_advance" in private:
-                private["snake_apple_advance"] = offering_view(private["snake_apple_advance"])
+                private["snake_apple_advance"] = owned_advance(private["snake_apple_advance"], person["npc_name"])
             if "situation" in private:
                 situation = private["situation"] = private["situation"].copy()
                 if "apple_bargain" in situation:
-                    situation["apple_bargain"] = offering_view(situation["apple_bargain"])
+                    situation["apple_bargain"] = owned_advance(situation["apple_bargain"], person["npc_name"])
         return person
 
     snake_request = snapshot.get("request_kind") in ("snake_encounter", "snake_decision", "snake_player")
@@ -715,6 +719,18 @@ def world_context(snapshot, *, correction=False):
         current = snapshot["initiator"]
         context["day"], context["time_of_day"] = current["day"], current["time_of_day"]
         context["environment"]["tree"]["shaking"] = current["tree_is_shaking"]
+        if context.get("shared_history"):
+            history = context["shared_history"] = context["shared_history"].copy()
+            names = {snapshot[role]["npc_name"] for role in ("initiator", "recipient")}
+            recent = []
+            for entry in history.get("recent_dialogue", []):
+                try:
+                    for name, text in entry["excerpts"]:
+                        _validate_speaker(text, name, next(other for other in names if other != name))
+                except ValueError:
+                    continue  # Keep saved words intact, but do not teach new speech a known role swap.
+                recent.append(entry)
+            history["recent_dialogue"] = recent
         if correction and context.get("shared_history"):
             # Keep transcripts for validation, but do not feed replayed lines
             # back to the model when asking it to write a fresh exchange.
@@ -832,6 +848,8 @@ def validate_snake_response(result, snapshot):
         if turn.speaker != ("initiator" if i % 2 == 0 else "recipient"):
             raise ValueError("Alternate snake and resident speech, beginning with the snake.")
         validate_snake_perspective(turn.text, snake_role="speaker" if turn.speaker == "initiator" else "listener")
+    validate_dialogue_speakers(result.turns, {
+        "initiator": snapshot["snake"]["name"], "recipient": snapshot["resident"]["npc_name"]})
 
 
 def _snake_identity_instruction(snapshot):
@@ -848,10 +866,55 @@ def _snake_identity_instruction(snapshot):
     return ""
 
 
+def _unquoted_speech(text):
+    return re.sub(r'''"[^"]*"|“[^”]*”|‘[^’]*’|(?<!\w)'[^'\n]+'(?!\w)''', " ", text)
+
+
+def _actor_name(actor):
+    return actor if isinstance(actor, str) else actor.get("name", actor.get("npc_name", ""))
+
+
+def _validate_speaker(text, speaker, listener):
+    """Reject clear self-address and embedded replies from the other participant."""
+    text = _unquoted_speech(text)
+    own, other = _actor_name(speaker), _actor_name(listener)
+    aliases = {own.casefold(), own.split()[0].casefold()} if own else set()
+    other_aliases = {other.casefold(), other.split()[0].casefold()} if other else set()
+    for name in sorted(aliases - other_aliases, key=len, reverse=True):
+        name = re.escape(name)
+        pattern = rf"(?:^|[.!?]\s+)\s*{name}\s*[,!?]|(?:,\s*|\b(?:you|yes|no|thanks|hello|hey|listen|of course)\s+){name}(?=\s*[,;:.!?]|\s*$)"
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            prefix = re.split(r"[.!?]", text[:match.start()])[-1]
+            intro = rf"\b(?:i am|i['’]m|my name is|call me|it['’]s me|it is me)(?:\s+{re.escape(own.split()[0])})?\s*$"
+            if re.search(intro, prefix, re.IGNORECASE) or re.fullmatch(r"\s*i\s*", prefix, re.IGNORECASE):
+                continue
+            if re.match(r"\s*,\s*(?:and|or)\b", text[match.end():], re.IGNORECASE):
+                continue
+            raise ValueError(
+                f"This turn belongs only to {own}, speaking to {other}, but it addresses {own} as the listener. "
+                "Keep every part in the current speaker's voice. Do not include the partner's answer in a later part; "
+                "use the actual listener's name when addressing them. Regenerate the speech without swapping roles.")
+    for name in other_aliases - aliases:
+        if re.search(rf"(?:^|[\n.!?])\s*{re.escape(name)}\s*:", text, re.IGNORECASE):
+            raise ValueError(f"A turn by {own} contains a reply labelled as {other}. Generate only {own}'s own words.")
+
+
+def validate_dialogue_speakers(turns, names, *, start_index=0):
+    errors, indices = [], []
+    for index, turn in enumerate(turns, start_index):
+        try:
+            _validate_speaker(turn.text, names[turn.speaker], names["recipient" if turn.speaker == "initiator" else "initiator"])
+        except ValueError as exc:
+            errors.append(str(exc))
+            indices.append(index)
+    if errors:
+        raise DialogueSpeakerError(" ".join(dict.fromkeys(errors)), indices)
+
+
 def validate_snake_perspective(text, *, snake_role):
     """Catch detached species references before they become the partner's context."""
     # Direct quotations may legitimately report someone else's earlier wording.
-    unquoted = re.sub(r'''"[^"]*"|“[^”]*”|‘[^’]*’|(?<!\w)'[^'\n]+'(?!\w)''', " ", text)
+    unquoted = _unquoted_speech(text)
     identity = r"i am|i['’]m|am i" if snake_role == "speaker" else r"you are|you['’]re|are you"
     pronoun = r"i|my" if snake_role == "speaker" else r"you|your"
     for match in re.finditer(r"\bthe\s+(?:snake|python)\b", unquoted, flags=re.IGNORECASE):
@@ -1297,18 +1360,44 @@ def validate_response(raw, snapshot):
     model = response_contract(snapshot)[2]
     try:
         return _validate_response(raw, snapshot, model)
-    except DialogueRepetitionError as exc:
+    except DialogueTurnError as exc:
         raise InvalidResponseError(str(exc), response=model.model_validate_json(raw),
-                                   repeated_turns=exc.turn_indices) from None
+                                   repeated_turns=exc.turn_indices if isinstance(exc, DialogueRepetitionError) else (),
+                                   repair_turns=exc.turn_indices,
+                                   failed_turns=_generated_dialogue(raw, snapshot)) from None
     except ValidationError as exc:
         issue = exc.errors(include_input=False, include_url=False)[0]
         field = issue["loc"][0] if issue["loc"] and issue["loc"][0] in model.model_fields else "response"
         raise InvalidResponseError(
             f"Invalid {field}: use the required JSON fields, value limits, and alternating speaker order.",
+            failed_turns=_generated_dialogue(raw, snapshot),
         ) from None
     except ValueError as exc:
         # These validators supply application-authored reasons, never provider text.
-        raise InvalidResponseError(str(exc)) from None
+        raise InvalidResponseError(str(exc), response=model.model_validate_json(raw),
+                                   failed_turns=_generated_dialogue(raw, snapshot)) from None
+
+
+def _generated_dialogue(raw, snapshot):
+    """Retain only readable speech fields from a rejected response, never its effects."""
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    values = data.get("turns", [])
+    if snapshot.get("request_kind") in ("snake_turn", "dialogue_repair", "conversation_closing") and "parts" in data:
+        values = [{"speaker": snapshot.get("speaker_role", "initiator"), "parts": data["parts"]}]
+    if not isinstance(values, list):
+        return []
+    turns = []
+    for value in values:
+        try:
+            turns.append(ConversationTurn.model_validate(value))
+        except (ValidationError, ValueError, TypeError):
+            break
+    return turns
 
 
 def _has_question(text):
@@ -1329,6 +1418,9 @@ def _validate_response(raw, snapshot, model):
     if isinstance(result, DialoguePartsResponse):
         current = ConversationTurn(speaker=snapshot.get("speaker_role", "initiator"), parts=result.parts)
         validate_dialogue_completion([current], start_index=snapshot.get("turn_index", 0))
+        names = {current.speaker: _actor_name(snapshot["speaker"]),
+                 "recipient" if current.speaker == "initiator" else "initiator": _actor_name(snapshot["listener"])}
+        validate_dialogue_speakers([current], names, start_index=snapshot.get("turn_index", 0))
         for role in ("speaker", "listener"):
             actor = snapshot.get(role)
             if isinstance(actor, dict) and actor.get("kind") == "python":
@@ -1411,6 +1503,9 @@ def _validate_response(raw, snapshot, model):
             if len(result.turns) == 3 and (not _has_question(result.turns[-2].text)
                                           or _has_question(result.turns[-1].text)):
                 raise ValueError("A third food-request turn may only answer a closing question.")
+            if result.handoff_thanks:
+                _validate_speaker(" ".join(part.text for part in result.handoff_thanks),
+                                  snapshot["initiator"]["npc_name"], snapshot["recipient"]["npc_name"])
         elif len(result.turns) < 4 or result.food_outcome or result.handoff_thanks:
             raise ValueError("Chats need at least four turns and cannot include a food outcome or handoff thanks.")
         if len(result.turns) == 8 and _has_question(result.turns[-1].text):
@@ -1421,27 +1516,42 @@ def _validate_response(raw, snapshot, model):
         ):
             if entry.person.strip().casefold() != partner["npc_name"].casefold():
                 raise ValueError("Conversation opinions must refer to the other participant.")
+        validate_dialogue_speakers(result.turns, {role: snapshot[role]["npc_name"] for role in ("initiator", "recipient")})
         validate_dialogue_repetition(result.turns, history.get("recent_dialogue", []), factual_context=facts)
     return result
 
 
 class RequestError(Exception):
-    """Contains only an application-authored message safe to show to the user."""
+    """An application-authored failure reason and optional generated draft for inspection."""
+
+    def __init__(self, message, *, failed_turns=()):
+        super().__init__(message)
+        self.failed_turns = list(failed_turns)
 
 
 class InvalidResponseError(ValueError):
     """An application-authored validation reason that can be sent back for correction."""
 
-    def __init__(self, message, *, response=None, repeated_turns=()):
+    def __init__(self, message, *, response=None, repeated_turns=(), repair_turns=(), failed_turns=()):
         super().__init__(message)
         self.response = response
         self.repeated_turns = tuple(repeated_turns)
+        self.repair_turns = tuple(repair_turns or repeated_turns)
+        self.failed_turns = list(failed_turns)
 
 
-class DialogueRepetitionError(ValueError):
+class DialogueTurnError(ValueError):
     def __init__(self, message, turn_indices):
         super().__init__(message)
         self.turn_indices = tuple(turn_indices)
+
+
+class DialogueRepetitionError(DialogueTurnError):
+    pass
+
+
+class DialogueSpeakerError(DialogueTurnError):
+    pass
 
 
 def _api_error_message(exc):
@@ -1490,6 +1600,20 @@ def _request_payload(message, snapshot, correction):
     if correction:
         instruction += "\n\n" + correction
     instruction += stock_instruction
+    if snapshot.get("request_kind") == "conversation":
+        instruction += (
+            f"\nSpeaker identities: initiator is {snapshot['initiator']['npc_name']}; "
+            f"recipient is {snapshot['recipient']['npc_name']}. All parts within a turn belong only to its named speaker. "
+            "After asking a question, leave the answer for the partner's separate turn. Never address the current "
+            "speaker as the listener or slip the partner's reply into another display part. "
+            f"An apple advance from {SNAKE_NAME} belongs to that python and its named resident; "
+            "a resident conversation partner must not take the python's place as creditor, apple giver, or judge.")
+    elif snapshot.get("request_kind") in ("snake_turn", "dialogue_repair", "conversation_closing"):
+        instruction += (
+            f"\nWrite only {_actor_name(snapshot['speaker'])}'s words to {_actor_name(snapshot['listener'])}. "
+            "Keep that identity in every part. I/my refers to the speaker; you/your refers to the listener. "
+            "Do not address yourself by name, answer your own question as the other person, or adopt the listener's "
+            "memories, authority, debts, or task. Explicit quotations and correct self-introductions are allowed.")
     payload = {"world_state": context, "player_message": message}
     if correction:
         payload["correction_request"] = correction
@@ -1834,6 +1958,17 @@ def _snake_reaction_repair_snapshot(snapshot):
 
 def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAULT_OLLAMA_MODEL, progress=None):
     """Called only by a worker. Does not read or mutate the world or interface."""
+    generated = []
+
+    def retain_dialogue(turns, state):
+        if not turns:
+            return
+        if state.get("request_kind") in ("snake_turn", "dialogue_repair", "conversation_closing"):
+            index = state.get("turn_index", 0)
+            generated[index:index + 1] = turns
+        else:
+            generated[:] = turns
+
     def report(stage):
         if progress is not None:
             progress(stage)
@@ -1855,13 +1990,25 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
         return "Choose the encounter outcome without writing speech." if state.get("request_kind") == "snake_decision" else message
 
     if provider == "gemini":
-        def request(state, correction=""):
+        def provider_request(state, correction=""):
             return _request_gemini(api_key, stage_message(state), state, correction=correction)
     elif provider == "ollama":
-        def request(state, correction=""):
+        def provider_request(state, correction=""):
             return _request_ollama(stage_message(state), state, ollama_model, correction=correction)
     else:
         raise RequestError("Choose an AI provider in Settings.")
+
+    def request(state, correction=""):
+        try:
+            result = provider_request(state, correction)
+        except InvalidResponseError as exc:
+            retain_dialogue(exc.failed_turns, state)
+            raise
+        if isinstance(result, (ConversationResponse, SnakeResponse)):
+            retain_dialogue(result.turns, state)
+        elif isinstance(result, DialoguePartsResponse):
+            retain_dialogue([ConversationTurn(speaker=state["speaker_role"], parts=result.parts)], state)
+        return result
 
     def validated_request(state):
         kind = state.get("request_kind")
@@ -1919,20 +2066,20 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                         return validate_response(candidate.model_dump_json(), state)
                     except InvalidResponseError as repair_error:
                         raise RequestError(f"The model's dialogue still failed validation after targeted repair: {repair_error}") from None
-                if isinstance(retry_error.response, ConversationResponse) and retry_error.repeated_turns:
+                if isinstance(retry_error.response, ConversationResponse) and retry_error.repair_turns:
                     # All structured effects passed validation. Repair only the
                     # offending speech, keeping every other field and turn fixed.
                     try:
-                        report("Recovery: removing duplicate speech")
                         candidate = retry_error.response.model_copy(deep=True)
+                        report("Recovery: checking rejected speech")
                         for index in retry_error.repeated_turns:
                             candidate.turns[index].parts = _deduplicate_dialogue_parts(candidate.turns[index])
                         try:
                             return validate_response(candidate.model_dump_json(), state)
                         except InvalidResponseError as remaining:
-                            if not remaining.repeated_turns:
+                            if not remaining.repair_turns:
                                 raise
-                            indices = remaining.repeated_turns
+                            indices = remaining.repair_turns
                         # Never paraphrase speech that authorizes a social effect.
                         protected = {entry.turn for entry in (*candidate.disclosures, *candidate.third_party_opinions,
                                                               *candidate.leverage)}
@@ -1942,7 +2089,7 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                             protected.update(range(len(candidate.turns)))
                         if protected.intersection(indices):
                             required = ", ".join(map(str, sorted(protected.intersection(indices))))
-                            raise InvalidResponseError(f"Required action or disclosure speech still repeats in turns {required}; retry the exchange.")
+                            raise InvalidResponseError(f"Required action or disclosure speech still fails validation in turns {required}; retry the exchange.")
                         for index in indices:
                             repair_state = _dialogue_repair_snapshot(state, candidate, index)
                             report(f"Recovery: rewriting turn {index + 1}/{len(candidate.turns)}")
@@ -1970,23 +2117,27 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
         except InvalidResponseError as exc:
             raise RequestError(f"The completed conversation failed validation: {exc}") from None
 
-    if snapshot.get("request_kind") == "snake_encounter":
-        decision = validated_request({**snapshot, "request_kind": "snake_decision"})
-        turns = []
-        for _ in range(SNAKE_TURN_COUNT):
-            state = _snake_turn_snapshot(snapshot, decision, turns)
-            speech = validated_request(state)
-            turns.append(ConversationTurn(speaker=state["speaker_role"], parts=speech.parts))
-        report("Validating completed encounter")
-        result = SnakeResponse(**decision.model_dump(), turns=turns)
-        try:
-            result = validate_response(result.model_dump_json(), snapshot)
-        except InvalidResponseError as exc:
-            raise RequestError(f"The completed encounter failed validation: {exc}") from None
-        return finish_questions(result)
-    if snapshot.get("request_kind") not in ("conversation", "intent", "snake_player", "dialogue_repair", "conversation_closing"):
-        intent = validated_request(intent_snapshot(snapshot))
-        # Keep the interpretation with this request for main-thread revalidation.
-        snapshot["request_intent"] = intent.model_dump()
-    result = validated_request(snapshot)
-    return finish_questions(result) if isinstance(result, ConversationResponse) else result
+    try:
+        if snapshot.get("request_kind") == "snake_encounter":
+            decision = validated_request({**snapshot, "request_kind": "snake_decision"})
+            turns = []
+            for _ in range(SNAKE_TURN_COUNT):
+                state = _snake_turn_snapshot(snapshot, decision, turns)
+                speech = validated_request(state)
+                turns.append(ConversationTurn(speaker=state["speaker_role"], parts=speech.parts))
+            report("Validating completed encounter")
+            result = SnakeResponse(**decision.model_dump(), turns=turns)
+            try:
+                result = validate_response(result.model_dump_json(), snapshot)
+            except InvalidResponseError as exc:
+                raise RequestError(f"The completed encounter failed validation: {exc}") from None
+            return finish_questions(result)
+        if snapshot.get("request_kind") not in ("conversation", "intent", "snake_player", "dialogue_repair", "conversation_closing"):
+            intent = validated_request(intent_snapshot(snapshot))
+            # Keep the interpretation with this request for main-thread revalidation.
+            snapshot["request_intent"] = intent.model_dump()
+        result = validated_request(snapshot)
+        return finish_questions(result) if isinstance(result, ConversationResponse) else result
+    except RequestError as exc:
+        exc.failed_turns = list(generated)
+        raise

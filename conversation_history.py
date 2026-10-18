@@ -16,6 +16,7 @@ class ConversationRecord:
     purpose: str = "chat"
     id: str = field(default_factory=lambda: uuid4().hex)
     dialogue_parts: dict[int, list[dict]] = field(default_factory=dict)
+    failed_turns: list[dict] = field(default_factory=list)
 
     def add_turn(self, speaker, text, parts):
         self.dialogue_parts[len(self.turns)] = parts

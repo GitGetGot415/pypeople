@@ -1,4 +1,5 @@
 import pygame
+from llm import ConversationTurn
 from constants import DIALOGUE_PAGE_LINES, EMOTION_THRESHOLD, INK, MUTED, PAPER, WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH
 
 from .button import Button
@@ -175,7 +176,7 @@ class GameScreen:
             if self.handle_dialogue_scroll(app, event):
                 return
             if self.viewed_conversation is not None:
-                if self.next_button.clicked(event, enabled=bool(self.viewed_conversation.turns)):
+                if self.next_button.clicked(event, enabled=bool(self.conversation_pages)):
                     self.advance_conversation(app)
                 elif self.back_button.clicked(event, enabled=self.conversation_page_index > 0):
                     self.rewind_conversation()
@@ -392,23 +393,25 @@ class GameScreen:
     def draw_conversation(self, app):
         conversation = self.viewed_conversation
         rect = pygame.Rect(self.reply_rect.x, 594, self.reply_rect.width, 96)
-        if self._conversation_page_turns is not conversation.turns:
+        source = conversation.turns or conversation.record.failed_turns
+        failed = bool(source) and not conversation.turns
+        if self._conversation_page_turns is not source:
             # A display part cannot interrupt a sentence from this same turn.
             max_lines = max(1, min(DIALOGUE_PAGE_LINES, rect.height // app.font.get_linesize()))
             self.conversation_pages = [
                 (turn, part, text)
-                for turn in conversation.turns
+                for turn in (conversation.turns or [ConversationTurn.model_validate(turn) for turn in source])
                 for part, text in paginate_parts([(part.text, part) for part in turn.parts],
                                                  app.font, rect.width - 12, max_lines)
             ]
-            self._conversation_page_turns = conversation.turns
+            self._conversation_page_turns = source
             self.conversation_page_index = 0
             self.dialogue_scroll = 0
         page = self.conversation_pages[self.conversation_page_index] if self.conversation_pages else None
         turn, part, text = page if page is not None else (None, None, "")
         if turn is not None:
             speaker = conversation.initiator if turn.speaker == "initiator" else conversation.recipient
-            title = speaker.name
+            title = speaker.name + (" - failed draft" if failed else "")
         else:
             speaker = self.selected_npc
             title = f"{conversation.initiator.name} & {conversation.recipient.name}"
@@ -427,16 +430,17 @@ class GameScreen:
                 text = f"{conversation.recipient.name} is walking to the guarded tree..."
             else:
                 text = f"{conversation.initiator.name} is walking over to {conversation.recipient.name}..."
-        elif conversation.error and not conversation.turns:
+        elif conversation.error and not source:
             text = conversation.error
-        elif not conversation.turns:
+        elif not source:
             text = "Generating their conversation..." if self.request_is_current(app) else "Waiting to hear their conversation..."
         self.draw_dialogue_lines(app.window, wrap_text(text, app.font, rect.width - 12), app.font, rect)
-        if conversation.turns:
+        if source:
             status = ("Simulation paused. Resume to continue." if app.simulation.paused and conversation.active
                       else "Conversation paused while you read." if conversation.active
                       else f"{conversation.record.status} - recorded dialogue.")
-            draw_wrapped_text(app.window, conversation.error or status, app.small_font, MUTED,
+            status = "Generated draft; no effects applied. " + conversation.error if failed else conversation.error or status
+            draw_wrapped_text(app.window, status, app.small_font, MUTED,
                               (rect.x, 696, rect.width - 80, 24))
             progress = app.small_font.render(f"{self.conversation_page_index + 1}/{len(self.conversation_pages)}", True, MUTED)
             app.window.blit(progress, progress.get_rect(topright=(1256, 696)))
