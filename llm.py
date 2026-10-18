@@ -10,7 +10,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_CHARACTERS, DIALOGUE_MAX_PARTS,
                        DIALOGUE_PART_TARGET_CHARACTERS, DIALOGUE_PARTS_PER_TURN,
-                       DIALOGUE_REPAIR_WORD_LIMIT, SNAKE_NAME, SNAKE_TURN_COUNT)
+                       DIALOGUE_REPAIR_WORD_LIMIT, EMOTION_THRESHOLD, FURIOUS_THRESHOLD, SNAKE_NAME, SNAKE_TURN_COUNT)
 from dialogue_text import speech_is_complete, split_sentences
 from dialogue_rules import (mentions_account, named_context, named_references, name_pattern, unquoted_speech,
                            validate_account_speech, validate_apple_roles, validate_continuity,
@@ -42,7 +42,8 @@ class OpinionUpdate(StrictResponse):
 class EmotionReaction(StrictResponse):
     name: Literal[
         "neutral", "angry", "confused", "disappointed", "flustered",
-        "happy", "shocked", "suspicious", "unyuu",
+        "giddy", "happy", "paranoid", "sad", "shifty", "shocked",
+        "suspicious", "ticked_off", "tired", "unyuu",
     ] = "neutral"
     intensity: int = Field(default=0, ge=0, le=100)
 
@@ -196,18 +197,26 @@ def structured_schema(model):
 EMOTION_SCHEMA = structured_schema(EmotionReaction)
 EMOTION_SCHEMA["required"] = list(EMOTION_SCHEMA["properties"])
 
-EMOTION_INSTRUCTION = """Include emotion with name and intensity (an integer 0 to 100).
+EMOTION_INSTRUCTION = f"""Include emotion with name and intensity (an integer 0 to 100).
 It describes the speaker's OWN immediate reaction to this exchange, based on
 their personality, current opinions, and what was actually said or learned.
-Names are neutral, angry, confused, disappointed, flustered, happy, shocked,
-suspicious, and unyuu. Use angry for anger or offense, confused for puzzlement
-or not understanding, disappointed for sadness or letdown, flustered for
-embarrassment or bashful agitation, happy for joy or delight, shocked for a
-startling revelation, and suspicious for active doubt or distrust. Use unyuu
+Names are neutral, angry, confused, disappointed, flustered, giddy, happy,
+paranoid, sad, shifty, shocked, suspicious, ticked_off, tired, and unyuu.
+Use angry for anger or offense, confused for puzzlement or not understanding,
+disappointed for unmet expectations or letdown, flustered for embarrassment or
+bashful agitation, happy for contentment or joy, and giddy for bubbly, excited
+elation. Use sad for sorrow or unhappiness, shocked for a startling revelation,
+suspicious for active doubt or distrust, paranoid for fearful beliefs that others
+are plotting against the speaker, shifty for evasive or furtive unease, ticked_off
+for irritation or exasperation, and tired for fatigue or sleepiness. These are
+separate reactions: choose the one that fits, rather than treating giddy as stronger
+happy or ticked_off as weaker angry. Use angry with intensity {FURIOUS_THRESHOLD}
+to 100 only for extreme rage; this displays furious eyes automatically. Furious
+is not a separate emotion name. Use unyuu
 for a scrunched-eye reaction to playful silliness or being comically overwhelmed.
 Default to neutral with intensity 0 for ordinary greetings, routine commands,
 calm replies, and any reaction that does not fit these names. Mild reactions should
-stay below 75; reserve 75 to 100 for clear, strong reactions that warrant a visible
+stay below {EMOTION_THRESHOLD}; reserve {EMOTION_THRESHOLD} to 100 for clear, strong reactions that warrant a visible
 facial expression. Do not force an emotion just because a negative opinion exists,
 an emotion word appears, or someone else is described as emotional. A routine
 question about someone disliked need not provoke anger. Never invent an event

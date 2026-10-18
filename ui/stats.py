@@ -1,7 +1,8 @@
 import pygame
 
 from character_data import DEFAULT_COLORS, FIELDS
-from constants import ACCENT, EMOTION_THRESHOLD, GRASS, INK, MUTED, PAPER, SNAKE_NAME
+from constants import ACCENT, GRASS, INK, MUTED, PAPER, SNAKE_NAME
+from emotions import portrait_expression
 from social import assertion_text, claim_by_id, fact_by_id, phase_label, selected_beliefs
 
 from .button import Button
@@ -82,9 +83,8 @@ class StatsScreen:
                 add(speaker, color=ACCENT, indent=indent)
                 add(page, indent=indent)
                 if npc is not None:
-                    visible = emotion is not None and emotion["intensity"] >= EMOTION_THRESHOLD
-                    expression = emotion["name"] if visible else None
-                    label = (expression or "neutral").title() if emotion is not None else "Not recorded"
+                    expression = portrait_expression(emotion["name"], emotion["intensity"]) if emotion is not None else None
+                    label = (expression or "neutral").replace("_", " ").title() if emotion is not None else "Not recorded"
                     labels = wrap_text(label, app.small_font, 100)
                     self.dialogue_portraits.append((top, npc, expression, labels))
                     portrait_height = 94 + len(labels) * app.small_font.get_linesize()

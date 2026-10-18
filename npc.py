@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from character_data import DIRECTIONS, normalize_opinions
+from emotions import portrait_expression
 from purgatory import initial_attitudes
 from conversation_history import (ConversationRecord, describe_opinion_change, relevant_memories, remember,
                                   shared_conversation_history)
@@ -15,7 +16,7 @@ from social import (Goal, check_relationship_goals, commit_agreements, commit_in
                     private_context, validate_live_agreements)
 from constants import (
     APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DIALOGUE_WAIT_SECONDS, EAT_SECONDS,
-    EMOTION_THRESHOLD, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, GIFT_SECONDS, INVENTORY_CAPACITY,
+    FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, GIFT_SECONDS, INVENTORY_CAPACITY,
     MOVEMENT_SPEED, NPC_RADIUS, PARTNER_COOLDOWN,
     POST_DIALOGUE_SECONDS, SHAKE_SECONDS, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED, WANDER_PAUSE, WORLD_HEIGHT, WORLD_WIDTH,
     STARTING_DAY, STARTING_FACING, STARTING_NPC_FRUIT, STARTING_NPC_GENEROSITY_RANGE,
@@ -261,9 +262,7 @@ class NPC:
 
     @property
     def portrait_emotion(self):
-        if self.emotion_intensity >= EMOTION_THRESHOLD:
-            return self.emotion if self.emotion != "neutral" else None
-        return None
+        return portrait_expression(self.emotion, self.emotion_intensity)
 
     def set_emotion(self, name, intensity):
         """Keep the reaction with its reply until new dialogue replaces it."""

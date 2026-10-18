@@ -1,6 +1,7 @@
 import pygame
 from llm import ConversationTurn
-from constants import DIALOGUE_PAGE_LINES, EMOTION_THRESHOLD, INK, MUTED, PAPER, WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH
+from constants import DIALOGUE_PAGE_LINES, INK, MUTED, PAPER, WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH
+from emotions import portrait_expression
 
 from .button import Button
 from .event_feed import EventFeed
@@ -415,7 +416,7 @@ class GameScreen:
         else:
             speaker = self.selected_npc
             title = f"{conversation.initiator.name} & {conversation.recipient.name}"
-        emotion = part.emotion.name if part is not None and part.emotion.intensity >= EMOTION_THRESHOLD else None
+        emotion = portrait_expression(part.emotion.name, part.emotion.intensity) if part is not None else None
         self.draw_portrait(app, speaker, emotion)
         draw_wrapped_text(app.window, title, app.font, INK, (self.reply_rect.x, 557, self.retry_button.rect.x - self.reply_rect.x - 16, 30))
         self.back_button.draw(app.window, app.small_font, enabled=self.conversation_page_index > 0)

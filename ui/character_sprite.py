@@ -58,9 +58,16 @@ class CharacterRenderer:
                 "confused": "Confused.png",
                 "disappointed": "Dissapointed.png",
                 "flustered": "Flustered.png",
+                "furious": "Furious.png",
+                "giddy": "Giddy.png",
                 "happy": "Happy.png",
+                "paranoid": "Paranoid.png",
+                "sad": "Sad.png",
+                "shifty": "Shifty.png",
                 "shocked": "Shock.png",
                 "suspicious": "Suspicious.png",
+                "ticked_off": "Ticked off.png",
+                "tired": "Tired.png",
                 "unyuu": "Unyuu (Emotion).png",
             }.items()
         }

@@ -85,7 +85,8 @@ class CharacterScreen:
         self.renderer = CharacterRenderer()
         self.selected_emotion = "neutral"
         self.emotion_buttons = {
-            emotion: Button((590 + index % 3 * 144, 240 + index // 3 * 104, 132, 96), emotion.title())
+            emotion: Button((590 + index % 4 * 114, 240 + index // 4 * 78, 108, 72),
+                            emotion.replace("_", " ").title())
             for index, emotion in enumerate(("neutral", *self.renderer.eye_emotions))
         }
         self.preview = None
@@ -311,7 +312,7 @@ class CharacterScreen:
         label = app.font.render("Face preview" if self.category == "Emotions" else "Preview", True, INK)
         surface.blit(label, label.get_rect(center=(390, 210)))
         self._draw_preview(surface)
-        preview_label = self.selected_emotion.title() if self.category == "Emotions" else self.DIRECTIONS[self.direction]
+        preview_label = self.selected_emotion.replace("_", " ").title() if self.category == "Emotions" else self.DIRECTIONS[self.direction]
         direction_label = app.small_font.render(preview_label, True, MUTED)
         surface.blit(direction_label, direction_label.get_rect(center=(390, 234)))
         if self.category != "Emotions":
