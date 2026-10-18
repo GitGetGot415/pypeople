@@ -8,6 +8,7 @@ from uuid import uuid4
 from constants import (
     DIALOGUE_WAIT_SECONDS, HEARING_RADIUS, POST_DIALOGUE_SECONDS,
     SNAKE_EAT_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME, SNAKE_SPEED,
+    STARTING_FACING, STARTING_SNAKE_ACTIVITY, STARTING_SNAKE_DECISION_SECONDS, STARTING_SNAKE_POSITION,
 )
 from conversation_history import ConversationRecord
 from interactions import (dialogue_finished, face_each_other, face_toward,
@@ -32,13 +33,13 @@ SNAKE_DOCTRINE = (
 @dataclass
 class Snake:
     id: str = "garden-python"
-    x: float = 540.0
-    y: float = 300.0
+    x: float = STARTING_SNAKE_POSITION[0]
+    y: float = STARTING_SNAKE_POSITION[1]
     destination: tuple[float, float] | None = None
-    facing: int = 4
+    facing: int = STARTING_FACING
     pause_remaining: float = 0.0
     animation_elapsed: float = 0.0
-    activity: str = "guarding"
+    activity: str = STARTING_SNAKE_ACTIVITY
     target_id: str | None = None
     beliefs: list = field(default_factory=list)
     standing: dict = field(default_factory=dict)
@@ -48,7 +49,7 @@ class Snake:
     recovery_remaining: float = 0.0
     pardons: list = field(default_factory=list)
     judged_phase: int = -1
-    decision_remaining: float = 3.0
+    decision_remaining: float = STARTING_SNAKE_DECISION_SECONDS
     encounter: object = field(default=None, repr=False, compare=False)
     world: object = field(default=None, repr=False, compare=False)
     selected: bool = False

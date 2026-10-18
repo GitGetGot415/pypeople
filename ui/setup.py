@@ -8,7 +8,7 @@ from .button import Button
 from .file_dialog import character_file_dialog
 from .text import draw_centered_text, draw_wrapped_text
 from .text_input import TextInput
-from constants import ACCENT, BORDER_RADIUS, GRASS, INK, MUTED, PAPER
+from constants import ACCENT, BORDER_RADIUS, GRASS, INK, MUTED, PAPER, STARTING_ADDITIONAL_NPCS
 
 
 class SetupScreen:
@@ -16,11 +16,11 @@ class SetupScreen:
 
     def __init__(self):
         # None means random; a Path means a character loaded from JSON.
-        self.sources = [None, None, None]
+        self.sources = [None] * STARTING_ADDITIONAL_NPCS
         self.page = 0
         self.message = ""
         self.count_input = TextInput((590, 138, 100, 40), max_length=None)
-        self.count_input.set_value("3")
+        self.count_input.set_value(str(len(self.sources)))
         self.remove_button = Button((540, 138, 40, 40), "-")
         self.add_button = Button((700, 138, 40, 40), "+")
         self.apply_button = Button((755, 138, 145, 40), "Set count")

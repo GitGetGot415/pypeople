@@ -25,11 +25,12 @@ from .settings import SettingsScreen
 from .setup import SetupScreen
 from .stats import StatsScreen
 from .ollama_setup import OllamaSetupScreen
-from constants import FPS, INTERACTION_GAP, WINDOW_SIZE
+from constants import (FPS, INTERACTION_GAP, STARTING_CHARACTER_FILE, STARTING_NPC_POSITION,
+                       STARTING_SPAWN_ORIGIN, STARTING_SPAWN_SIDE_OFFSET, STARTING_SPAWN_SPREAD, WINDOW_SIZE)
 from .world import CHARACTER_SCALE
 
 
-JUDY_CHARACTER_PATH = Path(__file__).resolve().parent.parent / "characters" / "judy.json"
+STARTING_CHARACTER_PATH = Path(__file__).resolve().parent.parent / STARTING_CHARACTER_FILE
 
 
 class Application:
@@ -118,7 +119,7 @@ class Application:
 
     def start_game(self):
         try:
-            characters = [load_character(JUDY_CHARACTER_PATH)]
+            characters = [load_character(STARTING_CHARACTER_PATH)]
             characters[0]["Opinions"] = {}
             # Each simulation owns its profiles and opinions inside its save file.
             for index, source in enumerate(self.setup.sources, start=1):
@@ -126,7 +127,7 @@ class Application:
                     characters.append(random_character() if source is None else load_character(source))
                 except (OSError, ValueError) as error:
                     raise ValueError(f"NPC {index + 1}: {error}") from error
-                if source is not None and Path(source).resolve() == JUDY_CHARACTER_PATH.resolve():
+                if source is not None and Path(source).resolve() == STARTING_CHARACTER_PATH.resolve():
                     characters[-1]["Opinions"] = {}
         except (OSError, ValueError) as error:
             self.setup.message = f"Could not start game: {error}"
@@ -138,13 +139,14 @@ class Application:
         rows = max(1, math.ceil((len(characters) - 1) / (columns * 2)))
         for index, character in enumerate(characters):
             if index == 0:
-                position = (240, 230)
+                position = STARTING_NPC_POSITION
             else:
                 # Spawn on either side, leaving the central tree and its approach clear.
                 side, slot = (index - 1) % 2, (index - 1) // 2
                 column, row = slot % columns, slot // columns
-                position = (120 + side * 500 + column * 200 / max(1, columns - 1),
-                            150 + row * 260 / max(1, rows - 1))
+                position = (STARTING_SPAWN_ORIGIN[0] + side * STARTING_SPAWN_SIDE_OFFSET
+                            + column * STARTING_SPAWN_SPREAD[0] / max(1, columns - 1),
+                            STARTING_SPAWN_ORIGIN[1] + row * STARTING_SPAWN_SPREAD[1] / max(1, rows - 1))
             npc = NPC(character=character, x=position[0], y=position[1])
             sprite = self.character.renderer.render(character, npc.facing, CHARACTER_SCALE)
             npc.sprite_size = sprite.get_size()

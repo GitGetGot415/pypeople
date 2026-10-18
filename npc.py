@@ -18,6 +18,9 @@ from constants import (
     EMOTION_THRESHOLD, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, GIFT_SECONDS, INVENTORY_CAPACITY,
     MOVEMENT_SPEED, NPC_RADIUS, PARTNER_COOLDOWN,
     POST_DIALOGUE_SECONDS, SHAKE_SECONDS, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED, WANDER_PAUSE, WORLD_HEIGHT, WORLD_WIDTH,
+    STARTING_DAY, STARTING_FACING, STARTING_NPC_FRUIT, STARTING_NPC_GENEROSITY_RANGE,
+    STARTING_NPC_POSITION, STARTING_NPC_SATISFACTION_RANGE, STARTING_NPC_SOCIABILITY_RANGE,
+    STARTING_TREE_CAPACITY, STARTING_TREE_FRUIT, STARTING_TREE_POSITION,
 )
 from interactions import (company_point, dialogue_finished, face_each_other, face_toward,
                           finish_generated_dialogue, move_toward, record_generated_turns)
@@ -43,13 +46,13 @@ class Behavior(str, Enum):
 
 @dataclass
 class Tree:
-    x: float = WORLD_WIDTH / 2
-    y: float = WORLD_HEIGHT / 2
+    x: float = STARTING_TREE_POSITION[0]
+    y: float = STARTING_TREE_POSITION[1]
     shake_elapsed: float | None = None
     shaker: "NPC | None" = field(default=None, repr=False, compare=False)
     id: str = "fruit-tree"
-    fruit: int = 8
-    capacity: int = 8
+    fruit: int = STARTING_TREE_FRUIT
+    capacity: int = STARTING_TREE_CAPACITY
     reserved_by: "NPC | None" = field(default=None, repr=False, compare=False)
 
     @property
@@ -97,13 +100,13 @@ class Tree:
 @dataclass
 class NPC:
     character: dict
-    x: float = 240.0
-    y: float = 230.0
+    x: float = STARTING_NPC_POSITION[0]
+    y: float = STARTING_NPC_POSITION[1]
     behavior: Behavior = Behavior.WANDER
     destination: tuple[float, float] | None = None
     pause_remaining: float = 0.0
     rng: random.Random = field(default_factory=random.Random, repr=False)
-    facing: int = 4
+    facing: int = STARTING_FACING
     sprite_size: tuple[int, int] | None = None
     selected: bool = False
     reply: str = ""
@@ -115,12 +118,12 @@ class NPC:
     emotion: str = "neutral"
     emotion_intensity: int = 0
     id: str = field(default_factory=lambda: uuid4().hex)
-    social: float = field(default_factory=lambda: random.uniform(55, 80))
-    inventory: dict = field(default_factory=lambda: {"fruit": 0})
+    social: float = field(default_factory=lambda: random.uniform(*STARTING_NPC_SATISFACTION_RANGE))
+    inventory: dict = field(default_factory=lambda: {"fruit": STARTING_NPC_FRUIT})
     inventory_capacity: int = INVENTORY_CAPACITY
     preferences: dict = field(default_factory=lambda: {
-        "sociability": random.uniform(0.25, 0.85),
-        "generosity": random.uniform(0.25, 0.85),
+        "sociability": random.uniform(*STARTING_NPC_SOCIABILITY_RANGE),
+        "generosity": random.uniform(*STARTING_NPC_GENEROSITY_RANGE),
     })
     memories: list = field(default_factory=list)
     goal: Goal | None = None
@@ -137,7 +140,7 @@ class NPC:
     request_pending: bool = False
     world: object = field(default=None, repr=False, compare=False)
     attitudes: dict = field(default_factory=initial_attitudes)
-    arrival_day: int = 1
+    arrival_day: int = STARTING_DAY
     departure: dict | None = None
     snake_encounter: object = field(default=None, repr=False, compare=False)
 

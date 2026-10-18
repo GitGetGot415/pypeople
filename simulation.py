@@ -6,7 +6,8 @@ import math
 from constants import (
     APPLE_ADVANCE_SECONDS, COMPANY_SOCIAL_RECOVERY, CROWD_LIMIT, DECISION_SECONDS,
     FAILURE_COOLDOWN, FRUIT_PER_PHASE, HEARING_RADIUS, MAX_SIMULATION_STEP_SECONDS, PROTECTED_POPULATION,
-    RECOVERY_SECONDS, SATISFACTION_PHASE_LOSS, SOCIAL_RADIUS, WITNESS_RADIUS,
+    RECOVERY_SECONDS, SATISFACTION_PHASE_LOSS, SOCIAL_RADIUS,
+    STARTING_DAY, STARTING_PAUSED, STARTING_PHASE, WITNESS_RADIUS,
 )
 
 
@@ -37,9 +38,9 @@ class Simulation:
         self.processed_arrival_days = []
         self.introductions = []
         self.roster_revision = 0
-        self.day = 1
-        self.phase = "day"
-        self.paused = False
+        self.day = STARTING_DAY
+        self.phase = STARTING_PHASE
+        self.paused = STARTING_PAUSED
         self.pending_actions = []
         self.history = []
         self.events = []
