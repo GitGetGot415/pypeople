@@ -5,7 +5,9 @@ from time import monotonic
 
 from pydantic import ValidationError
 
-from llm import ConversationTurn, InvalidResponseError, RequestError, request_response, validate_response
+from constants import DIALOGUE_WAIT_SECONDS
+from llm import (ConversationTurn, InvalidResponseError, RequestError, VoiceRewriteResponse, request_response,
+                 request_voice_rewrite, validate_response, validate_voice_rewrite, voice_rewrite_snapshot)
 from ollama_manager import DEFAULT_OLLAMA_MODEL
 
 
@@ -39,18 +41,25 @@ def _request_description(snapshot):
 def _request_worker(session_id, request_id, provider, api_key, message, snapshot, results, progress, ollama_model):
     """Only communicate through queues; never touch Pygame or live state."""
     def report(stage):
+        nonlocal deadline
+        # Match the interaction's progress-based inactivity deadline, including
+        # originals whose several successful provider calls span over two minutes.
+        deadline = monotonic() + DIALOGUE_WAIT_SECONDS
         progress.put((session_id, request_id, stage, None))
 
     stage = "Request failed"
     try:
+        deadline = monotonic() + DIALOGUE_WAIT_SECONDS
         result = request_response(provider, api_key, message, snapshot, ollama_model=ollama_model, progress=report)
-        results.put((session_id, request_id, result.model_dump_json(), None, snapshot, []))
+        rewritten = request_voice_rewrite(provider, api_key, result, snapshot, deadline=deadline,
+                                          ollama_model=ollama_model, progress=report)
+        results.put((session_id, request_id, result.model_dump_json(), None, snapshot, [], rewritten))
         stage = "Reply ready"
     except RequestError as exc:
         results.put((session_id, request_id, None, str(exc), snapshot,
-                     [turn.model_dump() for turn in exc.failed_turns]))
+                     [turn.model_dump() for turn in exc.failed_turns], []))
     except Exception:
-        results.put((session_id, request_id, None, "Could not get a reply from the model. Please try again.", snapshot, []))
+        results.put((session_id, request_id, None, "Could not get a reply from the model. Please try again.", snapshot, [], []))
     finally:
         progress.put((session_id, request_id, stage, monotonic()))
 
@@ -111,24 +120,30 @@ class RequestManager:
         replies = []
         while True:
             try:
-                session_id, request_id, raw, error, snapshot, failed_turns = self.results.get_nowait()
+                session_id, request_id, raw, error, snapshot, failed_turns, rewritten = self.results.get_nowait()
             except queue.Empty:
                 break
             if session_id != active_session:
                 continue
             if error:
-                replies.append((request_id, None, error, [ConversationTurn.model_validate(turn) for turn in failed_turns]))
+                replies.append((request_id, None, error, [ConversationTurn.model_validate(turn) for turn in failed_turns], []))
                 continue
             try:
                 # Revalidate at the main-thread boundary before touching the world.
                 result = validate_response(raw, snapshot)
             except InvalidResponseError as exc:
-                replies.append((request_id, None, f"The model's reply failed validation: {exc}", exc.failed_turns))
+                replies.append((request_id, None, f"The model's reply failed validation: {exc}", exc.failed_turns, []))
                 continue
             except (ValidationError, ValueError, TypeError):
-                replies.append((request_id, None, "The model returned an invalid action or reply. Try again.", []))
+                replies.append((request_id, None, "The model returned an invalid action or reply. Try again.", [], []))
                 continue
-            replies.append((request_id, result, None, []))
+            if rewritten:
+                try:
+                    state = voice_rewrite_snapshot(result, snapshot)
+                    rewritten = validate_voice_rewrite(VoiceRewriteResponse(turns=rewritten).model_dump_json(), state["turns"]).turns
+                except (ValidationError, ValueError, TypeError, AttributeError):
+                    rewritten = []
+            replies.append((request_id, result, None, [], rewritten))
         # A result may arrive after draining the queue; poll it next frame
         # before freeing the slot that belongs to that result.
         if self.results.empty():

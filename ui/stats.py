@@ -2,6 +2,7 @@ import pygame
 
 from character_data import DEFAULT_COLORS, FIELDS
 from constants import ACCENT, GRASS, INK, MUTED, PAPER, SNAKE_NAME
+from conversation_history import display_parts, usable_rewrite
 from emotions import portrait_expression
 from social import assertion_text, claim_by_id, fact_by_id, phase_label, selected_beliefs
 
@@ -15,10 +16,10 @@ class StatsScreen:
 
     def __init__(self):
         self.back_button = Button((184, 56, 170, 38), "Back to game")
-        self.tabs = {
-            name: Button((512 + index * 176, 146, 160, 36), name)
-            for index, name in enumerate(("Statistics", "Opinions", "Conversations"))
-        }
+        self.tabs = {name: Button(rect, name) for name, rect in (
+            ("Statistics", (512, 146, 108, 36)), ("Opinions", (628, 146, 100, 36)),
+            ("Conversations", (736, 146, 144, 36)))}
+        self.original_toggle = Button((888, 146, 192, 36), "Original dialogue: Off")
         self.list_rect = pygame.Rect(200, 184, 264, 440)
         self.detail_rect = pygame.Rect(512, 200, 568, 424)
         self.open()
@@ -118,12 +119,20 @@ class StatsScreen:
                 gap()
             add("Dialogue", app.heading_font)
             gap()
+            available = [usable_rewrite(record.dialogue_parts.get(index, [text]), record.rewritten_parts.get(index, ()))
+                         for index, (speaker, text) in enumerate(record.turns) if speaker != "You"]
+            if not app.original_dialogue and available and not all(available):
+                add("No usable voice rewrite was stored; showing original dialogue." if not any(available)
+                    else "Some lines use original dialogue because no usable voice rewrite was stored.",
+                    app.small_font, MUTED)
+                gap()
             if not record.turns and not record.failed_turns:
                 add("No generated draft was retained for this failure." if record.error else "No dialogue generated yet.", color=MUTED)
             for index, (speaker, text) in enumerate(record.turns):
                 parts = record.dialogue_parts.get(index)
                 if parts:
-                    message(speaker, [(part["text"], part["emotion"]) for part in parts])
+                    message(speaker, display_parts([(part["text"], part["emotion"]) for part in parts],
+                        record.rewritten_parts.get(index, ()), original=app.original_dialogue))
                 else:
                     message(speaker, [(text, None)])
             if record.failed_turns:
@@ -310,6 +319,11 @@ class StatsScreen:
                 self.scroll_focus = "detail"
                 return
 
+        if self.tab == "Conversations" and self.original_toggle.clicked(event):
+            app.original_dialogue = not app.original_dialogue
+            self._scroll("detail", self.detail_scroll, self._scroll_limits(app))
+            return
+
         limits = self._scroll_limits(app)
         for pane in limits:
             self._scroll(pane, getattr(self, f"{pane}_scroll"), limits)
@@ -380,6 +394,9 @@ class StatsScreen:
             button.draw(surface, app.small_font)
             if self.tab == name:
                 pygame.draw.line(surface, PAPER, (button.rect.left + 16, 176), (button.rect.right - 16, 176), 2)
+        if self.tab == "Conversations":
+            self.original_toggle.label = "Original dialogue: " + ("On" if app.original_dialogue else "Off")
+            self.original_toggle.draw(surface, app.small_font)
 
         limits = self._scroll_limits(app)
         for pane in limits:

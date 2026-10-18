@@ -2,6 +2,7 @@ import pygame
 from llm import ConversationTurn
 from constants import INK, MUTED, PAPER, WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH
 from emotions import portrait_expression
+from conversation_history import display_parts
 
 from .button import Button
 from .event_feed import EventFeed
@@ -34,6 +35,7 @@ class GameScreen:
         self.dialogue_open = False
         self.selected_npc = None
         self.reply = ""
+        self._reply_version = None
         self.player_record = None
         self.viewed_conversation = None
         self.conversation_tree = None
@@ -87,6 +89,7 @@ class GameScreen:
         if self.selected_npc is not None and text != self.selected_npc.reply:
             # Interface messages replacing a reply have no emotional reaction.
             self.selected_npc.set_emotion("neutral", 0)
+            self.selected_npc.rewritten_reply = ""
         normalized = " ".join(text.split())
         self.reply = "".join(char for char in normalized if char.isprintable())
         self.dialogue_scroll = 0
@@ -351,7 +354,13 @@ class GameScreen:
         rendered_status = app.small_font.render(status, True, MUTED)
         app.window.blit(rendered_status, rendered_status.get_rect(topright=(1256, 558)))
         app.window.blit(app.font.render(self.selected_npc.name, True, INK), (self.reply_rect.x, 557))
-        self.draw_dialogue_lines(app.window, wrap_text(self.reply or "Enter a message to talk to this NPC.", app.font,
+        rewritten = self.selected_npc.rewritten_reply
+        reply = display_parts([(self.reply, None)], [rewritten] if rewritten else (), original=app.original_dialogue)[0][0]
+        version = (reply, app.original_dialogue)
+        if self._reply_version != version:
+            self.dialogue_scroll = 0
+            self._reply_version = version
+        self.draw_dialogue_lines(app.window, wrap_text(reply or "Enter a message to talk to this NPC.", app.font,
                                                      self.reply_rect.width - 12), app.font, self.reply_rect,
                                  color=INK if self.reply else MUTED)
         closing = self.selected_npc.end_conversation
@@ -390,15 +399,18 @@ class GameScreen:
         rect = pygame.Rect(self.reply_rect.x, 594, self.reply_rect.width, 96)
         source = conversation.turns or conversation.record.failed_turns
         failed = bool(source) and not conversation.turns
-        if self._conversation_page_turns is not source:
+        version = (id(source), app.original_dialogue)
+        if self._conversation_page_turns != version:
             self.conversation_pages = [
                 (turn, part, text)
-                for turn in (conversation.turns or [ConversationTurn.model_validate(turn) for turn in source])
-                for part, text in paginate_parts([(part.text, part) for part in turn.parts],
+                for index, turn in enumerate(conversation.turns or [ConversationTurn.model_validate(turn) for turn in source])
+                for part, text in paginate_parts(display_parts([(part.text, part) for part in turn.parts],
+                                                 () if failed else conversation.record.rewritten_parts.get(index, ()),
+                                                 original=app.original_dialogue),
                                                  app.font, rect.width - 12)
             ]
-            self._conversation_page_turns = source
-            self.conversation_page_index = 0
+            self._conversation_page_turns = version
+            self.conversation_page_index = min(self.conversation_page_index, max(0, len(self.conversation_pages) - 1))
             self.dialogue_scroll = 0
         page = self.conversation_pages[self.conversation_page_index] if self.conversation_pages else None
         turn, part, text = page if page is not None else (None, None, "")

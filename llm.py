@@ -1,7 +1,9 @@
 import json
+import logging
 import re
 import unicodedata
 from copy import deepcopy
+from time import monotonic
 from typing import Literal
 
 from google import genai
@@ -11,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_CHARACTERS, DIALOGUE_MAX_PARTS,
                        DIALOGUE_PART_TARGET_CHARACTERS, DIALOGUE_PARTS_PER_TURN,
                        DIALOGUE_REPAIR_WORD_LIMIT, EMOTION_THRESHOLD, FURIOUS_THRESHOLD, SNAKE_NAME, SNAKE_TURN_COUNT)
-from dialogue_text import speech_is_complete, split_sentences
+from dialogue_text import contains_serialized_dialogue, speech_is_complete, split_sentences
 from dialogue_rules import (mentions_account, named_context, named_references, name_pattern, unquoted_speech,
                            validate_account_speech, validate_apple_roles, validate_continuity,
                            validate_claim_source, validate_english, validate_opinion_reason)
@@ -21,6 +23,7 @@ from purgatory import Attitudes
 
 MODEL = "gemini-2.5-flash"
 OLLAMA_URL = "http://localhost:11434/api/chat"
+logger = logging.getLogger(__name__)
 
 
 class StrictResponse(BaseModel):
@@ -177,6 +180,126 @@ class ConversationResponse(StrictResponse):
 
 class DialogueRepairResponse(DialoguePartsResponse):
     parts: list[ConversationPart] = Field(min_length=1, max_length=1)
+
+
+class VoiceRewriteResponse(StrictResponse):
+    turns: list[list[str]]
+
+
+VOICE_REWRITE_INSTRUCTION = """Rewrite only the supplied original speech in each speaker's own voice.
+Preserve speakers, turn order, part association and overall conversational progression.
+Preserve events, chronology, factual claims, uncertainty, negation, agreements, quantities and deadlines.
+Preserve who experienced an event, who reported it, and what each speaker knows.
+Do not invent events, memories, people, locations, disclosures, promises or actions.
+Use each speaker's supplied speaking brief without transferring mannerisms between speakers.
+Let each original part's emotion and intensity subtly affect delivery while the voice remains recognizable.
+Do not turn every angry speaker into the same voice or force a mannerism into every sentence.
+Explicit accents, stutters, spelling choices and swearing in the brief are permitted.
+Return one flat JSON object matching the supplied schema. Each part_N key identifies one
+original part; its value must be ONLY that part's rewritten spoken words as a nonempty string.
+Rewrite the words rather than copying the original unchanged. Include every supplied key exactly once.
+Never put JSON, serialized objects, speaker labels, emotion metadata or formatting fences inside a value.
+Do not add or remove parts, return game outcomes, or recalculate emotions."""
+
+
+def voice_rewrite_snapshot(response, snapshot):
+    """Copy only speech, authored speaking briefs and recorded delivery metadata."""
+    from character_data import description_parts
+    from snake import SNAKE_VOICE_BRIEF
+
+    def resident_brief(person):
+        return {"name": person["npc_name"],
+                "speaking_brief": description_parts(person["character"]["Details"])[0]}
+
+    if isinstance(response, (ConversationResponse, SnakeResponse)):
+        if isinstance(response, SnakeResponse):
+            speakers = {"initiator": {"name": SNAKE_NAME, "speaking_brief": SNAKE_VOICE_BRIEF},
+                        "recipient": resident_brief(snapshot["resident"])}
+        else:
+            speakers = {role: resident_brief(snapshot[role]) for role in ("initiator", "recipient")}
+        turns = [{"speaker": turn.speaker, "parts": [part.model_dump() for part in turn.parts]}
+                 for turn in response.turns]
+        if isinstance(response, ConversationResponse) and response.handoff_thanks:
+            turns.append({"speaker": "initiator", "parts": [p.model_dump() for p in response.handoff_thanks]})
+    elif isinstance(response, (ActionResponse, SnakePlayerResponse)) and response.reply.strip():
+        speaker = ({"name": SNAKE_NAME, "speaking_brief": SNAKE_VOICE_BRIEF}
+                   if isinstance(response, SnakePlayerResponse) else resident_brief(snapshot))
+        speakers = {"speaker": speaker}
+        emotion = response.emotion if isinstance(response, ActionResponse) else EmotionReaction()
+        turns = [{"speaker": "speaker", "parts": [{"text": response.reply, "emotion": emotion.model_dump()}]}]
+    else:
+        return None
+    return {"request_kind": "voice_rewrite", "speakers": speakers, "turns": turns}
+
+
+def validate_voice_rewrite(raw, turns):
+    """Presentation accepts any wording; only its display structure is checked."""
+    result = VoiceRewriteResponse.model_validate_json(raw)
+    if len(result.turns) != len(turns) or any(
+        len(rewritten) != len(original["parts"]) or any(
+            not text.strip() or contains_serialized_dialogue(text) for text in rewritten)
+        for rewritten, original in zip(result.turns, turns)
+    ):
+        raise ValueError("A rewrite needs exactly one nonempty spoken text per original part, without serialized JSON.")
+    return result
+
+
+def _voice_rewrite_parts(turns):
+    parts = {}
+    for turn in turns:
+        for part in turn["parts"]:
+            parts[f"part_{len(parts)}"] = {"speaker": turn["speaker"], "original": part["text"], "emotion": part["emotion"]}
+    return parts
+
+
+def _parse_voice_rewrite(raw, turns):
+    """The provider fills flat named slots; Python reconstructs turn association."""
+    def unique_parts(pairs):
+        data = {}
+        for key, value in pairs:
+            if key in data:
+                raise ValueError("The rewrite repeats a part key.")
+            data[key] = value
+        return data
+    data = json.loads(raw, object_pairs_hook=unique_parts)
+    expected = _voice_rewrite_parts(turns)
+    if not isinstance(data, dict) or data.keys() != expected.keys():
+        raise ValueError("The rewrite must supply exactly the requested part keys.")
+    offset, rewritten = 0, []
+    for turn in turns:
+        rewritten.append([data[f"part_{index}"] for index in range(offset, offset + len(turn["parts"]))])
+        offset += len(turn["parts"])
+    return validate_voice_rewrite(json.dumps({"turns": rewritten}), turns)
+
+
+def request_voice_rewrite(provider, api_key, response, snapshot, *, deadline,
+                          ollama_model=DEFAULT_OLLAMA_MODEL, progress=None):
+    """One optional request, without correction or semantic validation."""
+    try:
+        state = voice_rewrite_snapshot(response, snapshot)
+        remaining = deadline - monotonic()
+        if state is None:
+            return []
+        if remaining <= 0:
+            logger.warning("Voice rewrite skipped: request deadline expired; using original dialogue.")
+            return []
+        state["_timeout"] = remaining
+        if progress is not None:
+            progress("Rewriting character voices")
+        if provider == "gemini":
+            result = _request_gemini(api_key, "Rewrite the supplied speech.", state)
+        elif provider == "ollama":
+            result = _request_ollama("Rewrite the supplied speech.", state, ollama_model)
+        else:
+            return []
+        if monotonic() > deadline:
+            logger.warning("Voice rewrite arrived after its deadline; using original dialogue.")
+            return []
+        return validate_voice_rewrite(result.model_dump_json(), state["turns"]).turns
+    except Exception as exc:
+        # Presentation failure must never discard an accepted original or its effects.
+        logger.warning("Voice rewrite unavailable; using original dialogue: %s", exc)
+        return []
 
 
 def structured_schema(model):
@@ -1444,6 +1567,8 @@ def validate_dialogue_repetition(turns, recent_dialogue=(), *, factual_context=(
 
 
 def validate_response(raw, snapshot):
+    if snapshot.get("request_kind") == "voice_rewrite":
+        return _parse_voice_rewrite(raw, snapshot["turns"])
     model = response_contract(snapshot)[2]
     try:
         return _validate_response(raw, snapshot, model)
@@ -1497,6 +1622,8 @@ def _last_question(text):
 
 def validate_dialogue_format(turns):
     for turn in turns:
+        if contains_serialized_dialogue(turn.text):
+            raise ValueError("The speech reads internal dialogue or account JSON aloud. Return spoken words without serialized records.")
         speech = unquoted_speech(turn.text)
         if re.search(r"\b(?:account_to_share|question_to_answer|preceding_turns|zero-based|unreserved|new[_ ]apple[_ ]count)\b|"
                      r"\bconcrete event from (?:my|the|a supplied) (?:account|assertion)\b|"
@@ -1841,6 +1968,13 @@ def _tree_stock_instruction(context):
 
 def _request_payload(message, snapshot, correction):
     """Build the same instructions and world payload for both providers."""
+    if snapshot.get("request_kind") == "voice_rewrite":
+        parts = _voice_rewrite_parts(snapshot["turns"])
+        schema = {"type": "object", "properties": {key: {"type": "string", "minLength": 1}
+                  for key in parts}, "required": list(parts)}
+        return (VOICE_REWRITE_INSTRUCTION, schema,
+                json.dumps({"speakers": snapshot["speakers"], "parts": parts},
+                           ensure_ascii=False, separators=(",", ":")))
     instruction, schema, _ = response_contract(snapshot, correction=bool(correction))
     context = world_context(snapshot, correction=bool(correction))
     if snapshot.get("_compact_rewrite"):
@@ -1986,7 +2120,7 @@ def _request_gemini(api_key, message, snapshot, *, correction=""):
             api_key=api_key,
             vertexai=False,
             http_options=types.HttpOptions(
-                timeout=15_000,
+                timeout=max(1, int(min(15.0, snapshot.get("_timeout", 15.0)) * 1000)),
                 retry_options=types.HttpRetryOptions(attempts=1),
             ),
         ) as client:
@@ -2072,7 +2206,7 @@ def _request_ollama(message, snapshot, model=DEFAULT_OLLAMA_MODEL, *, correction
                 # default context. Truncation can remove the speaker rules.
                 "options": options,
             },
-            timeout=60.0,
+            timeout=min(60.0, snapshot.get("_timeout", 60.0)),
         )
         if response.status_code == 404:
             raise RequestError(f"Ollama could not find {model}. Run: ollama pull {model}")

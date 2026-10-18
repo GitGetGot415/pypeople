@@ -60,12 +60,13 @@ def company_point(npc, partner, spacing=0, *, allow_vertical=False):
     return min(points, key=lambda point: math.dist(point, (npc.x, npc.y))) if points else None
 
 
-def record_generated_turns(interaction, turns):
+def record_generated_turns(interaction, turns, rewritten_parts=()):
     """Keep speaker roles and recorded display parts identical across encounters."""
     interaction.turns = list(turns)
-    for turn in interaction.turns:
+    for index, turn in enumerate(interaction.turns):
         actor = interaction.initiator if turn.speaker == "initiator" else interaction.recipient
-        interaction.record.add_turn(actor.name, turn.text, [part.model_dump() for part in turn.parts])
+        rewritten = rewritten_parts[index] if rewritten_parts else ()
+        interaction.record.add_turn(actor.name, turn.text, [part.model_dump() for part in turn.parts], rewritten)
 
 
 def record_failed_dialogue(interaction, turns):

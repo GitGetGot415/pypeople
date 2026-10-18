@@ -111,6 +111,7 @@ class NPC:
     sprite_size: tuple[int, int] | None = None
     selected: bool = False
     reply: str = ""
+    rewritten_reply: str = ""
     end_conversation: bool = False
     conversation: "Conversation | None" = field(default=None, repr=False, compare=False)
     gift: "Gift | None" = field(default=None, repr=False, compare=False)
@@ -624,6 +625,7 @@ class Conversation:
         self.food_outcome = ""
         self.food_reason = ""
         self.handoff_thanks = []
+        self.rewritten_handoff_thanks = []
         self.outcome_event_id = None
         self.reactions = []
         self.arrived = False
@@ -666,7 +668,7 @@ class Conversation:
     def error(self, message):
         self.record.error = message
 
-    def set_response(self, response, *, reading=False):
+    def set_response(self, response, *, reading=False, rewritten_parts=()):
         if not self.accepts_response:
             return
         from llm import validate_dialogue_format, validate_dialogue_speakers, validate_resident_grounding
@@ -683,7 +685,8 @@ class Conversation:
             "recipient": self.recipient.snapshot(self.initiator.world.tree),
             "_information_validation": asdict(self.information_context) if self.information_context else None})
         self.handoff_thanks = response.handoff_thanks
-        record_generated_turns(self, response.turns)
+        self.rewritten_handoff_thanks = list(rewritten_parts[-1]) if rewritten_parts and response.handoff_thanks else []
+        record_generated_turns(self, response.turns, rewritten_parts)
         opinions = ((self.initiator, self.recipient, response.initiator_opinion),
                     (self.recipient, self.initiator, response.recipient_opinion))
         self.record.outcomes = [
@@ -880,13 +883,13 @@ class Conversation:
         requester.conversation = donor.conversation = None
         Gift(donor, requester, "fruit", 1, self.record,
              saved_states=[self.saved_states[1], self.saved_states[0]], already_met=True,
-             thanks=self.handoff_thanks)
+             thanks=self.handoff_thanks, rewritten_thanks=self.rewritten_handoff_thanks)
 
 
 class Gift:
     """Reserve both participants through approach, giving, and thanking."""
 
-    def __init__(self, initiator, recipient, item, quantity, record=None, spacing=0, *, saved_states=None, already_met=False, thanks=None):
+    def __init__(self, initiator, recipient, item, quantity, record=None, spacing=0, *, saved_states=None, already_met=False, thanks=None, rewritten_thanks=()):
         destination = (initiator.x, initiator.y) if already_met else company_point(initiator, recipient, spacing)
         if destination is None:
             raise ValueError("There isn't enough room here to give the items.")
@@ -897,6 +900,7 @@ class Gift:
         self.transferred = False
         self.outcome_event_id = None
         self.thanks = list(thanks) if thanks is not None else []
+        self.rewritten_thanks = list(rewritten_thanks)
         self.elapsed = 0.0
         self.record = record or ConversationRecord((initiator.name, recipient.name), "Give items", "Walking to give")
         self.saved_states = []
@@ -936,7 +940,7 @@ class Gift:
             on_transfer(giver.world, giver, recipient, self.quantity, event, self.record)
             if self.thanks:
                 self.record.add_turn(recipient.name, " ".join(part.text.strip() for part in self.thanks),
-                                     [part.model_dump() for part in self.thanks])
+                                     [part.model_dump() for part in self.thanks], self.rewritten_thanks)
             self.record.outcomes[0:1] = [f"Gave {self.quantity} {self.item} to {recipient.name}."]
             self.record.status = "Thanking"
             elapsed = max(GIFT_GIVE_SECONDS, elapsed)

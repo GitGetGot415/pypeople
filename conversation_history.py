@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from uuid import uuid4
+from dialogue_text import contains_serialized_dialogue
 
 
 @dataclass
@@ -16,11 +17,28 @@ class ConversationRecord:
     purpose: str = "chat"
     id: str = field(default_factory=lambda: uuid4().hex)
     dialogue_parts: dict[int, list[dict]] = field(default_factory=dict)
+    rewritten_parts: dict[int, list[str]] = field(default_factory=dict)
     failed_turns: list[dict] = field(default_factory=list)
 
-    def add_turn(self, speaker, text, parts):
+    def add_turn(self, speaker, text, parts, rewritten=()):
+        if rewritten:
+            self.rewritten_parts[len(self.turns)] = list(rewritten)
         self.dialogue_parts[len(self.turns)] = parts
         self.turns.append((speaker, text))
+
+
+def usable_rewrite(parts, rewritten):
+    """Old or malformed presentation data falls back without editing saved words."""
+    return bool(rewritten) and len(rewritten) == len(parts) and all(
+        isinstance(text, str) and text.strip() and not contains_serialized_dialogue(text)
+        for text in rewritten)
+
+
+def display_parts(parts, rewritten=(), *, original=False):
+    """Select presentation text while keeping the original part's metadata."""
+    use_rewrite = not original and usable_rewrite(parts, rewritten)
+    return [(rewritten[index] if use_rewrite else part[0], part[1])
+            for index, part in enumerate(parts)]
 
 
 @dataclass

@@ -226,6 +226,7 @@ class NPCState(ActivityState):
     x: float = Field(ge=0, le=WORLD_WIDTH)
     y: float = Field(ge=0, le=WORLD_HEIGHT)
     reply: str
+    rewritten_reply: str = ""
     emotion: EmotionReaction
     social: float = Field(ge=0, le=100)
     inventory: dict[Literal["fruit"], int]
@@ -259,11 +260,21 @@ class HistoryState(SaveModel):
     status: str
     turns: list[tuple[str, str]]
     dialogue_parts: dict[int, list[ConversationPart]] = Field(default_factory=dict)
+    rewritten_parts: dict[int, list[str]] = Field(default_factory=dict)
     failed_turns: list[ConversationTurn] = Field(default_factory=list)
     outcomes: list[str]
     error: str
     origin: Literal["player", "autonomous"]
     purpose: Literal["chat", "food_request", "gossip", "bargain", "judgment", "introduction", "snake_player"]
+
+    @model_validator(mode="after")
+    def validate_rewrites(self):
+        for index, texts in self.rewritten_parts.items():
+            if (index < 0 or index >= len(self.turns) or self.turns[index][0] == "You"
+                    or len(texts) != len(self.dialogue_parts.get(index, []))
+                    or not texts or any(not text.strip() for text in texts)):
+                raise ValueError("A rewrite must match the original NPC dialogue parts.")
+        return self
 
 
 class ConversationState(SaveModel):
@@ -277,6 +288,7 @@ class ConversationState(SaveModel):
     food_outcome: Literal["", "accepted", "need", "refused", "unavailable"]
     food_reason: str
     handoff_thanks: list[ConversationPart] = Field(max_length=3)
+    rewritten_handoff_thanks: list[str] = Field(default_factory=list)
     outcome_event_id: str | None
     reactions: list[tuple[str, float]] = Field(max_length=2)
     initiator: int = Field(ge=0)
@@ -313,6 +325,7 @@ class GiftState(SaveModel):
     transferred: bool
     outcome_event_id: str | None
     thanks: list[ConversationPart] = Field(max_length=3)
+    rewritten_thanks: list[str] = Field(default_factory=list)
     saved_states: tuple[ActivityState, ActivityState]
 
 
@@ -363,6 +376,7 @@ class SnakeState(SaveModel):
     decision_remaining: float = Field(ge=0)
     command_revision: int = Field(ge=0)
     reply: str
+    rewritten_reply: str = ""
     retry_request: SnakeRetryState | None
 
     @field_validator("destination")
@@ -587,6 +601,11 @@ class SimulationState(SaveModel):
             if set(record.participants) != {actors[self.npcs[i].id] for i in pair}:
                 raise ValueError("An interaction must match its record.")
             reserved.update(pair)
+            thanks = interaction.handoff_thanks if isinstance(interaction, ConversationState) else interaction.thanks
+            rewritten = (interaction.rewritten_handoff_thanks if isinstance(interaction, ConversationState)
+                         else interaction.rewritten_thanks)
+            if rewritten and (len(rewritten) != len(thanks) or any(not text.strip() for text in rewritten)):
+                raise ValueError("Rewritten thanks must match the original parts.")
             if isinstance(interaction, ConversationState):
                 ready = interaction.dialogue_state == "ready"
                 if record.id != interaction.id or ready != bool(interaction.turns) or ready != interaction.social_effects_applied:
@@ -877,6 +896,7 @@ def restore_simulation(state):
             reply=saved.reply, emotion=saved.emotion.name, emotion_intensity=saved.emotion.intensity,
             social=saved.social,
             inventory=saved.inventory.copy(), inventory_capacity=saved.inventory_capacity,
+            rewritten_reply=saved.rewritten_reply,
             preferences=saved.preferences.model_dump(), command_revision=saved.command_revision,
             memories=[Memory(**memory.model_dump()) for memory in saved.memories],
             goal=Goal(**saved.goal.model_dump()) if saved.goal else None,

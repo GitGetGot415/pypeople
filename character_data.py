@@ -89,7 +89,7 @@ def random_character(config_path=RANDOM_CONFIG_PATH):
         config = json.load(config_file)
     if not isinstance(config, dict):
         raise ValueError("Random settings must be a JSON object.")
-    for key in ("first_names", "last_names", "details", "backgrounds"):
+    for key in ("first_names", "last_names", "details", "voices", "mannerisms", "backgrounds"):
         choices = config.get(key)
         if not isinstance(choices, list) or not choices or any(
             not isinstance(value, str) or not value.strip() for value in choices
@@ -109,7 +109,8 @@ def random_character(config_path=RANDOM_CONFIG_PATH):
         values[name] = str(random.randint(low, high))
     values["Name"] = f"{random.choice(config['first_names']).strip()} {random.choice(config['last_names']).strip()}"
     values["Sex"] = random.choice(("M", "F"))
-    values["Details"] = (random.choice(config["details"]).strip() + "\n\n"
+    values["Details"] = (" ".join(random.choice(config[key]).strip()
+                                  for key in ("details", "voices", "mannerisms")) + "\n\n"
                          + random.choice(config["backgrounds"]).strip())
     values["Hair"] = random.choice(HAIR_STYLES)
     values["Eyes"] = random.choice(EYE_STYLES)

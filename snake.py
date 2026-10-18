@@ -29,7 +29,12 @@ SNAKE_DOCTRINE = (
     "It has no access to undisclosed secrets and cannot invent offenses."
 )
 
-SNAKE_SPEAKING_STYLE = (
+SNAKE_VOICE_BRIEF = (
+    "Calm, confident and ceremonious. Use measured, concise sentences, few contractions, "
+    "no slang or swearing, rare hesitation and occasional dry humor. No marked accent."
+)
+
+SNAKE_SPEAKING_STYLE = SNAKE_VOICE_BRIEF + " " + (
     f"Speak with calm, confident divine authority as {SNAKE_NAME}, appointed messenger of a god and guard of the apple tree. "
     "Keep your private pursuit of influence private. Follow the current transaction and supplied knowledge. "
     "Use a brief introduction only on first contact. Answer the resident's latest point and perform only the current task; "
@@ -61,6 +66,7 @@ class Snake:
     world: object = field(default=None, repr=False, compare=False)
     selected: bool = False
     reply: str = ""
+    rewritten_reply: str = ""
     end_conversation: bool = False
     request_pending: bool = False
     command_revision: int = 0
@@ -291,7 +297,7 @@ class SnakeEncounter:
             "_snake_knowledge": [(b.claim_id, b.stance, b.source_id, b.disclosure_id) for b in snake.beliefs]}
         return self.request_context
 
-    def set_response(self, response, *, reading=False):
+    def set_response(self, response, *, reading=False, rewritten_parts=()):
         from llm import validate_snake_response
         from social import claim_by_id
         if not self.accepts_response or not self.request_context:
@@ -316,7 +322,7 @@ class SnakeEncounter:
             raise ValueError("The resident's attitudes changed during generation. Retry the encounter.")
         # Speech describing a handoff is displayed only after the real transfer commits.
         world.commit_snake_response(self, response)
-        record_generated_turns(self, response.turns)
+        record_generated_turns(self, response.turns, rewritten_parts)
         self.stage = "dialogue"
         self.record.status = "Judgment announced" if self.purpose == "judgment" else "Dialogue ready"
         finish_generated_dialogue(self, reading=reading)

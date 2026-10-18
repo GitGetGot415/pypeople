@@ -44,6 +44,7 @@ class Application:
         self.small_font = pygame.font.Font(None, 22)
         self.running = True
         self.screen = "menu"
+        self.original_dialogue = False
 
         # Load the Gemini API key from the project's .env
         load_dotenv(
@@ -362,6 +363,7 @@ class Application:
         if error:
             npc.end_conversation = False
             npc.reply = error
+            npc.rewritten_reply = ""
             npc.set_emotion("neutral", 0)
             if self.game.selected_npc is npc:
                 self.game.set_reply(error)
@@ -437,7 +439,8 @@ class Application:
         simulation_active = self.screen in ("game", "stats") and not paused
         session_active = self.screen in ("game", "stats", "save_sim")
         active_session = self.session_id if session_active else None
-        viewed = self.game.viewed_conversation if self.screen == "game" and self.game.dialogue_open else None
+        # Stats owns the version toggle; visiting it keeps the live reading hold.
+        viewed = self.game.viewed_conversation if self.screen in ("game", "stats") and self.game.dialogue_open else None
         # Leave completed replies queued so they cannot change a paused world.
         replies = () if session_active and paused else self.requests.poll(active_session)
         if session_active and not paused:
@@ -448,7 +451,7 @@ class Application:
                         and getattr(pending, "request_stage", None) != worker.stage):
                     pending.request_stage = worker.stage
                     pending.wait_elapsed = 0.0
-        for request_id, result, error, failed_turns in replies:
+        for request_id, result, error, failed_turns, rewritten in replies:
             conversation = self.conversation_requests.pop(request_id, None)
             if conversation is not None:
                 if conversation.id == request_id and conversation.accepts_response:
@@ -456,7 +459,7 @@ class Application:
                         conversation.fail_dialogue(error, failed_turns=failed_turns)
                     else:
                         try:
-                            conversation.set_response(result, reading=conversation is viewed)
+                            conversation.set_response(result, reading=conversation is viewed, rewritten_parts=rewritten)
                         except ValueError as exc:
                             conversation.fail_dialogue(str(exc), failed_turns=result.turns)
                 continue
@@ -471,8 +474,10 @@ class Application:
                 if record:
                     record.status, record.error = ("Failed", error) if error else ("Completed", "")
                     if not error:
-                        record.turns.append((npc.name, result.reply))
+                        record.add_turn(npc.name, result.reply, [{"text": result.reply,
+                            "emotion": {"name": "neutral", "intensity": 0}}], rewritten[0] if rewritten else ())
                 npc.reply = f"Request failed: {error}" if error else result.reply
+                npc.rewritten_reply = rewritten[0][0] if not error and rewritten else ""
                 if self.game.selected_npc is npc:
                     self.game.set_reply(npc.reply)
                 self.request_history = None
@@ -516,6 +521,7 @@ class Application:
                             ))
                             npc.request_pending = True
             npc.reply = f"Request failed: {error}" if error else result.reply
+            npc.rewritten_reply = rewritten[0][0] if not error and rewritten else ""
             # A reply arriving after the player leaves must not wait for a reader.
             npc.end_conversation = bool(not error and result.end_conversation and npc.selected)
             if error:
@@ -527,7 +533,7 @@ class Application:
                     record.add_turn(npc.name, npc.reply, [{
                         "text": npc.reply,
                         "emotion": {"name": npc.emotion, "intensity": npc.emotion_intensity},
-                    }])
+                    }], rewritten[0] if rewritten else ())
                 record.error = error or ""
                 waiting_for_done = npc.request_pending and npc.end_conversation
                 if error:
