@@ -33,7 +33,7 @@ def name_pattern(name):
 
 
 def validate_speaker_identity(text, speaker, listener, *, allow_third_person=False):
-    """Reject clear self-address and embedded replies from the other participant."""
+    """Reject confused speaker/listener roles while retaining direct address and quotes."""
     text = unquoted_speech(text)
     own, other = speaker, listener
     aliases = {own.casefold(), own.split()[0].casefold()} if own else set()
@@ -54,9 +54,33 @@ def validate_speaker_identity(text, speaker, listener, *, allow_third_person=Fal
                 f"This turn belongs only to {own}, speaking to {other}, but it addresses {own} as the listener. "
                 "Keep every part in the current speaker's voice. Do not include the partner's answer in a later part; "
                 "use the actual listener's name when addressing them. Regenerate the speech without swapping roles.")
-    for name in other_aliases - aliases:
+    for name in sorted(other_aliases - aliases, key=len, reverse=True):
         if re.search(rf"(?:^|[\n.!?])\s*{re.escape(name)}\s*:", text, re.IGNORECASE):
             raise ValueError(f"A turn by {own} contains a reply labelled as {other}. Generate only {own}'s own words.")
+        if allow_third_person or name == "you":
+            continue  # Voice rewrites keep their existing limited diagnostic rules.
+        for match in re.finditer(name_pattern(name), text, re.IGNORECASE):
+            before, after = text[:match.start()], text[match.end():]
+            if name != other.casefold():
+                following = re.match(r"\s+([^\W\d_]+)\b", after)
+                if following and following[1][0].isupper():
+                    continue  # A shared first name cannot identify a different full name.
+            if re.match(r"\s+(?:is|was)\s+(?:an?\s+)?(?:\w+\s+){0,2}(?:name|nickname|surname)\b", after, re.I):
+                continue  # Talking about the name itself need not describe an absent person.
+            possessive = re.match(r"['’]s\b", after)
+            subject = re.match(
+                r"\s+(?:is|was|has|had|will|would|can|could|should|must|needs|wants|seems|looks|"
+                r"thinks|believes|gave|received|refused|accepted|said|did|does)\b", after, re.I)
+            object_reference = re.search(
+                r"\b(?:about|for|from|with|to|of|between|after|support(?:ing)?|help(?:ing)?|"
+                r"trust(?:ing)?|watch(?:ing)?|scrutiniz(?:e|ing)|protect(?:ing)?|avoid(?:ing)?|"
+                r"criticiz(?:e|ing)|judg(?:e|ing)|thank(?:ing)?|giv(?:e|ing)|tell(?:ing)?|ask(?:ing)?)\s+$",
+                before, re.I)
+            if possessive or subject or object_reference:
+                raise ValueError(
+                    f"{other} is the listener, but this turn by {own} refers to them in third person. "
+                    "Address the listener as you/your, keeping the same meaning and who did what. "
+                    "Names are allowed for direct address, introductions, and explicit quotations.")
 
 
 def validate_rewrite_identity(original, rewritten, *, speaker, listener):

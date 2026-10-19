@@ -504,6 +504,8 @@ Use first person for the speaker and second person for the listener, even when
 a record describes either of them in third person. Preserve who experienced
 each event and how they learned about it. Third-person references belong to
 other people or explicitly quoted earlier words.
+If an objective names the listener, address that person as you/your rather than
+discussing their support, behavior, or plans as though they were absent.
 Personality shapes questions, disagreement, reassurance and natural hesitation.
 When two residents converse, both are displaced; warmth can hide worry. Let the
 exchange reach a choice, answer or unresolved question. Avoid automatic greetings
