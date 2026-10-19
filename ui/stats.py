@@ -3,7 +3,9 @@ from time import monotonic
 
 from character_data import DEFAULT_COLORS, IDENTITY_FIELDS, PROFILE_FIELDS
 from constants import (ACCENT, FAILED_CONVERSATION_COLOR, FAILED_CONVERSATION_SELECTED_COLOR,
+                       GENERATING_CONVERSATION_COLOR, GENERATING_CONVERSATION_SELECTED_COLOR,
                        GIFT_CONVERSATION_COLOR, GIFT_CONVERSATION_SELECTED_COLOR,
+                       QUEUED_CONVERSATION_COLOR, QUEUED_CONVERSATION_SELECTED_COLOR,
                        REWRITE_FAILED_CONVERSATION_COLOR, REWRITE_FAILED_CONVERSATION_SELECTED_COLOR,
                        GRASS, INK, MODEL_LOG_COLORS, MODEL_LOG_REFRESH_SECONDS, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER, SNAKE_NAME)
 from conversation_history import (display_parts, has_failed_voice_rewrite, usable_rewrite,
@@ -525,8 +527,26 @@ class StatsScreen:
         surface.set_clip(self.list_rect.clip(previous_clip))
         rows, _ = self._list_rows(app)
         gift_ids = set()
+        generating_ids = set()
+        queued_ids = set()
         if self.tab == "Conversations":
             gift_ids = {fact.conversation_id for fact in app.simulation.facts if fact.kind == "apple_given"}
+            queued_ids = {
+                request_id for (session_id, request_id), log in app.requests.logs.items()
+                if session_id == app.session_id and log.status in ("queued", "waiting_for_ollama")
+            }
+            if app.request_id in queued_ids and app.request_history is not None:
+                queued_ids.add(app.request_history.id)
+            active_requests = {
+                worker.request_id for worker in app.requests.statuses()
+                if worker.session_id == app.session_id and worker.log is not None and worker.log.status == "running"
+            }
+            generating_ids = {
+                conversation.record.id for request_id, conversation in app.conversation_requests.items()
+                if request_id in active_requests
+            }
+            if app.request_id in active_requests and app.request_history is not None:
+                generating_ids.add(app.request_history.id)
         if not rows and self.tab == "Conversations":
             surface.blit(app.small_font.render("No conversations yet.", True, MUTED), (self.list_rect.x, self.list_rect.y + 12))
         if not rows and self.tab == "Model logs":
@@ -540,6 +560,10 @@ class StatsScreen:
             selected = entry is selected_entry
             if self.tab == "Model logs":
                 color = MODEL_LOG_COLORS[entry.status]
+            elif self.tab == "Conversations" and entry.id in generating_ids:
+                color = GENERATING_CONVERSATION_SELECTED_COLOR if selected else GENERATING_CONVERSATION_COLOR
+            elif self.tab == "Conversations" and entry.id in queued_ids:
+                color = QUEUED_CONVERSATION_SELECTED_COLOR if selected else QUEUED_CONVERSATION_COLOR
             elif self.tab == "Conversations" and (entry.status == "Failed" or entry.dialogue_errors):
                 color = FAILED_CONVERSATION_SELECTED_COLOR if selected else FAILED_CONVERSATION_COLOR
             elif self.tab == "Conversations" and has_failed_voice_rewrite(entry):
