@@ -119,9 +119,10 @@ def _restart_mac():
         if command and command == commands[pid]:
             _stop_process(int(pid))
     if bundle:
-        if _command(["open", "-a", bundle]) is None:
-            raise ValueError("Could not reopen the Ollama application.")
-    elif executable:
+        executable = str(Path(bundle) / "Contents/Resources/ollama")
+    if executable:
+        # Run just the API server, so restarting never opens or activates the
+        # desktop app over the game window.
         subprocess.Popen([executable, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True, env=os.environ.copy())
     else:
@@ -155,15 +156,13 @@ foreach ($serverId in $listeners) {
         Wait-Process -Id $serverId -Timeout 10 -ErrorAction SilentlyContinue
     }
 }
-$desktop = Join-Path $directory 'ollama app.exe'
-if (Test-Path $desktop) { Start-Process -FilePath $desktop }
-else { Start-Process -FilePath $executable -ArgumentList 'serve' -WindowStyle Hidden }
+Start-Process -FilePath $executable -ArgumentList 'serve' -WindowStyle Hidden
 '''
     result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
                             capture_output=True, text=True, timeout=30,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if result.returncode:
-        raise ValueError("Could not restart the local Ollama app. Close it and try Apply again.")
+        raise ValueError("Could not restart the local Ollama server. Close it and try Apply again.")
 
 
 def apply_parallel_limit(limit, model, progress=None):
