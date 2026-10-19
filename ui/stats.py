@@ -170,6 +170,12 @@ class StatsScreen:
             gap()
             add(f"Topic / request: {record.topic}")
             gap()
+            if record.dialogue_errors:
+                add("Base dialogue validation", app.heading_font)
+                for reason in record.dialogue_errors:
+                    add(reason, app.small_font, FAILED_CONVERSATION_SELECTED_COLOR)
+                add("Validation was off; dialogue accepted and outcomes applied.", app.small_font, MUTED)
+                gap()
             rewrite_errors = {}
             for index, speaker, reason in voice_rewrite_errors(record):
                 rewrite_errors.setdefault(reason, []).append(f"{speaker} (turn {index + 1})")
@@ -181,7 +187,7 @@ class StatsScreen:
                     gap()
             add("Outcome", app.heading_font)
             if record.error:
-                add(record.error, color=MUTED)
+                add(record.error, color=FAILED_CONVERSATION_SELECTED_COLOR)
                 gap()
             for outcome in record.outcomes:
                 if record.error and " ".join(outcome.split()) == " ".join(record.error.split()):
@@ -523,7 +529,7 @@ class StatsScreen:
             selected_entry = (self.selected_log if self.tab == "Model logs" else
                               self.selected_conversation if self.tab == "Conversations" else self.selected_npc)
             selected = entry is selected_entry
-            if self.tab == "Conversations" and entry.status == "Failed":
+            if self.tab == "Conversations" and (entry.status == "Failed" or entry.dialogue_errors):
                 color = FAILED_CONVERSATION_SELECTED_COLOR if selected else FAILED_CONVERSATION_COLOR
             elif self.tab == "Conversations" and has_failed_voice_rewrite(entry):
                 color = REWRITE_FAILED_CONVERSATION_SELECTED_COLOR if selected else REWRITE_FAILED_CONVERSATION_COLOR

@@ -678,7 +678,8 @@ class Conversation:
     def set_response(self, response, *, reading=False, rewritten_parts=(), dialogue_validation=True):
         if not self.accepts_response:
             return
-        from llm import validate_dialogue_format, validate_dialogue_speakers, validate_resident_grounding
+        from llm import (dialogue_validation_errors, validate_dialogue_format,
+                         validate_dialogue_speakers, validate_resident_grounding)
         # Reject stale actor snapshots before displaying or committing anything.
         if getattr(self, "request_roster_revision", self.initiator.world.roster_revision) != self.initiator.world.roster_revision:
             raise ValueError("The resident roster changed while dialogue was being prepared. Retry this meeting.")
@@ -705,6 +706,10 @@ class Conversation:
                 **name_snapshot, "initiator": {**name_snapshot["initiator"],
                     "name_knowledge": {"known_names": knowledge["initiator"]}}})
         orientation_discussed = validate_orientation(response, name_snapshot)
+        if not dialogue_validation:
+            self.record.dialogue_errors = list(dict.fromkeys([
+                *response._dialogue_errors,
+                *dialogue_validation_errors(response, self.snapshot(self.initiator.world.tree, self.initiator.world.npcs))]))
         self.handoff_thanks = response.handoff_thanks
         self.rewritten_handoff_thanks = list(rewritten_parts[-1]) if rewritten_parts and response.handoff_thanks else []
         record_generated_turns(self, response.turns, rewritten_parts)

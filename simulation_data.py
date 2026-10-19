@@ -274,6 +274,7 @@ class HistoryState(SaveModel):
     name_introductions: dict[int, list[NameIntroduction]] = Field(default_factory=dict)
     name_witnesses: dict[int, list[str]] = Field(default_factory=dict)
     orientation_discussed: bool = False
+    dialogue_errors: list[str] = Field(default_factory=list)
     outcomes: list[str]
     error: str
     origin: Literal["player", "autonomous"]
@@ -509,7 +510,9 @@ class SimulationState(SaveModel):
                 if not 0 <= index < len(record.turns) or len({i.actor_id for i in introductions}) != len(introductions):
                     raise ValueError("Invalid introduction turn or duplicate introduced actor.")
                 for intro in introductions:
-                    if (intro.actor_id not in ids or not introduction_supported(record.turns[index][1], intro.name, intro.reference)
+                    # Do not enforce waived speech checks again when loading an accepted result.
+                    missing_speech = not record.dialogue_errors and not introduction_supported(record.turns[index][1], intro.name, intro.reference)
+                    if (intro.actor_id not in ids or missing_speech
                             or intro.reference == "self" and record.turns[index][0] != actors[intro.actor_id]):
                         raise ValueError("Invalid introduction identity or spoken evidence.")
             for index, witnesses in record.name_witnesses.items():
@@ -593,7 +596,7 @@ class SimulationState(SaveModel):
                     raise ValueError("A learned name requires accepted spoken source evidence.")
                 from name_knowledge import introduction_supported
                 if not any(intro.actor_id == target_id and intro.name == learned["name"]
-                           and introduction_supported(source.turns[turn][1], intro.name, intro.reference)
+                           and (source.dialogue_errors or introduction_supported(source.turns[turn][1], intro.name, intro.reference))
                            and (intro.reference != "self" or source.turns[turn][0] == actors[target_id])
                            and source.turns[turn][0] != actors[npc.id]
                            for intro in source.name_introductions.get(turn, [])):

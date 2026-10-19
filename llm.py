@@ -9,7 +9,7 @@ from typing import Literal
 from google import genai
 from google.genai import errors, types
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_CHARACTERS, DIALOGUE_MAX_PARTS,
                        DIALOGUE_PART_TARGET_CHARACTERS, DIALOGUE_PARTS_PER_TURN,
                        DIALOGUE_REPAIR_WORD_LIMIT, DIALOGUE_TIMEOUT_SECONDS,
@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 class StrictResponse(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
+    # Computed locally, never requested from the model or trusted across the queue.
+    _dialogue_errors: list[str] = PrivateAttr(default_factory=list)
 
 
 class OpinionUpdate(StrictResponse):
@@ -1274,7 +1276,8 @@ def validate_snake_response(result, snapshot, *, dialogue_validation=None):
     if dialogue_validation:
         validate_dialogue_speakers(result.turns, {
             "initiator": snapshot["snake"]["name"], "recipient": snapshot["resident"]["npc_name"]})
-    validate_names(result.turns, {**snapshot, "_name_witnesses": snake_name_witnesses(snapshot, result.decision)})
+    validate_names(result.turns, {**snapshot, "_dialogue_validation": dialogue_validation,
+                                "_name_witnesses": snake_name_witnesses(snapshot, result.decision)})
 
 
 def _snake_identity_instruction(snapshot):
@@ -1816,7 +1819,12 @@ def validate_response(raw, snapshot):
         return _parse_voice_rewrite(raw, snapshot["turns"], speakers=snapshot["speakers"])
     model = response_contract(snapshot)[2]
     try:
-        return _validate_response(raw, snapshot, model)
+        result = _validate_response(raw, snapshot, model)
+        if not snapshot.get("_dialogue_validation", True):
+            result._dialogue_errors = dialogue_validation_errors(result, snapshot)
+            for error in result._dialogue_errors:
+                record_output("validation", f"Base dialogue failed validation; retaining dialogue and effects: {error}")
+        return result
     except DialogueTurnError as exc:
         raise InvalidResponseError(str(exc), response=model.model_validate_json(raw),
                                    repeated_turns=exc.turn_indices if isinstance(exc, DialogueRepetitionError) else (),
@@ -1833,6 +1841,15 @@ def validate_response(raw, snapshot):
         # These validators supply application-authored reasons, never provider text.
         raise InvalidResponseError(str(exc), response=model.model_validate_json(raw),
                                    failed_turns=_generated_dialogue(raw, snapshot)) from None
+
+
+def dialogue_validation_errors(response, snapshot):
+    """Diagnose accepted originals without another provider call or any effects."""
+    try:
+        _validate_response(response.model_dump_json(), {**snapshot, "_dialogue_validation": True}, type(response))
+    except ValueError as exc:
+        return [str(exc)]
+    return []
 
 
 def _generated_dialogue(raw, snapshot):
@@ -2093,7 +2110,7 @@ def _validate_response(raw, snapshot, model):
     if isinstance(result, SnakePlayerResponse):
         if not result.reply.strip():
             raise ValueError("The snake must supply generated speech.")
-        if "snake" in snapshot:
+        if check_dialogue and "snake" in snapshot:
             catalog = snapshot.get("_name_actors", {})
             validate_name_use(result.reply, permitted_forms(snapshot["snake"], catalog, {}), catalog)
         if check_dialogue:

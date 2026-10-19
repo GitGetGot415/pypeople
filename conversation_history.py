@@ -24,6 +24,7 @@ class ConversationRecord:
     name_introductions: dict[int, list[dict]] = field(default_factory=dict)
     name_witnesses: dict[int, list[str]] = field(default_factory=dict)
     orientation_discussed: bool = False
+    dialogue_errors: list[str] = field(default_factory=list)
 
     def add_turn(self, speaker, text, parts, rewritten=()):
         if rewritten:

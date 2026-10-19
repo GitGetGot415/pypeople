@@ -150,6 +150,7 @@ def introduction_supported(text, name, reference):
 def validate_names(turns, snapshot, *, check_use=True, require_effects=True):
     """Return temporary knowledge and per-turn permissions; never mutate live state."""
     people = _participants(snapshot)
+    check_dialogue = snapshot.get("_dialogue_validation", True)
     witnessed = snapshot.get("_name_witnesses", {})
     for hearers in witnessed.values():
         for person in hearers:
@@ -163,7 +164,7 @@ def validate_names(turns, snapshot, *, check_use=True, require_effects=True):
         person = people[turn.speaker]
         permitted = permitted_forms(person, catalog, knowledge[turn.speaker])
         permissions.append(sorted(permitted))
-        if check_use:
+        if check_use and check_dialogue:
             validate_name_use(turn.text, permitted, catalog)
         seen = set()
         for intro in turn.introductions:
@@ -177,11 +178,11 @@ def validate_names(turns, snapshot, *, check_use=True, require_effects=True):
                 if intro.actor_id != actor_id(person):
                     raise ValueError("A self-introduction must identify the current speaker.")
             elif (intro.reference not in target.get("references", [])
-                  or intro.name.casefold() not in {s.casefold() for s in permitted}):
+                  or check_dialogue and intro.name.casefold() not in {s.casefold() for s in permitted}):
                 raise ValueError("A third-party introduction needs an informed speaker and the actor's supplied observable reference.")
-            if not introduction_supported(turn.text, intro.name, intro.reference):
+            if check_dialogue and not introduction_supported(turn.text, intro.name, intro.reference):
                 raise ValueError("The introduction effect is unsupported by actual unquoted identifying speech.")
-            if (intro.name != target["self_name"]
+            if (check_dialogue and intro.name != target["self_name"]
                     and introduction_supported(turn.text, target["self_name"], intro.reference)):
                 raise ValueError("Record the exact name form actually introduced, including a spoken surname.")
             for role, hearer in people.items():
@@ -196,7 +197,7 @@ def validate_names(turns, snapshot, *, check_use=True, require_effects=True):
                 entry = {"name": intro.name, "conversation_id": snapshot.get("interaction_id"), "turn": index}
                 knowledge[role][intro.actor_id] = entry
                 changes.append((actor_id(hearer), intro.actor_id, entry))
-        if check_use and require_effects and catalog:
+        if check_dialogue and check_use and require_effects and catalog:
             spoken_intros = [name for name in sorted(forms(own_name(person)), key=len, reverse=True)
                              if introduction_supported(turn.text, name, "self")]
             if spoken_intros and not any(intro.actor_id == actor_id(person) and intro.name == spoken_intros[0]
@@ -260,7 +261,7 @@ def validate_orientation(response, snapshot):
                 if other_id not in knowledge[role] and not any(
                         turn.speaker == role and asks_name(turn.text) for turn in response.turns):
                     raise ValueError(f"The {role} still does not know the partner's name. Ask what to call them and give them a chance to answer; introduce only names actually spoken.")
-    if response.orientation_discussed and not discussed:
+    if snapshot.get("_dialogue_validation", True) and response.orientation_discussed and not discussed:
         raise ValueError("orientation_discussed requires actual speech about arrival, surroundings, help or safety.")
     return discussed
 

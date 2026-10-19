@@ -170,6 +170,8 @@ class RequestManager:
                 disposition("Rejected at main-thread validation: invalid action or reply.")
                 replies.append((request_id, None, "The model returned an invalid action or reply. Try again.", [], []))
                 continue
+            for reason in result._dialogue_errors:
+                disposition(f"Base dialogue failed validation; retaining dialogue and effects: {reason}")
             if rewritten:
                 try:
                     state = voice_rewrite_snapshot(result, snapshot)

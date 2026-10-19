@@ -305,7 +305,7 @@ class SnakeEncounter:
         return self.request_context
 
     def set_response(self, response, *, reading=False, rewritten_parts=(), dialogue_validation=True):
-        from llm import validate_snake_response
+        from llm import dialogue_validation_errors, validate_snake_response
         from name_knowledge import actor_catalog, commit_names, orientation_speech, snake_name_witnesses, validate_names
         from social import claim_by_id
         if not self.accepts_response or not self.request_context:
@@ -334,7 +334,11 @@ class SnakeEncounter:
             "_name_snake_audience": [p.snapshot(world.tree) for p in world.listeners(self.initiator) if p is not npc]},
             response.decision)
         _, _, name_changes = validate_names(response.turns, {**self.request_context,
+            "_dialogue_validation": dialogue_validation,
             "resident": npc.snapshot(world.tree), "_name_actors": actor_catalog(world), "_name_witnesses": witnessed})
+        if not dialogue_validation:
+            self.record.dialogue_errors = list(dict.fromkeys([
+                *response._dialogue_errors, *dialogue_validation_errors(response, self.request_context)]))
         # Speech describing a handoff is displayed only after the real transfer commits.
         world.commit_snake_response(self, response)
         record_generated_turns(self, response.turns, rewritten_parts)

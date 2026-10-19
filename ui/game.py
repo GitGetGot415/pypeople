@@ -1,6 +1,6 @@
 import pygame
 from llm import ConversationTurn
-from constants import (DIALOGUE_PANEL_HEIGHT, INK, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER,
+from constants import (DIALOGUE_PANEL_HEIGHT, FAILED_CONVERSATION_SELECTED_COLOR, INK, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER,
                        WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH)
 from emotions import portrait_expression
 from conversation_history import display_parts, uses_original_dialogue
@@ -374,7 +374,10 @@ class GameScreen:
             self.prompt_input.draw(app.window, app.font)
             self.send_button.draw(app.window, app.font, enabled=not app.requests.busy and app.request_history is None
                                   and not self.selected_npc.request_pending and not app.simulation.paused)
-        if not closing and self.prompt_input.error:
+        if self.player_record and self.player_record.dialogue_errors:
+            draw_wrapped_text(app.window, self.player_record.dialogue_errors[-1], app.small_font,
+                              FAILED_CONVERSATION_SELECTED_COLOR, (self.reply_rect.x, 696, self.reply_rect.width - 90, 24))
+        elif not closing and self.prompt_input.error:
             app.window.blit(app.small_font.render(self.prompt_input.error, True, MUTED), (self.reply_rect.x, 696))
         else:
             reason = self.selected_npc.decision_reason
@@ -469,7 +472,10 @@ class GameScreen:
                       else "Conversation paused while you read." if conversation.active
                       else f"{conversation.record.status} - recorded dialogue.")
             status = "Generated draft; no effects applied. " + conversation.error if failed else conversation.error or status
-            draw_wrapped_text(app.window, status, app.small_font, MUTED,
+            if conversation.record.dialogue_errors:
+                status = "Validation off: " + conversation.record.dialogue_errors[0]
+            status_color = FAILED_CONVERSATION_SELECTED_COLOR if conversation.error or conversation.record.dialogue_errors else MUTED
+            draw_wrapped_text(app.window, status, app.small_font, status_color,
                               (rect.x, 696, rect.width - 80, 24))
             progress = app.small_font.render(f"{self.conversation_page_index + 1}/{len(self.conversation_pages)}", True, MUTED)
             app.window.blit(progress, progress.get_rect(topright=(1256, 696)))

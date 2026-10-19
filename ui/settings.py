@@ -200,7 +200,7 @@ class SettingsScreen:
         app.window.blit(app.small_font.render("Add each speaker's style to make dialogue more interesting.", True, MUTED), (340, 480))
         self.validation_button.label = "Base dialogue validation: " + ("On" if self.dialogue_validation else "Off")
         self.validation_button.draw(app.window, app.font)
-        app.window.blit(app.small_font.render("Check original dialogue for coherence. Voice rewrites stay as generated.", True, MUTED), (340, 548))
+        app.window.blit(app.small_font.render("Off: show validation errors in red; dialogue and outcomes still apply.", True, MUTED), (340, 548))
         self.save_button.draw(app.window, app.font)
         if self.provider == "ollama":
             self.setup_button.draw(app.window, app.font)

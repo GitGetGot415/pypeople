@@ -486,6 +486,7 @@ class Application:
                 if record:
                     record.status, record.error = ("Failed", error) if error else ("Completed", "")
                     if not error:
+                        record.dialogue_errors = list(dict.fromkeys([*record.dialogue_errors, *result._dialogue_errors]))
                         record.name_forms = name_forms(actor_catalog(self.simulation))
                         record.add_turn(npc.name, result.reply, [{"text": result.reply,
                             "emotion": {"name": "neutral", "intensity": 0}}], rewritten[0] if rewritten else ())
@@ -502,13 +503,14 @@ class Application:
             record = self.request_history
             if not error and (npc.busy or npc.command_revision != self.request_revision or self.request_world_revision != self.simulation.roster_revision):
                 error = "That reply arrived after the NPC became busy. Please send the request again."
-            if not error:
+            if not error and self.dialogue_validation:
                 try:
                     person = npc.snapshot(self.tree)
                     validate_name_use(result.reply, permitted_forms(person, person["_name_actors"], npc.known_names), person["_name_actors"])
                 except ValueError as exc:
                     error = str(exc)
             if record is not None and not error:
+                record.dialogue_errors = list(dict.fromkeys([*record.dialogue_errors, *result._dialogue_errors]))
                 record.outcomes.extend(
                     describe_opinion_change(
                         npc.name, entry.person, npc.opinions.get(entry.person, {}).get("opinion"), entry.opinion, entry.reason
