@@ -6,7 +6,8 @@ from constants import (ACCENT, FAILED_CONVERSATION_COLOR, FAILED_CONVERSATION_SE
                        GIFT_CONVERSATION_COLOR, GIFT_CONVERSATION_SELECTED_COLOR,
                        REWRITE_FAILED_CONVERSATION_COLOR, REWRITE_FAILED_CONVERSATION_SELECTED_COLOR,
                        GRASS, INK, MODEL_LOG_REFRESH_SECONDS, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER, SNAKE_NAME)
-from conversation_history import display_parts, has_failed_voice_rewrite, usable_rewrite, uses_original_dialogue
+from conversation_history import (display_parts, has_failed_voice_rewrite, usable_rewrite,
+                                  uses_original_dialogue, voice_rewrite_errors)
 from emotions import portrait_expression
 from social import assertion_text, claim_by_id, fact_by_id, phase_label, selected_beliefs
 
@@ -169,13 +170,25 @@ class StatsScreen:
             gap()
             add(f"Topic / request: {record.topic}")
             gap()
+            rewrite_errors = {}
+            for index, speaker, reason in voice_rewrite_errors(record):
+                rewrite_errors.setdefault(reason, []).append(f"{speaker} (turn {index + 1})")
+            if rewrite_errors:
+                add("Voice rewrite validation", app.heading_font)
+                for reason, affected in rewrite_errors.items():
+                    add(", ".join(affected), app.small_font, MUTED)
+                    add(reason, app.small_font, REWRITE_FAILED_CONVERSATION_SELECTED_COLOR)
+                    gap()
             add("Outcome", app.heading_font)
             if record.error:
                 add(record.error, color=MUTED)
+                gap()
             for outcome in record.outcomes:
+                if record.error and " ".join(outcome.split()) == " ".join(record.error.split()):
+                    continue
                 add(outcome)
                 gap()
-            if not record.outcomes:
+            if not record.outcomes and not record.error:
                 add("No outcome recorded yet.", color=MUTED)
                 gap()
             add("Dialogue", app.heading_font)

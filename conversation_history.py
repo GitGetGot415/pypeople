@@ -66,12 +66,21 @@ def display_parts(parts, rewritten=(), *, original=False, speaker="", listener="
             for index, part in enumerate(parts)]
 
 
+def voice_rewrite_errors(record):
+    """Return each affected turn, speaker and reason without changing stored words."""
+    errors = []
+    for index, (speaker, text) in enumerate(record.turns):
+        error = rewrite_validation_error(
+            record.dialogue_parts.get(index, [text]), record.rewritten_parts.get(index, ()), speaker=speaker,
+            listener=next((name for name in record.participants if name != speaker), "You"))
+        if error:
+            errors.append((index, speaker, error))
+    return errors
+
+
 def has_failed_voice_rewrite(record):
     """Diagnose retained rewrites, including those loaded from saved history."""
-    return any(rewrite_validation_error(
-        record.dialogue_parts.get(index, [text]), record.rewritten_parts.get(index, ()), speaker=speaker,
-        listener=next((name for name in record.participants if name != speaker), "You"))
-        for index, (speaker, text) in enumerate(record.turns))
+    return bool(voice_rewrite_errors(record))
 
 
 def uses_original_dialogue(parts, rewritten=(), *, original=False, speaker="", listener=""):
