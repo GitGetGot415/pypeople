@@ -1,7 +1,7 @@
 import pygame
 from llm import ConversationTurn
 from constants import (DIALOGUE_PANEL_HEIGHT, FAILED_CONVERSATION_SELECTED_COLOR, INK, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER,
-                       WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH)
+                       MAX_LLM_REQUESTS, WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH)
 from emotions import portrait_expression
 from conversation_history import display_parts, uses_original_dialogue
 from name_knowledge import actor_catalog, name_forms
@@ -15,7 +15,7 @@ from .world import draw_world, snake_artwork
 
 
 class GameScreen:
-    def __init__(self, max_requests=2):
+    def __init__(self, max_requests=MAX_LLM_REQUESTS):
         self.menu_button = Button((1144, 16, 112, 38), "Menu")
         self.stats_button = Button((1024, 16, 112, 38), "Stats")
         self.save_button = Button((904, 16, 108, 38), "Save")

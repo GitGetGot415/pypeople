@@ -5,7 +5,7 @@ from time import monotonic
 
 from pydantic import ValidationError
 
-from constants import DIALOGUE_TIMEOUT_SECONDS
+from constants import DIALOGUE_TIMEOUT_SECONDS, MAX_LLM_REQUESTS
 from llm import (MODEL, ConversationTurn, InvalidResponseError, RequestError, VoiceRewriteResponse,
                  VoiceRewriteValidationError, request_response,
                  request_voice_rewrite, validate_response, validate_voice_rewrite, voice_rewrite_snapshot)
@@ -93,7 +93,7 @@ def _request_worker(session_id, request_id, provider, api_key, message, snapshot
 
 
 class RequestManager:
-    def __init__(self, max_requests=2):
+    def __init__(self, max_requests=MAX_LLM_REQUESTS):
         self.max_requests = max_requests
         self.workers = {}
         self.results = queue.Queue()
