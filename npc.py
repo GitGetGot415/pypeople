@@ -694,6 +694,7 @@ class Conversation:
                 "recipient": self.recipient.snapshot(self.initiator.world.tree),
                 "_information_validation": asdict(self.information_context) if self.information_context else None})
         name_snapshot = {"request_kind": "conversation", "interaction_id": self.id,
+                         "purpose": self.purpose, "_dialogue_validation": dialogue_validation,
                          "initiator": self.initiator.snapshot(self.initiator.world.tree),
                          "recipient": self.recipient.snapshot(self.initiator.world.tree),
                          "_name_actors": actor_catalog(self.initiator.world)}
@@ -730,7 +731,7 @@ class Conversation:
             commit_information(self)
             commit_names(self, name_changes)
             for npc, partner in ((self.initiator, self.recipient), (self.recipient, self.initiator)):
-                if npc.goal and npc.goal.status == "active" and npc.goal.target_id == partner.id:
+                if self.purpose != "orientation" and npc.goal and npc.goal.status == "active" and npc.goal.target_id == partner.id:
                     npc.goal.last_attempt_phase = npc.world.phase_index
             self.social_effects_applied = True
         self.remember_opinions()

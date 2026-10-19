@@ -277,7 +277,7 @@ class HistoryState(SaveModel):
     outcomes: list[str]
     error: str
     origin: Literal["player", "autonomous"]
-    purpose: Literal["chat", "food_request", "gossip", "bargain", "judgment", "introduction", "snake_player"]
+    purpose: Literal["chat", "orientation", "food_request", "gossip", "bargain", "judgment", "introduction", "snake_player"]
 
     @model_validator(mode="after")
     def validate_rewrites(self):
@@ -292,7 +292,7 @@ class HistoryState(SaveModel):
 class ConversationState(SaveModel):
     id: str = Field(min_length=1)
     origin: Literal["player", "autonomous"]
-    purpose: Literal["chat", "food_request", "gossip"]
+    purpose: Literal["chat", "orientation", "food_request", "gossip"]
     focus_claim_id: str | None
     dialogue_state: Literal["waiting", "pending", "ready"]
     wait_elapsed: float = Field(ge=0, le=DIALOGUE_TIMEOUT_SECONDS + MAX_SIMULATION_STEP_SECONDS)

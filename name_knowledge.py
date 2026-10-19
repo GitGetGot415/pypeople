@@ -5,6 +5,7 @@ import re
 
 from constants import SNAKE_NAME
 from dialogue_rules import is_name_reference, name_pattern, unquoted_speech
+from dialogue_text import split_sentences
 
 
 NAME_INSTRUCTION = """Engine names, actor IDs, roster labels, goals, opinions, memories,
@@ -12,7 +13,9 @@ accounts, promises and correction metadata identify actors for bookkeeping only.
 They never teach a resident a name. name_knowledge is the authority for spoken
 names: use only your own authored name and learned forms, without surnames or
 numbered disambiguation suffixes you have not learned. Use you or a visible
-description for a stranger. Introductions are optional, never a required greeting.
+description for a stranger. In an orientation exchange, ask what to call an
+unfamiliar partner and answer with your own name; do not ask again after learning it.
+Other concerns may take precedence outside these introductory conversations.
 Where the schema includes introductions, record actor_id, name (the exact form
 spoken), and reference for each actual spoken introduction in that turn. Direct
 replies to the player can state your own name without an NPC learning effect.
@@ -93,6 +96,15 @@ def permitted_forms(person, catalog, knowledge):
     return permitted
 
 
+def listener_address(person, listener, knowledge):
+    if person.get("kind") == "python" or person.get("name_rule") == "knows_resident_names":
+        return own_name(listener)
+    learned = knowledge.get(actor_id(listener))
+    if learned:
+        return learned["name"]
+    return "the python guarding the apple tree" if listener.get("name_rule") == "knows_resident_names" else "the other resident"
+
+
 def validate_name_use(text, permitted, catalog):
     """Reject identifiable unknown references, leaving ambiguous ordinary words alone."""
     speech = unquoted_speech(text)
@@ -120,7 +132,8 @@ def introduction_supported(text, name, reference):
     speech = unquoted_speech(text)
     escaped = name_pattern(name)
     if reference == "self":
-        pattern = r"\b(?:my name is|i am|i['’]m|call me|you can call me)\s+" + escaped
+        pattern = (r"\b(?:my name is|my name['’]s|name['’]s|i am|i['’]m|call me|you can call me|i go by|i['’]m called)\s+"
+                   + escaped + r"|\bi,\s*" + escaped + r"\s*,")
     else:
         ref = re.escape(reference)
         pattern = (r"\b" + ref + r"\s+(?:is|is called|goes by|is named)\s+" + escaped
@@ -222,17 +235,37 @@ def orientation_context(npc):
 
 
 def orientation_speech(texts):
-    speech = " ".join(unquoted_speech(text) for text in texts)
-    return bool(re.search(r"\b(?:arriv\w*|where (?:are|am) (?:we|i)|how (?:did|do) (?:we|i) get|"
-                          r"(?:get|getting|go|going|way|back) home|remember.{0,50}(?:here|before)|"
-                          r"this place|where we are|surroundings|bearings|safety|shelter|"
-                          r"(?:find|finding|seek|seeking|need) (?:some )?help|safe here)\b", speech, re.I))
+    pattern = (r"\b(?:arriv\w*|where (?:are|am) (?:we|i)|how (?:did|do) (?:we|i) get|"
+               r"(?:get|getting|go|going|way|back) home|"
+               r"(?:remember|recall).{0,35}(?:how|why|when).{0,25}here|"
+               r"this place|where we are|surroundings|bearings|safety|shelter|"
+               r"(?:find|finding|seek|seeking|need) (?:some )?help|safe here)\b")
+    return any(re.search(pattern, sentence, re.I)
+               for text in texts for sentence in split_sentences(unquoted_speech(text)))
 
 
 def validate_orientation(response, snapshot):
     # A structured claim alone is insufficient. Derive the accepted record's
     # marker from actual speech, including when the model omitted the flag.
     discussed = orientation_speech(turn.text for turn in response.turns)
+    if snapshot.get("purpose") == "orientation":
+        if any((response.accepted_proposals, response.disclosures, response.third_party_opinions, response.leverage)):
+            raise ValueError("This orientation exchange does not authorize apple promises, private disclosures or leverage. Meet the person and find your bearings.")
+        if snapshot.get("_dialogue_validation", True):
+            if not discussed:
+                raise ValueError("This is an orientation exchange. Discuss the unfamiliar surroundings or missing arrival memory, rather than pursuing a routine apple goal.")
+            knowledge, _, _ = validate_names(response.turns, snapshot)
+            for role, other in (("initiator", "recipient"), ("recipient", "initiator")):
+                other_id = actor_id(snapshot[other])
+                if other_id not in knowledge[role] and not any(
+                        turn.speaker == role and asks_name(turn.text) for turn in response.turns):
+                    raise ValueError(f"The {role} still does not know the partner's name. Ask what to call them and give them a chance to answer; introduce only names actually spoken.")
     if response.orientation_discussed and not discussed:
         raise ValueError("orientation_discussed requires actual speech about arrival, surroundings, help or safety.")
     return discussed
+
+
+def asks_name(text):
+    speech = unquoted_speech(text)
+    return bool(re.search(r"\b(?:your name|call you(?:rself)?|address you|who are you)\b[^.!?]*\?|"
+                          r"\b(?:and you|(?:and )?yours)\s*\?", speech, re.I))

@@ -749,7 +749,7 @@ def check_relationship_goals(world, opinion_owner, record=None):
 
 
 def permitted_proposals(conversation):
-    if conversation.purpose == "food_request":
+    if conversation.purpose in ("food_request", "orientation"):
         return []
     world = conversation.initiator.world
     proposals = []
