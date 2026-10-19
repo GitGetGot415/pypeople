@@ -169,17 +169,23 @@ def validate_names(turns, snapshot, *, check_use=True, require_effects=True):
         seen = set()
         for intro in turn.introductions:
             target = catalog.get(intro.actor_id)
+            error = ""
             if target is None or intro.actor_id in seen:
-                raise ValueError("An introduction must identify one supplied actor exactly once per turn.")
+                error = "An introduction must identify one supplied actor exactly once per turn."
+            elif intro.name not in forms(target["self_name"]):
+                error = "An introduction must use the actor's authored name form, without a hidden surname or suffix."
+            elif intro.reference == "self" and intro.actor_id != actor_id(person):
+                error = "A self-introduction must identify the current speaker."
+            elif intro.reference != "self" and (intro.reference not in target.get("references", [])
+                    or check_dialogue and intro.name.casefold() not in {s.casefold() for s in permitted}):
+                error = "A third-party introduction needs an informed speaker and the actor's supplied observable reference."
+            if error:
+                if check_dialogue:
+                    raise ValueError(error)
+                # Retain unchecked speech/metadata, but an unresolvable name effect
+                # cannot teach a phantom actor or overwrite another actor's name.
+                continue
             seen.add(intro.actor_id)
-            if intro.name not in forms(target["self_name"]):
-                raise ValueError("An introduction must use the actor's authored name form, without a hidden surname or suffix.")
-            if intro.reference == "self":
-                if intro.actor_id != actor_id(person):
-                    raise ValueError("A self-introduction must identify the current speaker.")
-            elif (intro.reference not in target.get("references", [])
-                  or check_dialogue and intro.name.casefold() not in {s.casefold() for s in permitted}):
-                raise ValueError("A third-party introduction needs an informed speaker and the actor's supplied observable reference.")
             if check_dialogue and not introduction_supported(turn.text, intro.name, intro.reference):
                 raise ValueError("The introduction effect is unsupported by actual unquoted identifying speech.")
             if (check_dialogue and intro.name != target["self_name"]

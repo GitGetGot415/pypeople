@@ -507,11 +507,16 @@ class SimulationState(SaveModel):
                     raise ValueError("Dialogue parts do not match their recorded turn.")
             from name_knowledge import introduction_supported
             for index, introductions in record.name_introductions.items():
-                if not 0 <= index < len(record.turns) or len({i.actor_id for i in introductions}) != len(introductions):
+                if not 0 <= index < len(record.turns):
+                    raise ValueError("Invalid introduction turn.")
+                # Diagnosed metadata is retained even when its name effect was
+                # unusable. Learned-name references are checked separately below.
+                if record.dialogue_errors:
+                    continue
+                if len({i.actor_id for i in introductions}) != len(introductions):
                     raise ValueError("Invalid introduction turn or duplicate introduced actor.")
                 for intro in introductions:
-                    # Do not enforce waived speech checks again when loading an accepted result.
-                    missing_speech = not record.dialogue_errors and not introduction_supported(record.turns[index][1], intro.name, intro.reference)
+                    missing_speech = not introduction_supported(record.turns[index][1], intro.name, intro.reference)
                     if (intro.actor_id not in ids or missing_speech
                             or intro.reference == "self" and record.turns[index][0] != actors[intro.actor_id]):
                         raise ValueError("Invalid introduction identity or spoken evidence.")

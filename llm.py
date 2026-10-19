@@ -25,7 +25,7 @@ from conversation_history import rewrite_validation_error, usable_rewrite
 from social import phase_index, validate_agreements, validate_information
 from purgatory import Attitudes
 from name_knowledge import (NAME_INSTRUCTION, account_references, name_forms, permitted_forms, validate_name_use,
-                            actor_id, listener_address, own_name, snake_name_witnesses, validate_names, validate_orientation)
+                            actor_id, forms, listener_address, own_name, snake_name_witnesses, validate_names, validate_orientation)
 
 MODEL = "gemini-2.5-flash"
 OLLAMA_URL = "http://localhost:11434/api/chat"
@@ -1406,6 +1406,29 @@ def _orientation_contract(snapshot, *, correction=False):
     return instruction, schema, ConversationResponse
 
 
+def _speaker_introductions_schema(snapshot):
+    """Bind each offered name/reference to its real actor; self means the speaker."""
+    speaker, catalog = snapshot["speaker"], snapshot.get("_name_actors", {})
+    schema = structured_schema(DialoguePartsResponse)["properties"]["introductions"]
+    permitted = permitted_forms(speaker, catalog, speaker.get("name_knowledge", {}).get("known_names", {}))
+    choices = []
+    for target_id, person in catalog.items():
+        names = sorted(forms(person["self_name"]) & permitted)
+        references = ["self"] if target_id == actor_id(speaker) else person.get("references", [])
+        if names and references:
+            choices.append({"type": "object", "properties": {
+                "actor_id": {"type": "string", "enum": [target_id]},
+                "name": {"type": "string", "enum": names},
+                "reference": {"type": "string", "enum": references},
+            }, "required": ["actor_id", "name", "reference"]})
+    if choices:
+        schema["items"] = choices[0] if len(choices) == 1 else {"anyOf": choices}
+    else:
+        schema["maxItems"] = 0
+    schema["description"] = "Only actual introductions in this turn; otherwise []. Self uses the speaker's actor ID, never a name or the listener's ID."
+    return schema
+
+
 def response_contract(snapshot, *, correction=False):
     kind = snapshot.get("request_kind")
     if kind == "conversation" and snapshot.get("purpose") == "orientation":
@@ -1438,6 +1461,7 @@ def response_contract(snapshot, *, correction=False):
             "and your own views. End without asking any question."
         )
         schema = structured_schema(DialogueRepairResponse)
+        schema["properties"]["introductions"] = _speaker_introductions_schema(snapshot)
         schema["properties"]["parts"]["items"]["properties"]["text"]["description"] = (
             "The speaker's direct answer in complete statements. State an answer, intention, or honest uncertainty. "
             "Finish the exchange without asking a question or requesting approval.")
@@ -1478,6 +1502,8 @@ def response_contract(snapshot, *, correction=False):
         )
         schema = structured_schema(DialoguePartsResponse)
         schema["properties"]["parts"] = _dialogue_parts_schema(correction=correction)
+        schema["properties"]["introductions"] = _speaker_introductions_schema(snapshot)
+        schema["required"] = [*dict.fromkeys([*schema["required"], "introductions"])]
         return instruction, schema, DialoguePartsResponse
     if kind == "dialogue_repair":
         instruction = (
