@@ -3,14 +3,6 @@
 1. make sure you install everything listed in requirements.txt
 2. run main.py from the terminal
 
-The game allows two model requests at once. For local Ollama generation, also set the Ollama server's `OLLAMA_NUM_PARALLEL` to `2` so both requests can generate simultaneously. For the macOS Ollama app, run:
-
-```sh
-launchctl setenv OLLAMA_NUM_PARALLEL 2
-```
-
-Fully quit and reopen Ollama after changing this setting. The launch setting applies to future app launches in the current login session; set it again after logging out or restarting your Mac. Parallel requests share the same hardware and use additional context memory.
-
 # What part of the code does what
 
 - ui/ - frontend folder
@@ -49,6 +41,7 @@ Fully quit and reopen Ollama after changing this setting. The launch setting app
 - model_debug.py - captures model request output and debug logs
 - name_knowledge.py - tracks character name knowledge and validates name use
 - ollama_manager.py - checks Ollama availability and manages model selection
+- ollama_parallel.py - edits local Ollama launch settings and reads loaded model processing slots
 - npc.py - backend
 - simulation_data.py - validates, saves, and restores complete simulations
 - simulation.py - day phases, shared activity constants, and world updates

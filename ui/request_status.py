@@ -11,17 +11,27 @@ from .button import Button
 
 class RequestStatus:
     def __init__(self, max_requests):
-        self.expanded_height = HUD_HEADER_HEIGHT + max_requests * LLM_SLOT_HEIGHT + 8
-        self.rect = pygame.Rect(24, 16, LLM_PANEL_WIDTH, self.expanded_height)
+        self.rect = pygame.Rect(24, 16, LLM_PANEL_WIDTH, 0)
         self.header = pygame.Rect(self.rect.x, self.rect.y, self.rect.width, HUD_HEADER_HEIGHT)
         self.collapsed = False
+        self.slot_scroll = 0
+        self.set_capacity(max_requests)
+
+    def set_capacity(self, max_requests):
+        self.max_requests = max_requests
+        self.visible_slots = min(max_requests, 5)
+        self.slot_scroll = min(self.slot_scroll, max_requests - self.visible_slots)
+        self.expanded_height = HUD_HEADER_HEIGHT + self.visible_slots * LLM_SLOT_HEIGHT + 8
+        if max_requests > self.visible_slots:
+            self.expanded_height += 20
+        self.rect.height = HUD_HEADER_HEIGHT if self.collapsed else self.expanded_height
 
     def output_button(self, slot):
-        y = self.rect.y + HUD_HEADER_HEIGHT + 8 + (slot - 1) * LLM_SLOT_HEIGHT
+        y = self.rect.y + HUD_HEADER_HEIGHT + 8 + (slot - 1 - self.slot_scroll) * LLM_SLOT_HEIGHT
         return Button((self.rect.right - 64, y + 23, 54, 26), "View")
 
     def cancel_button(self, slot):
-        y = self.rect.y + HUD_HEADER_HEIGHT + 8 + (slot - 1) * LLM_SLOT_HEIGHT
+        y = self.rect.y + HUD_HEADER_HEIGHT + 8 + (slot - 1 - self.slot_scroll) * LLM_SLOT_HEIGHT
         return Button((self.rect.right - 34, y - 2, 24, 22), "X")
 
     def handle_event(self, app, event):
@@ -33,8 +43,13 @@ class RequestStatus:
             return False
         app.game.pan_start = app.game.pan_last = None
         app.game.panning = False
+        if event.type == pygame.MOUSEWHEEL and not self.collapsed:
+            self.slot_scroll = max(0, min(self.max_requests - self.visible_slots, self.slot_scroll - event.y))
+            return True
         if not self.collapsed:
             for worker in app.requests.statuses():
+                if not self.slot_scroll < worker.slot <= self.slot_scroll + self.visible_slots:
+                    continue
                 if self.cancel_button(worker.slot).clicked(event):
                     app.cancel_model_request(worker.session_id, worker.request_id)
                     return True
@@ -68,8 +83,11 @@ class RequestStatus:
                 text += "..."
             surface.blit(font.render(text, True, color), (x, y))
 
-        for slot in range(1, manager.max_requests + 1):
-            y = self.rect.y + HUD_HEADER_HEIGHT + 8 + (slot - 1) * LLM_SLOT_HEIGHT
+        if self.max_requests > self.visible_slots:
+            label = f"Scroll for threads {self.slot_scroll + 1}-{self.slot_scroll + self.visible_slots} of {self.max_requests}"
+            surface.blit(font.render(label, True, MUTED), (self.rect.x + 12, self.rect.bottom - 22))
+        for slot in range(self.slot_scroll + 1, self.slot_scroll + self.visible_slots + 1):
+            y = self.rect.y + HUD_HEADER_HEIGHT + 8 + (slot - 1 - self.slot_scroll) * LLM_SLOT_HEIGHT
             x, width = self.rect.x + 12, self.rect.width - 24
             worker = workers.get(slot)
             center = (x + 5, y + 7)

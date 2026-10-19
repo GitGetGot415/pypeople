@@ -73,7 +73,7 @@ class Application:
         self.save_id = None
         self.save_identity = None
         self.save_name_refresh_remaining = 0
-        self.requests = RequestManager()
+        self.requests = RequestManager(settings["max_llm_requests"])
         self.menu = MenuScreen()
         self.load_sim = LoadSimScreen()
         self.save_sim = SaveSimScreen()
@@ -240,7 +240,8 @@ class Application:
     def open_settings(self):
         self.screen = "settings"
         self.settings.open(self.provider, self.api_key, self.ollama_model, self.npc_trait_mode,
-                           voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation)
+                           voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation,
+                           max_requests=self.requests.max_requests)
 
     def open_stats(self):
         self.game.prompt_input.active = False
@@ -614,7 +615,7 @@ class Application:
             self.requests.finish(active_session, request_id, error)
         self.game.prompt_input.update(dt)
         self.settings.key_input.update(dt)
-        self.settings.update()
+        self.settings.update(self)
         if self.screen == "load_sim":
             self.load_sim.name_input.update(dt)
         if self.screen == "save_sim":
