@@ -3,7 +3,8 @@
 import math
 
 from character_data import DIRECTIONS
-from constants import INTERACTION_GAP, NPC_RADIUS, POST_DIALOGUE_SECONDS
+from constants import (CONVERSATION_CLEARANCE, CONVERSATION_SPOT_STEP, CONVERSATION_TREE_CLEARANCE,
+                       INTERACTION_GAP, NPC_RADIUS, POST_DIALOGUE_SECONDS)
 
 
 def finish_generated_dialogue(interaction, *, reading=False):
@@ -58,6 +59,59 @@ def company_point(npc, partner, spacing=0, *, allow_vertical=False):
         points = [(partner.x, partner.y - height), (partner.x, partner.y + height)]
         points = [point for point in points if npc.can_reach(point)]
     return min(points, key=lambda point: math.dist(point, (npc.x, npc.y))) if points else None
+
+
+def conversation_points(first, second, spacing=0):
+    """Choose two reachable positions near the midpoint, preferring a clear area."""
+    world = first.world
+    midpoint = ((first.x + second.x) / 2, (first.y + second.y) / 2)
+    sizes = [actor.sprite_size or (NPC_RADIUS * 2, NPC_RADIUS) for actor in (first, second)]
+    horizontal_gap = max(sum(size[0] / 2 for size in sizes) + INTERACTION_GAP, spacing)
+    vertical_gap = max(max(size[1] for size in sizes) + INTERACTION_GAP, spacing)
+    occupied = [((world.tree.x, world.tree.y), CONVERSATION_TREE_CLEARANCE)]
+    seen = set()
+    for resident in world.npcs:
+        interaction = resident.interaction
+        if interaction is None or id(interaction) in seen:
+            continue
+        seen.add(id(interaction))
+        actors = (interaction.initiator, interaction.recipient)
+        if any(actor is first or actor is second for actor in actors):
+            continue
+        points = [actor.destination or (actor.x, actor.y) for actor in actors]
+        center = tuple((a + b) / 2 for a, b in zip(*points))
+        occupied.append((center, math.dist(*points) / 2 + CONVERSATION_CLEARANCE))
+
+    candidates, clear = [], []
+    for dx, dy in ((horizontal_gap / 2, 0), (0, vertical_gap / 2)):
+        for sign in (-1, 1):
+            offsets = ((sign * dx, sign * dy), (-sign * dx, -sign * dy))
+            bounds = []
+            for actor, (ox, oy) in zip((first, second), offsets):
+                left, right, top, bottom = actor.movement_bounds
+                bounds.append((left - ox, right - ox, top - oy, bottom - oy))
+            left, right = max(b[0] for b in bounds), min(b[1] for b in bounds)
+            top, bottom = max(b[2] for b in bounds), min(b[3] for b in bounds)
+            if left > right or top > bottom:
+                continue
+            centers = [(min(right, max(left, midpoint[0])), min(bottom, max(top, midpoint[1])))]
+            centers.extend((x, y)
+                           for x in [left, right, *range(math.ceil(left), math.floor(right) + 1, CONVERSATION_SPOT_STEP)]
+                           for y in [top, bottom, *range(math.ceil(top), math.floor(bottom) + 1, CONVERSATION_SPOT_STEP)])
+            radius = math.hypot(dx, dy)
+            for center in centers:
+                points = tuple((center[0] + ox, center[1] + oy) for ox, oy in offsets)
+                candidates.append(points)
+                if all(math.dist(center, other) >= radius + clearance for other, clearance in occupied):
+                    clear.append(points)
+    if not candidates:
+        return None
+
+    def travel(points):
+        distances = [math.dist((actor.x, actor.y), point) for actor, point in zip((first, second), points)]
+        return max(distances), sum(distances)
+
+    return min(clear or candidates, key=travel)
 
 
 def record_generated_turns(interaction, turns, rewritten_parts=()):

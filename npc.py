@@ -23,7 +23,7 @@ from constants import (
     STARTING_NPC_POSITION, STARTING_NPC_SATISFACTION_RANGE, STARTING_NPC_SOCIABILITY_RANGE,
     STARTING_TREE_POSITION,
 )
-from interactions import (company_point, dialogue_finished, face_each_other, face_toward,
+from interactions import (company_point, conversation_points, dialogue_finished, face_each_other, face_toward,
                           finish_generated_dialogue, move_toward, record_failed_dialogue, record_generated_turns)
 from name_knowledge import actor_catalog, commit_names, name_context, orientation_context, validate_names, validate_orientation
 
@@ -315,9 +315,8 @@ class NPC:
         if self.conversation is not None:
             if self.conversation.arrived:
                 return f"Talking with {self.conversation.other(self).name}"
-            if self.conversation.initiator is self:
-                return f"Walking to {self.conversation.recipient.name}"
-            return f"Waiting for {self.conversation.initiator.name}"
+            partner = self.conversation.other(self)
+            return f"Walking to meet {partner.name}" if self.destination is not None else f"Waiting for {partner.name}"
         if self.owner == "player_hold":
             return "Player hold (STOP)"
         if self.resume_pending:
@@ -651,8 +650,8 @@ class Conversation:
         self.leverage_uses = []
         self.error = ""
         self.saved_states = []
-        destination = company_point(initiator, recipient, spacing, allow_vertical=True)
-        if destination is None:
+        destinations = conversation_points(initiator, recipient, spacing)
+        if destinations is None:
             raise ValueError("There isn't enough room here for a conversation.")
         for npc in (initiator, recipient):
             if purpose == "food_request":
@@ -662,7 +661,7 @@ class Conversation:
                 reason = "Having an automatic chat" if origin == "autonomous" else "In a player-initiated conversation"
             self.saved_states.append(npc.suspend_activity(reason))
             npc.conversation = self
-        initiator.destination = destination
+        initiator.destination, recipient.destination = destinations
 
     def other(self, npc):
         return self.recipient if npc is self.initiator else self.initiator
@@ -818,11 +817,15 @@ class Conversation:
                 else:
                     self.finish(self.initiator.world.tree)
             return
-        npc = self.initiator
-        self.arrived = npc._move(max(0.0, dt))
+        self.arrived = True
+        for npc in (self.initiator, self.recipient):
+            if npc.destination is not None:
+                if npc._move(max(0.0, dt)):
+                    npc.destination = None
+                else:
+                    self.arrived = False
         if self.arrived:
             self.record.status = "Waiting for dialogue"
-            npc.destination = None
             face_each_other(self.initiator, self.recipient)
             if self.purpose == "food_request":
                 self.prepare_food_request()
