@@ -5,7 +5,7 @@ import math
 
 from constants import (
     APPLE_ADVANCE_SECONDS, COMPANY_SOCIAL_RECOVERY, CROWD_LIMIT, DECISION_SECONDS,
-    FAILURE_COOLDOWN, FRUIT_PER_PHASE, HEARING_RADIUS, MAX_SIMULATION_STEP_SECONDS, PROTECTED_POPULATION,
+    FAILURE_COOLDOWN, HEARING_RADIUS, MAX_SIMULATION_STEP_SECONDS, PROTECTED_POPULATION,
     RECOVERY_SECONDS, SATISFACTION_PHASE_LOSS, SOCIAL_RADIUS, SNAKE_NAME,
     STARTING_DAY, STARTING_PAUSED, STARTING_PHASE, WITNESS_RADIUS,
 )
@@ -30,7 +30,7 @@ class Simulation:
 
         self.npcs = npcs
         self.npc_trait_mode = npc_trait_mode
-        self.tree = tree if tree is not None else Tree()
+        self.tree = tree if tree is not None else Tree(fruit=len(npcs))
         self.snake = Snake()
         self.snake.world = self
         self.archived = []
@@ -87,7 +87,7 @@ class Simulation:
         self.snake.pardons.clear()
         for npc in self.npcs:
             npc.social = max(0.0, npc.social - SATISFACTION_PHASE_LOSS)
-        self.tree.fruit = min(self.tree.capacity, self.tree.fruit + FRUIT_PER_PHASE)
+        self.tree.fruit = len(self.npcs)
         advance_social_phase(self)
         self.social_opportunity = True
         self.publish("phase", [], f"Time changed to {self.phase}.")

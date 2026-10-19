@@ -542,6 +542,8 @@ WORLD_INSTRUCTION = SPEAKING_BRIEF + f"""Use world_state.environment, live inven
 for the simulation. Profiles describe personality and former life; former-life
 recollections do not establish events in this garden. Opinions and memory
 summaries are subjective and cannot establish an unrecorded event.
+Each phase change resets tree apples to the number of living residents then on the map.
+Leftover tree apples do not accumulate, and tree stock has no maximum.
 Keep speech grounded in what the speaker knows and what is happening now.
 Firsthand memories and accounts are events that speaker personally experienced.
 The speaker already knows whether they happened: never describe them as hearsay,

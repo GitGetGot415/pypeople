@@ -21,7 +21,7 @@ from constants import (
     POST_DIALOGUE_SECONDS, SHAKE_SECONDS, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED, WANDER_PAUSE, WORLD_HEIGHT, WORLD_WIDTH,
     STARTING_DAY, STARTING_FACING, STARTING_NPC_FRUIT, STARTING_NPC_GENEROSITY_RANGE,
     STARTING_NPC_POSITION, STARTING_NPC_SATISFACTION_RANGE, STARTING_NPC_SOCIABILITY_RANGE,
-    STARTING_TREE_CAPACITY, STARTING_TREE_FRUIT, STARTING_TREE_POSITION,
+    STARTING_TREE_POSITION,
 )
 from interactions import (company_point, dialogue_finished, face_each_other, face_toward,
                           finish_generated_dialogue, move_toward, record_failed_dialogue, record_generated_turns)
@@ -52,8 +52,7 @@ class Tree:
     shake_elapsed: float | None = None
     shaker: "NPC | None" = field(default=None, repr=False, compare=False)
     id: str = "fruit-tree"
-    fruit: int = STARTING_TREE_FRUIT
-    capacity: int = STARTING_TREE_CAPACITY
+    fruit: int = 0
     reserved_by: "NPC | None" = field(default=None, repr=False, compare=False)
 
     @property

@@ -116,7 +116,7 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
             for x, y in APPLE_POINTS[:tree.fruit]:
                 center = screen_point((left + x * TREE_SCALE, top + y * TREE_SCALE))
                 surface.blit(apple, apple.get_rect(center=center))
-            label = name_font.render(f"Fruit {tree.fruit}/{tree.capacity}", True, label_color)
+            label = name_font.render(f"Fruit {tree.fruit}", True, label_color)
             surface.blit(label, label.get_rect(midtop=screen_point((tree_x, tree.y + 76))))
             continue
         if obj is snake:

@@ -334,7 +334,6 @@ class TreeState(SaveModel):
     x: float = Field(ge=60, le=WORLD_WIDTH)
     y: float = Field(ge=0, le=WORLD_HEIGHT - 50)
     fruit: int = Field(ge=0)
-    capacity: int = Field(ge=1)
     shake_elapsed: float | None = Field(ge=0, le=SHAKE_SECONDS)
     shaker: str | None
     reserved_by: str | None
@@ -459,8 +458,8 @@ class SimulationState(SaveModel):
         now = phase_index(self.day, self.phase)
         if len(ids) != len(residents) + 1 or self.tree.id in ids or len({v.casefold() for v in actors.values()}) != len(ids):
             raise ValueError("Actor IDs and stable display names must be unique.")
-        if self.tree.fruit > self.tree.capacity or self.social_rotation >= len(self.npcs):
-            raise ValueError("Invalid tree stock or social rotation.")
+        if self.social_rotation >= len(self.npcs):
+            raise ValueError("Invalid social rotation.")
         if any(n.departure is not None for n in self.npcs) or any(n.departure is None for n in self.archived):
             raise ValueError("Live and departed rosters disagree.")
         history = {h.id: h for h in self.history}
@@ -911,7 +910,6 @@ def restore_simulation(state):
     npcs = all_residents[:len(state.npcs)]
     by_id = {npc.id: npc for npc in npcs}
     tree = Tree(id=state.tree.id, x=state.tree.x, y=state.tree.y, fruit=state.tree.fruit,
-                capacity=state.tree.capacity,
                 shake_elapsed=state.tree.shake_elapsed, shaker=by_id.get(state.tree.shaker),
                 reserved_by=by_id.get(state.tree.reserved_by))
     world = Simulation(npcs, tree, assign_goals=False, npc_trait_mode=state.npc_trait_mode)
