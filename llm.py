@@ -21,7 +21,7 @@ from dialogue_rules import (is_name_reference, mentions_account, mentions_privat
                            validate_base_prose, validate_claim_source, validate_english, validate_opinion_reason,
                            validate_speaker_identity)
 from ollama_manager import DEFAULT_OLLAMA_MODEL, mark_ollama_ready
-from model_debug import record_output, streaming_output
+from model_debug import cancellable_stream, disconnect_response, record_output, streaming_output, watch_response
 from conversation_history import rewrite_validation_error, usable_rewrite
 from social import phase_index, validate_agreements, validate_information
 from purgatory import Attitudes
@@ -958,6 +958,7 @@ def _orientation_world_context(snapshot, *, correction=False):
             "name_knowledge": deepcopy(person.get("name_knowledge", {})),
             "partner_name_known": learned["name"] if learned else None,
             "ask_partner_name": learned is None,
+            "first_turn_address": learned["name"] if learned else "you",
             "opinion_of_partner": _base_opinions(private.get("opinions", {}), person["npc_name"]).get(partner["npc_name"]),
             "private_context": {"situation": {key: value for key, value in private.get("situation", {}).items()
                                              if key not in ("known_danger", "apple_bargain")}},
@@ -967,6 +968,15 @@ def _orientation_world_context(snapshot, *, correction=False):
         history.pop("recent_dialogue", None)
     context["shared_history"] = history
     return context
+
+
+def _speech_references(person, catalog):
+    """Give writers usable references beside technical account/roster names."""
+    knowledge = person.get("name_knowledge", {}).get("known_names", {})
+    allowed = permitted_forms(person, catalog, knowledge)
+    return {"allowed_name_forms": sorted(allowed), "unknown_people": {
+        actor["name"]: actor.get("references", []) for actor in catalog.values()
+        if actor["self_name"] not in allowed and not forms(actor["self_name"]) & allowed}}
 
 
 def world_context(snapshot, *, correction=False):
@@ -2386,7 +2396,9 @@ def _request_payload(message, snapshot, correction):
         kind = snapshot["account_to_share"]["kind"]
         content_task = ("Explain your own private reason: what you want and why. This is a present motive, not a remembered life event. "
                         if kind == "private_motive" else "Tell the supplied account's actual content from its owner's perspective. ")
-        instruction = (f"You are {speaker}, speaking to {listener} in English. You received an apple earlier and now "
+        instruction = ("Behavioral personality (never read these directions aloud or substitute them for the account): "
+                       + snapshot["_speaker_behavior"] + "\n"
+                       + f"You are {speaker}, speaking to {listener} in English. You received an apple earlier and now "
                        "provide the agreed private information to settle that obligation; no new apple is exchanged. "
                        + content_task + "Use only account_to_share and preserve its people and source. "
                        "Express its substance in natural words now, without inventing details or promising to tell it later. "
@@ -2394,7 +2406,7 @@ def _request_payload(message, snapshot, correction):
                        "Keep only the supplied memory: no added relatives, places or incidents. "
                        "Public claims about authority do not substitute for a private memory or motive. "
                        "Use I/you, one or two complete sentences, and your own emotion. Return only parts.\n"
-                       + snapshot["_speaker_behavior"] + "\n" + EMOTION_INSTRUCTION)
+                       + EMOTION_INSTRUCTION + "\nRequired account content: " + snapshot["account_to_share"]["assertion"])
         context = {"speaker": {"name": speaker}, "listener": {"name": listener},
                    "task": snapshot["task"], "account_to_share": context["account_to_share"],
                    "preceding_turns": context["preceding_turns"]}
@@ -2439,7 +2451,9 @@ def _request_payload(message, snapshot, correction):
                        "Explicitly offer one ordinary apple as the item. Do not invent an apple name, variety, deity or magical properties. "
                        "You give the apple; the listener would owe YOU the offering. "
                        "Wait for acceptance. Do not perform the handoff yet or promise your own secrets to the listener. "
-                       "If the task calls for an introduction, state your claimed divine role in one brief clause. "
+                       "If the task calls for an introduction, state your own name and claimed divine role briefly. "
+                       "You claim appointment by a god; the python guarding the tree is yourself, not your appointing deity. "
+                       "Describe only the offer; do not read the waiting/handoff instructions aloud. "
                        "Use I/you, one or two complete sentences and your own emotion. Return only parts.\n"
                        + snapshot["_speaker_behavior"] + "\n" + EMOTION_INSTRUCTION)
         context = {"speaker": {"name": giver}, "listener": {"name": receiver}, "task": snapshot["task"],
@@ -2505,6 +2519,8 @@ def _request_payload(message, snapshot, correction):
                             "not merely that someone made claims. Refusing an offering after receiving an apple "
                             "is different from refusing the apple. Keep those events distinct. "
                             "Begin with the actual report, not a greeting or a request to discuss its general topic. "
+                            "Account names identify actors for bookkeeping. Use the speaker's learned name form or a supplied "
+                            "observable reference from speech_references for an unknown person; never copy an unlearned name from an assertion. "
                             "Do not move the required disclosure into a later turn.")
     elif snapshot.get("request_kind") in ("snake_turn", "dialogue_repair", "conversation_closing"):
         instruction += (
@@ -2519,6 +2535,10 @@ def _request_payload(message, snapshot, correction):
     if snapshot.get("request_kind") == "conversation":
         for role in ("initiator", "recipient"):
             context[role]["name_knowledge"] = snapshot[role].get("name_knowledge", {})
+            context[role]["speech_references"] = _speech_references(snapshot[role], snapshot.get("_name_actors", {}))
+        instruction += (" For every turn, check that speaker's speech_references before naming anyone. "
+                        "Address an unnamed partner as you; introduce yourself before later replies use your name. "
+                        "Private objectives are motivations, never lines to read aloud. orientation_discussed is true only for arrival or surroundings discussion.")
     elif snapshot.get("request_kind") in ("snake_turn", "dialogue_repair", "conversation_closing"):
         context["speaker"]["name_knowledge"] = snapshot["speaker"].get("name_knowledge", {})
         if snapshot["speaker"].get("name_rule"):
@@ -2550,8 +2570,9 @@ def _request_gemini(api_key, message, snapshot, *, correction=""):
             http_options=types.HttpOptions(
                 timeout=max(1, int(_request_timeout(snapshot) * 1000)),
                 retry_options=types.HttpRetryOptions(attempts=1),
+                client_args={"event_hooks": {"response": [watch_response]}},
             ),
-        ) as client:
+        ) as client, cancellable_stream(client.close):
             config = types.GenerateContentConfig(
                 system_instruction=instruction,
                 temperature=VOICE_REWRITE_TEMPERATURE if snapshot.get("request_kind") == "voice_rewrite" else 0 if (snapshot.get("request_kind") == "intent"
@@ -2661,7 +2682,7 @@ def _request_ollama(message, snapshot, model=DEFAULT_OLLAMA_MODEL, *, correction
         if streaming_output():
             deadline = monotonic() + _request_timeout(snapshot)
             chunks, data = [], {}
-            with httpx.stream("POST", OLLAMA_URL, json=payload, timeout=_request_timeout(snapshot)) as response:
+            with httpx.stream("POST", OLLAMA_URL, json=payload, timeout=_request_timeout(snapshot)) as response, cancellable_stream(lambda: disconnect_response(response)):
                 check_response(response)
                 for line in response.iter_lines():
                     if monotonic() > deadline:
@@ -2869,7 +2890,8 @@ def _snake_turn_snapshot(snapshot, decision, turns):
             task = "Present only the supplied accusation; hear the response before announcing judgment."
         elif snapshot["advance"]:
             offering = "private information" if snapshot["advance"]["offering"] == "secret" else "public endorsement"
-            task = f"Ask only for the {offering} owed for the apple previously given. No new apple or return of the earlier apple is requested."
+            task = (f"You already gave the resident an apple. Ask only for the {offering} they owe you. "
+                    "They owe information or endorsement, never an apple. No new apple or return of the earlier apple is requested.")
         elif no_new_bargain:
             task = ("Explain why an apple cannot be provided now, using the actual tree stock, reservation "
                     "and receiver capacity. Do not offer an apple, ask for a new payment or promise an apple later.")

@@ -10,7 +10,7 @@ from llm import (MODEL, ConversationTurn, InvalidResponseError, RequestError, Vo
                  VoiceRewriteValidationError, request_response,
                  request_voice_rewrite, validate_response, validate_voice_rewrite, voice_rewrite_snapshot)
 from ollama_manager import DEFAULT_OLLAMA_MODEL
-from model_debug import DebugLogs, RequestLog, capture_output, record_output
+from model_debug import DebugLogs, RequestLog, RequestCancelled, RequestControl, capture_output, record_output
 
 
 @dataclass
@@ -24,6 +24,8 @@ class RequestWorker:
     stage: str = "Starting request"
     finished_at: float | None = None
     log: RequestLog | None = None
+    request_id: str | None = None
+    control: RequestControl | None = None
 
 
 def _request_description(snapshot):
@@ -41,41 +43,53 @@ def _request_description(snapshot):
     return f"You & {name}", "Player conversation"
 
 
-def _request_worker(session_id, request_id, provider, api_key, message, snapshot, results, progress, ollama_model, log=None):
+def _request_worker(session_id, request_id, provider, api_key, message, snapshot, results, progress, ollama_model, log=None, control=None):
     """Queue simulation results; diagnostics have their own synchronized log."""
     deadline = monotonic() + DIALOGUE_TIMEOUT_SECONDS
+    control = control or RequestControl()
 
     def report(stage):
         nonlocal deadline
+        control.check()
         # Match the interaction's progress-based inactivity deadline across calls.
         deadline = monotonic() + DIALOGUE_TIMEOUT_SECONDS
-        progress.put((session_id, request_id, stage, None))
+        progress.put((session_id, request_id, stage, None, control))
         record_output("stage", stage)
 
     stage = "Request failed"
-    with capture_output(log):
+    with capture_output(log, control):
         try:
             report("Starting request")
             result = request_response(provider, api_key, message, snapshot, ollama_model=ollama_model, progress=report)
+            control.check()
             rewritten = []
             if snapshot.get("_voice_rewrites", True):
                 rewritten = request_voice_rewrite(provider, api_key, result, snapshot, deadline=deadline,
                                                   ollama_model=ollama_model, progress=report)
             else:
                 record_output("stage", "Voice rewrites disabled; using original dialogue.")
-            results.put((session_id, request_id, result.model_dump_json(), None, snapshot, [], rewritten))
+            control.check()
+            results.put((session_id, request_id, result.model_dump_json(), None, snapshot, [], rewritten, control))
             stage = "Reply ready"
+        except RequestCancelled:
+            stage = "Cancelled by player"
         except RequestError as exc:
-            record_output("error", str(exc))
-            results.put((session_id, request_id, None, str(exc), snapshot,
-                         [turn.model_dump() for turn in exc.failed_turns], []))
+            if control.cancelled.is_set():
+                stage = "Cancelled by player"
+            else:
+                record_output("error", str(exc))
+                results.put((session_id, request_id, None, str(exc), snapshot,
+                             [turn.model_dump() for turn in exc.failed_turns], [], control))
         except Exception:
             error = "Could not get a reply from the model. Please try again."
             record_output("error", error)
-            results.put((session_id, request_id, None, error, snapshot, [], []))
+            if not control.cancelled.is_set():
+                results.put((session_id, request_id, None, error, snapshot, [], [], control))
+            else:
+                stage = "Cancelled by player"
         finally:
             record_output("finished", stage)
-            progress.put((session_id, request_id, stage, monotonic()))
+            progress.put((session_id, request_id, stage, monotonic(), control))
 
 
 class RequestManager:
@@ -99,11 +113,11 @@ class RequestManager:
         # Read progress even while paused, without applying any completed replies.
         while True:
             try:
-                session_id, request_id, stage, finished_at = self.progress.get_nowait()
+                session_id, request_id, stage, finished_at, control = self.progress.get_nowait()
             except queue.Empty:
                 break
             worker = self.workers.get((session_id, request_id))
-            if worker is not None:
+            if worker is not None and worker.control is control:
                 worker.stage = stage
                 worker.finished_at = finished_at
         return tuple(self.workers.values())
@@ -122,13 +136,15 @@ class RequestManager:
         log = self.debug_logs.create(session_id=session_id, request_id=request_id, slot=slot,
                                      provider=provider, model=ollama_model if provider == "ollama" else MODEL,
                                      participants=participants, topic=topic)
+        control = RequestControl()
         worker = threading.Thread(
             target=_request_worker,
-            args=(session_id, request_id, provider, api_key, message, snapshot, self.results, self.progress, ollama_model, log),
+            args=(session_id, request_id, provider, api_key, message, snapshot, self.results, self.progress, ollama_model, log, control),
             daemon=True,
             name=f"NPC-model-request-{slot}",
         )
-        self.workers[key] = RequestWorker(worker, session_id, slot, participants, topic, monotonic(), log=log)
+        self.workers[key] = RequestWorker(worker, session_id, slot, participants, topic, monotonic(),
+                                          log=log, request_id=request_id, control=control)
         try:
             worker.start()
         except RuntimeError:
@@ -137,15 +153,25 @@ class RequestManager:
             return False
         return True
 
+    def cancel(self, session_id, request_id):
+        worker = self.workers.pop((session_id, request_id), None)
+        if worker is None:
+            return False
+        worker.control.cancel()
+        worker.log.record("disposition", "Cancelled by player; discard this request and its effects.")
+        return True
+
     def poll(self, active_session):
         """Match replies to their session and request; discard old sessions."""
         self.statuses()
         replies = []
         while True:
             try:
-                session_id, request_id, raw, error, snapshot, failed_turns, rewritten = self.results.get_nowait()
+                session_id, request_id, raw, error, snapshot, failed_turns, rewritten, control = self.results.get_nowait()
             except queue.Empty:
                 break
+            if control is not None and control.cancelled.is_set():
+                continue
             worker = self.workers.get((session_id, request_id))
             log = worker.log if worker is not None else None
 

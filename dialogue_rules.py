@@ -64,7 +64,7 @@ def validate_speaker_identity(text, speaker, listener, *, allow_third_person=Fal
         for match in re.finditer(pattern, text, re.IGNORECASE):
             prefix = re.split(r"[.!?]", text[:match.start()])[-1]
             intro = rf"\b(?:i am|i['’]m|my name is|call me|it['’]s me|it is me)(?:\s+{re.escape(own.split()[0])})?\s*$"
-            if re.search(intro, prefix, re.IGNORECASE) or re.fullmatch(r"\s*i\s*", prefix, re.IGNORECASE):
+            if re.search(intro, prefix, re.IGNORECASE) or re.search(r"\bi\s*$", prefix, re.IGNORECASE):
                 continue
             if re.match(r"\s*,\s*(?:and|or)\b", text[match.end():], re.IGNORECASE):
                 continue

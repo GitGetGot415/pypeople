@@ -283,8 +283,8 @@ def validate_orientation(response, snapshot):
                 if other_id not in knowledge[role] and not any(
                         turn.speaker == role and asks_name(turn.text) for turn in response.turns):
                     raise ValueError(f"The {role} still does not know the partner's name. Ask what to call them and give them a chance to answer; introduce only names actually spoken.")
-    if snapshot.get("_dialogue_validation", True) and response.orientation_discussed and not discussed:
-        raise ValueError("orientation_discussed requires actual speech about arrival, surroundings, help or safety.")
+    # This is derived bookkeeping, not a reason to regenerate otherwise valid speech.
+    response.orientation_discussed = discussed
     return discussed
 
 

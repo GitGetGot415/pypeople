@@ -439,6 +439,27 @@ class Application:
                     "player_dialogue": self.game.player_record.turns[-12:] if self.game.player_record else []}
         self._submit_player_message(snake, message, snapshot, purpose="snake_player")
 
+    def cancel_model_request(self, session_id, request_id):
+        if not self.requests.cancel(session_id, request_id):
+            return
+        if session_id != self.session_id:
+            return
+        reason = "Model request cancelled by player. Retry when ready."
+        conversation = self.conversation_requests.pop(request_id, None)
+        if conversation is not None:
+            conversation.fail_dialogue(reason)
+        elif request_id == self.request_id:
+            npc, record = self.request_npc, self.request_history
+            if npc is not None:
+                npc.request_pending = False
+                npc.reply = reason
+                npc.rewritten_reply = ""
+                if self.game.selected_npc is npc:
+                    self.game.set_reply(reason)
+            if record is not None:
+                record.status, record.error = "Failed", reason
+            self.request_history = self.request_npc = self.request_id = None
+
     def handle_event(self, event):
         if event.type == pygame.QUIT:
             self.running = False

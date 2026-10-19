@@ -20,6 +20,10 @@ class RequestStatus:
         y = self.rect.y + HUD_HEADER_HEIGHT + 8 + (slot - 1) * LLM_SLOT_HEIGHT
         return Button((self.rect.right - 64, y + 23, 54, 26), "View")
 
+    def cancel_button(self, slot):
+        y = self.rect.y + HUD_HEADER_HEIGHT + 8 + (slot - 1) * LLM_SLOT_HEIGHT
+        return Button((self.rect.right - 34, y - 2, 24, 22), "X")
+
     def handle_event(self, app, event):
         if event.type not in (pygame.MOUSEWHEEL, pygame.MOUSEBUTTONDOWN,
                               pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION):
@@ -31,6 +35,9 @@ class RequestStatus:
         app.game.panning = False
         if not self.collapsed:
             for worker in app.requests.statuses():
+                if self.cancel_button(worker.slot).clicked(event):
+                    app.cancel_model_request(worker.session_id, worker.request_id)
+                    return True
                 if worker.log is not None and self.output_button(worker.slot).clicked(event):
                     app.open_stats()
                     app.stats.open_log(worker.log)
@@ -84,8 +91,9 @@ class RequestStatus:
             elapsed = max(0, int((now if running else worker.finished_at) - worker.started_at))
             minutes, seconds = divmod(elapsed, 60)
             timer = font.render(f"{minutes}:{seconds:02d}", True, INK)
-            timer_rect = timer.get_rect(topright=(self.rect.right - 12, y))
+            timer_rect = timer.get_rect(topright=(self.rect.right - 42, y))
             surface.blit(timer, timer_rect)
+            self.cancel_button(slot).draw(surface, font)
             line(f"Thread {slot}: {state}", x + 18, y, timer_rect.left - x - 28)
             self.output_button(slot).draw(surface, font, enabled=worker.log is not None)
             line(worker.participants, x, y + 20, width - 62)

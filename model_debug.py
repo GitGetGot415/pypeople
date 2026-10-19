@@ -5,7 +5,8 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-from threading import Lock
+from socket import SHUT_RDWR
+from threading import Event, Lock, Thread
 from time import monotonic
 from uuid import uuid4
 
@@ -14,6 +15,73 @@ from constants import MODEL_LOG_FLUSH_SECONDS
 
 LOG_DIRECTORY = Path(__file__).resolve().parent / "logs" / "model_requests"
 _current_log = ContextVar("model_request_log", default=None)
+_current_control = ContextVar("model_request_control", default=None)
+
+
+class RequestCancelled(BaseException):
+    """Leave provider/recovery loops immediately without retrying cancellation."""
+
+
+class RequestControl:
+    def __init__(self):
+        self.cancelled = Event()
+        self._lock = Lock()
+        self._close = None
+
+    def check(self):
+        if self.cancelled.is_set():
+            raise RequestCancelled()
+
+    def cancel(self):
+        self.cancelled.set()
+        with self._lock:
+            close = self._close
+        if close is not None:
+            # Closing a blocked socket must never block pygame's event thread.
+            def disconnect():
+                try:
+                    close()
+                except Exception:
+                    pass
+            Thread(target=disconnect, daemon=True, name="Cancel-model-stream").start()
+
+
+def disconnect_response(response):
+    """Interrupt a blocked streaming read before releasing its HTTP connection."""
+    stream = response.extensions.get("network_stream")
+    connection = stream.get_extra_info("socket") if stream is not None else None
+    if connection is not None:
+        try:
+            connection.shutdown(SHUT_RDWR)
+        except OSError:
+            pass
+    response.close()
+
+
+def watch_response(response):
+    """SDK response hook: make its active HTTP stream cancellable too."""
+    control = _current_control.get()
+    if control is not None:
+        with control._lock:
+            control._close = lambda: disconnect_response(response)
+        control.check()
+
+
+@contextmanager
+def cancellable_stream(close):
+    control = _current_control.get()
+    if control is None:
+        yield
+        return
+    with control._lock:
+        control._close = close
+    try:
+        control.check()
+        yield
+        control.check()
+    finally:
+        with control._lock:
+            control._close = None
 
 
 def streaming_output():
@@ -21,18 +89,23 @@ def streaming_output():
 
 
 def record_output(kind, text):
+    control = _current_control.get()
+    if control is not None and kind in ("call", "output", "reasoning"):
+        control.check()
     log = _current_log.get()
     if log is not None and text:
         log.record(kind, str(text))
 
 
 @contextmanager
-def capture_output(log):
+def capture_output(log, control=None):
     token = _current_log.set(log)
+    control_token = _current_control.set(control)
     try:
         yield
     finally:
         _current_log.reset(token)
+        _current_control.reset(control_token)
         if log is not None:
             log.flush()
 
