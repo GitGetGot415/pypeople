@@ -382,13 +382,18 @@ class Application:
     def _interaction_spacing(self, first, second):
         return sum(self.small_font.size(actor.name)[0] for actor in (first, second)) / 2 + INTERACTION_GAP
 
-    def request_conversation_dialogue(self, conversation):
-        if not conversation.accepts_response or not conversation.arrived or self.requests.busy:
+    def request_conversation_dialogue(self, conversation, *, start=True):
+        if not conversation.accepts_response or not conversation.arrived:
             return
         if conversation.dialogue_state != "waiting":
             return
         if self.provider == "gemini" and not self.api_key:
             conversation.fail_dialogue("Add an API key in Settings to generate this conversation.")
+            return
+        if (self.session_id, conversation.id) not in self.requests.logs:
+            self.requests.prepare(self.session_id, self.provider, conversation.snapshot(self.tree, self.npcs),
+                                  request_id=conversation.id, ollama_model=self.ollama_model)
+        if self.requests.busy or not start:
             return
         snapshot = conversation.snapshot(self.tree, self.npcs)
         if not self.requests.submit(
@@ -496,9 +501,14 @@ class Application:
                             conversation.set_response(result, reading=conversation is viewed, rewritten_parts=rewritten,
                                                       dialogue_validation=self.dialogue_validation)
                         except ValueError as exc:
+                            error = str(exc)
                             conversation.fail_dialogue(str(exc), failed_turns=result.turns)
+                    self.requests.finish(active_session, request_id, error)
+                else:
+                    self.requests.finish(active_session, request_id, "The conversation ended before the reply arrived.")
                 continue
             if request_id != self.request_id:
+                self.requests.finish(active_session, request_id, "The player request is no longer active.")
                 continue
             npc = self.request_npc
             if npc is self.simulation.snake:
@@ -517,9 +527,11 @@ class Application:
                 npc.rewritten_reply = rewritten[0][0] if not error and rewritten else ""
                 if self.game.selected_npc is npc:
                     self.game.set_reply(npc.reply)
+                self.requests.finish(active_session, request_id, error)
                 self.request_history = None
                 continue
             if npc is None or self.simulation.npc_by_id(npc.id) is not npc:
+                self.requests.finish(active_session, request_id, "The NPC is no longer available.")
                 self.request_history = None
                 continue
             npc.request_pending = False
@@ -599,6 +611,7 @@ class Application:
                 self.request_history = None
             if self.game.selected_npc is npc and self.game.viewed_conversation is None:
                 self.game.set_reply(npc.reply)
+            self.requests.finish(active_session, request_id, error)
         self.game.prompt_input.update(dt)
         self.settings.key_input.update(dt)
         self.settings.update()
@@ -636,9 +649,12 @@ class Application:
             # leave one slot free and let other conversations use the rest.
             composing = self.screen == "game" and self.game.prompt_input.active
             for conversation in sorted(conversations, key=lambda interaction: interaction.origin != "player"):
-                if composing and self.requests.available_slots <= 1:
-                    break
-                self.request_conversation_dialogue(conversation)
+                self.request_conversation_dialogue(conversation,
+                    start=not composing or self.requests.available_slots > 1)
+            self.requests.expire_queued(self.session_id, {
+                conversation.id for conversation in conversations
+                if conversation.accepts_response and conversation.arrived and conversation.dialogue_state == "waiting"
+            })
 
     def draw(self):
         self.screens[self.screen].draw(self)

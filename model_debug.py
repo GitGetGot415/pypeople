@@ -117,12 +117,19 @@ class RequestLog:
         self.started_at = monotonic()
         self._lock = Lock()
         self._events = []
+        self._status = "queued"
         self._pending = [{"metadata": self.metadata}]
         self._next_flush = 0
         self.revision = 0
         self.save_error = ""
 
     def _append(self, event):
+        if event["kind"] == "status" and event["text"] in ("queued", "running", "completed", "failed"):
+            # Cancellation or game rejection wins over a worker finishing late.
+            if self._status != "failed":
+                self._status = event["text"]
+        elif event["kind"] == "slot" and event["text"].isdigit():
+            self.metadata["slot"] = int(event["text"])
         # Coalesce tokens for display while retaining their original disk events.
         if self._events and event["kind"] in ("output", "reasoning") and self._events[-1]["kind"] == event["kind"]:
             self._events[-1] = {**self._events[-1], "text": self._events[-1]["text"] + event["text"]}
@@ -137,7 +144,7 @@ class RequestLog:
             self._append(event)
             if not self.save_error:
                 self._pending.append(event)
-            if now >= self._next_flush or kind in ("error", "finished", "disposition"):
+            if now >= self._next_flush or kind in ("error", "finished", "disposition", "status", "slot"):
                 self._flush()
                 self._next_flush = now + MODEL_LOG_FLUSH_SECONDS
 
@@ -161,6 +168,11 @@ class RequestLog:
         with self._lock:
             return self.revision, tuple(self._events), self.save_error
 
+    @property
+    def status(self):
+        with self._lock:
+            return self._status
+
     @classmethod
     def load(cls, path):
         with path.open(encoding="utf-8") as source:
@@ -182,6 +194,16 @@ class RequestLog:
                         log._append(event)
                 except (ValueError, AttributeError):
                     continue  # A crash can leave a partial last line.
+            if not any(event["kind"] == "status" for event in log._events):
+                # Older logs lack explicit states. Recover final outcomes without
+                # treating a failed rewrite with usable original dialogue as fatal.
+                finished = [event["text"] for event in log._events if event["kind"] == "finished"]
+                rejected = any(event["kind"] == "disposition" and event["text"].startswith(
+                    ("Rejected", "Discarded", "Cancelled")) for event in log._events)
+                log._status = "completed" if finished and finished[-1] == "Reply ready" and not rejected else "failed"
+            elif log._status in ("queued", "running"):
+                # A saved request cannot still be running after a restart.
+                log._status = "failed"
         return log
 
 

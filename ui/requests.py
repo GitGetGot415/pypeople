@@ -59,6 +59,7 @@ def _request_worker(session_id, request_id, provider, api_key, message, snapshot
     stage = "Request failed"
     with capture_output(log, control):
         try:
+            record_output("status", "running")
             report("Starting request")
             result = request_response(provider, api_key, message, snapshot, ollama_model=ollama_model, progress=report)
             control.check()
@@ -69,7 +70,9 @@ def _request_worker(session_id, request_id, provider, api_key, message, snapshot
             else:
                 record_output("stage", "Voice rewrites disabled; using original dialogue.")
             control.check()
-            results.put((session_id, request_id, result.model_dump_json(), None, snapshot, [], rewritten, control))
+            raw = result.model_dump_json()
+            record_output("status", "completed")
+            results.put((session_id, request_id, raw, None, snapshot, [], rewritten, control))
             stage = "Reply ready"
         except RequestCancelled:
             stage = "Cancelled by player"
@@ -88,6 +91,8 @@ def _request_worker(session_id, request_id, provider, api_key, message, snapshot
             else:
                 stage = "Cancelled by player"
         finally:
+            if stage != "Reply ready":
+                record_output("status", "failed")
             record_output("finished", stage)
             progress.put((session_id, request_id, stage, monotonic(), control))
 
@@ -99,6 +104,29 @@ class RequestManager:
         self.results = queue.Queue()
         self.progress = queue.Queue()
         self.debug_logs = DebugLogs()
+        self.logs = {}
+
+    def prepare(self, session_id, provider, snapshot, *, request_id=None, ollama_model=DEFAULT_OLLAMA_MODEL):
+        key = (session_id, request_id)
+        if key not in self.logs:
+            participants, topic = _request_description(snapshot)
+            log = self.debug_logs.create(session_id=session_id, request_id=request_id, slot=None,
+                                         provider=provider, model=ollama_model if provider == "ollama" else MODEL,
+                                         participants=participants, topic=topic)
+            self.logs[key] = log
+            log.record("status", "queued")
+        return self.logs[key]
+
+    def finish(self, session_id, request_id, error=None):
+        log = self.logs.get((session_id, request_id))
+        if log is not None:
+            log.record("disposition", f"Rejected by the game: {error}" if error else "Accepted by the game.")
+            log.record("status", "failed" if error else "completed")
+
+    def expire_queued(self, session_id, request_ids):
+        for key, log in self.logs.items():
+            if log.status == "queued" and key not in self.workers and (key[0] != session_id or key[1] not in request_ids):
+                self.finish(*key, error="The conversation ended before a worker became available.")
 
     @property
     def busy(self):
@@ -133,9 +161,8 @@ class RequestManager:
         participants, topic = _request_description(snapshot)
         occupied = {worker.slot for worker in self.workers.values()}
         slot = next(slot for slot in range(1, self.max_requests + 1) if slot not in occupied)
-        log = self.debug_logs.create(session_id=session_id, request_id=request_id, slot=slot,
-                                     provider=provider, model=ollama_model if provider == "ollama" else MODEL,
-                                     participants=participants, topic=topic)
+        log = self.prepare(session_id, provider, snapshot, request_id=request_id, ollama_model=ollama_model)
+        log.record("slot", str(slot))
         control = RequestControl()
         worker = threading.Thread(
             target=_request_worker,
@@ -150,21 +177,31 @@ class RequestManager:
         except RuntimeError:
             self.workers.pop(key)
             log.record("error", "Could not start the model worker.")
+            log.record("status", "failed")
             return False
         return True
 
     def cancel(self, session_id, request_id):
         worker = self.workers.pop((session_id, request_id), None)
         if worker is None:
-            return False
+            log = self.logs.get((session_id, request_id))
+            if log is None or log.status != "queued":
+                return False
+            self.finish(session_id, request_id, "Cancelled before the request started.")
+            return True
         worker.control.cancel()
         worker.log.record("disposition", "Cancelled by player; discard this request and its effects.")
+        worker.log.record("status", "failed")
         return True
 
     def cancel_all(self):
         """Disconnect outstanding requests and detach their old session queues."""
         for session_id, request_id in tuple(self.workers):
             self.cancel(session_id, request_id)
+        for key, log in self.logs.items():
+            if log.status == "queued":
+                self.cancel(*key)
+        self.logs.clear()
         self.results = queue.Queue()
         self.progress = queue.Queue()
 
@@ -188,8 +225,10 @@ class RequestManager:
 
             if session_id != active_session:
                 disposition("Discarded: request belongs to a previous session.")
+                self.finish(session_id, request_id, "Request belongs to a previous session.")
                 continue
             if error:
+                self.finish(session_id, request_id, error)
                 replies.append((request_id, None, error, [ConversationTurn.model_validate(turn) for turn in failed_turns], []))
                 continue
             try:
@@ -197,10 +236,12 @@ class RequestManager:
                 result = validate_response(raw, snapshot)
             except InvalidResponseError as exc:
                 disposition(f"Rejected at main-thread validation: {exc}")
+                self.finish(session_id, request_id, str(exc))
                 replies.append((request_id, None, f"The model's reply failed validation: {exc}", exc.failed_turns, []))
                 continue
             except (ValidationError, ValueError, TypeError):
                 disposition("Rejected at main-thread validation: invalid action or reply.")
+                self.finish(session_id, request_id, "Invalid action or reply.")
                 replies.append((request_id, None, "The model returned an invalid action or reply. Try again.", [], []))
                 continue
             for reason in result._dialogue_errors:

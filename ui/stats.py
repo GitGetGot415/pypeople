@@ -5,7 +5,7 @@ from character_data import DEFAULT_COLORS, IDENTITY_FIELDS, PROFILE_FIELDS
 from constants import (ACCENT, FAILED_CONVERSATION_COLOR, FAILED_CONVERSATION_SELECTED_COLOR,
                        GIFT_CONVERSATION_COLOR, GIFT_CONVERSATION_SELECTED_COLOR,
                        REWRITE_FAILED_CONVERSATION_COLOR, REWRITE_FAILED_CONVERSATION_SELECTED_COLOR,
-                       GRASS, INK, MODEL_LOG_REFRESH_SECONDS, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER, SNAKE_NAME)
+                       GRASS, INK, MODEL_LOG_COLORS, MODEL_LOG_REFRESH_SECONDS, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER, SNAKE_NAME)
 from conversation_history import (display_parts, has_failed_voice_rewrite, usable_rewrite,
                                   uses_original_dialogue, voice_rewrite_errors)
 from emotions import portrait_expression
@@ -63,7 +63,9 @@ class StatsScreen:
         rows = []
         top = 0
         if self.tab == "Model logs":
-            entries = [(log, f"{log.metadata['participants']}\n{log.metadata['started'][:19]} UTC / Thread {log.metadata['slot']}")
+            entries = [(log, f"{log.metadata['participants']}\n{log.status.title()} / "
+                       f"{('Thread ' + str(log.metadata['slot'])) if log.metadata['slot'] is not None else 'Waiting for a thread'}\n"
+                       f"{log.metadata['started'][:19]} UTC")
                        for log in app.requests.debug_logs.history()]
         elif self.tab == "Conversations":
             entries = [
@@ -120,12 +122,13 @@ class StatsScreen:
             log = self.selected_log
             if log is None:
                 add("Select a model request to inspect its output, reasoning, stages, and errors.", color=MUTED)
+                add("Yellow: running. Orange: queued. Green: completed. Red: unusable.", app.small_font)
                 add(f"Saved in: {app.requests.debug_logs.directory}", app.small_font, MUTED)
                 if app.requests.debug_logs.read_error:
                     add(app.requests.debug_logs.read_error, app.small_font, MUTED)
                 return lines
             revision, events, save_error = log.snapshot()
-            cache_key = (log, revision, save_error)
+            cache_key = (log, revision, save_error, log.status)
             now = monotonic()
             if self._log_cache is not None:
                 previous_key, previous_lines, refreshed_at = self._log_cache
@@ -134,7 +137,9 @@ class StatsScreen:
                     return previous_lines
             meta = log.metadata
             add(meta["participants"], app.heading_font)
-            add(f"{meta['provider']} / {meta['model']} / Thread {meta['slot']}", app.small_font, MUTED)
+            add(f"Status: {log.status.title()}", app.small_font)
+            slot = f"Thread {meta['slot']}" if meta['slot'] is not None else "Waiting for a thread"
+            add(f"{meta['provider']} / {meta['model']} / {slot}", app.small_font, MUTED)
             add(f"Started: {meta['started']}", app.small_font, MUTED)
             add(f"Request: {meta['request_id']} / Session: {meta['session_id']}", app.small_font, MUTED)
             add(meta["topic"], app.small_font)
@@ -529,7 +534,9 @@ class StatsScreen:
             selected_entry = (self.selected_log if self.tab == "Model logs" else
                               self.selected_conversation if self.tab == "Conversations" else self.selected_npc)
             selected = entry is selected_entry
-            if self.tab == "Conversations" and (entry.status == "Failed" or entry.dialogue_errors):
+            if self.tab == "Model logs":
+                color = MODEL_LOG_COLORS[entry.status]
+            elif self.tab == "Conversations" and (entry.status == "Failed" or entry.dialogue_errors):
                 color = FAILED_CONVERSATION_SELECTED_COLOR if selected else FAILED_CONVERSATION_COLOR
             elif self.tab == "Conversations" and has_failed_voice_rewrite(entry):
                 color = REWRITE_FAILED_CONVERSATION_SELECTED_COLOR if selected else REWRITE_FAILED_CONVERSATION_COLOR
@@ -538,8 +545,11 @@ class StatsScreen:
             else:
                 color = ACCENT if selected else GRASS
             pygame.draw.rect(surface, color, row)
+            if selected and self.tab == "Model logs":
+                pygame.draw.rect(surface, INK, row, 2)
             for index, line in enumerate(lines):
-                surface.blit(app.font.render(line, True, PAPER if selected else INK), (row.x + 8, row.y + 10 + index * app.font.get_linesize()))
+                surface.blit(app.font.render(line, True, PAPER if selected and self.tab != "Model logs" else INK),
+                             (row.x + 8, row.y + 10 + index * app.font.get_linesize()))
         surface.set_clip(self.detail_rect.clip(previous_clip))
         lines = self._detail_lines(app)
         for top, bottom in self.dialogue_backgrounds:
