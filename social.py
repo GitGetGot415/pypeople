@@ -183,9 +183,8 @@ def account_content(world, fact, affirmed=True):
     """Request prose has no record header; keep UI formatting in assertion_text()."""
     summary = fact.summary if fact.kind == "former_life" else named_references(fact.summary)
     if fact.kind == "former_life":
-        from character_data import description_parts
         _, marker, description = summary.partition("'s own description: ")
-        _, summary = description_parts(description if marker else summary)
+        summary = description if marker else summary
     elif fact.kind == "private_motive":
         # The heading describes the goal; the owed private information is why
         # its owner wants it. Ownership stays in the separate account fields.

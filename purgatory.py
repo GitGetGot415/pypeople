@@ -1,4 +1,4 @@
-"""Snake attitudes and private knowledge from a resident's description."""
+"""Snake attitudes and private knowledge from a resident's Background."""
 
 from typing import Literal
 
@@ -25,12 +25,11 @@ def initial_attitudes():
 
 
 def remember_description(npc):
-    """The authored description is the only source of former-life knowledge."""
+    """Only authored Background supplies former-life knowledge."""
     from social import add_fact
-    from character_data import description_parts
     from dialogue_text import split_sentences
 
-    _, description = description_parts(npc.character["Details"])
+    description = npc.character["Background"]
     for index, memory in enumerate(split_sentences(description)):
         add_fact(npc.world, "former_life", npc, npc.world.snake,
                  f"{npc.id}:description:{index}", None,

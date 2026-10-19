@@ -1,7 +1,7 @@
 import pygame
 from time import monotonic
 
-from character_data import DEFAULT_COLORS, FIELDS
+from character_data import DEFAULT_COLORS, IDENTITY_FIELDS, PROFILE_FIELDS
 from constants import (ACCENT, FAILED_CONVERSATION_COLOR, FAILED_CONVERSATION_SELECTED_COLOR,
                        GIFT_CONVERSATION_COLOR, GIFT_CONVERSATION_SELECTED_COLOR,
                        REWRITE_FAILED_CONVERSATION_COLOR, REWRITE_FAILED_CONVERSATION_SELECTED_COLOR,
@@ -253,9 +253,10 @@ class StatsScreen:
                 add(f"Source: {account['immediate_source_name']}; original: {account['original_speaker_name']}", app.small_font, MUTED)
             return lines
         if self.tab == "Statistics":
-            add("Description", app.heading_font)
-            add(npc.character["Details"] or "Not specified")
-            gap()
+            for field in PROFILE_FIELDS:
+                add(field, app.heading_font)
+                add(npc.character[field] or "Not specified")
+                gap()
             add(f"Arrival: day {npc.arrival_day}")
             add(f"Activity: {npc.status}")
             if npc.departure:
@@ -345,8 +346,7 @@ class StatsScreen:
                 add(f"Day {memory.day} / {memory.phase.title()}: {memory.summary}")
                 add(f"Influence: {memory.weight:+g}", app.small_font, MUTED)
             gap()
-            fields = tuple(field for field in FIELDS if field != "Details")
-            for field in (*fields, "Hair", "Eyes", *DEFAULT_COLORS):
+            for field in (*IDENTITY_FIELDS, "Hair", "Eyes", *DEFAULT_COLORS):
                 value = npc.name if field == "Name" else npc.character.get(field, "")
                 add(f"{field}: {value or 'Not specified'}")
         else:

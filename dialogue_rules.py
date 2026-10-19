@@ -3,7 +3,8 @@
 import re
 import unicodedata
 
-from constants import SNAKE_NAME
+from constants import (DIALOGUE_CAPS_MIN_LETTERS, DIALOGUE_CAPS_MIN_WORDS,
+                       DIALOGUE_CAPS_RATIO, SNAKE_NAME)
 from dialogue_text import split_sentences
 
 
@@ -22,7 +23,7 @@ def named_context(value):
     if isinstance(value, list):
         return [named_context(item) for item in value]
     if isinstance(value, dict):
-        return {key: item if key in ("preceding_turns", "recent_dialogue", "player_dialogue", "former_life", "Details")
+        return {key: item if key in ("preceding_turns", "recent_dialogue", "player_dialogue", "former_life", "Background")
                 or key == "assertion" and value.get("kind") == "former_life" else named_context(item)
                 for key, item in value.items()}
     return value
@@ -107,11 +108,37 @@ def validate_english(text, names=()):
         raise ValueError("Write the current reply in English, preserving the speaker's voice and the supplied facts.")
 
 
-def validate_opinion_reason(reason, owner):
+def validate_base_prose(text, names=()):
+    """Reject substantial capitals in new base prose, allowing names and quotations.
+
+    Short acknowledgments and isolated acronyms fall below the evidence threshold.
+    This detects presentation, not sentiment or semantic coherence.
+    """
+    text = unquoted_speech(text)
+    for name in sorted(set(names), key=len, reverse=True):
+        if name:
+            text = re.sub(name_pattern(name), " ", text, flags=re.I)
+    for sentence in [text, *split_sentences(text)]:
+        words = re.findall(r"[^\W\d_]+", sentence, re.UNICODE)
+        letters = [char for char in sentence if char.isalpha() and char.lower() != char.upper()]
+        if (len(words) >= DIALOGUE_CAPS_MIN_WORDS and len(letters) >= DIALOGUE_CAPS_MIN_LETTERS
+                and sum(char.isupper() for char in letters) / len(letters) >= DIALOGUE_CAPS_RATIO):
+            raise ValueError("Base speech and opinion/attitude reasons must use ordinary capitalization and plain prose. "
+                             "Preserve the meaning, stance, facts and ownership; reserve all-caps delivery for the optional voice rewrite.")
+
+
+def validate_opinion_reason(reason, owner, target=""):
     # Self-focused explanations from old model output must not seed new opinions.
-    if owner and re.search(name_pattern(owner) + r"(?:['’]s\b|\s+(?:kept|seemed|was|appeared|dismissed|ignored|refused)\b)",
-                           unquoted_speech(reason), re.I):
-        raise ValueError("An opinion reason must explain the owner's view of their partner, not criticize the owner by name.")
+    for sentence in split_sentences(unquoted_speech(reason)):
+        if re.search(r"\b(?:myself|my own (?:behavior|behaviour|reaction|conduct))\b", sentence, re.I):
+            continue  # Explicit self-reflection is not a swapped partner.
+        aliases = {owner} if owner else set()
+        if owner and (not target or owner.split()[0].casefold() != target.split()[0].casefold()):
+            aliases.add(owner.split()[0])
+        if any(re.search(name_pattern(name) + r"(?:['’]s\b|\s+(?:kept|seemed|was|appeared|dismissed|ignored|refused)\b|\s+is\s+(?:trying|being)\b)",
+                         sentence, re.I) for name in aliases):
+            raise ValueError("An opinion reason must explain the owner's view of their partner, not criticize the owner by name. "
+                             "The initiator judges the recipient; the recipient judges the initiator. Use I/my for the owner.")
 
 
 _CONTENT_NOISE = set("""a an the and or but so if while to of in on at by for with from as into

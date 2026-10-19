@@ -3,7 +3,8 @@ from pathlib import Path
 
 import pygame
 
-from character_data import DEFAULT_COLORS, DIRECTIONS, EYE_STYLES, FIELDS, HAIR_STYLES, load_character, parse_color, random_character
+from character_data import (DEFAULT_COLORS, DIRECTIONS, EYE_STYLES, FIELDS, HAIR_STYLES,
+                            IDENTITY_FIELDS, PROFILE_FIELDS, load_character, parse_color, random_character)
 
 from .button import Button
 from .file_dialog import character_file_dialog
@@ -19,6 +20,12 @@ class CharacterScreen:
     DEFAULT_COLORS = DEFAULT_COLORS
     COLOR_GRID = ("Eye Color", "Hair Color", "Skin Color", "Shirt Color")
     DIRECTIONS = DIRECTIONS
+    PROFILE_HELP = {
+        "Personality": "Behavior, motives and reactions in base dialogue.",
+        "Voice": "Delivery, cadence and casing in optional voice rewrites.",
+        "Mannerisms": "Verbal tics and delivery habits in voice rewrites.",
+        "Background": "Private former life, memories, regrets and beliefs.",
+    }
 
     def __init__(self):
         self.values = {name: "" for name in self.FIELDS}
@@ -29,25 +36,27 @@ class CharacterScreen:
         self.category = "Stats"
         self.inputs = {}
         for index, name in enumerate(self.FIELDS):
-            multiline = name == "Details"
+            multiline = name in PROFILE_FIELDS
             self.inputs[name] = TextInput(
-                (710, 250 + index * 58, 300, 156 if multiline else 42),
+                ((590, 298 + PROFILE_FIELDS.index(name) * 224, 420, 156) if multiline
+                 else (710, 250 + index * 58, 300, 42)),
                 max_length=None if multiline else 100,
                 strip_paste=not multiline,
-                placeholder="Personality, former life, memories and concerns" if multiline else f"Enter {name.lower()}",
+                placeholder=f"Enter {name.lower()} (optional)" if multiline else f"Enter {name.lower()}",
                 multiline=multiline,
             )
             self.inputs[name].set_value(self.values[name])
         self.stats_viewport = pygame.Rect(590, 240, 450, 308)
         self.stats_scroll = 0
         self.stats_input_tops = {name: field.rect.y for name, field in self.inputs.items()}
-        self.stats_scroll_limit = max(field.rect.bottom for field in self.inputs.values()) + 10 - self.stats_viewport.bottom
+        self.panel_scrolls = {"Stats": 0, "Traits": 0}
+        self.stats_scroll_limit = self._panel_scroll_limit()
         self.stats_scrollbar = pygame.Rect(1024, self.stats_viewport.y, 8, self.stats_viewport.height)
         self.stats_dragging = False
         self._stats_drag_offset = 0
         self.tab_buttons = {
-            name: Button((590 + index * 80, 180, 100 if name == "Emotions" else 70, 44), name)
-            for index, name in enumerate(("Stats", "Color", "Eyes", "Hair", "Emotions"))
+            name: Button((590 + index * 72, 180, 90 if name == "Emotions" else 66, 44), name)
+            for index, name in enumerate(("Stats", "Traits", "Color", "Eyes", "Hair", "Emotions"))
         }
         self.eye_buttons = {
             style: Button((590 + index % 2 * 220, 240 + index // 2 * 158, 200, 148), style.title())
@@ -104,14 +113,24 @@ class CharacterScreen:
         for text_input in self.inputs.values():
             text_input.active = False
             text_input.backspace_held = False
+            text_input._navigation_key = None
         for sliders in self.color_sliders.values():
             for slider in sliders:
                 slider.active = False
                 slider.dragging = False
 
+    def _panel_fields(self):
+        return PROFILE_FIELDS if self.category == "Traits" else IDENTITY_FIELDS
+
+    def _panel_scroll_limit(self):
+        return max(0, max(self.stats_input_tops[name] + self.inputs[name].rect.height
+                          for name in self._panel_fields()) + 10 - self.stats_viewport.bottom)
+
     def _set_stats_scroll(self, value):
         self.stats_scroll = max(0, min(self.stats_scroll_limit, round(value)))
-        for name, field in self.inputs.items():
+        self.panel_scrolls[self.category] = self.stats_scroll
+        for name in self._panel_fields():
+            field = self.inputs[name]
             field.rect.y = self.stats_input_tops[name] - self.stats_scroll
             if not field.rect.colliderect(self.stats_viewport):
                 field.active = False
@@ -122,12 +141,13 @@ class CharacterScreen:
     def _stats_scroll_thumb(self):
         track = self.stats_scrollbar
         height = max(36, round(track.height * self.stats_viewport.height / (self.stats_viewport.height + self.stats_scroll_limit)))
-        top = track.y + round((track.height - height) * self.stats_scroll / self.stats_scroll_limit)
+        top = track.y + round((track.height - height) * self.stats_scroll / max(1, self.stats_scroll_limit))
         return pygame.Rect(track.x, top, track.width, height)
 
     def _reveal_stats_input(self, field):
-        if field.rect.top < self.stats_viewport.top:
-            self._set_stats_scroll(self.stats_scroll + field.rect.top - self.stats_viewport.top - 10)
+        top = field.rect.top - 58 if field.multiline else field.rect.top
+        if top < self.stats_viewport.top:
+            self._set_stats_scroll(self.stats_scroll + top - self.stats_viewport.top - 10)
         elif field.rect.bottom > self.stats_viewport.bottom:
             self._set_stats_scroll(self.stats_scroll + field.rect.bottom - self.stats_viewport.bottom + 10)
 
@@ -135,8 +155,9 @@ class CharacterScreen:
         if event.type == pygame.MOUSEWHEEL:
             pos = getattr(event, "pos", pygame.mouse.get_pos())
             if self.stats_viewport.collidepoint(pos):
-                details = self.inputs["Details"]
-                if not details.rect.collidepoint(pos) or not details.scroll(event.y):
+                field = next((self.inputs[name] for name in self._panel_fields()
+                              if self.inputs[name].multiline and self.inputs[name].rect.collidepoint(pos)), None)
+                if field is None or not field.scroll(event.y):
                     self._set_stats_scroll(self.stats_scroll - event.y * 42)
                 return True
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
@@ -147,7 +168,7 @@ class CharacterScreen:
             self._set_stats_scroll(offset * self.stats_scroll_limit / (self.stats_scrollbar.height - thumb.height))
             return True
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            if self.stats_scrollbar.collidepoint(event.pos):
+            if self.stats_scroll_limit and self.stats_scrollbar.collidepoint(event.pos):
                 self._clear_focus()
                 thumb = self._stats_scroll_thumb()
                 if not thumb.collidepoint(event.pos):
@@ -160,8 +181,18 @@ class CharacterScreen:
             if not self.stats_viewport.collidepoint(event.pos):
                 self._clear_focus()
                 return False
-        for field in self.inputs.values():
-            field.handle_event(event)
+        fields = [self.inputs[name] for name in self._panel_fields()]
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_TAB:
+            active = next((i for i, field in enumerate(fields) if field.active), None)
+            step = -1 if event.mod & pygame.KMOD_SHIFT else 1
+            self._clear_focus()
+            field = fields[(active + step) % len(fields) if active is not None else (0 if step == 1 else -1)]
+            self._reveal_stats_input(field)
+            field.focus()
+            return True
+        for field in fields:
+            if field.rect.colliderect(self.stats_viewport) or field.active:
+                field.handle_event(event)
         if event.type in (pygame.MOUSEBUTTONDOWN, pygame.KEYDOWN, pygame.TEXTINPUT):
             for field in self.inputs.values():
                 if field.active:
@@ -230,6 +261,9 @@ class CharacterScreen:
             if button.clicked(event):
                 self._clear_focus()
                 self.category = name
+                if name in ("Stats", "Traits"):
+                    self.stats_scroll_limit = self._panel_scroll_limit()
+                    self._set_stats_scroll(self.panel_scrolls[name])
                 return
 
         if self.category != "Emotions" and (self.turn_left_button.clicked(event) or self.turn_right_button.clicked(event)):
@@ -238,7 +272,7 @@ class CharacterScreen:
             self.direction = (self.direction + step) % len(self.DIRECTIONS)
             return
 
-        if self.category == "Stats":
+        if self.category in ("Stats", "Traits"):
             if self._handle_stats_event(event):
                 return
         elif self.category in ("Eyes", "Hair"):
@@ -269,9 +303,9 @@ class CharacterScreen:
             self._export()
 
     def update(self, dt):
-        if self.category == "Stats":
-            for text_input in self.inputs.values():
-                text_input.update(dt)
+        if self.category in ("Stats", "Traits"):
+            for name in self._panel_fields():
+                self.inputs[name].update(dt)
 
     def _draw_preview(self, surface):
         if self.category == "Emotions":
@@ -327,19 +361,24 @@ class CharacterScreen:
                     (button.rect.right - 16, button.rect.bottom - 5), 2,
                 )
 
-        if self.category == "Stats":
+        if self.category in ("Stats", "Traits"):
             previous_clip = surface.get_clip()
             surface.set_clip(self.stats_viewport.clip(previous_clip))
-            for name, text_input in self.inputs.items():
-                if not text_input.rect.colliderect(self.stats_viewport):
+            for name in self._panel_fields():
+                text_input = self.inputs[name]
+                if not text_input.rect.inflate(0, 110).colliderect(self.stats_viewport):
                     continue
-                label = app.font.render("Description" if name == "Details" else name, True, INK)
-                label_y = text_input.rect.y + 21 if text_input.multiline else text_input.rect.centery
+                label = app.font.render(name, True, INK)
+                label_y = text_input.rect.y - 42 if text_input.multiline else text_input.rect.centery
                 surface.blit(label, label.get_rect(midleft=(590, label_y)))
+                if text_input.multiline:
+                    helper = app.small_font.render(self.PROFILE_HELP[name], True, MUTED)
+                    surface.blit(helper, (590, text_input.rect.y - 25))
                 text_input.draw(surface, app.font)
             surface.set_clip(previous_clip)
-            pygame.draw.rect(surface, GRASS, self.stats_scrollbar)
-            pygame.draw.rect(surface, ACCENT, self._stats_scroll_thumb())
+            if self.stats_scroll_limit:
+                pygame.draw.rect(surface, GRASS, self.stats_scrollbar)
+                pygame.draw.rect(surface, ACCENT, self._stats_scroll_thumb())
         elif self.category in ("Eyes", "Hair"):
             buttons = self.eye_buttons if self.category == "Eyes" else self.hair_buttons
             for style, button in buttons.items():

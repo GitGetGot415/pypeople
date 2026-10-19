@@ -9,7 +9,9 @@ from constants import (RANDOM_EYE_STYLES_BY_SEX, RANDOM_HAIR_STYLES_BY_SEX,
                        RANDOM_SKIN_HUE_RANGE, RANDOM_SKIN_LIGHTNESS_RANGE)
 
 
-FIELDS = ("Name", "Age", "Weight", "Height", "Sex", "Details")
+IDENTITY_FIELDS = ("Name", "Age", "Weight", "Height", "Sex")
+PROFILE_FIELDS = ("Personality", "Voice", "Mannerisms", "Background")
+FIELDS = IDENTITY_FIELDS + PROFILE_FIELDS
 EYE_STYLES = ("one", "two")
 HAIR_STYLES = ("one", "two", "three", "four")
 DEFAULT_COLORS = {
@@ -19,13 +21,6 @@ DEFAULT_COLORS = {
 DIRECTIONS = ("North", "North east", "East", "South east", "South", "South west", "West", "North west")
 RANDOM_CONFIG_PATH = Path(__file__).resolve().parent / "assets" / "character_randomization.json"
 NPC_TRAIT_MODES = ("normal", "extreme", "both")
-
-
-def description_parts(details):
-    """Separate the authored speaking brief from its blank-line-delimited memories."""
-    style, separator, recollections = details.strip().replace("\r\n", "\n").partition("\n\n")
-    # Unstructured custom descriptions cannot safely be classified as style alone.
-    return (style, recollections.strip()) if separator else ("", style)
 
 
 def parse_color(value):
@@ -41,11 +36,16 @@ def normalize_character(data):
     """Validate the whole character before callers apply any of its values."""
     if not isinstance(data, dict):
         raise ValueError("The JSON must contain a character object.")
-    if "Details" not in data or not isinstance(data["Details"], str):
-        raise ValueError("Details must be text.")
+    missing = [name for name in PROFILE_FIELDS if name not in data]
+    if missing:
+        raise ValueError("Missing character fields: " + ", ".join(missing)
+                         + ". Provide separate Personality, Voice, Mannerisms, and Background text; Details is no longer supported.")
+    for name in PROFILE_FIELDS:
+        if not isinstance(data[name], str):
+            raise ValueError(f"{name} must be text (empty text is allowed).")
     values = {}
     for name in FIELDS:
-        value = data[name] if name == "Details" else data.get(name, "")
+        value = data.get(name, "")
         if not isinstance(value, (str, int, float)):
             raise ValueError(f"{name} must be text.")
         values[name] = str(value)
@@ -103,7 +103,7 @@ def random_character(config_path=RANDOM_CONFIG_PATH, *, trait_mode="normal"):
         ):
             raise ValueError(f"{key} must be a nonempty list of text.")
     trait_choices = {}
-    for key in ("details", "voices", "mannerisms"):
+    for key in ("personalities", "voices", "mannerisms"):
         groups = config.get(key)
         if not isinstance(groups, dict):
             raise ValueError(f"{key} must contain normal and extreme lists.")
@@ -137,10 +137,10 @@ def random_character(config_path=RANDOM_CONFIG_PATH, *, trait_mode="normal"):
         if type(low) is not int or type(high) is not int or low > high:
             raise ValueError(f"{name} needs integer limits with min <= max.")
         values[name] = str(random.randint(low, high))
-    values["Details"] = (" ".join(random.choice(trait_choices[key]).strip()
-                                  for key in ("details", "voices", "mannerisms")) + "\n\n"
-                         + config["background_prefix"].strip() + " "
-                         + random.choice(config["backgrounds"]).strip())
+    for name, key in zip(PROFILE_FIELDS[:3], ("personalities", "voices", "mannerisms")):
+        values[name] = random.choice(trait_choices[key]).strip()
+    values["Background"] = (config["background_prefix"].strip() + " "
+                            + random.choice(config["backgrounds"]).strip())
     values["Hair"] = random.choice(RANDOM_HAIR_STYLES_BY_SEX[values["Sex"]])
     values["Eyes"] = random.choice(RANDOM_EYE_STYLES_BY_SEX[values["Sex"]])
     for name in DEFAULT_COLORS:

@@ -17,7 +17,7 @@ from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_C
 from dialogue_text import contains_serialized_dialogue, contains_speaker_label, speech_is_complete, split_sentences
 from dialogue_rules import (mentions_account, mentions_private_recollection, named_context, named_references, name_pattern, unquoted_speech,
                            validate_account_speech, validate_apple_roles, validate_continuity,
-                           validate_claim_source, validate_english, validate_opinion_reason,
+                           validate_base_prose, validate_claim_source, validate_english, validate_opinion_reason,
                            validate_speaker_identity)
 from ollama_manager import DEFAULT_OLLAMA_MODEL
 from model_debug import record_output, streaming_output
@@ -205,7 +205,7 @@ phrases announcing who speaks. Do not wrap the utterance in quotation marks. The
 already identifies the speaker. Address the listener as you; describe yourself as I.
 
 You are rewriting ONE speaker's voice. Every slot belongs to this same speaker.
-Use only the supplied speaking_brief. Original wording supplies meaning, not a voice to imitate:
+Use only the supplied Voice and Mannerisms. Original wording supplies meaning, not a voice to imitate:
 remove accents, rhymes, catchphrases and other habits that do not belong to this brief.
 Never adopt the listener's voice, identity, authority or personal history.
 Rewrite each independent speech slot as expressive, engaging character dialogue.
@@ -221,7 +221,7 @@ self-reference, you may use your own name that way, but never address yourself a
 
 Make a substantial voice rewrite: rebuild sentence structure, rhythm, cadence and word choice.
 Go beyond synonym swaps, word rearrangement and lightly edited copies. Follow THIS slot's
-speaking_brief; let its personality show in idiom, contractions, humor, hesitation, swearing
+Voice and Mannerisms; express delivery through idiom, contractions, humor, hesitation, swearing
 and explicitly specified mannerisms. Use lively, natural spoken phrasing. Prefer everyday words
 over stiff legalistic language unless the brief calls for formality. Warm, clear, concise voices
 should sound approachable. Restrained voices still have individual rhythm. Short natural phrases
@@ -232,6 +232,8 @@ Let the recorded emotion and intensity subtly influence delivery without replaci
 
 Preserve events, chronology, factual claims, uncertainty, negation, agreements, quantities and deadlines.
 Keep questions, commitments, who experienced or reported events, and who knows what intact.
+Preserve the original stance, willingness to cooperate, refusals and objectives. Delivery must
+never reinterpret intent; no new behavioral instructions or personality are supplied here.
 Do not invent events, memories, people, places, disclosures, promises, actions or new questions.
 
 Return ONLY the flat JSON object in the schema, every part_N exactly once. Each value contains
@@ -240,17 +242,17 @@ Keep part association, turn order and progression. Check names and speaker/liste
 
 
 def voice_rewrite_snapshot(response, snapshot):
-    """Copy only speech, authored speaking briefs and recorded delivery metadata."""
-    from character_data import description_parts
+    """Copy only speech, explicit presentation fields and recorded delivery metadata."""
     from snake import SNAKE_VOICE_BRIEF
 
     def resident_brief(person):
         return {"name": person["npc_name"],
-                "speaking_brief": description_parts(person["character"]["Details"])[0]}
+                "Voice": person["character"]["Voice"],
+                "Mannerisms": person["character"]["Mannerisms"]}
 
     if isinstance(response, (ConversationResponse, SnakeResponse)):
         if isinstance(response, SnakeResponse):
-            speakers = {"initiator": {"name": SNAKE_NAME, "speaking_brief": SNAKE_VOICE_BRIEF},
+            speakers = {"initiator": {"name": SNAKE_NAME, "Voice": SNAKE_VOICE_BRIEF, "Mannerisms": ""},
                         "recipient": resident_brief(snapshot["resident"])}
         else:
             speakers = {role: resident_brief(snapshot[role]) for role in ("initiator", "recipient")}
@@ -259,7 +261,7 @@ def voice_rewrite_snapshot(response, snapshot):
         if isinstance(response, ConversationResponse) and response.handoff_thanks:
             turns.append({"speaker": "initiator", "parts": [p.model_dump() for p in response.handoff_thanks]})
     elif isinstance(response, (ActionResponse, SnakePlayerResponse)) and response.reply.strip():
-        speaker = ({"name": SNAKE_NAME, "speaking_brief": SNAKE_VOICE_BRIEF}
+        speaker = ({"name": SNAKE_NAME, "Voice": SNAKE_VOICE_BRIEF, "Mannerisms": ""}
                    if isinstance(response, SnakePlayerResponse) else resident_brief(snapshot))
         speakers = {"speaker": speaker}
         emotion = response.emotion if isinstance(response, ActionResponse) else EmotionReaction()
@@ -493,6 +495,8 @@ CONVERSATION_SCHEMA["properties"]["turns"]["items"]["properties"]["parts"]["item
 
 SPEAKING_BRIEF = f"""Write all dialogue in English. Name the tree's guard {SNAKE_NAME} consistently;
 use I/my for the speaker and you/your for the listener in direct conversation.
+Write base speech and all opinion/attitude reasons in ordinary capitalization and plain prose.
+Personality controls behavior; presentation is applied separately. Never imitate historical delivery.
 Write people experiencing this place as real. Residents remember their own
 authored lives but not how they arrived; the cause and way home remain unknown.
 {SNAKE_NAME} asserts divine authority; this theology is not established truth, and a
@@ -549,9 +553,7 @@ endorsement owed later. An advance is an actual inventory transfer, not a promis
 an apple. Only the later owed disclosure, or an endorsement heard by another living resident,
 fulfills the resident's obligation. Refusing that obligation can lead to judgment and
 being eaten. Carried apples may still be eaten or shared while the offering is owed.
-Each resident's character.speaking_style guides performance; character.former_life
-contains authored private recollections. An unstructured description may also
-contain speaking directions; those directions are never a remembered event.
+Each resident's character.personality guides motivations, temperament and reactions.
 Use only authored recollections; do not generate
 additional backstory or identify remembered people with current residents. A private
 background or motive belongs only to its speaker until explicitly disclosed. Specific
@@ -594,8 +596,8 @@ The tree's fruit count is real. A player SHAKE_TREE is cosmetic and gives no fru
 STOP holds you in place until another task; WANDER releases player control.
 Only the supported action contract can change activities; do not invent actions.
 Use the profile's Name as your identity and its Age, Weight (kg), Height (cm),
-Sex, and appearance as your own stats. Use speaking_style for personality and
-voice, and former_life for authored background. Speak in character and answer questions
+Sex, and appearance as your own stats. Use personality for behavior, and permitted
+private accounts for authored background. Speak in character and answer questions
 about yourself using your profile. The action contract below always applies.
 Names with numbered suffixes, such as 'Alex (1)' and 'Alex (2)', identify separate
 NPCs, even when their profiles are identical. Keep these suffixes when referring
@@ -645,8 +647,8 @@ that NPC to answer. SAY cannot start a new task, so never promise a new task
 when the action is SAY.
 Never target yourself. If the target is missing, ambiguous, or busy, choose SAY
 and ask the player to name an available NPC. For all other actions, target is "".
-Return the required action/reply object. Give a complete reply in your character's
-speaking style. This reply is addressed to the PLAYER, before any requested NPC
+Return the required action/reply object. Give a complete reply expressing your character's
+personality in ordinary prose. This reply is addressed to the PLAYER, before any requested NPC
 conversation begins. Past replies are context, not text to repeat. You can
 interact with the tree, eat carried apples, give carried items, and talk to the other NPCs.
 In player_message, "you" means you, the selected NPC; "I" means the player.
@@ -667,7 +669,7 @@ Speak naturally without announcing numeric scores unless asked for a number.
 Opinions are personal and directional: someone liking you does not mean you
 like them. When asked for your opinion of a known NPC, give your own view to
 the player using the stored opinion. If you have no stored opinion of that
-person, form a modest first impression using your speaking_style and their profile
+person, form a modest first impression using your personality and their profile
 from other_npcs, and include it in opinion_updates so it can be remembered.
 Do not invent previous meetings or events; describe first impressions honestly.
 You may also form a first impression when explicitly asked to talk to someone.
@@ -704,7 +706,7 @@ including when a clarification question is necessary."""
 
 CONVERSATION_INSTRUCTION = WORLD_INSTRUCTION + f"""Write a natural face-to-face conversation between world_state.initiator and
 recipient. They are already together; address each other, not the player.
-Use each speaker's own speaking_style, opinions, knowledge, and immediate
+Use each speaker's own personality, opinions, knowledge, and immediate
 objective. Personality and goals shape wording without guaranteeing cooperation.
 Normally write 4 alternating turns, starting with initiator; use 6 only when
 needed to resolve the current concern. Keep each turn to one or two short sentences.
@@ -842,24 +844,46 @@ handoff. Include an emotion on every part. Return only the required JSON."""
 
 
 def character_context(character):
-    """Copy the profile so prompt preparation cannot modify the character."""
-    from character_data import description_parts
-    character = character.copy()
-    if "Details" in character:
-        character["speaking_style"], character["former_life"] = description_parts(character.pop("Details"))
-    character["Opinions"] = {name: entry.copy() for name, entry in character.get("Opinions", {}).items()}
-    for entry in character["Opinions"].values():
+    """Base-only profile; private Background reaches speech through scoped accounts."""
+    profile = {key: value for key, value in character.items()
+                 if key not in ("Personality", "Voice", "Mannerisms", "Background")}
+    if "Personality" in character:
+        profile["personality"] = character["Personality"]
+    profile["Opinions"] = _base_opinions(character.get("Opinions", {}), character.get("Name", ""))
+    return profile
+
+
+def _base_opinions(opinions, owner):
+    opinions = {name: entry.copy() for name, entry in opinions.items()}
+    for name, entry in opinions.items():
         try:
-            validate_opinion_reason(entry.get("reason", ""), character.get("Name", ""))
+            validate_opinion_reason(entry.get("reason", ""), owner, name)
+            validate_base_prose(entry.get("reason", ""), (owner, name, SNAKE_NAME))
         except ValueError:
             entry.pop("reason", None)
-    return character
+    return opinions
+
+
+def _ordinary_context_prose(text, names=()):
+    try:
+        validate_base_prose(text, names)
+    except ValueError:
+        return False
+    return True
+
+
+def _base_preceding_turns(turns, names=()):
+    """Omit styled examples in provider views; internal transcripts stay intact."""
+    return [turn for turn in turns if _ordinary_context_prose(turn["text"], names)]
 
 
 def world_context(snapshot, *, correction=False):
     """Supply relevant state without exposing other NPCs' private knowledge."""
     if snapshot.get("request_kind") in ("dialogue_repair", "snake_turn", "conversation_closing"):
-        return named_context({k: v for k, v in snapshot.items() if not k.startswith("_")})
+        context = {k: v for k, v in snapshot.items() if not k.startswith("_")}
+        names = (_actor_name(snapshot["speaker"]), _actor_name(snapshot["listener"]), SNAKE_NAME)
+        context["preceding_turns"] = _base_preceding_turns(context.get("preceding_turns", []), names)
+        return named_context(context)
     conversation = snapshot.get("request_kind") == "conversation"
     info = snapshot.get("_information_validation") or {}
     focus = next((option for option in info.get("options", [])
@@ -889,6 +913,11 @@ def world_context(snapshot, *, correction=False):
             person["character"] = character_context(person["character"])
         if not include_reply:
             person.pop("last_reply", None)
+        elif person.get("last_reply") and not _ordinary_context_prose(person["last_reply"], (person.get("npc_name", ""), SNAKE_NAME)):
+            person.pop("last_reply", None)
+        if "memories" in person:
+            person["memories"] = [memory for memory in person["memories"]
+                                  if _ordinary_context_prose(memory.get("summary", ""), (person.get("npc_name", ""), SNAKE_NAME))]
         if conversation or snapshot.get("request_kind") in ("snake_encounter", "snake_decision"):
             # Rendering and movement bookkeeping do not help write a conversation.
             fields = {"npc_id", "npc_name", "character", "activity", "satisfaction", "inventory",
@@ -897,7 +926,6 @@ def world_context(snapshot, *, correction=False):
             person = {key: value for key, value in person.items() if key in fields}
             # Private facts already have individually scoped accounts. A second full
             # biography encourages unrecorded disclosure and borrowing the partner's life.
-            person.get("character", {}).pop("former_life", None)
             if correction:
                 person.pop("memories", None)
             if "private_context" in person:
@@ -924,6 +952,10 @@ def world_context(snapshot, *, correction=False):
                 person["private_context"] = private
         if "private_context" in person:
             private = person["private_context"] = person["private_context"].copy()
+            private["opinions"] = _base_opinions(private.get("opinions", {}), person["npc_name"])
+            if "snake_attitudes" in private:
+                private["snake_attitudes"] = {key: value for key, value in private["snake_attitudes"].items()
+                    if not key.endswith("_reason") or _ordinary_context_prose(value, (person["npc_name"], SNAKE_NAME))}
             private["promises"] = [
                 {**promise, "giver_name": actor_names.get(promise["promisor_id"], promise["promisor_id"]),
                  "receiver_name": actor_names.get(promise["recipient_id"], promise["recipient_id"])}
@@ -969,6 +1001,7 @@ def world_context(snapshot, *, correction=False):
                 try:
                     for name, text in entry["excerpts"]:
                         _validate_speaker(text, name, next(other for other in names if other != name))
+                        validate_base_prose(text, (*names, SNAKE_NAME))
                 except ValueError:
                     continue  # Keep saved words intact, but do not teach new speech a known role swap.
                 recent.append(entry)
@@ -985,7 +1018,6 @@ def world_context(snapshot, *, correction=False):
         # An advance promises an account, never its contents. Give the writer
         # those contents only at fulfillment, when the resident may speak them.
         resident = context["resident"]
-        resident["character"].pop("former_life", None)
         private = resident["private_context"] = resident["private_context"].copy()
         private["known_accounts"] = [a for a in private.get("known_accounts", [])
                                      if a["kind"] not in ("former_life", "private_motive")]
@@ -1028,8 +1060,14 @@ def world_context(snapshot, *, correction=False):
                 for field in ("private_context", "memories", "activity_reason", "last_reply"):
                     person.pop(field, None)
                 person.get("character", {}).pop("Opinions", None)
-                for field in ("Details", "speaking_style", "former_life"):
-                    person.get("character", {}).pop(field, None)
+                person.get("character", {}).pop("personality", None)
+    if "player_dialogue" in context:
+        dialogue = []
+        for turn in context["player_dialogue"]:
+            speaker, text = (turn["speaker"], turn["text"]) if isinstance(turn, dict) else turn
+            if speaker == "You" or _ordinary_context_prose(text, (*actor_names.values(), SNAKE_NAME)):
+                dialogue.append(turn)
+        context["player_dialogue"] = dialogue
     return named_context(context)
 
 
@@ -1110,6 +1148,7 @@ def validate_snake_response(result, snapshot, *, dialogue_validation=None):
         dialogue_validation = snapshot.get("_dialogue_validation", True)
     validate_snake_decision(result, snapshot)
     if dialogue_validation:
+        _validate_base_presentation(result, snapshot)
         validate_dialogue_format(result.turns)
         validate_dialogue_completion(result.turns)
     for i, turn in enumerate(result.turns):
@@ -1239,7 +1278,7 @@ def response_contract(snapshot, *, correction=False):
             "settled outcome. Do not claim a new item transfer or invent events or private knowledge. "
             "Existing agreements name their giver and receiver; preserve who owes what to whom. "
             "Situation and task fields are context, never words to quote. Return only parts.\n"
-            + snapshot.get("_speaker_direction", snapshot["speaker"].get("style", ""))
+            + snapshot.get("_speaker_behavior", snapshot["speaker"].get("personality", ""))
             + "\n" + EMOTION_INSTRUCTION
             + _snake_identity_instruction(snapshot)
             + "\nFinal task: briefly answer the listener's last question using only already stated facts "
@@ -1277,7 +1316,7 @@ def response_contract(snapshot, *, correction=False):
             "consecutive display parts, retaining the complete current task and each part's emotion. "
             "End parts at complete sentences. Finish the sentence even if it exceeds the size target; "
             "never leave it for the other speaker or a later turn to finish. Return only parts.\n"
-            + snapshot["_speaker_direction"] + "\n" + EMOTION_INSTRUCTION
+            + snapshot["_speaker_behavior"] + "\n" + EMOTION_INSTRUCTION
             + _snake_identity_instruction(snapshot)
             + f"\nCurrent speaker: {snapshot['speaker']['name']}. Listener: {snapshot['listener']['name']}. "
             + "The action is already chosen; personality changes its wording, not whether it happens. "
@@ -1515,11 +1554,11 @@ def response_contract(snapshot, *, correction=False):
             "recipient": snapshot["recipient"]["npc_name"],
         }, ensure_ascii=False)
         instruction += "\nInclude emotion separately on every part for that turn's speaker."
-        instruction += "\nPrivate speaking directions for each role: " + json.dumps({
-            role: character_context(snapshot[role]["character"])["speaking_style"]
+        instruction += "\nPrivate behavioral personality for each role: " + json.dumps({
+            role: character_context(snapshot[role]["character"])["personality"]
             for role in ("initiator", "recipient")
         }, ensure_ascii=False)
-        instruction += " Carry these different manners into questions and decisions under uncertainty; never describe or quote the directions."
+        instruction += " Let these motives and attitudes shape decisions under uncertainty; never describe or quote the directions."
         for role in ("initiator", "recipient"):
             person = snapshot[role]
             firsthand = list(dict.fromkeys(account["firsthand_evidence"]
@@ -1776,6 +1815,7 @@ def validate_speech_grounding(text, snapshot):
 
 
 def validate_resident_grounding(result, snapshot):
+    _validate_base_presentation(result, snapshot)
     info = snapshot.get("_information_validation") or {}
     options = {a["id"]: a for a in info.get("options", [])}
     names = [snapshot[role]["npc_name"] for role in ("initiator", "recipient")]
@@ -1818,7 +1858,7 @@ def validate_resident_grounding(result, snapshot):
     for owner, entry in ((snapshot["initiator"], result.initiator_opinion),
                          (snapshot["recipient"], result.recipient_opinion)):
         validate_english(entry.reason, (owner["npc_name"], entry.person))
-        validate_opinion_reason(entry.reason, owner["npc_name"])
+        validate_opinion_reason(entry.reason, owner["npc_name"], entry.person)
 
 
 def validate_dialogue_completion(turns, *, start_index=0):
@@ -1830,9 +1870,39 @@ def validate_dialogue_completion(turns, *, start_index=0):
             "Rewrite a shorter complete sentence if needed; never clip speech to meet a size target.")
 
 
+def _validate_base_presentation(result, snapshot):
+    names = {SNAKE_NAME}
+    people = [snapshot, *[snapshot[key] for key in ("initiator", "recipient", "resident", "snake", "speaker", "listener")
+                         if isinstance(snapshot.get(key), dict)],
+              *snapshot.get("other_npcs", []), *snapshot.get("nearby_npcs", [])]
+    for person in people:
+        name = person.get("npc_name", person.get("name", person.get("character", {}).get("Name", "")))
+        if name:
+            names.update((name, name.split()[0]))
+    texts = []
+    if isinstance(result, (ConversationResponse, SnakeResponse)):
+        texts.extend(turn.text for turn in result.turns)
+    elif isinstance(result, DialoguePartsResponse):
+        texts.append(" ".join(part.text for part in result.parts))
+    elif isinstance(result, (ActionResponse, SnakePlayerResponse)):
+        texts.append(result.reply)
+    if isinstance(result, ConversationResponse):
+        texts.extend((result.initiator_opinion.reason, result.recipient_opinion.reason))
+        texts.extend(entry.reason for entry in result.third_party_opinions)
+        texts.extend(part.text for part in result.handoff_thanks)
+    elif isinstance(result, ActionResponse):
+        texts.extend(entry.reason for entry in result.opinion_updates)
+    if isinstance(result, SnakeDecision) and result.attitudes is not None:
+        texts.extend(value for key, value in result.attitudes.model_dump().items() if key.endswith("_reason"))
+    for text in texts:
+        validate_base_prose(text, names)
+
+
 def _validate_response(raw, snapshot, model):
     result = model.model_validate_json(raw)
     check_dialogue = snapshot.get("_dialogue_validation", True)
+    if check_dialogue:
+        _validate_base_presentation(result, snapshot)
     if isinstance(result, DialoguePartsResponse):
         if not check_dialogue:
             return result
@@ -1893,6 +1963,8 @@ def _validate_response(raw, snapshot, model):
         if isinstance(result, ActionResponse) and check_dialogue:
             validate_english(result.reply, (snapshot.get("npc_name", ""), SNAKE_NAME))
             validate_dialogue_format([ConversationTurn(speaker="initiator", parts=[ConversationPart(text=result.reply)])])
+            for entry in result.opinion_updates:
+                validate_opinion_reason(entry.reason, snapshot.get("npc_name", snapshot.get("character", {}).get("Name", "")), entry.person)
         if (check_dialogue and isinstance(result, ActionResponse) and result.end_conversation
                 and any(mark in result.reply for mark in ("?", "？", "؟"))):
             raise ValueError(
@@ -2044,7 +2116,8 @@ def _request_payload(message, snapshot, correction):
         parts = {key: {
             "speaker_name": speakers[part["speaker"]]["name"],
             "listener_name": speakers[part["speaker"]]["listener_name"],
-            "speaking_brief": speakers[part["speaker"]]["speaking_brief"],
+            "Voice": speakers[part["speaker"]]["Voice"],
+            "Mannerisms": speakers[part["speaker"]]["Mannerisms"],
             "emotion": part["emotion"], "original": part["original"],
         } for key, part in _voice_rewrite_parts(snapshot["turns"]).items()}
         # Repeat the exact references locally so small models need not resolve
@@ -2076,7 +2149,7 @@ def _request_payload(message, snapshot, correction):
             "owner, source and stance; never read JSON, keys, narrator labels or instructions aloud. "
             "Do not invent an agreement, action or private memory. Keep I/my with the speaker and you/your "
             "with the listener. Write one or two short complete sentences ending in punctuation. Return only parts.\n"
-            + snapshot.get("_speaker_direction", snapshot["speaker"].get("style", ""))
+            + snapshot.get("_speaker_behavior", snapshot["speaker"].get("personality", ""))
             + "\nCurrent task: " + snapshot.get("task", "Answer question_to_answer and finish without another question.")
             + "\n" + EMOTION_INSTRUCTION)
         if snapshot["request_kind"] == "conversation_closing":
@@ -2098,17 +2171,17 @@ def _request_payload(message, snapshot, correction):
                        "Keep only the supplied memory: no added relatives, places or incidents. "
                        "Public claims about authority do not substitute for a private memory or motive. "
                        "Use I/you, one or two complete sentences, and your own emotion. Return only parts.\n"
-                       + snapshot["_speaker_direction"] + "\n" + EMOTION_INSTRUCTION)
+                       + snapshot["_speaker_behavior"] + "\n" + EMOTION_INSTRUCTION)
         context = {"speaker": {"name": speaker}, "listener": {"name": listener},
                    "task": snapshot["task"], "account_to_share": context["account_to_share"],
-                   "preceding_turns": snapshot["preceding_turns"]}
+                   "preceding_turns": context["preceding_turns"]}
     if correction and snapshot.get("request_kind") == "conversation" and snapshot.get("purpose") == "gossip":
         # A failed factual report needs its event and sources, not a second
         # biography, stock announcement, or menu of unrelated apple promises.
         people = {}
         for role, other in (("initiator", "recipient"), ("recipient", "initiator")):
             person = context[role]
-            people[role] = {"name": person["npc_name"], "speaking_style": person["character"]["speaking_style"],
+            people[role] = {"name": person["npc_name"], "personality": person["character"]["personality"],
                             "opinion_of_listener": person["private_context"].get("opinions", {}).get(context[other]["npc_name"]),
                             "focus_accounts": person["private_context"].get("permitted_accounts", [])}
             direct_claims = [a for a in people[role]["focus_accounts"]
@@ -2145,7 +2218,7 @@ def _request_payload(message, snapshot, correction):
                        "Wait for acceptance. Do not perform the handoff yet or promise your own secrets to the listener. "
                        "If the task calls for an introduction, state your claimed divine role in one brief clause. "
                        "Use I/you, one or two complete sentences and your own emotion. Return only parts.\n"
-                       + snapshot["_speaker_direction"] + "\n" + EMOTION_INSTRUCTION)
+                       + snapshot["_speaker_behavior"] + "\n" + EMOTION_INSTRUCTION)
         context = {"speaker": {"name": giver}, "listener": {"name": receiver}, "task": snapshot["task"],
                    "offer": {"apple_giver": giver, "apple_receiver": receiver, "apples_offered_now": 1,
                              "offering_owed_by": receiver, "offering_owed_to": giver,
@@ -2167,11 +2240,11 @@ def _request_payload(message, snapshot, correction):
                    "handoff": {"apple_giver": giver, "apple_receiver": receiver, "apples_given_now": 1,
                                "offering_owed_by": receiver, "offering_owed_to": giver,
                                "offering": offering, "offering_due_later": True, "apples_owed_back": 0},
-                   "preceding_turns": snapshot["preceding_turns"],
+                   "preceding_turns": context["preceding_turns"],
                    "account_to_share": context.get("account_to_share")}
     if (snapshot.get("request_kind") == "snake_turn" and snapshot["turn_index"] == 2
             and transaction.get("selected_outcome") in ("secret", "endorsement") and snapshot.get("account_to_share")):
-        from snake import SNAKE_VOICE_BRIEF
+        from snake import SNAKE_BEHAVIOR
         speaker, listener = _actor_name(snapshot["speaker"]), _actor_name(snapshot["listener"])
         report = context["account_to_share"]
         instruction = (f"You are {speaker}, speaking directly to {listener} in English. "
@@ -2183,9 +2256,9 @@ def _request_payload(message, snapshot, correction):
                        "If firsthand, simply say what you saw or heard; otherwise preserve who told you. "
                        "Say the event now, without announcing a rephrasing or explaining how accounts are owned, stored or sourced. "
                        "No apple is exchanged, and no new debt is created. Use two short complete sentences and return only parts.\n"
-                       + SNAKE_VOICE_BRIEF + "\n" + EMOTION_INSTRUCTION)
+                       + SNAKE_BEHAVIOR + "\n" + EMOTION_INSTRUCTION)
         context = {"speaker": {"name": speaker}, "listener": {"name": listener},
-                   "task": snapshot["task"], "account_to_share": report, "preceding_turns": snapshot["preceding_turns"]}
+                   "task": snapshot["task"], "account_to_share": report, "preceding_turns": context["preceding_turns"]}
     stock_instruction = "" if snapshot.get("request_kind") == "conversation_closing" else _tree_stock_instruction(context)
     if correction:
         instruction += "\n\n" + correction
@@ -2216,6 +2289,9 @@ def _request_payload(message, snapshot, correction):
             "Keep that identity in every part. I/my refers to the speaker; you/your refers to the listener. "
             "Do not address yourself by name, answer your own question as the other person, or adopt the listener's "
             "memories, authority, debts, or task. Explicit quotations and correct self-introductions are allowed.")
+    instruction += ("\nUse ordinary capitalization and plain prose for base speech and opinion/attitude reasons. "
+                    "Express the supplied behavioral personality; presentation is applied in a separate optional pass. "
+                    "Do not imitate casing, accents or verbal tics from previous speech.")
     instruction = named_references(instruction)
     payload = {"world_state": context, "player_message": message}
     if correction:
@@ -2430,7 +2506,7 @@ def _dialogue_repair_snapshot(snapshot, response, index, *, closing=False):
             "_dialogue_validation": snapshot.get("_dialogue_validation", True),
             "day": snapshot["initiator"].get("day"),
             "speaker_role": role,
-            "speaker": {"name": speaker["npc_name"], "style": speaker["character"]["speaking_style"],
+            "speaker": {"name": speaker["npc_name"], "personality": speaker["character"]["personality"],
                         "opinion_of_listener": private.get("opinions", {}).get(listener["npc_name"]),
                         "situation": {key: (value[:1] if key == "known_danger" else value)
                                       for key, value in private.get("situation", {}).items()},
@@ -2474,10 +2550,10 @@ def _snake_turn_snapshot(snapshot, decision, turns):
     speaker = identities[role].copy()
     private = resident["private_context"]
     if role == "initiator":
-        from snake import SNAKE_SPEAKING_STYLE
-        direction = SNAKE_SPEAKING_STYLE
+        from snake import SNAKE_BEHAVIOR
+        direction = SNAKE_BEHAVIOR
     else:
-        direction = resident["character"]["speaking_style"]
+        direction = resident["character"]["personality"]
         attitudes = (decision.attitudes.model_dump() if index >= SNAKE_TURN_COUNT - 1 and decision.attitudes is not None
                      else private["snake_attitudes"])
         speaker.update(situation=private.get("situation", {}), inventory=resident["inventory"],
@@ -2650,7 +2726,7 @@ def _snake_turn_snapshot(snapshot, decision, turns):
         "accusation": snapshot["accusation"], "audience_ids": snapshot["audience_ids"] if outcome == "endorsement" else [],
         "account_to_share": account,
         "preceding_turns": latest, "_preceding_turns": preceding,
-        "_speaker_direction": direction,
+        "_speaker_behavior": direction,
     }
     if index >= SNAKE_TURN_COUNT:
         state["question_to_answer"] = _last_question(turns[-1].text)
@@ -2670,8 +2746,8 @@ def _speech_retry_snapshot(snapshot):
                          "State your answer to question_to_answer using settled facts and your own views. ")
         state["task"] += "This is your final reply; the listener will not respond."
     if state["speaker"].get("kind") == "python" and state.get("turn_index", 0) > 0:
-        from snake import SNAKE_SPEAKING_STYLE
-        state["_speaker_direction"] = SNAKE_SPEAKING_STYLE
+        from snake import SNAKE_BEHAVIOR
+        state["_speaker_behavior"] = SNAKE_BEHAVIOR
     if state["request_kind"] == "snake_turn" and state["turn_index"] == SNAKE_TURN_COUNT - 1:
         state["word_limit"] = DIALOGUE_REPAIR_WORD_LIMIT
     return state

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from character_data import DIRECTIONS, normalize_opinions
+from character_data import DIRECTIONS, PROFILE_FIELDS, normalize_opinions
 from emotions import portrait_expression
 from purgatory import initial_attitudes
 from conversation_history import (ConversationRecord, describe_opinion_change, relevant_memories, remember,
@@ -392,7 +392,8 @@ class NPC:
             }
         else:
             state["character"].pop("Opinions", None)
-            state["character"].pop("Details", None)
+            for field in PROFILE_FIELDS:
+                state["character"].pop(field, None)
             for key in ("last_reply", "activity_reason"):
                 state.pop(key, None)
         state["arrival_day"] = self.arrival_day
