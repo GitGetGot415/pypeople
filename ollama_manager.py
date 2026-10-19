@@ -31,10 +31,14 @@ def save_model(model):
     temporary.replace(SETTINGS_PATH)
 
 
+def mark_ollama_ready():
+    """Remember successful discovery or validated generation for this app session."""
+    global _ollama_ready
+    _ollama_ready = True
+
+
 def list_models():
     """Map installed model names (including tags) to their size in bytes, if known."""
-    global _ollama_ready
-    _ollama_ready = False
     try:
         response = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
         response.raise_for_status()
@@ -52,7 +56,7 @@ def list_models():
         raise ValueError("Cannot list models. Make sure Ollama is running, then Refresh.") from None
     except (ValueError, KeyError, TypeError):
         raise ValueError("Ollama returned an invalid model list. Try Refresh again.") from None
-    _ollama_ready = True
+    mark_ollama_ready()
     return {name: sizes[name] for name in sorted(sizes, key=str.casefold)}
 
 

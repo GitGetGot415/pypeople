@@ -19,7 +19,7 @@ from dialogue_rules import (mentions_account, mentions_private_recollection, nam
                            validate_account_speech, validate_apple_roles, validate_continuity,
                            validate_base_prose, validate_claim_source, validate_english, validate_opinion_reason,
                            validate_speaker_identity)
-from ollama_manager import DEFAULT_OLLAMA_MODEL
+from ollama_manager import DEFAULT_OLLAMA_MODEL, mark_ollama_ready
 from model_debug import record_output, streaming_output
 from conversation_history import rewrite_validation_error, usable_rewrite
 from social import phase_index, validate_agreements, validate_information
@@ -2451,7 +2451,9 @@ def _request_ollama(message, snapshot, model=DEFAULT_OLLAMA_MODEL, *, correction
             content = data["message"]["content"]
         if not data.get("done", False) or data.get("done_reason") not in (None, "stop"):
             raise RequestError("Ollama returned an incomplete reply. Try again.")
-        return validate_response(content, snapshot)
+        result = validate_response(content, snapshot)
+        mark_ollama_ready()
+        return result
     except (RequestError, InvalidResponseError):
         raise
     except httpx.TimeoutException:

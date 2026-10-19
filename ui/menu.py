@@ -37,7 +37,7 @@ class MenuScreen:
             if app.provider == "gemini":
                 self.ai_warning = "" if app.api_key.strip() else "No Gemini API key is configured."
             elif app.provider == "ollama":
-                self.ai_warning = "" if check_ollama(force_refresh=True) else "Ollama is not running or could not be reached."
+                self.ai_warning = "" if check_ollama() else "Ollama is not running or could not be reached."
             else:
                 self.ai_warning = "Choose an AI provider in Settings."
             if not self.ai_warning:
