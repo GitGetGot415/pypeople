@@ -124,7 +124,7 @@ class RequestLog:
         self.save_error = ""
 
     def _append(self, event):
-        if event["kind"] == "status" and event["text"] in ("queued", "running", "completed", "failed"):
+        if event["kind"] == "status" and event["text"] in ("queued", "waiting_for_ollama", "running", "completed", "failed"):
             # Cancellation or game rejection wins over a worker finishing late.
             if self._status != "failed":
                 self._status = event["text"]
@@ -173,6 +173,11 @@ class RequestLog:
         with self._lock:
             return self._status
 
+    @property
+    def status_label(self):
+        status = self.status
+        return "Waiting for Ollama" if status == "waiting_for_ollama" else status.title()
+
     @classmethod
     def load(cls, path):
         with path.open(encoding="utf-8") as source:
@@ -201,7 +206,7 @@ class RequestLog:
                 rejected = any(event["kind"] == "disposition" and event["text"].startswith(
                     ("Rejected", "Discarded", "Cancelled")) for event in log._events)
                 log._status = "completed" if finished and finished[-1] == "Reply ready" and not rejected else "failed"
-            elif log._status in ("queued", "running"):
+            elif log._status in ("queued", "waiting_for_ollama", "running"):
                 # A saved request cannot still be running after a restart.
                 log._status = "failed"
         return log

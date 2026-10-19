@@ -122,6 +122,7 @@ GIFT_CONVERSATION_SELECTED_COLOR = (48, 89, 144)
 MODEL_LOG_COLORS = {
     "running": (244, 218, 111),
     "queued": (239, 171, 99),
+    "waiting_for_ollama": (242, 195, 105),  # #F2C369, between running yellow and queued orange.
     "completed": (155, 204, 151),
     "failed": FAILED_CONVERSATION_COLOR,
 }

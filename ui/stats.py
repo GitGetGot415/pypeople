@@ -63,7 +63,7 @@ class StatsScreen:
         rows = []
         top = 0
         if self.tab == "Model logs":
-            entries = [(log, f"{log.metadata['participants']}\n{log.status.title()} / "
+            entries = [(log, f"{log.metadata['participants']}\n{log.status_label} / "
                        f"{('Thread ' + str(log.metadata['slot'])) if log.metadata['slot'] is not None else 'Waiting for a thread'}\n"
                        f"{log.metadata['started'][:19]} UTC")
                        for log in app.requests.debug_logs.history()]
@@ -123,6 +123,7 @@ class StatsScreen:
             if log is None:
                 add("Select a model request to inspect its output, reasoning, stages, and errors.", color=MUTED)
                 add("Yellow: running. Orange: queued. Green: completed. Red: unusable.", app.small_font)
+                add("Amber: waiting for Ollama output.", app.small_font)
                 add(f"Saved in: {app.requests.debug_logs.directory}", app.small_font, MUTED)
                 if app.requests.debug_logs.read_error:
                     add(app.requests.debug_logs.read_error, app.small_font, MUTED)
@@ -137,7 +138,10 @@ class StatsScreen:
                     return previous_lines
             meta = log.metadata
             add(meta["participants"], app.heading_font)
-            add(f"Status: {log.status.title()}", app.small_font)
+            add(f"Status: {log.status_label}", app.small_font)
+            if log.status == "waiting_for_ollama":
+                add("Waiting for the first text or reasoning token. Ollama may be queued, loading, or processing the prompt.",
+                    app.small_font, MUTED)
             slot = f"Thread {meta['slot']}" if meta['slot'] is not None else "Waiting for a thread"
             add(f"{meta['provider']} / {meta['model']} / {slot}", app.small_font, MUTED)
             add(f"Started: {meta['started']}", app.small_font, MUTED)

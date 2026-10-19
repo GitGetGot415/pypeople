@@ -2679,9 +2679,13 @@ def _request_ollama(message, snapshot, model=DEFAULT_OLLAMA_MODEL, *, correction
             if response.is_error:
                 raise RequestError(f"Ollama could not process this request. Check that {model} is available.")
 
+        # Each call (including rewrites and repairs) may wait in Ollama again.
+        # The chat API confirms generation only once it streams actual tokens.
+        record_output("status", "waiting_for_ollama")
         if streaming_output():
             deadline = monotonic() + _request_timeout(snapshot)
             chunks, data = [], {}
+            receiving = False
             with httpx.stream("POST", OLLAMA_URL, json=payload, timeout=_request_timeout(snapshot)) as response, cancellable_stream(lambda: disconnect_response(response)):
                 check_response(response)
                 for line in response.iter_lines():
@@ -2693,6 +2697,9 @@ def _request_ollama(message, snapshot, model=DEFAULT_OLLAMA_MODEL, *, correction
                     if data.get("error"):
                         raise RequestError(f"Ollama could not process this request. Check that {model} is available.")
                     part = data.get("message", {})
+                    if not receiving and (part.get("thinking") or part.get("content")):
+                        receiving = True
+                        record_output("status", "running")
                     record_output("reasoning", part.get("thinking", ""))
                     text = part.get("content", "")
                     record_output("output", text)
@@ -2705,6 +2712,7 @@ def _request_ollama(message, snapshot, model=DEFAULT_OLLAMA_MODEL, *, correction
             check_response(response)
             data = response.json()
             content = data["message"]["content"]
+            record_output("status", "running")
         if not data.get("done", False) or data.get("done_reason") not in (None, "stop"):
             raise RequestError("Ollama returned an incomplete reply. Try again.")
         result = validate_response(content, snapshot)

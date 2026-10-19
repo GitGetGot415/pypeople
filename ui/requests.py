@@ -59,7 +59,7 @@ def _request_worker(session_id, request_id, provider, api_key, message, snapshot
     stage = "Request failed"
     with capture_output(log, control):
         try:
-            record_output("status", "running")
+            record_output("status", "waiting_for_ollama" if provider == "ollama" else "running")
             report("Starting request")
             result = request_response(provider, api_key, message, snapshot, ollama_model=ollama_model, progress=report)
             control.check()
