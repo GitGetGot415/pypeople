@@ -15,6 +15,7 @@ from ollama_manager import load_model
 from simulation_data import InvalidSaveName, SaveStore, capture_simulation, restore_simulation
 from simulation import PendingAction, Simulation
 from snake import SnakeEncounter
+from name_knowledge import actor_catalog, name_forms, orientation_speech, validate_name_use, permitted_forms
 
 from .game import GameScreen
 from .character import CharacterScreen
@@ -434,6 +435,7 @@ class Application:
         if self.screen != "game" or not message or self.requests.busy or snake.encounter or snake.request_pending or self.request_history is not None:
             return
         snapshot = {"request_kind": "snake_player", "snake": snake.snapshot(),
+                    "_name_actors": actor_catalog(self.simulation),
                     "player_dialogue": self.game.player_record.turns[-12:] if self.game.player_record else []}
         self._submit_player_message(snake, message, snapshot, purpose="snake_player")
 
@@ -484,6 +486,7 @@ class Application:
                 if record:
                     record.status, record.error = ("Failed", error) if error else ("Completed", "")
                     if not error:
+                        record.name_forms = name_forms(actor_catalog(self.simulation))
                         record.add_turn(npc.name, result.reply, [{"text": result.reply,
                             "emotion": {"name": "neutral", "intensity": 0}}], rewritten[0] if rewritten else ())
                 npc.reply = f"Request failed: {error}" if error else result.reply
@@ -499,6 +502,12 @@ class Application:
             record = self.request_history
             if not error and (npc.busy or npc.command_revision != self.request_revision or self.request_world_revision != self.simulation.roster_revision):
                 error = "That reply arrived after the NPC became busy. Please send the request again."
+            if not error:
+                try:
+                    person = npc.snapshot(self.tree)
+                    validate_name_use(result.reply, permitted_forms(person, person["_name_actors"], npc.known_names), person["_name_actors"])
+                except ValueError as exc:
+                    error = str(exc)
             if record is not None and not error:
                 record.outcomes.extend(
                     describe_opinion_change(
@@ -540,6 +549,8 @@ class Application:
                 npc.set_emotion(result.emotion.name, result.emotion.intensity)
             if record is not None:
                 if not error:
+                    record.name_forms = name_forms(actor_catalog(self.simulation))
+                    record.orientation_discussed = record.orientation_discussed or orientation_speech([npc.reply])
                     record.add_turn(npc.name, npc.reply, [{
                         "text": npc.reply,
                         "emotion": {"name": npc.emotion, "intensity": npc.emotion_intensity},

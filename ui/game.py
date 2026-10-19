@@ -4,6 +4,7 @@ from constants import (DIALOGUE_PANEL_HEIGHT, INK, MUTED, ORIGINAL_DIALOGUE_PAPE
                        WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH)
 from emotions import portrait_expression
 from conversation_history import display_parts, uses_original_dialogue
+from name_knowledge import actor_catalog, name_forms
 
 from .button import Button
 from .event_feed import EventFeed
@@ -341,8 +342,9 @@ class GameScreen:
             self.draw_conversation(app)
             return
         rewritten = self.selected_npc.rewritten_reply
+        names = name_forms(actor_catalog(app.simulation))
         original = uses_original_dialogue([(self.reply, None)], [rewritten] if rewritten else (),
-                                          original=app.original_dialogue, speaker=self.selected_npc.name, listener="You")
+                                          original=app.original_dialogue, speaker=self.selected_npc.name, listener="You", names=names)
         self.draw_dialogue_background(app, original)
         if self.dialogue_open:
             self.draw_portrait(app, self.selected_npc, self.selected_npc.portrait_emotion)
@@ -357,7 +359,7 @@ class GameScreen:
         app.window.blit(rendered_status, rendered_status.get_rect(topright=(1256, 558)))
         app.window.blit(app.font.render(self.selected_npc.name, True, INK), (self.reply_rect.x, 557))
         reply = display_parts([(self.reply, None)], [rewritten] if rewritten else (), original=app.original_dialogue,
-                              speaker=self.selected_npc.name, listener="You")[0][0]
+                              speaker=self.selected_npc.name, listener="You", names=names)[0][0]
         version = (reply, app.original_dialogue)
         if self._reply_version != version:
             self.dialogue_scroll = 0
@@ -415,6 +417,8 @@ class GameScreen:
                 for part, text in paginate_parts(display_parts([(part.text, part) for part in turn.parts],
                                                  () if failed else conversation.record.rewritten_parts.get(index, ()),
                                                  original=app.original_dialogue,
+                                                 names=conversation.record.name_forms,
+                                                 introductions=conversation.record.name_introductions.get(index, ()),
                                                  speaker=(conversation.initiator if turn.speaker == "initiator" else conversation.recipient).name,
                                                  listener=(conversation.recipient if turn.speaker == "initiator" else conversation.initiator).name),
                                                  app.font, rect.width - 12)
@@ -429,6 +433,8 @@ class GameScreen:
             index = next(index for index, source_turn in enumerate(conversation.turns) if source_turn is turn)
             original = uses_original_dialogue(turn.parts, conversation.record.rewritten_parts.get(index, ()),
                                               original=app.original_dialogue,
+                                              names=conversation.record.name_forms,
+                                              introductions=conversation.record.name_introductions.get(index, ()),
                                               speaker=(conversation.initiator if turn.speaker == "initiator" else conversation.recipient).name,
                                               listener=(conversation.recipient if turn.speaker == "initiator" else conversation.initiator).name)
         self.draw_dialogue_background(app, original)

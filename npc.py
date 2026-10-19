@@ -25,6 +25,7 @@ from constants import (
 )
 from interactions import (company_point, dialogue_finished, face_each_other, face_toward,
                           finish_generated_dialogue, move_toward, record_failed_dialogue, record_generated_turns)
+from name_knowledge import actor_catalog, commit_names, name_context, orientation_context, validate_names, validate_orientation
 
 
 ACTIVITY_FIELDS = (
@@ -130,6 +131,7 @@ class NPC:
     goal: Goal | None = None
     pending_social_opinions: list = field(default_factory=list)
     beliefs: list = field(default_factory=list)
+    known_names: dict = field(default_factory=dict)
     owner: str = "autonomous"
     target_id: str | None = None
     activity_elapsed: float = 0.0
@@ -347,7 +349,9 @@ class NPC:
         state = {
             "npc_id": self.id,
             "npc_name": self.name,
-            "character": {key: value for key, value in {**self.character, "Name": self.name}.items() if key != "Opinions"},
+            "character": {key: value for key, value in self.character.items() if key != "Opinions"},
+            "name_knowledge": name_context(self),
+            "_name_actors": actor_catalog(self.world) if self.world else {},
             "facing": DIRECTIONS[self.facing],
             "selected": self.selected,
             "position": [round(self.x, 1), round(self.y, 1)],
@@ -379,6 +383,7 @@ class NPC:
             state["private_context"]["snake_apple_advance"] = advance.copy() if advance else None
             encounters = [record for record in self.world.history if self.name in record.participants and record.turns]
             state["private_context"]["situation"] = {
+                **orientation_context(self),
                 "arrival_day": self.arrival_day,
                 "transition_memory": "absent", "explanation": "unknown", "way_home": "unknown",
                 "prior_conversations": len(encounters),
@@ -390,6 +395,8 @@ class NPC:
                 "apple_bargain": {"stage": "apple already received; offering still owed", **advance} if advance else None,
             }
         else:
+            state.pop("name_knowledge", None)
+            state.pop("_name_actors", None)
             state["character"].pop("Opinions", None)
             for field in PROFILE_FIELDS:
                 state["character"].pop(field, None)
@@ -682,9 +689,21 @@ class Conversation:
             validate_dialogue_format(response.turns)
             validate_dialogue_speakers(response.turns, {"initiator": self.initiator.name, "recipient": self.recipient.name})
             validate_resident_grounding(response, {
+                "_name_actors": actor_catalog(self.initiator.world),
                 "initiator": self.initiator.snapshot(self.initiator.world.tree),
                 "recipient": self.recipient.snapshot(self.initiator.world.tree),
                 "_information_validation": asdict(self.information_context) if self.information_context else None})
+        name_snapshot = {"request_kind": "conversation", "interaction_id": self.id,
+                         "initiator": self.initiator.snapshot(self.initiator.world.tree),
+                         "recipient": self.recipient.snapshot(self.initiator.world.tree),
+                         "_name_actors": actor_catalog(self.initiator.world)}
+        knowledge, _, name_changes = validate_names(response.turns, name_snapshot)
+        if response.handoff_thanks:
+            from llm import ConversationTurn
+            validate_names([ConversationTurn(speaker="initiator", parts=response.handoff_thanks)], {
+                **name_snapshot, "initiator": {**name_snapshot["initiator"],
+                    "name_knowledge": {"known_names": knowledge["initiator"]}}})
+        orientation_discussed = validate_orientation(response, name_snapshot)
         self.handoff_thanks = response.handoff_thanks
         self.rewritten_handoff_thanks = list(rewritten_parts[-1]) if rewritten_parts and response.handoff_thanks else []
         record_generated_turns(self, response.turns, rewritten_parts)
@@ -697,6 +716,7 @@ class Conversation:
             for npc, partner, entry in opinions
         ]
         self.record.status = "Dialogue ready"
+        self.record.orientation_discussed = orientation_discussed
         self.pending_opinions = [
             (npc, {partner.name: {"opinion": entry.opinion, "reason": entry.reason}})
             for npc, partner, entry in opinions
@@ -708,6 +728,7 @@ class Conversation:
         if not self.social_effects_applied:
             commit_agreements(self)
             commit_information(self)
+            commit_names(self, name_changes)
             for npc, partner in ((self.initiator, self.recipient), (self.recipient, self.initiator)):
                 if npc.goal and npc.goal.status == "active" and npc.goal.target_id == partner.id:
                     npc.goal.last_attempt_phase = npc.world.phase_index
@@ -822,6 +843,7 @@ class Conversation:
         recipient["private_context"]["immediate_objective"] = "Respond to what is actually said using only my own knowledge."
         return {
             "request_kind": "conversation",
+            "_name_actors": actor_catalog(self.initiator.world),
             "interaction_id": self.id,
             "origin": self.origin,
             "purpose": self.purpose,

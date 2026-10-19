@@ -193,8 +193,9 @@ class StatsScreen:
                 gap()
             add("Dialogue", app.heading_font)
             gap()
-            def identity(speaker):
-                return {"speaker": speaker, "listener": next((name for name in record.participants if name != speaker), "You")}
+            def identity(speaker, index=None):
+                return {"speaker": speaker, "listener": next((name for name in record.participants if name != speaker), "You"),
+                        "names": record.name_forms, "introductions": record.name_introductions.get(index, ())}
 
             available = [usable_rewrite(record.dialogue_parts.get(index, [text]), record.rewritten_parts.get(index, ()),
                                         **identity(speaker))
@@ -211,8 +212,8 @@ class StatsScreen:
                 if parts:
                     rewritten = record.rewritten_parts.get(index, ())
                     message(speaker, display_parts([(part["text"], part["emotion"]) for part in parts],
-                        rewritten, original=app.original_dialogue, **identity(speaker)),
-                        original=uses_original_dialogue(parts, rewritten, original=app.original_dialogue, **identity(speaker)))
+                        rewritten, original=app.original_dialogue, **identity(speaker, index)),
+                        original=uses_original_dialogue(parts, rewritten, original=app.original_dialogue, **identity(speaker, index)))
                 else:
                     message(speaker, [(text, None)])
             if record.failed_turns:

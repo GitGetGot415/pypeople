@@ -1,6 +1,7 @@
 """Self-contained simulation saves. No character file paths are loaded."""
 
 from dataclasses import asdict, dataclass
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 import re
@@ -16,7 +17,7 @@ from constants import (
     POST_DIALOGUE_SECONDS, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME, WORLD_HEIGHT, WORLD_WIDTH,
 )
 from conversation_history import ConversationRecord, Memory, WorldEvent
-from llm import (AcceptedProposal, ConversationPart, ConversationTurn, DisclosureChoice,
+from llm import (AcceptedProposal, ConversationPart, ConversationTurn, DisclosureChoice, NameIntroduction,
                  EmotionReaction, LeverageUse, ThirdPartyOpinion)
 from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree
 from simulation import PendingAction, Simulation
@@ -219,6 +220,12 @@ class DepartureState(SaveModel):
     event_id: str = Field(min_length=1)
 
 
+class LearnedNameState(SaveModel):
+    name: str = Field(min_length=1)
+    conversation_id: str = Field(min_length=1)
+    turn: int = Field(ge=0)
+
+
 class NPCState(ActivityState):
     id: str = Field(min_length=1)
     character: dict
@@ -236,6 +243,7 @@ class NPCState(ActivityState):
     goal: GoalState | None
     pending_social_opinions: list[OpinionEffectState]
     beliefs: list[BeliefState]
+    known_names: dict[str, LearnedNameState] = Field(default_factory=dict)
     command_revision: int = Field(ge=0)
     attitudes: Attitudes
     arrival_day: int = Field(ge=1)
@@ -262,6 +270,10 @@ class HistoryState(SaveModel):
     dialogue_parts: dict[int, list[ConversationPart]] = Field(default_factory=dict)
     rewritten_parts: dict[int, list[str]] = Field(default_factory=dict)
     failed_turns: list[ConversationTurn] = Field(default_factory=list)
+    name_forms: list[str] = Field(default_factory=list)
+    name_introductions: dict[int, list[NameIntroduction]] = Field(default_factory=dict)
+    name_witnesses: dict[int, list[str]] = Field(default_factory=dict)
+    orientation_discussed: bool = False
     outcomes: list[str]
     error: str
     origin: Literal["player", "autonomous"]
@@ -492,6 +504,20 @@ class SimulationState(SaveModel):
             for index, parts in record.dialogue_parts.items():
                 if index >= len(record.turns) or " ".join(p.text.strip() for p in parts) != record.turns[index][1]:
                     raise ValueError("Dialogue parts do not match their recorded turn.")
+            from name_knowledge import introduction_supported
+            for index, introductions in record.name_introductions.items():
+                if not 0 <= index < len(record.turns) or len({i.actor_id for i in introductions}) != len(introductions):
+                    raise ValueError("Invalid introduction turn or duplicate introduced actor.")
+                for intro in introductions:
+                    if (intro.actor_id not in ids or not introduction_supported(record.turns[index][1], intro.name, intro.reference)
+                            or intro.reference == "self" and record.turns[index][0] != actors[intro.actor_id]):
+                        raise ValueError("Invalid introduction identity or spoken evidence.")
+            for index, witnesses in record.name_witnesses.items():
+                if (not 0 <= index < len(record.turns) or not set(witnesses) <= ids
+                        or not all(any((f.kind == "endorsement" and index == 1 or f.kind == "snake_claim" and index == 0)
+                                       and f.conversation_id == record.id
+                                       and witness in f.witness_ids for f in self.facts) for witness in witnesses)):
+                    raise ValueError("A witnessed introduction requires a recorded hearing event.")
         for fact in self.facts:
             if (fact.subject_id not in ids or fact.object_id not in ids or fact.subject_id == fact.object_id
                     or fact.phase > now or not set(fact.witness_ids) <= ids
@@ -552,6 +578,26 @@ class SimulationState(SaveModel):
                         raise ValueError("Hearsay requires its actual disclosure source.")
         goal_ids = set()
         for npc in residents:
+            from name_knowledge import forms
+            for target_id, learned in npc.known_names.items():
+                learned = learned.model_dump()
+                target = next((n for n in residents if n.id == target_id), None)
+                actual_name = SNAKE_NAME if target_id == self.snake.id else target.character["Name"] if target else ""
+                if (target_id == npc.id or not actual_name or set(learned) != {"name", "conversation_id", "turn"}
+                        or learned["name"] not in forms(actual_name)):
+                    raise ValueError("Invalid learned name or actor reference.")
+                source = record_for(learned["conversation_id"])
+                turn = learned["turn"]
+                if (type(turn) is not int or not 0 <= turn < len(source.turns)
+                        or actors[npc.id] not in source.participants and npc.id not in source.name_witnesses.get(turn, [])):
+                    raise ValueError("A learned name requires accepted spoken source evidence.")
+                from name_knowledge import introduction_supported
+                if not any(intro.actor_id == target_id and intro.name == learned["name"]
+                           and introduction_supported(source.turns[turn][1], intro.name, intro.reference)
+                           and (intro.reference != "self" or source.turns[turn][0] == actors[target_id])
+                           and source.turns[turn][0] != actors[npc.id]
+                           for intro in source.name_introductions.get(turn, [])):
+                    raise ValueError("A learned name must be supported by its source speech.")
             if npc.arrival_day > self.day or any(m.partner_id not in ids or phase_index(m.day, m.phase) > now for m in npc.memories):
                 raise ValueError("Invalid arrival day or personal memory.")
             if npc.departure and (phase_index(npc.departure.day, npc.departure.phase) > now or not any(f.source_id == npc.departure.event_id and f.kind == "eating" and f.object_id == npc.id for f in self.facts)):
@@ -902,6 +948,7 @@ def restore_simulation(state):
             goal=Goal(**saved.goal.model_dump()) if saved.goal else None,
             pending_social_opinions=[OpinionEffect(**effect.model_dump()) for effect in saved.pending_social_opinions],
             beliefs=[Belief(**belief.model_dump()) for belief in saved.beliefs],
+            known_names=deepcopy(saved.model_dump()["known_names"]),
             attitudes=saved.attitudes.model_dump(),
             arrival_day=saved.arrival_day, departure=saved.departure.model_dump() if saved.departure else None,
         )

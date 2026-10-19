@@ -2,6 +2,7 @@
 
 import re
 import unicodedata
+from collections import Counter
 
 from constants import (DIALOGUE_CAPS_MIN_LETTERS, DIALOGUE_CAPS_MIN_WORDS,
                        DIALOGUE_CAPS_RATIO, SNAKE_NAME)
@@ -30,7 +31,23 @@ def named_context(value):
 
 
 def name_pattern(name):
-    return rf"\b{re.escape(name)}\b"
+    return rf"(?<!\w){re.escape(name)}(?!\w)"
+
+
+_ORDINARY_NAME_WORDS = {
+    "will", "may", "hope", "joy", "rose", "grace", "faith", "pat", "mark", "bill",
+    "judge", "price", "hill", "green", "brown", "white", "baker", "king", "young", "hall",
+    "west", "summer", "autumn", "hunter", "chase", "river", "dawn", "june", "august", "ivy", "ray", "chance",
+}
+
+
+def is_name_reference(match, speech):
+    """An ordinary word alone is not evidence that a roster name was spoken."""
+    if match.group().casefold() not in _ORDINARY_NAME_WORDS:
+        return True
+    before, after = speech[:match.start()], speech[match.end():]
+    return bool(re.search(r"\b(?:hello|hey|thanks|thank you|ask|tell|called|named|name is|call me|i am|i['’]m|mr|mrs|ms|dr)\.?\s*[, ]*\s*$", before, re.I)
+                or re.match(r"\s*[,!]", after))
 
 
 def validate_speaker_identity(text, speaker, listener, *, allow_third_person=False):
@@ -84,18 +101,29 @@ def validate_speaker_identity(text, speaker, listener, *, allow_third_person=Fal
                     "Names are allowed for direct address, introductions, and explicit quotations.")
 
 
-def validate_rewrite_identity(original, rewritten, *, speaker, listener):
+def validate_rewrite_identity(original, rewritten, *, speaker, listener, names=(), introductions=()):
     """A display voice may use third person, but cannot address itself as its partner."""
     validate_speaker_identity(rewritten, speaker, listener, allow_third_person=True)
-    names = sorted({name for actor in (speaker, listener) if actor and actor != "You"
-                    for name in (actor, actor.split()[0])}, key=lambda name: (-len(name), name))
+    names = sorted(set(names) | {name for actor in (speaker, listener) if actor and actor != "You"
+                    for name in (actor, *actor.split())}, key=lambda name: (-len(name), name))
     if not names:
         return
     pattern = "|".join(name_pattern(name) for name in names)
-    before = set(re.findall(pattern, original))
-    after = set(re.findall(pattern, rewritten))
-    if not before.issubset(after):
-        raise ValueError("The voice rewrite changed or removed a participant's name. Keep each original name and its exact form.")
+    def references(text):
+        return Counter(match.group() for match in re.finditer(pattern, text, re.I) if is_name_reference(match, text))
+    before = references(original)
+    after = references(rewritten)
+    if before != after:
+        raise ValueError("The voice rewrite added, changed or removed a participant's name. Keep each original name and its exact form.")
+    if references(unquoted_speech(original)) != references(unquoted_speech(rewritten)):
+        raise ValueError("The voice rewrite changed a quoted name into an actual reference, or the reverse.")
+    from name_knowledge import introduction_supported
+    for name in names:
+        if introduction_supported(original, name, "self") != introduction_supported(rewritten, name, "self"):
+            raise ValueError("The voice rewrite changed an introduction. Preserve the original name-learning effect.")
+    for intro in introductions:
+        if not introduction_supported(rewritten, intro["name"], intro["reference"]):
+            raise ValueError("The voice rewrite changed an introduction. Preserve its identifying reference and learned form.")
 
 
 def validate_english(text, names=()):
@@ -219,7 +247,7 @@ def _asserts(pattern, text):
     return False
 
 
-def validate_claim_source(text, *, names=(), speaker=None, listener=None):
+def validate_claim_source(text, *, names=(), speaker=None, listener=None, actor_references=None):
     """Firsthand hearing may be doubted as theology, but not recast as a rumor."""
     for sentence in split_sentences(unquoted_speech(text)):
         if not re.search(r"\b(?:claims?|claimed|authority|divine|in charge|belongs?|belonged)\b", sentence, re.I):
@@ -227,16 +255,18 @@ def validate_claim_source(text, *, names=(), speaker=None, listener=None):
         false_source = re.search(
             rf"\bi heard (?:a|the|some) (?:rumou?r|story) that (?:{name_pattern(SNAKE_NAME)}|he|she|they)\b", sentence, re.I)
         for name in names:
+            references = "|".join(name_pattern(ref) for ref in [name, *(actor_references or {}).get(name, [])])
             if name not in (speaker, listener, SNAKE_NAME) and re.search(
-                    rf"\bi\s+(?:heard\s+{name_pattern(name)}\s+(?:say|tell)|"
-                    rf"(?:heard|learned|was told)\s+(?:about (?:it|this|that)\s+)?from\s+{name_pattern(name)})\b|"
-                    rf"{name_pattern(name)}\s+told me\b", sentence, re.I):
+                    rf"\bi\s+(?:heard\s+(?:{references})\s+(?:say|tell)|"
+                    rf"(?:heard|learned|was told)\s+(?:about (?:it|this|that)\s+)?from\s+(?:{references}))\b|"
+                    rf"(?:{references})\s+told me\b", sentence, re.I):
                 false_source = True
         if false_source:
             raise ValueError("The speaker witnessed these claims firsthand. Describe what you heard directly; another named witness is not your source. Doubting the claims' truth is allowed.")
 
 
-def validate_account_speech(text, assertion, *, names=(), speaker=None, listener=None, kind=None, firsthand=False):
+def validate_account_speech(text, assertion, *, names=(), speaker=None, listener=None, kind=None, firsthand=False,
+                            actor_references=None):
     """Require content evidence, rather than an ID or a promise to tell it later.
 
     This is a conservative vocabulary check, not a proof of semantic equivalence.
@@ -248,7 +278,8 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
             raise ValueError("This account concerns an unpaid offering after an apple was received, not refusal of the apple. Preserve what was refused.")
         subject = assertion.partition(" refused the agreed ")[0]
         if " refused the agreed " in assertion and speaker is not None and subject not in (speaker, listener):
-            actor = rf"(?:{name_pattern(subject)}|{name_pattern(subject.split()[0])})"
+            actor = "(?:" + "|".join(name_pattern(ref) for ref in
+                [subject, subject.split()[0], *(actor_references or {}).get(subject, [])]) + ")"
             adopts_event = re.search(r"\bi\s+(?:received|accepted|got|refused|declined)\b", speech, re.I)
             if adopts_event and not re.search(actor + r"\s*,?\s+(?:(?:she|he|they|has|had|have|did|not|never|already|also|then|still|to)\s+){0,4}"
                              r"(?:refuse[d]?|decline[d]?|reject(?:ed)?|receive[d]?|accept(?:ed)?|took|got|take|said|told|won['’]t|wouldn['’]t)\b",
@@ -284,11 +315,14 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
         if not re.search(r"\b(?:claim(?:s|ed)?|assert(?:s|ed)?|say(?:s|ing)?|said|told|stat(?:e[sd]?|ing)|insist(?:s|ed)?|declar(?:e[sd]?|ing))\b", spoken, re.I):
             actual.clear()
         if firsthand:
-            validate_claim_source(spoken, names=names, speaker=speaker, listener=listener)
+            validate_claim_source(spoken, names=names, speaker=speaker, listener=listener, actor_references=actor_references)
     missing_actor = speaker is not None and any(
         name not in (speaker, listener) and re.search(name_pattern(name), assertion, re.I)
         and not (kind == "snake_claim" and name != SNAKE_NAME)
-        and not re.search(name_pattern(name.split()[0]), " ".join(sentences), re.I) for name in names if name)
+        and not any(re.search(name_pattern(ref), spoken, re.I)
+                    for ref in [name.split()[0], *(actor_references or {}).get(name, []),
+                                *(["the python", "the snake"] if name == SNAKE_NAME else [])])
+        for name in names if name)
     if missing_actor or not expected or len(expected & actual) < min(2, len(expected)):
         direction = ("Explain the supplied private reason and what you want, in your own words. " if kind == "private_motive" else
                      "Report who made which claims and preserve how you heard them. " if kind == "snake_claim" else

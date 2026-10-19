@@ -49,7 +49,7 @@ class Simulation:
         self.facts = []
         self.claims = []
         self.disclosures = []
-        self.social_opportunity = False
+        self.social_opportunity = assign_goals
         self.social_rotation = 0
         for npc in self.npcs:
             npc.world = self

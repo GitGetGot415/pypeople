@@ -20,6 +20,10 @@ class ConversationRecord:
     dialogue_parts: dict[int, list[dict]] = field(default_factory=dict)
     rewritten_parts: dict[int, list[str]] = field(default_factory=dict)
     failed_turns: list[dict] = field(default_factory=list)
+    name_forms: list[str] = field(default_factory=list)
+    name_introductions: dict[int, list[dict]] = field(default_factory=dict)
+    name_witnesses: dict[int, list[str]] = field(default_factory=dict)
+    orientation_discussed: bool = False
 
     def add_turn(self, speaker, text, parts, rewritten=()):
         if rewritten:
@@ -28,13 +32,21 @@ class ConversationRecord:
         self.turns.append((speaker, text))
 
 
-def usable_rewrite(parts, rewritten, *, speaker="", listener=""):
+def usable_rewrite(parts, rewritten, *, speaker="", listener="", names=(), introductions=()):
     """Whether generated strings can be associated with the original display parts."""
     return bool(rewritten) and len(rewritten) == len(parts) and all(
         isinstance(text, str) and text.strip() for text in rewritten)
 
 
-def rewrite_validation_error(parts, rewritten, *, speaker="", listener=""):
+def _part_text(part):
+    if isinstance(part, str):
+        return part
+    if isinstance(part, dict):
+        return part["text"]
+    return part[0] if isinstance(part, tuple) else part.text
+
+
+def rewrite_validation_error(parts, rewritten, *, speaker="", listener="", names=(), introductions=()):
     """Report a failed rewrite check without replacing any generated words."""
     if not rewritten:
         return ""
@@ -45,23 +57,18 @@ def rewrite_validation_error(parts, rewritten, *, speaker="", listener=""):
     if any(contains_speaker_label(text) for text in rewritten):
         return "The voice rewrite contains narrator or speaker labels."
     if speaker:
-        def text(part):
-            if isinstance(part, str):
-                return part
-            if isinstance(part, dict):
-                return part["text"]
-            return part[0] if isinstance(part, tuple) else part.text
         try:
-            validate_rewrite_identity(" ".join(text(part) for part in parts), " ".join(rewritten),
-                                      speaker=speaker, listener=listener)
+            validate_rewrite_identity(" ".join(_part_text(part) for part in parts), " ".join(rewritten),
+                                      speaker=speaker, listener=listener, names=names, introductions=introductions)
         except ValueError as exc:
             return str(exc)
     return ""
 
 
-def display_parts(parts, rewritten=(), *, original=False, speaker="", listener=""):
+def display_parts(parts, rewritten=(), *, original=False, speaker="", listener="", names=(), introductions=()):
     """Select presentation text while keeping the original part's metadata."""
-    use_original = uses_original_dialogue(parts, rewritten, original=original, speaker=speaker, listener=listener)
+    use_original = uses_original_dialogue(parts, rewritten, original=original, speaker=speaker, listener=listener,
+                                         names=names, introductions=introductions)
     return [(part[0] if use_original else rewritten[index], part[1])
             for index, part in enumerate(parts)]
 
@@ -72,7 +79,8 @@ def voice_rewrite_errors(record):
     for index, (speaker, text) in enumerate(record.turns):
         error = rewrite_validation_error(
             record.dialogue_parts.get(index, [text]), record.rewritten_parts.get(index, ()), speaker=speaker,
-            listener=next((name for name in record.participants if name != speaker), "You"))
+            listener=next((name for name in record.participants if name != speaker), "You"),
+            names=record.name_forms, introductions=record.name_introductions.get(index, ()))
         if error:
             errors.append((index, speaker, error))
     return errors
@@ -83,9 +91,9 @@ def has_failed_voice_rewrite(record):
     return bool(voice_rewrite_errors(record))
 
 
-def uses_original_dialogue(parts, rewritten=(), *, original=False, speaker="", listener=""):
-    """Rendering and text selection agree when a missing rewrite falls back."""
-    return original or not usable_rewrite(parts, rewritten, speaker=speaker, listener=listener)
+def uses_original_dialogue(parts, rewritten=(), *, original=False, speaker="", listener="", names=(), introductions=()):
+    """Content diagnostics never gate display; only availability or the user's toggle does."""
+    return original or not usable_rewrite(parts, rewritten)
 
 
 @dataclass

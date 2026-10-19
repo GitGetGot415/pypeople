@@ -1,6 +1,8 @@
 """Small, local activity choices. Autonomous activities never call a model."""
 
 import math
+from constants import ORIENTATION_PRIORITY
+from name_knowledge import orientation_context
 
 from npc import Behavior
 from conversation_history import memory_bias
@@ -138,6 +140,14 @@ def social_pair(world):
     for npc in available:
         for other in partners(npc):
             priority, objective = pair_objective(world, npc, other)
+            if orientation_context(npc)["needs_orientation"] and priority < ORIENTATION_PRIORITY:
+                priority = ORIENTATION_PRIORITY
+                objective = "Find my bearings: understand these surroundings, the missing transition, or where to find help and safety"
+            # A known immediate danger keeps its place above routine orientation.
+            if priority < 2 and any(b.stance != "disbelieved" and
+                    fact_by_id(world, claim_by_id(world, b.claim_id).fact_id).kind in ("eating", "judgment", "defiance")
+                    for b in selected_beliefs(npc, other.id)):
+                priority, objective = 2, "Seek safety or help after a known alarming event, using its actual source"
             if priority:
                 deadline = min((p.deadline for p in pending_promises(world)
                                 if {p.promisor_id, p.recipient_id} == {npc.id, other.id}), default=world.phase_index)
@@ -183,5 +193,5 @@ def social_pair(world):
     elif recollection:
         topic = f"Remembering: {recollection.summary}"
     else:
-        topic = "The missing memory of arriving here and uncertainty about getting home"
+        topic = "Life here and whatever still feels unresolved, building on what we have already discussed"
     return npc, partner, "chat", topic, f"Seeking a chat with {partner.name}{memory_reason(npc, partner)}"
