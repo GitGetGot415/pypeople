@@ -680,6 +680,7 @@ class Conversation:
             return
         from llm import (dialogue_validation_errors, validate_dialogue_format,
                          validate_dialogue_speakers, validate_resident_grounding)
+        from name_knowledge import record_self_introductions
         # Reject stale actor snapshots before displaying or committing anything.
         if getattr(self, "request_roster_revision", self.initiator.world.roster_revision) != self.initiator.world.roster_revision:
             raise ValueError("The resident roster changed while dialogue was being prepared. Retry this meeting.")
@@ -699,6 +700,7 @@ class Conversation:
                          "initiator": self.initiator.snapshot(self.initiator.world.tree),
                          "recipient": self.recipient.snapshot(self.initiator.world.tree),
                          "_name_actors": actor_catalog(self.initiator.world)}
+        record_self_introductions(response.turns, name_snapshot)
         knowledge, _, name_changes = validate_names(response.turns, name_snapshot)
         if response.handoff_thanks:
             from llm import ConversationTurn

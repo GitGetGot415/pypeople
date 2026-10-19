@@ -13,7 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError,
 from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_CHARACTERS, DIALOGUE_MAX_PARTS,
                        DIALOGUE_PART_TARGET_CHARACTERS, DIALOGUE_PARTS_PER_TURN,
                        DIALOGUE_REPAIR_WORD_LIMIT, DIALOGUE_TIMEOUT_SECONDS,
-                       EMOTION_THRESHOLD, FURIOUS_THRESHOLD, SNAKE_NAME, SNAKE_TURN_COUNT)
+                       EMOTION_THRESHOLD, FURIOUS_THRESHOLD, LEVERAGE_ACCOUNT_KINDS,
+                       SNAKE_NAME, SNAKE_TURN_COUNT, VOICE_REWRITE_TEMPERATURE)
 from dialogue_text import contains_serialized_dialogue, contains_speaker_label, speech_is_complete, split_sentences
 from dialogue_rules import (is_name_reference, mentions_account, mentions_private_recollection, named_context, named_references, name_pattern, unquoted_speech,
                            validate_account_speech, validate_apple_roles, validate_continuity,
@@ -25,7 +26,8 @@ from conversation_history import rewrite_validation_error, usable_rewrite
 from social import phase_index, validate_agreements, validate_information
 from purgatory import Attitudes
 from name_knowledge import (NAME_INSTRUCTION, account_references, name_forms, permitted_forms, validate_name_use,
-                            actor_id, forms, listener_address, own_name, snake_name_witnesses, validate_names, validate_orientation)
+                            actor_id, forms, listener_address, own_name, record_self_introductions,
+                            snake_name_witnesses, validate_names, validate_orientation)
 
 MODEL = "gemini-2.5-flash"
 OLLAMA_URL = "http://localhost:11434/api/chat"
@@ -211,49 +213,29 @@ class VoiceRewriteValidationError(ValueError):
         self.response = response
 
 
-VOICE_REWRITE_INSTRUCTION = """Write direct spoken dialogue, as if the listener can hear the speaker talking.
-Each JSON value is ONLY the words coming out of that speaker's mouth. Start immediately with
-the utterance. No narrator, character actions, stage directions, speaker-name prefixes or
-phrases announcing who speaks. Do not wrap the utterance in quotation marks. The interface
-already identifies the speaker. Address the listener as you; describe yourself as I.
+VOICE_REWRITE_INSTRUCTION = """Rewrite ONE speaker's supplied utterances in their Voice and Mannerisms.
+Each part_N is an independent slot: speaker_name says original to listener_name.
+I/my belongs to the speaker; you/your belongs to the listener. Never answer as the
+listener or borrow a different slot's words. Return only the flat part_N JSON strings.
 
-You are rewriting ONE speaker's voice. Every slot belongs to this same speaker.
-Use only the supplied Voice and Mannerisms. Original wording supplies meaning, not a voice to imitate:
-remove accents, rhymes, catchphrases and other habits that do not belong to this brief.
-Never adopt the listener's voice, identity, authority or personal history.
-Rewrite each independent speech slot as expressive, engaging character dialogue.
-For each part_N, speaker_name speaks ONLY that slot's original words to listener_name.
-Never copy another slot's speech, swap speakers, or give the listener's answer. I/my belongs
-to this speaker; you/your belongs to this listener.
+Preserve meaning first: facts, stance, refusals and objectives; keep
+uncertainty, negation, agreements, quantities and deadlines, sources and roles.
+Never copy another slot's speech. Do not invent events, explanations, gestures as stage
+directions, private memories, thanks, answers or additional questions.
 
-Preserve every proper name EXACTLY as written in the original, including abbreviated forms.
-Keep introductions and their identifying references intact. Do not add, remove,
-expand or change an introduction, or convert quoted names into actual references.
-Never rename people or places, replace the listener's name with the speaker's, expand or shorten
-names, or alter names for an accent or stutter. Keep names_to_preserve verbatim in this slot;
-do not introduce any of its names_to_avoid. Third-person self-reference may retain
-your own name when already present, but cannot add it or address yourself as the listener.
+Preserve every proper name EXACTLY. Names are protected text, not style.
+Keep names_to_preserve EXACTLY, in the same slot.
+Do not add a name absent from that original, even your own name or the listener's.
+Keep name questions and self-introductions intact, including the exact name form.
+When Voice asks for third-person self-reference or titles, apply it only where it
+can preserve the original names and identity. These preservation rules take priority.
 
-Make a substantial voice rewrite: rebuild sentence structure, rhythm, cadence and word choice.
-Go beyond synonym swaps, word rearrangement and lightly edited copies. Follow THIS slot's
-Voice and Mannerisms; express delivery through idiom, contractions, humor, hesitation, swearing
-and explicitly specified mannerisms. Use lively, natural spoken phrasing. Prefer everyday words
-over stiff legalistic language unless the brief calls for formality. Warm, clear, concise voices
-should sound approachable. Restrained voices still have individual rhythm. Short natural phrases
-may stay unchanged. Do not force accents, jokes, profanity or a tic into every sentence.
-Match the brief's usual sentence length. Keep terse speakers terse; do not pad their replies
-to make them expressive. Preserve necessary meaning while removing habits that do not belong to this speaker.
-Let the recorded emotion and intensity subtly influence delivery without replacing the speaker's voice.
-
-Preserve events, chronology, factual claims, uncertainty, negation, agreements, quantities and deadlines.
-Keep questions, commitments, who experienced or reported events, and who knows what intact.
-Preserve the original stance, willingness to cooperate, refusals and objectives. Delivery must
-never reinterpret intent; no new behavioral instructions or personality are supplied here.
-Do not invent events, memories, people, places, disclosures, promises, actions or new questions.
-
-Return ONLY the flat JSON object in the schema, every part_N exactly once. Each value contains
-only that slot's rewritten spoken words: no speaker labels, serialized objects, emotions or fences.
-Keep part association, turn order and progression. Check names and speaker/listener ownership before returning."""
+Change phrasing and rhythm only where the brief calls for it. A warm, concise voice
+can stay close to an already natural original. Keep short replies short. Do not pad
+speech or add a tic to every sentence. Convey mannerisms through spoken delivery,
+without narration, stage directions, wrappers, labels, outer quotes or field readouts.
+Use the supplied emotion subtly. Keep each slot's complete original meaning.
+"""
 
 
 def voice_rewrite_snapshot(response, snapshot):
@@ -888,41 +870,42 @@ For food requests, keep the supplied outcome, with thanks only for an accepted
 handoff. Include an emotion on every part. Return only the required JSON."""
 
 
-ORIENTATION_INSTRUCTION = """Write a natural face-to-face introduction and orientation exchange.
-These residents remember their former lives but not the transition here. They do
-not know why they are here or a way home. Address one present question about the
-unfamiliar surroundings, their missing arrival memory, or a first safe step.
-Routine apple goals are deferred. Do not open negotiations for apples, promises,
-private accounts or favors. An apple tree is scenery, not the subject of every chat.
-Use each role's own behavioral personality and experience. A newcomer may be
-anxious, skeptical, irritated, competitive or practical; panic is not required.
-Someone established here can explain what they actually know without pretending
-to have solved the mystery or starting their own arrival over.
+ORIENTATION_INSTRUCTION = """Write exactly four alternating turns between initiator and recipient.
+This is an introductory orientation exchange. Residents remember their former
+lives, but not the transition here. Their location's cause and a route home are unknown.
 
-Ask an unfamiliar partner what to call them. Answer name questions with your own
-authored name and record that spoken self-introduction in introductions using
-your own npc_id, the exact name form spoken and reference self. Share your own
-name as part of meeting them. First names are enough; do not reveal a surname
-that was not given. Avoid asking for a name already offered in an earlier turn.
-The listener learns AFTER the introduction. A later reply may naturally use that
-learned form. Before that, address the partner as you, without naming them.
-Own-name labels and opinion fields are technical identity, never shared knowledge.
+Use only supplied surroundings, situation and shared history as facts. A visible
+python guarding a tree does not imply it has spoken to either resident. Do not
+invent its words, intentions, past encounters, signs, clues or discoveries.
+Distinguish a suggestion to explore from something already found.
 
-Use four alternating turns, initiator first, or up to six only if needed. Use one
-or two short complete sentences per turn. Allow room for names, one present concern
-and an answer or concrete next step. Respond to what is actually said rather than
-reciting task labels or a list of possible concerns. Introductions and questions
-can share a turn. Finish naturally
-without a new question in the final turn. Write only generated direct speech,
-in English with ordinary capitalization; voice presentation is applied separately.
-Give each part its own speaker's emotion. Return both directional opinions using
-the exact technical partner name in person, with a first-person reason about the
-partner's words. accepted_proposals, disclosures, third_party_opinions and leverage
-are empty. Set orientation_discussed true only when the speech actually engages
-with their situation. Use only the supplied surroundings and history; do not invent
-animals, plants, buildings, clues or earlier sightings. Never invent an explanation,
-route home or earlier meeting.
-""" + NAME_INSTRUCTION
+Routine apple goals are deferred. Discuss one present concern about arrival,
+where they are, or a practical first step. Do not negotiate apples, favors or secrets.
+Let behavioral personality shape reactions without forcing panic or optimism.
+A resident who has already discussed arrival should help the newcomer rather
+than restarting their own first arrival.
+
+Ask an unfamiliar partner what to call them; offer your own authored first or full
+name and answer name questions. Avoid asking for a name already offered. Use you
+until the partner actually introduces a name; a later reply may use that exact form.
+Technical names and IDs do not teach names. The engine records actual spoken
+self-introductions; leave introductions empty. Do not invent a missing surname.
+
+Turn 0: initiator gives their own name and asks the unknown partner's name alongside
+one arrival concern. They have not heard the recipient yet, so use you for that person.
+Turn 1: recipient answers with their own name and responds to that concern.
+Turn 2: initiator responds to the answer and suggests one practical first step.
+Turn 3: recipient answers or agrees/disagrees with that step, then closes.
+Skip a name request or repeated self-introduction when the supplied knowledge already
+establishes it. Let the concern and wording vary; do not recite this outline.
+
+Use one or two short complete sentences per turn in English with ordinary capitalization.
+Respond to the partner's actual point; the final turn closes without a new question.
+Give each part the current speaker's emotion. Both opinion fields use the exact
+technical partner name and a first-person reason about their words.
+accepted_proposals, disclosures, third_party_opinions and leverage are empty.
+Set orientation_discussed true only for actual discussion of their situation.
+"""
 
 
 def character_context(character):
@@ -1262,6 +1245,7 @@ def validate_snake_decision(result, snapshot):
 def validate_snake_response(result, snapshot, *, dialogue_validation=None):
     if dialogue_validation is None:
         dialogue_validation = snapshot.get("_dialogue_validation", True)
+    record_self_introductions(result.turns, snapshot)
     validate_snake_decision(result, snapshot)
     if dialogue_validation:
         _validate_base_presentation(result, snapshot)
@@ -1375,15 +1359,15 @@ def disclosure_schema(info, turn_limit, *, opening=False):
 
 def _orientation_contract(snapshot, *, correction=False):
     schema = deepcopy(CONVERSATION_SCHEMA)
-    schema["properties"]["turns"].update(minItems=4, maxItems=6)
+    schema["properties"]["turns"].update(minItems=4, maxItems=4)
     branches = []
     for role in ("initiator", "recipient"):
         turn = deepcopy(CONVERSATION_SCHEMA["properties"]["turns"]["items"])
         turn["properties"]["speaker"] = {"type": "string", "enum": [role]}
         turn["properties"]["parts"] = _dialogue_parts_schema(correction=correction)
         turn["properties"]["introductions"] = {
-            "type": "array", "maxItems": 1,
-            "description": "Record your actual spoken self-introduction in this turn; otherwise [].",
+            "type": "array", "maxItems": 0,
+            "description": "Empty. The engine records names from actual spoken self-introductions.",
             "items": {"type": "object", "properties": {
                 "actor_id": {"type": "string", "enum": [actor_id(snapshot[role])]},
                 "name": {"type": "string", "enum": sorted({own_name(snapshot[role]), own_name(snapshot[role]).split()[0]})},
@@ -1407,14 +1391,22 @@ def _orientation_contract(snapshot, *, correction=False):
 
 
 def _speaker_introductions_schema(snapshot):
-    """Bind each offered name/reference to its real actor; self means the speaker."""
+    """Offer only third-party effects; self introductions are derived from speech."""
     speaker, catalog = snapshot["speaker"], snapshot.get("_name_actors", {})
     schema = structured_schema(DialoguePartsResponse)["properties"]["introductions"]
     permitted = permitted_forms(speaker, catalog, speaker.get("name_knowledge", {}).get("known_names", {}))
     choices = []
+    account_names = {value for key, value in (snapshot.get("account_to_share") or {}).items()
+                     if key.endswith("_name") and isinstance(value, str)}
     for target_id, person in catalog.items():
+        if target_id == actor_id(speaker):
+            continue
+        # A bargain/reaction is not a request to identify the whole visible roster.
+        # Only a supplied account can call for introducing a third-party actor.
+        if person["name"] not in account_names:
+            continue
         names = sorted(forms(person["self_name"]) & permitted)
-        references = ["self"] if target_id == actor_id(speaker) else person.get("references", [])
+        references = person.get("references", [])
         if names and references:
             choices.append({"type": "object", "properties": {
                 "actor_id": {"type": "string", "enum": [target_id]},
@@ -1425,7 +1417,7 @@ def _speaker_introductions_schema(snapshot):
         schema["items"] = choices[0] if len(choices) == 1 else {"anyOf": choices}
     else:
         schema["maxItems"] = 0
-    schema["description"] = "Only actual introductions in this turn; otherwise []. Self uses the speaker's actor ID, never a name or the listener's ID."
+    schema["description"] = "Only actual third-party identifications in this turn; otherwise []. The engine records your own spoken name."
     return schema
 
 
@@ -1696,11 +1688,13 @@ def response_contract(snapshot, *, correction=False):
                 "reason": {"type": "string", "minLength": 1, "maxLength": 400},
             }, "required": ["turn", "claim_id", "subject_id", "delta", "reason"]},
         }
+        leverage_claims = [option["id"] for option in info["options"]
+                           if option["id"] in claim_ids and option["kind"] in LEVERAGE_ACCOUNT_KINDS] if info else []
         properties["leverage"] = {
-            "type": "array", "maxItems": min(2, limit),
+            "type": "array", "maxItems": min(2, limit) if leverage_claims else 0,
             "description": "Explicit pressure using known information. Normal requests are not leverage; usually [].",
             "items": {"type": "object", "properties": {
-                "turn": turn_field, "claim_id": claim_field,
+                "turn": turn_field, "claim_id": {"type": "string", "enum": leverage_claims or [""]},
                 "demand": {"type": "string", "enum": ["apple", "repayment", "disclosure"]},
             }, "required": ["turn", "claim_id", "demand"]},
         }
@@ -1888,7 +1882,8 @@ def _generated_dialogue(raw, snapshot):
         return []
     values = data.get("turns", [])
     if snapshot.get("request_kind") in ("snake_turn", "dialogue_repair", "conversation_closing") and "parts" in data:
-        values = [{"speaker": snapshot.get("speaker_role", "initiator"), "parts": data["parts"]}]
+        values = [{"speaker": snapshot.get("speaker_role", "initiator"), "parts": data["parts"],
+                   "introductions": data.get("introductions", [])}]
     if not isinstance(values, list):
         return []
     turns = []
@@ -2095,12 +2090,16 @@ def _validate_base_presentation(result, snapshot):
 
 def _validate_response(raw, snapshot, model):
     result = model.model_validate_json(raw)
+    if isinstance(result, ConversationResponse):
+        record_self_introductions(result.turns, snapshot)
     check_dialogue = snapshot.get("_dialogue_validation", True)
     if check_dialogue:
         _validate_base_presentation(result, snapshot)
     if isinstance(result, DialoguePartsResponse):
         current = ConversationTurn(speaker=snapshot.get("speaker_role", "initiator"), parts=result.parts,
                                    introductions=result.introductions)
+        record_self_introductions([current], snapshot)
+        result.introductions = current.introductions
         validate_names([current], snapshot)
         if not check_dialogue:
             return result
@@ -2329,7 +2328,6 @@ def _request_payload(message, snapshot, correction):
             "Voice": speakers[part["speaker"]]["Voice"],
             "Mannerisms": speakers[part["speaker"]]["Mannerisms"],
             "emotion": part["emotion"], "original": part["original"],
-            "permitted_names": part["permitted_names"], "introductions": part["introductions"],
         } for key, part in _voice_rewrite_parts(snapshot["turns"]).items()}
         # Repeat the exact references locally so small models need not resolve
         # names across other speakers' very similar lines.
@@ -2342,9 +2340,12 @@ def _request_payload(message, snapshot, correction):
             part["names_to_preserve"] = list(dict.fromkeys(match.group() for match in re.finditer(
                 "|".join(name_pattern(name) for name in names), part["original"], re.I)
                 if is_name_reference(match, part["original"])))
-            # Do not advertise strangers' roster names as writing metadata.
-            part["names_to_avoid"] = [name for name in part["permitted_names"]
-                                      if not re.search(name_pattern(name), part["original"])]
+            # Names absent from this original are unnecessary style context.
+            # Listing them as labels or names to avoid primed small models to add them.
+            for field, fallback in (("speaker_name", "the speaker"), ("listener_name", "the listener")):
+                label = part[field]
+                spoken = next((name for name in part["names_to_preserve"] if name in forms(label)), None)
+                part[field] = spoken or (label if label.startswith("the ") or label == "You" else fallback)
         schema = {"type": "object", "properties": {key: {
             "type": "string", "minLength": 1,
             "description": f"Direct utterance by {part['speaker_name']} to {part['listener_name']}. No speaker label, narration or outer quotes. Keep original names unchanged."
@@ -2553,7 +2554,7 @@ def _request_gemini(api_key, message, snapshot, *, correction=""):
         ) as client:
             config = types.GenerateContentConfig(
                 system_instruction=instruction,
-                temperature=0 if (snapshot.get("request_kind") == "intent"
+                temperature=VOICE_REWRITE_TEMPERATURE if snapshot.get("request_kind") == "voice_rewrite" else 0 if (snapshot.get("request_kind") == "intent"
                                   or snapshot.get("transaction", {}).get("apple_handoff_now")) else None,
                 response_mime_type="application/json",
                 response_schema=schema,
@@ -2619,7 +2620,9 @@ def _request_ollama(message, snapshot, model=DEFAULT_OLLAMA_MODEL, *, correction
         "num_ctx": 16384 if snapshot.get("request_kind") in ("conversation", "snake_decision") else 8192,
         "num_predict": -1,
     }
-    if snapshot.get("transaction", {}).get("apple_handoff_now"):
+    if snapshot.get("request_kind") == "voice_rewrite":
+        options["temperature"] = VOICE_REWRITE_TEMPERATURE
+    elif snapshot.get("transaction", {}).get("apple_handoff_now"):
         options["temperature"] = 0
     elif snapshot.get("request_kind") in ("conversation", "snake_decision", "snake_turn", "dialogue_repair", "conversation_closing"):
         # Greedy decoding encouraged small models to replay the supplied history.
@@ -2950,6 +2953,9 @@ def _snake_turn_snapshot(snapshot, decision, turns):
             environment["tree"]["fruit"] -= 1
             transaction.update(can_give_apple=False, apple_reserved=False, apple_already_received=True,
                                receiver_inventory_space=resident["inventory_space"] - 1)
+            if role == "initiator":
+                task += (" You are the apple giver, answering the resident's question after your handoff. "
+                         "The resident owes you the offering; you are not selling your own secret or asking to buy theirs.")
     if account:
         account = speech_account(account)
         task += (" Express the substance of account_to_share.assertion now in natural words, preserving its owner and source. "
@@ -2957,7 +2963,7 @@ def _snake_turn_snapshot(snapshot, decision, turns):
                  "Simply tell what happened; do not announce a rephrasing, recite ownership labels or say you are storing knowledge.")
     if role == "initiator" and snake["actor_id"] not in knowledge["recipient"]:
         task += (" The resident has not learned your name. Give your own name in a clear spoken self-introduction "
-                 "and record it in introductions with your actor_id and reference self. Once heard, they may use that name.")
+                 "as part of the current task; the engine records it from your words. Once heard, they may use that name.")
     preceding = [{"name": identities[turn.speaker]["name"], "role": turn.speaker, "text": turn.text}
                  for turn in turns]
     latest = preceding[-1:]

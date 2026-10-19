@@ -118,11 +118,14 @@ def validate_rewrite_identity(original, rewritten, *, speaker, listener, names=(
     if references(unquoted_speech(original)) != references(unquoted_speech(rewritten)):
         raise ValueError("The voice rewrite changed a quoted name into an actual reference, or the reverse.")
     from name_knowledge import introduction_supported
-    for name in names:
+    for name in before:
         if introduction_supported(original, name, "self") != introduction_supported(rewritten, name, "self"):
             raise ValueError("The voice rewrite changed an introduction. Preserve the original name-learning effect.")
     for intro in introductions:
-        if not introduction_supported(rewritten, intro["name"], intro["reference"]):
+        # With base validation off, the original can carry bogus introduction
+        # metadata. Its absence in both texts is a base error, not rewrite drift.
+        if (introduction_supported(original, intro["name"], intro["reference"])
+                and not introduction_supported(rewritten, intro["name"], intro["reference"])):
             raise ValueError("The voice rewrite changed an introduction. Preserve its identifying reference and learned form.")
 
 
@@ -213,7 +216,8 @@ def mentions_account(text, assertion, names):
 
 def mentions_private_recollection(text, assertion, names):
     # Generic thought/reaction words cannot establish that private biography was spoken.
-    general = {"description", "think", "thought", "mean", "feel", "felt", "wonder", "hope", "believe"}
+    general = {"description", "think", "thought", "mean", "feel", "felt", "wonder", "hope", "believe",
+               "seem", "too", "find", "way"}
     expected = _content_words(assertion, names) - general
     actual = _content_words(text, names) - general
     return bool(expected) and len(expected & actual) >= min(2, len(expected))
@@ -382,6 +386,10 @@ def validate_continuity(text, *, day, situation, knows_claims=False):
 def validate_apple_roles(text, *, giver, receiver, speaker, owed_offering=False,
                          apple_received=False, offering_pending=False):
     speech = unquoted_speech(text)
+    if speaker == giver and owed_offering and re.search(
+            r"\byou(?:['’]re| are)?\s+(?:(?:not|never)\s+)?(?:getting|buying|receiving)\s+"
+            r"(?:my|our)\s+(?:private\s+)?(?:secrets?|recollection)\b", speech, re.I):
+        raise ValueError(f"{giver} is the apple giver; {receiver} owes the private offering. Do not adopt the resident's secret or refusal as your own.")
     if speaker == receiver and re.search(
             r"\b(?:apple|fruit)\s+i\s+(?:offered|gave|handed|provided)\s+you\b|\bi\s+(?:gave|handed)\s+you\s+(?:an?|the|one)\s+(?:apple|fruit)\b|"
             r"(?:^|[.!?;,]\s+)(?:please\s+)?(?:take|accept)\s+(?:the|this|an?|one)\s+(?:apple|fruit)\b|"

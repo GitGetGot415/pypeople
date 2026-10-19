@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Literal
 from uuid import uuid4
 
-from constants import GOAL_IMPROVEMENT
+from constants import GOAL_IMPROVEMENT, LEVERAGE_ACCOUNT_KINDS
 from conversation_history import remember
 from dialogue_rules import named_references, validate_account_speech, validate_apple_promise
 
@@ -404,7 +404,7 @@ def validate_information(response, context, *, names=(), participant_names=None,
             if (use.claim_id not in beliefs[role] or option is None
                     or use.claim_id not in context.allowed[role] and use.claim_id not in acquired[role]
                     or use.claim_id in seen_leverage
-                    or option.kind not in ("private_motive", "apple_given", "apple_refused", "promise_kept", "promise_broken")):
+                    or option.kind not in LEVERAGE_ACCOUNT_KINDS):
                 raise ValueError(f"Leverage on turn {turn} ({role}) requires a permitted claim already known before this turn. "
                                  "An account disclosed on this same turn is too late; omit leverage for ordinary requests.")
             seen_leverage.add(use.claim_id)

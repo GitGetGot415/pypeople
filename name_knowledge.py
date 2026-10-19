@@ -16,11 +16,11 @@ numbered disambiguation suffixes you have not learned. Use you or a visible
 description for a stranger. In an orientation exchange, ask what to call an
 unfamiliar partner and answer with your own name; do not ask again after learning it.
 Other concerns may take precedence outside these introductory conversations.
-Where the schema includes introductions, record actor_id, name (the exact form
-spoken), and reference for each actual spoken introduction in that turn. Direct
-replies to the player can state your own name without an NPC learning effect.
-For yourself reference is self and
-speech must actually introduce you (for example using my name is or call me).
+The engine records your own spoken self-introduction and exact name form; do not
+add self-introduction bookkeeping. Where the schema includes introductions, use
+it only to identify another person you already know, with their supplied actor_id,
+exact learned name and observable reference. Direct replies to the player can
+state your own name without an NPC learning effect.
 For another person you must already know that form, and explicitly identify them
 using one of their supplied observable references in the spoken introduction. A mere
 mention, quotation or name in a record does not identify a visible stranger.
@@ -133,7 +133,8 @@ def introduction_supported(text, name, reference):
     escaped = name_pattern(name)
     if reference == "self":
         pattern = (r"\b(?:my name is|my name['’]s|name['’]s|i am|i['’]m|call me|you can call me|i go by|i['’]m called)\s+"
-                   + escaped + r"|\bi,\s*" + escaped + r"\s*,")
+                   + escaped + r"|\bi,\s*" + escaped + r"\s*,|(?:^|[.!?]\s*|,\s*)"
+                   + escaped + r"\s+here(?=\s*[,!.]|$)")
     else:
         ref = re.escape(reference)
         pattern = (r"\b" + ref + r"\s+(?:is|is called|goes by|is named)\s+" + escaped
@@ -145,6 +146,20 @@ def introduction_supported(text, name, reference):
             continue
         return True
     return False
+
+
+def record_self_introductions(turns, snapshot):
+    """Derive unambiguous self effects from generated words, never invent speech."""
+    from llm import NameIntroduction
+    people = _participants(snapshot)
+    for turn in turns:
+        person = people[turn.speaker]
+        if not actor_id(person) or any(intro.reference == "self" for intro in turn.introductions):
+            continue
+        introduced = next((name for name in sorted(forms(own_name(person)), key=len, reverse=True)
+                           if introduction_supported(turn.text, name, "self")), None)
+        if introduced:
+            turn.introductions.append(NameIntroduction(actor_id=actor_id(person), name=introduced, reference="self"))
 
 
 def validate_names(turns, snapshot, *, check_use=True, require_effects=True):
@@ -242,7 +257,8 @@ def orientation_context(npc):
 
 
 def orientation_speech(texts):
-    pattern = (r"\b(?:arriv\w*|where (?:are|am) (?:we|i)|how (?:did|do) (?:we|i) get|"
+    pattern = (r"\b(?:arriv\w*|where (?:are|am) (?:we|i)|where (?:we|i) (?:are|am)|"
+               r"why (?:we|i) (?:are|am) here|how (?:did|do) (?:we|i) get|how (?:we|i) got here|"
                r"(?:get|getting|go|going|way|back) home|"
                r"(?:remember|recall).{0,35}(?:how|why|when).{0,25}here|"
                r"this place|where we are|surroundings|bearings|safety|shelter|"
