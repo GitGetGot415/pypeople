@@ -1,9 +1,9 @@
 import pygame
 from llm import ConversationTurn
-from constants import (DIALOGUE_PANEL_HEIGHT, FAILED_CONVERSATION_SELECTED_COLOR, INK, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER,
+from constants import (DIALOGUE_PANEL_HEIGHT, INK, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER,
                        WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH)
 from emotions import portrait_expression
-from conversation_history import display_parts, rewrite_validation_error, uses_original_dialogue
+from conversation_history import display_parts, uses_original_dialogue
 
 from .button import Button
 from .event_feed import EventFeed
@@ -353,12 +353,7 @@ class GameScreen:
             status = "Click Done when you've finished reading."
         elif self.selected_npc.request_pending:
             status = f"Applying player request / {status}"
-        rewrite_error = rewrite_validation_error([(self.reply, None)], [rewritten] if rewritten else (),
-                                                  speaker=self.selected_npc.name, listener="You")
-        if rewrite_error and not original:
-            status = "Voice rewrite failed validation (shown)."
-        status_color = FAILED_CONVERSATION_SELECTED_COLOR if rewrite_error and not original else MUTED
-        rendered_status = app.small_font.render(status, True, status_color)
+        rendered_status = app.small_font.render(status, True, MUTED)
         app.window.blit(rendered_status, rendered_status.get_rect(topright=(1256, 558)))
         app.window.blit(app.font.render(self.selected_npc.name, True, INK), (self.reply_rect.x, 557))
         reply = display_parts([(self.reply, None)], [rewritten] if rewritten else (), original=app.original_dialogue,
@@ -430,16 +425,12 @@ class GameScreen:
         page = self.conversation_pages[self.conversation_page_index] if self.conversation_pages else None
         turn, part, text = page if page is not None else (None, None, "")
         original = app.original_dialogue or failed
-        rewrite_error = ""
         if turn is not None and not failed:
             index = next(index for index, source_turn in enumerate(conversation.turns) if source_turn is turn)
             original = uses_original_dialogue(turn.parts, conversation.record.rewritten_parts.get(index, ()),
                                               original=app.original_dialogue,
                                               speaker=(conversation.initiator if turn.speaker == "initiator" else conversation.recipient).name,
                                               listener=(conversation.recipient if turn.speaker == "initiator" else conversation.initiator).name)
-            rewrite_error = rewrite_validation_error(turn.parts, conversation.record.rewritten_parts.get(index, ()),
-                speaker=(conversation.initiator if turn.speaker == "initiator" else conversation.recipient).name,
-                listener=(conversation.recipient if turn.speaker == "initiator" else conversation.initiator).name)
         self.draw_dialogue_background(app, original)
         if turn is not None:
             speaker = conversation.initiator if turn.speaker == "initiator" else conversation.recipient
@@ -472,10 +463,7 @@ class GameScreen:
                       else "Conversation paused while you read." if conversation.active
                       else f"{conversation.record.status} - recorded dialogue.")
             status = "Generated draft; no effects applied. " + conversation.error if failed else conversation.error or status
-            if rewrite_error and not original:
-                status = "Voice rewrite failed validation (shown). " + status
-            status_color = FAILED_CONVERSATION_SELECTED_COLOR if rewrite_error and not original else MUTED
-            draw_wrapped_text(app.window, status, app.small_font, status_color,
+            draw_wrapped_text(app.window, status, app.small_font, MUTED,
                               (rect.x, 696, rect.width - 80, 24))
             progress = app.small_font.render(f"{self.conversation_page_index + 1}/{len(self.conversation_pages)}", True, MUTED)
             app.window.blit(progress, progress.get_rect(topright=(1256, 696)))

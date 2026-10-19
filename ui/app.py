@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pygame
 
-from app_settings import load_npc_trait_mode
+from app_settings import load_settings
 from character_data import load_character, random_character
 from conversation_history import ConversationRecord, describe_opinion_change
 from npc import NPC, assign_npc_names
@@ -55,7 +55,10 @@ class Application:
         self.api_key = os.getenv("GEMINI_API_KEY", "").strip()
         self.provider = "gemini"
         self.ollama_model = load_model()
-        self.npc_trait_mode = load_npc_trait_mode()
+        settings = load_settings()
+        self.npc_trait_mode = settings["npc_trait_mode"]
+        self.voice_rewrites = settings["voice_rewrites"]
+        self.dialogue_validation = settings["dialogue_validation"]
         self.session_id = 0
         self.request_npc = None
         self.conversation_requests = {}
@@ -233,7 +236,8 @@ class Application:
 
     def open_settings(self):
         self.screen = "settings"
-        self.settings.open(self.provider, self.api_key, self.ollama_model, self.npc_trait_mode)
+        self.settings.open(self.provider, self.api_key, self.ollama_model, self.npc_trait_mode,
+                           voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation)
 
     def open_stats(self):
         self.game.prompt_input.active = False
@@ -271,6 +275,7 @@ class Application:
         if not self.requests.submit(
             self.session_id, self.provider, self.api_key, message, snapshot,
             request_id=request_id, ollama_model=self.ollama_model,
+            voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation,
         ):
             self.game.set_reply("Could not start the request. Please try again.")
             return
@@ -387,6 +392,7 @@ class Application:
             self.session_id, self.provider, self.api_key,
             f"Write what {conversation.initiator.name} and {conversation.recipient.name} say directly to each other.", snapshot,
             request_id=conversation.id, ollama_model=self.ollama_model,
+            voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation,
         ):
             conversation.fail_dialogue("Could not start dialogue generation.")
             return
@@ -462,7 +468,8 @@ class Application:
                         conversation.fail_dialogue(error, failed_turns=failed_turns)
                     else:
                         try:
-                            conversation.set_response(result, reading=conversation is viewed, rewritten_parts=rewritten)
+                            conversation.set_response(result, reading=conversation is viewed, rewritten_parts=rewritten,
+                                                      dialogue_validation=self.dialogue_validation)
                         except ValueError as exc:
                             conversation.fail_dialogue(str(exc), failed_turns=result.turns)
                 continue

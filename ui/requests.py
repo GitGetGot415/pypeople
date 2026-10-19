@@ -57,8 +57,12 @@ def _request_worker(session_id, request_id, provider, api_key, message, snapshot
         try:
             report("Starting request")
             result = request_response(provider, api_key, message, snapshot, ollama_model=ollama_model, progress=report)
-            rewritten = request_voice_rewrite(provider, api_key, result, snapshot, deadline=deadline,
-                                              ollama_model=ollama_model, progress=report)
+            rewritten = []
+            if snapshot.get("_voice_rewrites", True):
+                rewritten = request_voice_rewrite(provider, api_key, result, snapshot, deadline=deadline,
+                                                  ollama_model=ollama_model, progress=report)
+            else:
+                record_output("stage", "Voice rewrites disabled; using original dialogue.")
             results.put((session_id, request_id, result.model_dump_json(), None, snapshot, [], rewritten))
             stage = "Reply ready"
         except RequestError as exc:
@@ -104,10 +108,14 @@ class RequestManager:
                 worker.finished_at = finished_at
         return tuple(self.workers.values())
 
-    def submit(self, session_id, provider, api_key, message, snapshot, *, request_id=None, ollama_model=DEFAULT_OLLAMA_MODEL):
+    def submit(self, session_id, provider, api_key, message, snapshot, *, request_id=None,
+               ollama_model=DEFAULT_OLLAMA_MODEL, voice_rewrites=True, dialogue_validation=True):
         key = (session_id, request_id)
         if self.busy or key in self.workers:
             return False
+        snapshot = snapshot.copy()
+        snapshot["_voice_rewrites"] = voice_rewrites
+        snapshot["_dialogue_validation"] = dialogue_validation
         participants, topic = _request_description(snapshot)
         occupied = {worker.slot for worker in self.workers.values()}
         slot = next(slot for slot in range(1, self.max_requests + 1) if slot not in occupied)
@@ -174,7 +182,8 @@ class RequestManager:
                     disposition(f"Voice rewrite rejected; using original dialogue: {exc}")
                     rewritten = []
             replies.append((request_id, result, None, [], rewritten))
-            disposition("Validated and returned to the simulation for live-state checks.")
+            disposition("Validated and returned to the simulation for live-state checks." if snapshot.get("_dialogue_validation", True)
+                        else "Base dialogue coherence checks disabled; parsed reply returned for live-state checks.")
         # A result may arrive after draining the queue; poll it next frame
         # before freeing the slot that belongs to that result.
         if self.results.empty():

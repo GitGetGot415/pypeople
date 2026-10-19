@@ -4,8 +4,9 @@ from time import monotonic
 from character_data import DEFAULT_COLORS, FIELDS
 from constants import (ACCENT, FAILED_CONVERSATION_COLOR, FAILED_CONVERSATION_SELECTED_COLOR,
                        GIFT_CONVERSATION_COLOR, GIFT_CONVERSATION_SELECTED_COLOR,
+                       REWRITE_FAILED_CONVERSATION_COLOR, REWRITE_FAILED_CONVERSATION_SELECTED_COLOR,
                        GRASS, INK, MODEL_LOG_REFRESH_SECONDS, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER, SNAKE_NAME)
-from conversation_history import display_parts, rewrite_validation_error, usable_rewrite, uses_original_dialogue
+from conversation_history import display_parts, has_failed_voice_rewrite, usable_rewrite, uses_original_dialogue
 from emotions import portrait_expression
 from social import assertion_text, claim_by_id, fact_by_id, phase_label, selected_beliefs
 
@@ -196,11 +197,6 @@ class StatsScreen:
                 parts = record.dialogue_parts.get(index)
                 if parts:
                     rewritten = record.rewritten_parts.get(index, ())
-                    error = rewrite_validation_error(parts, rewritten, **identity(speaker))
-                    if error:
-                        add(f"{speaker}: voice rewrite failed validation.", app.small_font, FAILED_CONVERSATION_SELECTED_COLOR)
-                        add(error, app.small_font, MUTED)
-                        gap()
                     message(speaker, display_parts([(part["text"], part["emotion"]) for part in parts],
                         rewritten, original=app.original_dialogue, **identity(speaker)),
                         original=uses_original_dialogue(parts, rewritten, original=app.original_dialogue, **identity(speaker)))
@@ -515,6 +511,8 @@ class StatsScreen:
             selected = entry is selected_entry
             if self.tab == "Conversations" and entry.status == "Failed":
                 color = FAILED_CONVERSATION_SELECTED_COLOR if selected else FAILED_CONVERSATION_COLOR
+            elif self.tab == "Conversations" and has_failed_voice_rewrite(entry):
+                color = REWRITE_FAILED_CONVERSATION_SELECTED_COLOR if selected else REWRITE_FAILED_CONVERSATION_COLOR
             elif self.tab == "Conversations" and entry.id in gift_ids and not entry.turns and not entry.failed_turns:
                 color = GIFT_CONVERSATION_SELECTED_COLOR if selected else GIFT_CONVERSATION_COLOR
             else:

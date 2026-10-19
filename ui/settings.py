@@ -3,7 +3,7 @@ import threading
 
 import pygame
 
-from app_settings import save_npc_trait_mode
+from app_settings import save_settings
 from character_data import NPC_TRAIT_MODES
 from ollama_manager import DEFAULT_OLLAMA_MODEL, list_models, save_model
 
@@ -24,15 +24,17 @@ def format_model_size(size):
 
 class SettingsScreen:
     def __init__(self):
-        self.gemini_button = Button((340, 205, 280, 48), "Gemini")
-        self.ollama_button = Button((660, 205, 280, 48), "Ollama")
-        self.previous_model_button = Button((340, 310, 48, 52), "<")
-        self.next_model_button = Button((892, 310, 48, 52), ">")
-        self.refresh_button = Button((750, 400, 190, 32), "Refresh models")
-        self.save_button = Button((500, 525, 280, 54), "Save & Back")
-        self.setup_button = Button((500, 585, 280, 48), "Setup Ollama")
+        self.gemini_button = Button((340, 160, 280, 42), "Gemini")
+        self.ollama_button = Button((660, 160, 280, 42), "Ollama")
+        self.previous_model_button = Button((340, 242, 48, 48), "<")
+        self.next_model_button = Button((892, 242, 48, 48), ">")
+        self.refresh_button = Button((750, 297, 190, 30), "Refresh models")
+        self.save_button = Button((340, 580, 280, 48), "Save & Back")
+        self.setup_button = Button((660, 580, 280, 48), "Setup Ollama")
+        self.voice_rewrite_button = Button((340, 435, 600, 38), "")
+        self.validation_button = Button((340, 503, 600, 38), "")
         self.key_input = TextInput(
-            (340, 310, 600, 52),
+            (340, 242, 600, 48),
             max_length=512,
             secret=True,
             strip_paste=True,
@@ -40,8 +42,10 @@ class SettingsScreen:
         )
         self.provider = "gemini"
         self.npc_trait_mode = "normal"
+        self.voice_rewrites = True
+        self.dialogue_validation = True
         self.trait_mode_buttons = {
-            mode: Button((340 + index * 205, 450, 190, 42), mode.title())
+            mode: Button((340 + index * 205, 365, 190, 38), mode.title())
             for index, mode in enumerate(NPC_TRAIT_MODES)
         }
         self.ollama_model = DEFAULT_OLLAMA_MODEL
@@ -52,10 +56,13 @@ class SettingsScreen:
         self.model_message = ""
         self.error = ""
 
-    def open(self, provider, api_key, ollama_model, npc_trait_mode="normal"):
+    def open(self, provider, api_key, ollama_model, npc_trait_mode="normal", *,
+             voice_rewrites=True, dialogue_validation=True):
         self.provider = provider
         self.ollama_model = ollama_model
         self.npc_trait_mode = npc_trait_mode
+        self.voice_rewrites = voice_rewrites
+        self.dialogue_validation = dialogue_validation
         self.error = ""
         self.update_model_choices()
         self.key_input.set_value(api_key)
@@ -128,6 +135,10 @@ class SettingsScreen:
             self.npc_trait_mode = next(
                 mode for mode, button in self.trait_mode_buttons.items() if button.rect.collidepoint(event.pos)
             )
+        elif self.voice_rewrite_button.clicked(event):
+            self.voice_rewrites = not self.voice_rewrites
+        elif self.validation_button.clicked(event):
+            self.dialogue_validation = not self.dialogue_validation
         elif self.save_button.clicked(event):
             if self.ollama_model != app.ollama_model:
                 try:
@@ -136,12 +147,14 @@ class SettingsScreen:
                     self.error = "Could not save your model choice. Check folder permissions and try again."
                     return
             try:
-                save_npc_trait_mode(self.npc_trait_mode)
+                save_settings(self.npc_trait_mode, self.voice_rewrites, self.dialogue_validation)
             except OSError:
-                self.error = "Could not save your random NPC trait setting. Check folder permissions and try again."
+                self.error = "Could not save your settings. Check folder permissions and try again."
                 return
             app.ollama_model = self.ollama_model
             app.npc_trait_mode = self.npc_trait_mode
+            app.voice_rewrites = self.voice_rewrites
+            app.dialogue_validation = self.dialogue_validation
             app.provider = self.provider
             app.api_key = self.key_input.text.strip()
             self.key_input.set_value(app.api_key)
@@ -152,28 +165,28 @@ class SettingsScreen:
 
     def draw(self, app):
         app.window.fill(GRASS)
-        pygame.draw.rect(app.window, PAPER, (280, 120, 720, 530), border_radius=BORDER_RADIUS)
-        draw_centered_text(app.window, "Settings", app.heading_font, 160)
+        pygame.draw.rect(app.window, PAPER, (280, 95, 720, 575), border_radius=BORDER_RADIUS)
+        draw_centered_text(app.window, "Settings", app.heading_font, 125)
         self.gemini_button.draw(app.window, app.font, enabled=self.provider != "gemini")
         self.ollama_button.draw(app.window, app.font, enabled=self.provider != "ollama")
         if self.provider == "gemini":
-            app.window.blit(app.font.render("Gemini API key", True, INK), (340, 275))
+            app.window.blit(app.font.render("Gemini API key", True, INK), (340, 213))
             self.key_input.draw(app.window, app.font)
-            app.window.blit(app.small_font.render("Stored only for this session.", True, MUTED), (340, 370))
+            app.window.blit(app.small_font.render("Session only. Get a key at aistudio.google.com/apikey", True, MUTED), (340, 301))
         else:
             index = self.models.index(self.ollama_model) + 1
             label = f"Local Ollama model ({index}/{len(self.models)})"
-            app.window.blit(app.font.render(label, True, INK), (340, 275))
+            app.window.blit(app.font.render(label, True, INK), (340, 213))
             self.previous_model_button.draw(app.window, app.font, enabled=len(self.models) > 1)
             self.next_model_button.draw(app.window, app.font, enabled=len(self.models) > 1)
-            draw_wrapped_text(app.window, self.ollama_model, app.font, INK, (404, 310, 472, 44))
+            draw_wrapped_text(app.window, self.ollama_model, app.font, INK, (404, 246, 472, 44))
             size = self.installed_models.get(self.ollama_model)
             if size is None and ":" not in self.ollama_model:
                 size = self.installed_models.get(f"{self.ollama_model}:latest")
             size_label = f"Size on disk: {format_model_size(size)}"
-            app.window.blit(app.small_font.render(size_label, True, MUTED), (404, 365))
+            app.window.blit(app.small_font.render(size_label, True, MUTED), (404, 302))
             self.refresh_button.draw(app.window, app.small_font, enabled=self.model_worker is None)
-        app.window.blit(app.font.render("Random NPC traits", True, INK), (340, 420))
+        app.window.blit(app.font.render("Random NPC traits", True, INK), (340, 336))
         for mode, button in self.trait_mode_buttons.items():
             button.draw(app.window, app.font)
             if mode == self.npc_trait_mode:
@@ -181,12 +194,17 @@ class SettingsScreen:
         explanation = "Typical personalities and speech." if self.npc_trait_mode == "normal" else (
             "Unusually conspicuous personalities and speech." if self.npc_trait_mode == "extreme"
             else "Choose from both typical and conspicuous traits.")
-        app.window.blit(app.small_font.render(explanation, True, MUTED), (340, 497))
+        app.window.blit(app.small_font.render(explanation, True, MUTED), (340, 410))
+        self.voice_rewrite_button.label = "Voice rewrites: " + ("On" if self.voice_rewrites else "Off")
+        self.voice_rewrite_button.draw(app.window, app.font)
+        app.window.blit(app.small_font.render("Add each speaker's style to make dialogue more interesting.", True, MUTED), (340, 480))
+        self.validation_button.label = "Base dialogue validation: " + ("On" if self.dialogue_validation else "Off")
+        self.validation_button.draw(app.window, app.font)
+        app.window.blit(app.small_font.render("Check original dialogue for coherence. Voice rewrites stay as generated.", True, MUTED), (340, 548))
         self.save_button.draw(app.window, app.font)
         if self.provider == "ollama":
             self.setup_button.draw(app.window, app.font)
         if self.provider == "gemini":
-            draw_centered_text(app.window, "Get a key at Google AI Studio: aistudio.google.com/apikey", app.small_font, 598, MUTED)
             hint = self.key_input.error or "Ctrl+V to paste. Escape discards your edits."
         else:
             hint = self.model_message or "Use < and > to choose a model. Escape discards your edits."

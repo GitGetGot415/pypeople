@@ -668,7 +668,7 @@ class Conversation:
     def error(self, message):
         self.record.error = message
 
-    def set_response(self, response, *, reading=False, rewritten_parts=()):
+    def set_response(self, response, *, reading=False, rewritten_parts=(), dialogue_validation=True):
         if not self.accepts_response:
             return
         from llm import validate_dialogue_format, validate_dialogue_speakers, validate_resident_grounding
@@ -677,13 +677,14 @@ class Conversation:
             raise ValueError("The resident roster changed while dialogue was being prepared. Retry this meeting.")
         if any(n.command_revision != self.request_actor_revisions[n.id] for n in (self.initiator, self.recipient)):
             raise ValueError("The participants changed activities before the reply arrived.")
-        validate_live_agreements(self, response)
-        validate_dialogue_format(response.turns)
-        validate_dialogue_speakers(response.turns, {"initiator": self.initiator.name, "recipient": self.recipient.name})
-        validate_resident_grounding(response, {
-            "initiator": self.initiator.snapshot(self.initiator.world.tree),
-            "recipient": self.recipient.snapshot(self.initiator.world.tree),
-            "_information_validation": asdict(self.information_context) if self.information_context else None})
+        validate_live_agreements(self, response, dialogue_validation=dialogue_validation)
+        if dialogue_validation:
+            validate_dialogue_format(response.turns)
+            validate_dialogue_speakers(response.turns, {"initiator": self.initiator.name, "recipient": self.recipient.name})
+            validate_resident_grounding(response, {
+                "initiator": self.initiator.snapshot(self.initiator.world.tree),
+                "recipient": self.recipient.snapshot(self.initiator.world.tree),
+                "_information_validation": asdict(self.information_context) if self.information_context else None})
         self.handoff_thanks = response.handoff_thanks
         self.rewritten_handoff_thanks = list(rewritten_parts[-1]) if rewritten_parts and response.handoff_thanks else []
         record_generated_turns(self, response.turns, rewritten_parts)

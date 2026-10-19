@@ -297,12 +297,12 @@ class SnakeEncounter:
             "_snake_knowledge": [(b.claim_id, b.stance, b.source_id, b.disclosure_id) for b in snake.beliefs]}
         return self.request_context
 
-    def set_response(self, response, *, reading=False, rewritten_parts=()):
+    def set_response(self, response, *, reading=False, rewritten_parts=(), dialogue_validation=True):
         from llm import validate_snake_response
         from social import claim_by_id
         if not self.accepts_response or not self.request_context:
             return
-        validate_snake_response(response, self.request_context)
+        validate_snake_response(response, self.request_context, dialogue_validation=dialogue_validation)
         npc, world = self.recipient, self.world
         if (self.request_context["roster_revision"] != world.roster_revision
                 or self.request_context["resident_revision"] != npc.command_revision):

@@ -1103,17 +1103,22 @@ def validate_snake_decision(result, snapshot):
         raise ValueError("Leave snake_account_id empty for a new bargain; later optional disclosures must concern this visitor and use a permitted known account.")
 
 
-def validate_snake_response(result, snapshot):
+def validate_snake_response(result, snapshot, *, dialogue_validation=None):
+    if dialogue_validation is None:
+        dialogue_validation = snapshot.get("_dialogue_validation", True)
     validate_snake_decision(result, snapshot)
-    validate_dialogue_format(result.turns)
-    validate_dialogue_completion(result.turns)
+    if dialogue_validation:
+        validate_dialogue_format(result.turns)
+        validate_dialogue_completion(result.turns)
     for i, turn in enumerate(result.turns):
         if turn.speaker != ("initiator" if i % 2 == 0 else "recipient"):
             raise ValueError("Alternate snake and resident speech, beginning with the snake.")
-        validate_snake_perspective(turn.text, snake_role="speaker" if turn.speaker == "initiator" else "listener")
-        validate_speech_grounding(turn.text, _snake_turn_snapshot(snapshot, result, result.turns[:i]))
-    validate_dialogue_speakers(result.turns, {
-        "initiator": snapshot["snake"]["name"], "recipient": snapshot["resident"]["npc_name"]})
+        if dialogue_validation:
+            validate_snake_perspective(turn.text, snake_role="speaker" if turn.speaker == "initiator" else "listener")
+            validate_speech_grounding(turn.text, _snake_turn_snapshot(snapshot, result, result.turns[:i]))
+    if dialogue_validation:
+        validate_dialogue_speakers(result.turns, {
+            "initiator": snapshot["snake"]["name"], "recipient": snapshot["resident"]["npc_name"]})
 
 
 def _snake_identity_instruction(snapshot):
@@ -1825,7 +1830,10 @@ def validate_dialogue_completion(turns, *, start_index=0):
 
 def _validate_response(raw, snapshot, model):
     result = model.model_validate_json(raw)
+    check_dialogue = snapshot.get("_dialogue_validation", True)
     if isinstance(result, DialoguePartsResponse):
+        if not check_dialogue:
+            return result
         current = ConversationTurn(speaker=snapshot.get("speaker_role", "initiator"), parts=result.parts)
         validate_dialogue_format([current])
         validate_speech_grounding(current.text, snapshot)
@@ -1850,7 +1858,8 @@ def _validate_response(raw, snapshot, model):
         return result
     if isinstance(result, SnakeResponse):
         validate_snake_response(result, snapshot)
-        validate_dialogue_repetition(result.turns)
+        if check_dialogue:
+            validate_dialogue_repetition(result.turns)
         return result
     if isinstance(result, SnakeDecision):
         validate_snake_decision(result, snapshot)
@@ -1858,9 +1867,10 @@ def _validate_response(raw, snapshot, model):
     if isinstance(result, SnakePlayerResponse):
         if not result.reply.strip():
             raise ValueError("The snake must supply generated speech.")
-        validate_english(result.reply, (SNAKE_NAME,))
-        validate_dialogue_format([ConversationTurn(speaker="initiator", parts=[ConversationPart(text=result.reply)])])
-        validate_snake_perspective(result.reply, snake_role="speaker")
+        if check_dialogue:
+            validate_english(result.reply, (SNAKE_NAME,))
+            validate_dialogue_format([ConversationTurn(speaker="initiator", parts=[ConversationPart(text=result.reply)])])
+            validate_snake_perspective(result.reply, snake_role="speaker")
         return result
     if isinstance(result, PlayerIntent):
         # Observations and questions cannot issue commands, even if the model
@@ -1878,10 +1888,10 @@ def _validate_response(raw, snapshot, model):
             raise ValueError("The action, recipient, item, or quantity differs from the current request.")
         if isinstance(result, ActionResponse) and not result.reply.strip():
             raise ValueError("Empty reply")
-        if isinstance(result, ActionResponse):
+        if isinstance(result, ActionResponse) and check_dialogue:
             validate_english(result.reply, (snapshot.get("npc_name", ""), SNAKE_NAME))
             validate_dialogue_format([ConversationTurn(speaker="initiator", parts=[ConversationPart(text=result.reply)])])
-        if (isinstance(result, ActionResponse) and result.end_conversation
+        if (check_dialogue and isinstance(result, ActionResponse) and result.end_conversation
                 and any(mark in result.reply for mark in ("?", "？", "؟"))):
             raise ValueError(
                 "A closing reply cannot ask a question. For SAY, either use end_conversation false so the player "
@@ -1907,14 +1917,17 @@ def _validate_response(raw, snapshot, model):
         people = [snapshot[role]["npc_name"] for role in ("initiator", "recipient")]
         people.extend(n["npc_name"] for n in snapshot.get("nearby_npcs", []))
         validate_information(result, snapshot.get("_information_validation"), names=(*people, SNAKE_NAME),
-                             participant_names={role: snapshot[role]["npc_name"] for role in ("initiator", "recipient")})
+                             participant_names={role: snapshot[role]["npc_name"] for role in ("initiator", "recipient")},
+                             dialogue_validation=check_dialogue)
         validate_agreements(result.accepted_proposals, snapshot.get("permitted_proposals", []),
                             result.turns, snapshot["initiator"]["npc_id"], snapshot["recipient"]["npc_id"],
                             current_phase=phase_index(snapshot["initiator"].get("day", 1),
-                                                      snapshot["initiator"].get("time_of_day", "day")))
-        validate_dialogue_format(result.turns)
-        validate_dialogue_completion(result.turns)
-        validate_resident_grounding(result, snapshot)
+                                                      snapshot["initiator"].get("time_of_day", "day")),
+                            dialogue_validation=check_dialogue)
+        if check_dialogue:
+            validate_dialogue_format(result.turns)
+            validate_dialogue_completion(result.turns)
+            validate_resident_grounding(result, snapshot)
         history = snapshot.get("shared_history") or {}
         disclosed = {entry.claim_id for entry in result.disclosures}
         facts = [option["assertion"] for option in (snapshot.get("_information_validation") or {}).get("options", [])
@@ -1925,10 +1938,10 @@ def _validate_response(raw, snapshot, model):
             if (result.accepted_proposals or len(result.turns) not in (2, 3) or result.food_outcome != outcome
                     or bool(result.handoff_thanks) != (outcome == "accepted")):
                 raise ValueError("Dialogue must respect the food decision and reserve thanks for a successful handoff.")
-            if len(result.turns) == 3 and (not _has_question(result.turns[-2].text)
+            if check_dialogue and len(result.turns) == 3 and (not _has_question(result.turns[-2].text)
                                           or _has_question(result.turns[-1].text)):
                 raise ValueError("A third food-request turn may only answer a closing question.")
-            if result.handoff_thanks:
+            if check_dialogue and result.handoff_thanks:
                 thanks = ConversationTurn(speaker="initiator", parts=result.handoff_thanks)
                 validate_dialogue_format([thanks])
                 validate_english(thanks.text, people)
@@ -1936,7 +1949,7 @@ def _validate_response(raw, snapshot, model):
                                   snapshot["initiator"]["npc_name"], snapshot["recipient"]["npc_name"])
         elif len(result.turns) < 4 or result.food_outcome or result.handoff_thanks:
             raise ValueError("Chats need at least four turns and cannot include a food outcome or handoff thanks.")
-        if len(result.turns) == 8 and _has_question(result.turns[-1].text):
+        if check_dialogue and len(result.turns) == 8 and _has_question(result.turns[-1].text):
             raise ValueError("At the turn limit, finish with an answer or closing rather than a new question.")
         for entry, partner in (
             (result.initiator_opinion, snapshot["recipient"]),
@@ -1944,8 +1957,9 @@ def _validate_response(raw, snapshot, model):
         ):
             if entry.person.strip().casefold() != partner["npc_name"].casefold():
                 raise ValueError("Conversation opinions must refer to the other participant.")
-        validate_dialogue_speakers(result.turns, {role: snapshot[role]["npc_name"] for role in ("initiator", "recipient")})
-        validate_dialogue_repetition(result.turns, history.get("recent_dialogue", []), factual_context=facts)
+        if check_dialogue:
+            validate_dialogue_speakers(result.turns, {role: snapshot[role]["npc_name"] for role in ("initiator", "recipient")})
+            validate_dialogue_repetition(result.turns, history.get("recent_dialogue", []), factual_context=facts)
     return result
 
 
@@ -2411,6 +2425,7 @@ def _dialogue_repair_snapshot(snapshot, response, index, *, closing=False):
     preceding = [{"name": snapshot[turn.speaker]["npc_name"], "role": turn.speaker, "text": turn.text}
                  for turn in response.turns[:index]]
     state = {"request_kind": "conversation_closing" if closing else "dialogue_repair", "turn_index": index,
+            "_dialogue_validation": snapshot.get("_dialogue_validation", True),
             "day": snapshot["initiator"].get("day"),
             "speaker_role": role,
             "speaker": {"name": speaker["npc_name"], "style": speaker["character"]["speaking_style"],
@@ -2626,6 +2641,7 @@ def _snake_turn_snapshot(snapshot, decision, turns):
         latest = [{**preceding[-1], "text": split_sentences(preceding[-1]["text"])[0]}]
     state = {
         "request_kind": "snake_turn", "turn_index": index, "speaker_role": role,
+        "_dialogue_validation": snapshot.get("_dialogue_validation", True),
         "speaker": speaker, "listener": identities[listener_role],
         "day": resident.get("day", snake["day"]), "time_of_day": snake["phase"],
         "environment": environment, "transaction": transaction, "task": task,
@@ -2798,6 +2814,8 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
 
     def finish_questions(result):
         retain_dialogue(result.turns, snapshot)
+        if not snapshot.get("_dialogue_validation", True):
+            return result
         # Allow one generated answer, without starting another question.
         if not _has_question(result.turns[-1].text):
             return result
