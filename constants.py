@@ -32,7 +32,7 @@ STARTING_FACING = 4  # South, shared by residents and the snake.
 RANDOM_HAIR_STYLES_BY_SEX = {"M": ("one", "four"), "F": ("two", "three")}
 RANDOM_EYE_STYLES_BY_SEX = {"M": ("one",), "F": ("one", "two")}
 RANDOM_SKIN_HUE_RANGE = (0.0, 50.0 / 360.0)  # Red through warm yellow; excludes green, blue and purple.
-RANDOM_SKIN_LIGHTNESS_RANGE = (0.2, 1.0)  # Keep dark eye outlines distinct from random skin.
+RANDOM_SKIN_LIGHTNESS_RANGE = (0.4, 1.0)  # Keep dark eye outlines distinct from random skin.
 
 # Resident movement, needs, and activity timing (seconds).
 MOVEMENT_SPEED = 90.0
