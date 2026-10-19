@@ -43,9 +43,14 @@ def snake_artwork(facing, frame):
 
 
 def _draw_shadow(surface, rect):
-    shadow = pygame.Surface(rect.size, pygame.SRCALPHA)
-    pygame.draw.ellipse(shadow, SHADOW_COLOR, shadow.get_rect())
-    surface.blit(shadow, rect)
+    # A white multiply mask leaves the ground untouched outside the oval.
+    # Leave destination alpha unchanged beneath the tree's transparent pixels,
+    # avoiding a rectangular alpha region around the shadow on macOS.
+    shadow = pygame.Surface(rect.size, depth=32)
+    shadow.fill((255, 255, 255))
+    shade = (255 - SHADOW_COLOR[3],) * 3
+    pygame.draw.ellipse(shadow, shade, shadow.get_rect())
+    surface.blit(shadow, rect, special_flags=pygame.BLEND_RGB_MULT)
 
 
 def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), phase="day", zoom=1.0, viewport=None, snake=None):
