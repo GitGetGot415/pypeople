@@ -7,6 +7,9 @@ import re
 import subprocess
 import shlex
 import shutil
+import signal
+from pathlib import Path
+from time import monotonic, sleep
 
 import httpx
 from constants import MAX_CONFIGURABLE_LLM_REQUESTS
@@ -50,6 +53,164 @@ def set_parallel_limit(limit):
     os.environ["OLLAMA_NUM_PARALLEL"] = value
     return ("Ollama service restarted with the new limit." if system == "Linux" else
             "Limit saved. Quit and reopen Ollama to apply it.")
+
+
+def _stop_process(pid):
+    """Give a known local Ollama process time to shut down cleanly."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = monotonic() + 10
+    while monotonic() < deadline:
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        sleep(0.1)
+    raise ValueError("Ollama did not stop. Close it and try Apply again.")
+
+
+def _restart_mac():
+    listeners = _command(["/usr/sbin/lsof", "-t", "-iTCP:11434", "-sTCP:LISTEN"])
+    # lsof returns a nonzero status when no server is listening.
+    server_pids = set((listeners or "").split())
+    processes = _command(["ps", "-axww", "-o", "pid=,command="])
+    if processes is None:
+        raise ValueError("Cannot inspect the local Ollama process to restart it.")
+    commands = {}
+    for line in processes.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2 and parts[0].isdigit():
+            commands[parts[0]] = parts[1]
+    bundle = None
+    executable = shutil.which("ollama")
+    for pid in server_pids:
+        command = commands.get(pid, "")
+        server = re.match(r"^(.*/ollama)\s+serve(?:\s|$)", command)
+        if server is None:
+            raise ValueError("Port 11434 is not owned by a recognizable Ollama server; it was left running.")
+        executable = server.group(1)
+        app = re.match(r"^(.+/Ollama\.app)/Contents/", command)
+        if app:
+            bundle = app.group(1)
+    if bundle is None and not server_pids:
+        for command in commands.values():
+            app = re.match(r"^(.+/Ollama\.app)/Contents/MacOS/Ollama$", command)
+            if app:
+                bundle = app.group(1)
+                break
+        if bundle is None:
+            for candidate in (Path("/Applications/Ollama.app"), Path.home() / "Applications/Ollama.app"):
+                if candidate.is_dir():
+                    bundle = str(candidate)
+                    break
+    if bundle:
+        for pid, command in commands.items():
+            if command == f"{bundle}/Contents/MacOS/Ollama":
+                _stop_process(int(pid))
+    for pid in server_pids:
+        # Recheck identity in case exiting the desktop app also stopped its server.
+        command = _command(["ps", "-p", pid, "-o", "command="])
+        if command and command == commands[pid]:
+            _stop_process(int(pid))
+    if bundle:
+        if _command(["open", "-a", bundle]) is None:
+            raise ValueError("Could not reopen the Ollama application.")
+    elif executable:
+        subprocess.Popen([executable, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True, env=os.environ.copy())
+    else:
+        raise ValueError("Ollama is not installed or its executable could not be found.")
+
+
+def _restart_windows():
+    # Target the local API listener and its desktop app, rather than every model
+    # process on the machine. Child launches inherit the newly set environment.
+    script = r'''
+$ErrorActionPreference = 'Stop'
+$listeners = @(Get-NetTCPConnection -LocalPort 11434 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)
+$executable = (Get-Command ollama.exe -ErrorAction SilentlyContinue).Source
+foreach ($serverId in $listeners) {
+    $server = Get-CimInstance Win32_Process -Filter "ProcessId = $serverId"
+    if ($server.Name -ne 'ollama.exe' -or $server.CommandLine -notmatch '\bserve\b') { throw 'Unexpected process on the Ollama port.' }
+    $executable = $server.ExecutablePath
+}
+if (-not $executable) { throw 'Ollama executable was not found.' }
+$directory = Split-Path $executable
+Get-CimInstance Win32_Process -Filter "Name = 'ollama app.exe'" | Where-Object {
+    $_.ExecutablePath -and (Split-Path $_.ExecutablePath) -eq $directory
+} | ForEach-Object {
+    Stop-Process -Id $_.ProcessId -ErrorAction Stop
+    Wait-Process -Id $_.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+}
+foreach ($serverId in $listeners) {
+    $server = Get-CimInstance Win32_Process -Filter "ProcessId = $serverId"
+    if ($server -and $server.ExecutablePath -eq $executable) {
+        Stop-Process -Id $serverId -ErrorAction Stop
+        Wait-Process -Id $serverId -Timeout 10 -ErrorAction SilentlyContinue
+    }
+}
+$desktop = Join-Path $directory 'ollama app.exe'
+if (Test-Path $desktop) { Start-Process -FilePath $desktop }
+else { Start-Process -FilePath $executable -ArgumentList 'serve' -WindowStyle Hidden }
+'''
+    result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                            capture_output=True, text=True, timeout=30,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if result.returncode:
+        raise ValueError("Could not restart the local Ollama app. Close it and try Apply again.")
+
+
+def apply_parallel_limit(limit, model, progress=None):
+    """Apply a limit, reload the selected model, and confirm its actual slots."""
+    report = progress or (lambda message: None)
+    report("Saving the launch setting...")
+    set_parallel_limit(limit)
+    report("Restarting Ollama; other local Ollama requests will be interrupted...")
+    try:
+        system = platform.system()
+        if system == "Darwin":
+            _restart_mac()
+        elif system == "Windows":
+            _restart_windows()
+        # The Linux setter already restarts the systemd service.
+        deadline = monotonic() + 20
+        while True:
+            try:
+                response = httpx.get("http://localhost:11434/api/version", timeout=1.0)
+                response.raise_for_status()
+                break
+            except httpx.HTTPError:
+                if monotonic() >= deadline:
+                    raise ValueError("Ollama did not become ready after restarting. Reopen it and try Apply again.")
+                sleep(0.25)
+        report("Loading the selected model with the new limit...")
+        response = httpx.post("http://localhost:11434/api/chat", json={
+            "model": model, "messages": [], "stream": False, "keep_alive": "15m",
+            "options": {"num_ctx": 16384},
+        }, timeout=120.0)
+        response.raise_for_status()
+        try:
+            loaded = response.json()
+        except ValueError as exc:
+            raise ValueError("Ollama returned an invalid model-loading response. Refresh and try Apply again.") from exc
+        if not isinstance(loaded, dict) or loaded.get("error"):
+            raise ValueError("Ollama restarted but could not load the selected model. Try a lower request limit.")
+        report("Checking the loaded model's parallel slots...")
+        status = inspect_parallelism()
+        slots = status.slots.get(model, status.slots.get(f"{model}:latest"))
+        if slots is None:
+            raise ValueError("Ollama restarted, but its loaded slots could not be confirmed. Refresh Ollama to inspect its state.")
+        if slots != limit or status.launch_value != str(limit):
+            raise ValueError(f"Requested {limit} slots, but Ollama loaded {slots}. Try a lower limit or check available memory.")
+        return status
+    except (OSError, subprocess.TimeoutExpired, httpx.HTTPError, KeyError, TypeError) as exc:
+        raise ValueError("Launch setting saved, but Ollama could not restart or reload the model. Try a lower limit and Apply again.") from exc
 
 
 @dataclass

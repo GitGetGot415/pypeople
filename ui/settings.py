@@ -6,7 +6,7 @@ import pygame
 from app_settings import save_settings
 from character_data import NPC_TRAIT_MODES
 from ollama_manager import DEFAULT_OLLAMA_MODEL, list_models, save_model
-from ollama_parallel import inspect_parallelism, set_parallel_limit
+from ollama_parallel import inspect_parallelism, apply_parallel_limit
 
 from .button import Button
 from .text import draw_centered_text, draw_wrapped_text
@@ -62,6 +62,7 @@ class SettingsScreen:
         self.parallel_limit = MAX_LLM_REQUESTS
         self.parallel_worker = None
         self.parallel_results = queue.Queue()
+        self.parallel_progress = queue.Queue()
         self.parallel_message = ""
         self.save_after_apply = False
         self.error = ""
@@ -110,23 +111,32 @@ class SettingsScreen:
         if self.parallel_worker is not None or self.model_worker is not None:
             return
         limit = self.parallel_limit
+        model = self.ollama_model
         self.save_after_apply = save_and_back
         self.error = ""
         self.parallel_message = "Applying the local parallel request limit..."
 
         def apply():
             try:
-                self.parallel_results.put((limit, set_parallel_limit(limit), ""))
+                status = apply_parallel_limit(limit, model, progress=self.parallel_progress.put)
+                self.parallel_results.put((limit, f"Launch limit and loaded model slots both set to {limit}.", "", status))
             except ValueError as exc:
-                self.parallel_results.put((limit, "", str(exc)))
+                self.parallel_results.put((limit, "", str(exc), None))
 
         self.parallel_worker = threading.Thread(target=apply, daemon=True, name="Ollama-parallel-setting")
         self.parallel_worker.start()
 
     def update(self, app=None):
+        while True:
+            try:
+                message = self.parallel_progress.get_nowait()
+                if self.parallel_worker is not None:
+                    self.parallel_message = message
+            except queue.Empty:
+                break
         if app is not None:
             try:
-                limit, message, error = self.parallel_results.get_nowait()
+                limit, message, error, status = self.parallel_results.get_nowait()
             except queue.Empty:
                 pass
             else:
@@ -134,7 +144,9 @@ class SettingsScreen:
                 self.parallel_message = message
                 if error:
                     self.error = error
+                    self.refresh_models()
                 else:
+                    self.parallel_status = status
                     app.requests.max_requests = limit
                     app.game.request_status.set_capacity(limit)
                     try:
@@ -144,7 +156,6 @@ class SettingsScreen:
                         self.error = "Limit applied, but could not save it for the next game launch."
                     if self.save_after_apply and not self.error:
                         self._save(app)
-                    self.refresh_models()
         try:
             models, error, parallel_status = self.model_results.get_nowait()
         except queue.Empty:
@@ -293,7 +304,7 @@ class SettingsScreen:
         if self.provider == "gemini":
             hint = self.key_input.error or "Ctrl+V to paste. Escape discards your edits."
         else:
-            hint = self.parallel_message or self.model_message or "Apply updates both limits. More parallel requests use more memory."
+            hint = self.parallel_message or self.model_message or "Apply restarts Ollama and reloads this model. Active Ollama requests will stop."
             installed = (self.ollama_model in self.installed_models
                          or f"{self.ollama_model}:latest" in self.installed_models)
             if not self.model_message and not self.parallel_message and not installed:
