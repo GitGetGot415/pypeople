@@ -6,7 +6,8 @@ from time import monotonic
 from pydantic import ValidationError
 
 from constants import DIALOGUE_TIMEOUT_SECONDS
-from llm import (MODEL, ConversationTurn, InvalidResponseError, RequestError, VoiceRewriteResponse, request_response,
+from llm import (MODEL, ConversationTurn, InvalidResponseError, RequestError, VoiceRewriteResponse,
+                 VoiceRewriteValidationError, request_response,
                  request_voice_rewrite, validate_response, validate_voice_rewrite, voice_rewrite_snapshot)
 from ollama_manager import DEFAULT_OLLAMA_MODEL
 from model_debug import DebugLogs, RequestLog, capture_output, record_output
@@ -164,8 +165,13 @@ class RequestManager:
             if rewritten:
                 try:
                     state = voice_rewrite_snapshot(result, snapshot)
-                    rewritten = validate_voice_rewrite(VoiceRewriteResponse(turns=rewritten).model_dump_json(), state["turns"]).turns
-                except (ValidationError, ValueError, TypeError, AttributeError):
+                    rewritten = validate_voice_rewrite(VoiceRewriteResponse(turns=rewritten).model_dump_json(),
+                                                       state["turns"], speakers=state["speakers"]).turns
+                except VoiceRewriteValidationError as exc:
+                    disposition(f"Voice rewrite failed validation; retaining generated text: {exc}")
+                    rewritten = exc.response.turns
+                except (ValidationError, ValueError, TypeError, AttributeError) as exc:
+                    disposition(f"Voice rewrite rejected; using original dialogue: {exc}")
                     rewritten = []
             replies.append((request_id, result, None, [], rewritten))
             disposition("Validated and returned to the simulation for live-state checks.")

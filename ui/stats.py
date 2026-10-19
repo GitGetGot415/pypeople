@@ -3,8 +3,9 @@ from time import monotonic
 
 from character_data import DEFAULT_COLORS, FIELDS
 from constants import (ACCENT, FAILED_CONVERSATION_COLOR, FAILED_CONVERSATION_SELECTED_COLOR,
+                       GIFT_CONVERSATION_COLOR, GIFT_CONVERSATION_SELECTED_COLOR,
                        GRASS, INK, MODEL_LOG_REFRESH_SECONDS, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER, SNAKE_NAME)
-from conversation_history import display_parts, usable_rewrite, uses_original_dialogue
+from conversation_history import display_parts, rewrite_validation_error, usable_rewrite, uses_original_dialogue
 from emotions import portrait_expression
 from social import assertion_text, claim_by_id, fact_by_id, phase_label, selected_beliefs
 
@@ -178,11 +179,15 @@ class StatsScreen:
                 gap()
             add("Dialogue", app.heading_font)
             gap()
-            available = [usable_rewrite(record.dialogue_parts.get(index, [text]), record.rewritten_parts.get(index, ()))
+            def identity(speaker):
+                return {"speaker": speaker, "listener": next((name for name in record.participants if name != speaker), "You")}
+
+            available = [usable_rewrite(record.dialogue_parts.get(index, [text]), record.rewritten_parts.get(index, ()),
+                                        **identity(speaker))
                          for index, (speaker, text) in enumerate(record.turns) if speaker != "You"]
             if not app.original_dialogue and available and not all(available):
-                add("No usable voice rewrite was stored; showing original dialogue." if not any(available)
-                    else "Some lines use original dialogue because no usable voice rewrite was stored.",
+                add("No voice rewrite was stored; showing original dialogue." if not any(available)
+                    else "Some lines use original dialogue because no voice rewrite was stored.",
                     app.small_font, MUTED)
                 gap()
             if not record.turns and not record.failed_turns:
@@ -191,9 +196,14 @@ class StatsScreen:
                 parts = record.dialogue_parts.get(index)
                 if parts:
                     rewritten = record.rewritten_parts.get(index, ())
+                    error = rewrite_validation_error(parts, rewritten, **identity(speaker))
+                    if error:
+                        add(f"{speaker}: voice rewrite failed validation.", app.small_font, FAILED_CONVERSATION_SELECTED_COLOR)
+                        add(error, app.small_font, MUTED)
+                        gap()
                     message(speaker, display_parts([(part["text"], part["emotion"]) for part in parts],
-                        rewritten, original=app.original_dialogue),
-                        original=uses_original_dialogue(parts, rewritten, original=app.original_dialogue))
+                        rewritten, original=app.original_dialogue, **identity(speaker)),
+                        original=uses_original_dialogue(parts, rewritten, original=app.original_dialogue, **identity(speaker)))
                 else:
                     message(speaker, [(text, None)])
             if record.failed_turns:
@@ -489,6 +499,9 @@ class StatsScreen:
         previous_clip = surface.get_clip()
         surface.set_clip(self.list_rect.clip(previous_clip))
         rows, _ = self._list_rows(app)
+        gift_ids = set()
+        if self.tab == "Conversations":
+            gift_ids = {fact.conversation_id for fact in app.simulation.facts if fact.kind == "apple_given"}
         if not rows and self.tab == "Conversations":
             surface.blit(app.small_font.render("No conversations yet.", True, MUTED), (self.list_rect.x, self.list_rect.y + 12))
         if not rows and self.tab == "Model logs":
@@ -502,6 +515,8 @@ class StatsScreen:
             selected = entry is selected_entry
             if self.tab == "Conversations" and entry.status == "Failed":
                 color = FAILED_CONVERSATION_SELECTED_COLOR if selected else FAILED_CONVERSATION_COLOR
+            elif self.tab == "Conversations" and entry.id in gift_ids and not entry.turns and not entry.failed_turns:
+                color = GIFT_CONVERSATION_SELECTED_COLOR if selected else GIFT_CONVERSATION_COLOR
             else:
                 color = ACCENT if selected else GRASS
             pygame.draw.rect(surface, color, row)

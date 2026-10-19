@@ -15,11 +15,13 @@ from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_C
                        DIALOGUE_REPAIR_WORD_LIMIT, DIALOGUE_TIMEOUT_SECONDS,
                        EMOTION_THRESHOLD, FURIOUS_THRESHOLD, SNAKE_NAME, SNAKE_TURN_COUNT)
 from dialogue_text import contains_serialized_dialogue, contains_speaker_label, speech_is_complete, split_sentences
-from dialogue_rules import (mentions_account, named_context, named_references, name_pattern, unquoted_speech,
+from dialogue_rules import (mentions_account, mentions_private_recollection, named_context, named_references, name_pattern, unquoted_speech,
                            validate_account_speech, validate_apple_roles, validate_continuity,
-                           validate_claim_source, validate_english, validate_opinion_reason)
+                           validate_claim_source, validate_english, validate_opinion_reason,
+                           validate_speaker_identity)
 from ollama_manager import DEFAULT_OLLAMA_MODEL
 from model_debug import record_output, streaming_output
+from conversation_history import rewrite_validation_error, usable_rewrite
 from social import phase_index, validate_agreements, validate_information
 from purgatory import Attitudes
 
@@ -188,12 +190,24 @@ class VoiceRewriteResponse(StrictResponse):
     turns: list[list[str]]
 
 
+class VoiceRewriteValidationError(ValueError):
+    """An invalid but displayable rewrite, retained alongside its diagnosis."""
+
+    def __init__(self, message, response):
+        super().__init__(message)
+        self.response = response
+
+
 VOICE_REWRITE_INSTRUCTION = """Write direct spoken dialogue, as if the listener can hear the speaker talking.
 Each JSON value is ONLY the words coming out of that speaker's mouth. Start immediately with
 the utterance. No narrator, character actions, stage directions, speaker-name prefixes or
 phrases announcing who speaks. Do not wrap the utterance in quotation marks. The interface
 already identifies the speaker. Address the listener as you; describe yourself as I.
 
+You are rewriting ONE speaker's voice. Every slot belongs to this same speaker.
+Use only the supplied speaking_brief. Original wording supplies meaning, not a voice to imitate:
+remove accents, rhymes, catchphrases and other habits that do not belong to this brief.
+Never adopt the listener's voice, identity, authority or personal history.
 Rewrite each independent speech slot as expressive, engaging character dialogue.
 For each part_N, speaker_name speaks ONLY that slot's original words to listener_name.
 Never copy another slot's speech, swap speakers, or give the listener's answer. I/my belongs
@@ -202,7 +216,8 @@ to this speaker; you/your belongs to this listener.
 Preserve every proper name EXACTLY as written in the original, including abbreviated forms.
 Never rename people or places, replace the listener's name with the speaker's, expand or shorten
 names, or alter names for an accent or stutter. Keep names_to_preserve verbatim in this slot;
-do not introduce any of its names_to_avoid, including the speaker's own name when absent from the original.
+do not introduce any of its names_to_avoid. If the brief explicitly requests third-person
+self-reference, you may use your own name that way, but never address yourself as the listener.
 
 Make a substantial voice rewrite: rebuild sentence structure, rhythm, cadence and word choice.
 Go beyond synonym swaps, word rearrangement and lightly edited copies. Follow THIS slot's
@@ -211,6 +226,8 @@ and explicitly specified mannerisms. Use lively, natural spoken phrasing. Prefer
 over stiff legalistic language unless the brief calls for formality. Warm, clear, concise voices
 should sound approachable. Restrained voices still have individual rhythm. Short natural phrases
 may stay unchanged. Do not force accents, jokes, profanity or a tic into every sentence.
+Match the brief's usual sentence length. Keep terse speakers terse; do not pad their replies
+to make them expressive. Preserve necessary meaning while removing habits that do not belong to this speaker.
 Let the recorded emotion and intensity subtly influence delivery without replacing the speaker's voice.
 
 Preserve events, chronology, factual claims, uncertainty, negation, agreements, quantities and deadlines.
@@ -249,19 +266,44 @@ def voice_rewrite_snapshot(response, snapshot):
         turns = [{"speaker": "speaker", "parts": [{"text": response.reply, "emotion": emotion.model_dump()}]}]
     else:
         return None
+    for role, person in speakers.items():
+        person["listener_name"] = next((other["name"] for key, other in speakers.items() if key != role), "You")
     return {"request_kind": "voice_rewrite", "speakers": speakers, "turns": turns}
 
 
-def validate_voice_rewrite(raw, turns):
-    """Presentation accepts any wording; only its display structure is checked."""
+def voice_rewrite_batches(state):
+    """Each provider call sees one speaker's brief and only that speaker's originals."""
+    for role, person in state["speakers"].items():
+        indices = [index for index, turn in enumerate(state["turns"]) if turn["speaker"] == role]
+        if indices:
+            yield indices, {"request_kind": "voice_rewrite", "speakers": {role: person},
+                            "turns": [state["turns"][index] for index in indices]}
+
+
+def validate_voice_rewrite(raw, turns, *, speakers=None):
+    """Check display association and identity; simulation effects still use originals."""
     result = VoiceRewriteResponse.model_validate_json(raw)
-    if len(result.turns) != len(turns) or any(
-        len(rewritten) != len(original["parts"]) or any(
-            not text.strip() or contains_serialized_dialogue(text) or contains_speaker_label(text) for text in rewritten)
-        for rewritten, original in zip(result.turns, turns)
-    ):
-        raise ValueError("A rewrite needs exactly one nonempty spoken text per original part, without serialized JSON or speaker labels.")
+    if len(result.turns) != len(turns) or any(not usable_rewrite(original["parts"], rewritten)
+                                           for original, rewritten in zip(turns, result.turns)):
+        raise ValueError("A rewrite needs exactly one nonempty text string per original part.")
+    for original, rewritten in zip(turns, result.turns):
+        speaker = speakers[original["speaker"]] if speakers is not None else {}
+        error = rewrite_validation_error(original["parts"], rewritten, speaker=speaker.get("name", ""),
+                                         listener=speaker.get("listener_name", ""))
+        if error:
+            raise VoiceRewriteValidationError(error, result)
     return result
+
+
+def retain_voice_rewrite(raw, turns, *, speakers=None):
+    """Keep a displayable failed rewrite and report the failed validation."""
+    try:
+        return validate_voice_rewrite(raw, turns, speakers=speakers)
+    except VoiceRewriteValidationError as exc:
+        message = f"Voice rewrite failed validation; retaining generated text: {exc}"
+        logger.warning(message)
+        record_output("validation", message)
+        return exc.response
 
 
 def _voice_rewrite_parts(turns):
@@ -272,7 +314,7 @@ def _voice_rewrite_parts(turns):
     return parts
 
 
-def _parse_voice_rewrite(raw, turns):
+def _parse_voice_rewrite(raw, turns, *, speakers=None):
     """The provider fills flat named slots; Python reconstructs turn association."""
     def unique_parts(pairs):
         data = {}
@@ -289,33 +331,39 @@ def _parse_voice_rewrite(raw, turns):
     for turn in turns:
         rewritten.append([data[f"part_{index}"] for index in range(offset, offset + len(turn["parts"]))])
         offset += len(turn["parts"])
-    return validate_voice_rewrite(json.dumps({"turns": rewritten}), turns)
+    return retain_voice_rewrite(json.dumps({"turns": rewritten}), turns, speakers=speakers)
 
 
 def request_voice_rewrite(provider, api_key, response, snapshot, *, deadline,
                           ollama_model=DEFAULT_OLLAMA_MODEL, progress=None):
-    """One optional request, without correction or semantic validation."""
+    """One optional call per speaker, sharing a deadline and never repeating effects."""
     try:
         state = voice_rewrite_snapshot(response, snapshot)
-        remaining = deadline - monotonic()
         if state is None:
             return []
-        if remaining <= 0:
-            logger.warning("Voice rewrite skipped: request deadline expired; using original dialogue.")
-            return []
-        state["_timeout"] = remaining
-        if progress is not None:
-            progress("Rewriting character voices")
-        if provider == "gemini":
-            result = _request_gemini(api_key, "Rewrite the supplied speech.", state)
-        elif provider == "ollama":
-            result = _request_ollama("Rewrite the supplied speech.", state, ollama_model)
-        else:
-            return []
-        if monotonic() > deadline:
-            logger.warning("Voice rewrite arrived after its deadline; using original dialogue.")
-            return []
-        return validate_voice_rewrite(result.model_dump_json(), state["turns"]).turns
+        rewritten = [None] * len(state["turns"])
+        for indices, batch in voice_rewrite_batches(state):
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                logger.warning("Voice rewrite deadline expired; using original dialogue.")
+                return []
+            batch["_timeout"] = remaining
+            name = next(iter(batch["speakers"].values()))["name"]
+            if progress is not None:
+                progress(f"Rewriting {name}'s voice")
+            if provider == "gemini":
+                result = _request_gemini(api_key, "Rewrite the supplied speech.", batch)
+            elif provider == "ollama":
+                result = _request_ollama("Rewrite the supplied speech.", batch, ollama_model)
+            else:
+                return []
+            if monotonic() > deadline:
+                logger.warning("Voice rewrite arrived after its deadline; using original dialogue.")
+                return []
+            checked = retain_voice_rewrite(result.model_dump_json(), batch["turns"], speakers=batch["speakers"])
+            for index, parts in zip(indices, checked.turns):
+                rewritten[index] = parts
+        return rewritten
     except Exception as exc:
         # Presentation failure must never discard an accepted original or its effects.
         logger.warning("Voice rewrite unavailable; using original dialogue: %s", exc)
@@ -1086,30 +1134,7 @@ def _actor_name(actor):
 
 
 def _validate_speaker(text, speaker, listener):
-    """Reject clear self-address and embedded replies from the other participant."""
-    text = unquoted_speech(text)
-    own, other = _actor_name(speaker), _actor_name(listener)
-    aliases = {own.casefold(), own.split()[0].casefold()} if own else set()
-    if own and re.search(name_pattern(own) + r"(?:['’]s\b|\s+(?:heard|said|gave|received|refused|accepted|decided|agreed|was|has|had)\b)", text, re.I):
-        raise ValueError("The speaker narrates their own experience as another person. Use I/my for yourself, preserving who did what.")
-    other_aliases = {other.casefold(), other.split()[0].casefold()} if other else set()
-    for name in sorted(aliases - other_aliases, key=len, reverse=True):
-        name = re.escape(name)
-        pattern = rf"(?:^|[.!?]\s+)\s*{name}\s*[,!?]|(?:,\s*|\b(?:you|yes|no|thanks|hello|hey|listen|of course)\s+){name}(?=\s*[,;:.!?]|\s*$)"
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            prefix = re.split(r"[.!?]", text[:match.start()])[-1]
-            intro = rf"\b(?:i am|i['’]m|my name is|call me|it['’]s me|it is me)(?:\s+{re.escape(own.split()[0])})?\s*$"
-            if re.search(intro, prefix, re.IGNORECASE) or re.fullmatch(r"\s*i\s*", prefix, re.IGNORECASE):
-                continue
-            if re.match(r"\s*,\s*(?:and|or)\b", text[match.end():], re.IGNORECASE):
-                continue
-            raise ValueError(
-                f"This turn belongs only to {own}, speaking to {other}, but it addresses {own} as the listener. "
-                "Keep every part in the current speaker's voice. Do not include the partner's answer in a later part; "
-                "use the actual listener's name when addressing them. Regenerate the speech without swapping roles.")
-    for name in other_aliases - aliases:
-        if re.search(rf"(?:^|[\n.!?])\s*{re.escape(name)}\s*:", text, re.IGNORECASE):
-            raise ValueError(f"A turn by {own} contains a reply labelled as {other}. Generate only {own}'s own words.")
+    validate_speaker_identity(text, _actor_name(speaker), _actor_name(listener))
 
 
 def validate_dialogue_speakers(turns, names, *, start_index=0):
@@ -1591,7 +1616,7 @@ def validate_dialogue_repetition(turns, recent_dialogue=(), *, factual_context=(
 
 def validate_response(raw, snapshot):
     if snapshot.get("request_kind") == "voice_rewrite":
-        return _parse_voice_rewrite(raw, snapshot["turns"])
+        return _parse_voice_rewrite(raw, snapshot["turns"], speakers=snapshot["speakers"])
     model = response_contract(snapshot)[2]
     try:
         return _validate_response(raw, snapshot, model)
@@ -1769,7 +1794,7 @@ def validate_resident_grounding(result, snapshot):
         private_accounts = [{**a, "assertion": sentence} for a in options.values() if a["kind"] == "former_life"
                             for sentence in split_sentences(a["assertion"])
                             if not re.search(r"\b(?:believe[sd]?|beliefs|like[sd]? to think)\b", sentence, re.I)
-                            and mentions_account(turn.text, sentence, names)]
+                            and mentions_private_recollection(turn.text, sentence, names)]
         own_memories = [a for a in private_accounts if a["subject_id"] == speaker["npc_id"]]
         disclosed = {options[d.claim_id]["fact_id"] for d in result.disclosures if d.turn == index and d.claim_id in options}
         for account in private_accounts:
@@ -2002,15 +2027,15 @@ def _request_payload(message, snapshot, correction):
         speakers = snapshot["speakers"]
         parts = {key: {
             "speaker_name": speakers[part["speaker"]]["name"],
-            "listener_name": next((person["name"] for role, person in speakers.items()
-                                   if role != part["speaker"]), "You"),
+            "listener_name": speakers[part["speaker"]]["listener_name"],
             "speaking_brief": speakers[part["speaker"]]["speaking_brief"],
             "emotion": part["emotion"], "original": part["original"],
         } for key, part in _voice_rewrite_parts(snapshot["turns"]).items()}
         # Repeat the exact references locally so small models need not resolve
         # names across other speakers' very similar lines.
         names = sorted({form for person in speakers.values()
-                        for form in (person["name"], person["name"].split()[0])}, key=lambda name: (-len(name), name))
+                        for name in (person["name"], person["listener_name"]) if name != "You"
+                        for form in (name, name.split()[0])}, key=lambda name: (-len(name), name))
         for part in parts.values():
             part["names_to_preserve"] = list(dict.fromkeys(re.findall(
                 "|".join(name_pattern(name) for name in names), part["original"])))

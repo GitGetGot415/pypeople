@@ -32,6 +32,47 @@ def name_pattern(name):
     return rf"\b{re.escape(name)}\b"
 
 
+def validate_speaker_identity(text, speaker, listener, *, allow_third_person=False):
+    """Reject clear self-address and embedded replies from the other participant."""
+    text = unquoted_speech(text)
+    own, other = speaker, listener
+    aliases = {own.casefold(), own.split()[0].casefold()} if own else set()
+    if own and not allow_third_person and re.search(name_pattern(own) + r"(?:['’]s\b|\s+(?:heard|said|gave|received|refused|accepted|decided|agreed|was|has|had)\b)", text, re.I):
+        raise ValueError("The speaker narrates their own experience as another person. Use I/my for yourself, preserving who did what.")
+    other_aliases = {other.casefold(), other.split()[0].casefold()} if other else set()
+    for name in sorted(aliases - other_aliases, key=len, reverse=True):
+        name = re.escape(name)
+        pattern = rf"(?:^|[.!?]\s+)\s*{name}\s*[,!?]|(?:,\s*|\b(?:you|yes|no|thanks|hello|hey|listen|of course)\s+){name}(?=\s*[,;:.!?]|\s*$)"
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            prefix = re.split(r"[.!?]", text[:match.start()])[-1]
+            intro = rf"\b(?:i am|i['’]m|my name is|call me|it['’]s me|it is me)(?:\s+{re.escape(own.split()[0])})?\s*$"
+            if re.search(intro, prefix, re.IGNORECASE) or re.fullmatch(r"\s*i\s*", prefix, re.IGNORECASE):
+                continue
+            if re.match(r"\s*,\s*(?:and|or)\b", text[match.end():], re.IGNORECASE):
+                continue
+            raise ValueError(
+                f"This turn belongs only to {own}, speaking to {other}, but it addresses {own} as the listener. "
+                "Keep every part in the current speaker's voice. Do not include the partner's answer in a later part; "
+                "use the actual listener's name when addressing them. Regenerate the speech without swapping roles.")
+    for name in other_aliases - aliases:
+        if re.search(rf"(?:^|[\n.!?])\s*{re.escape(name)}\s*:", text, re.IGNORECASE):
+            raise ValueError(f"A turn by {own} contains a reply labelled as {other}. Generate only {own}'s own words.")
+
+
+def validate_rewrite_identity(original, rewritten, *, speaker, listener):
+    """A display voice may use third person, but cannot address itself as its partner."""
+    validate_speaker_identity(rewritten, speaker, listener, allow_third_person=True)
+    names = sorted({name for actor in (speaker, listener) if actor and actor != "You"
+                    for name in (actor, actor.split()[0])}, key=lambda name: (-len(name), name))
+    if not names:
+        return
+    pattern = "|".join(name_pattern(name) for name in names)
+    before = set(re.findall(pattern, original))
+    after = set(re.findall(pattern, rewritten))
+    if not before.issubset(after):
+        raise ValueError("The voice rewrite changed or removed a participant's name. Keep each original name and its exact form.")
+
+
 def validate_english(text, names=()):
     text = unquoted_speech(text)
     for name in names:
@@ -89,6 +130,14 @@ def _content_words(text, names):
 def mentions_account(text, assertion, names):
     expected = _content_words(assertion, names)
     return bool(expected) and len(expected & _content_words(text, names)) >= min(2, len(expected))
+
+
+def mentions_private_recollection(text, assertion, names):
+    # Generic thought/reaction words cannot establish that private biography was spoken.
+    general = {"description", "think", "thought", "mean", "feel", "felt", "wonder", "hope", "believe"}
+    expected = _content_words(assertion, names) - general
+    actual = _content_words(text, names) - general
+    return bool(expected) and len(expected & actual) >= min(2, len(expected))
 
 
 def _account_words(text, names, kind):

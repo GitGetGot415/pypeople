@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from uuid import uuid4
 from dialogue_text import contains_serialized_dialogue, contains_speaker_label
+from dialogue_rules import validate_rewrite_identity
 
 
 @dataclass
@@ -27,24 +28,47 @@ class ConversationRecord:
         self.turns.append((speaker, text))
 
 
-def usable_rewrite(parts, rewritten):
-    """Old or malformed presentation data falls back without editing saved words."""
+def usable_rewrite(parts, rewritten, *, speaker="", listener=""):
+    """Whether generated strings can be associated with the original display parts."""
     return bool(rewritten) and len(rewritten) == len(parts) and all(
-        isinstance(text, str) and text.strip()
-        and not contains_serialized_dialogue(text) and not contains_speaker_label(text)
-        for text in rewritten)
+        isinstance(text, str) and text.strip() for text in rewritten)
 
 
-def display_parts(parts, rewritten=(), *, original=False):
+def rewrite_validation_error(parts, rewritten, *, speaker="", listener=""):
+    """Report a failed rewrite check without replacing any generated words."""
+    if not rewritten:
+        return ""
+    if not usable_rewrite(parts, rewritten):
+        return "A rewrite needs one nonempty text string per original part."
+    if any(contains_serialized_dialogue(text) for text in rewritten):
+        return "The voice rewrite contains serialized JSON or response wrappers instead of spoken words."
+    if any(contains_speaker_label(text) for text in rewritten):
+        return "The voice rewrite contains narrator or speaker labels."
+    if speaker:
+        def text(part):
+            if isinstance(part, str):
+                return part
+            if isinstance(part, dict):
+                return part["text"]
+            return part[0] if isinstance(part, tuple) else part.text
+        try:
+            validate_rewrite_identity(" ".join(text(part) for part in parts), " ".join(rewritten),
+                                      speaker=speaker, listener=listener)
+        except ValueError as exc:
+            return str(exc)
+    return ""
+
+
+def display_parts(parts, rewritten=(), *, original=False, speaker="", listener=""):
     """Select presentation text while keeping the original part's metadata."""
-    use_original = uses_original_dialogue(parts, rewritten, original=original)
+    use_original = uses_original_dialogue(parts, rewritten, original=original, speaker=speaker, listener=listener)
     return [(part[0] if use_original else rewritten[index], part[1])
             for index, part in enumerate(parts)]
 
 
-def uses_original_dialogue(parts, rewritten=(), *, original=False):
+def uses_original_dialogue(parts, rewritten=(), *, original=False, speaker="", listener=""):
     """Rendering and text selection agree when a missing rewrite falls back."""
-    return original or not usable_rewrite(parts, rewritten)
+    return original or not usable_rewrite(parts, rewritten, speaker=speaker, listener=listener)
 
 
 @dataclass
