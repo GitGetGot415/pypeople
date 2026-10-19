@@ -161,6 +161,13 @@ class RequestManager:
         worker.log.record("disposition", "Cancelled by player; discard this request and its effects.")
         return True
 
+    def cancel_all(self):
+        """Disconnect outstanding requests and detach their old session queues."""
+        for session_id, request_id in tuple(self.workers):
+            self.cancel(session_id, request_id)
+        self.results = queue.Queue()
+        self.progress = queue.Queue()
+
     def poll(self, active_session):
         """Match replies to their session and request; discard old sessions."""
         self.statuses()

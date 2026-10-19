@@ -113,6 +113,7 @@ class Application:
 
     def _activate_simulation(self, simulation, *, save_id=None, save_identity=None):
         """Switch sessions only after the new world is fully prepared."""
+        self.requests.cancel_all()
         self.session_id += 1
         self.game.reset()
         self.stats.open()
@@ -220,6 +221,7 @@ class Application:
         return True
 
     def leave_game(self):
+        self.requests.cancel_all()
         for npc in self.npcs:
             npc.request_pending = any(action.npc_id == npc.id for action in self.simulation.pending_actions)
         if self.request_history is not None:
@@ -643,15 +645,18 @@ class Application:
         pygame.display.flip()
 
     def run(self):
-        while self.running:
-            dt = self.clock.tick(FPS) / 1000.0
-            for event in pygame.event.get():
-                self.handle_event(event)
-                if not self.running:
-                    break
-            if self.running:
-                self.update(dt)
-                self.draw()
+        try:
+            while self.running:
+                dt = self.clock.tick(FPS) / 1000.0
+                for event in pygame.event.get():
+                    self.handle_event(event)
+                    if not self.running:
+                        break
+                if self.running:
+                    self.update(dt)
+                    self.draw()
+        finally:
+            self.requests.cancel_all()
 
 
 def run():
