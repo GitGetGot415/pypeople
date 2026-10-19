@@ -140,7 +140,7 @@ class Simulation:
                 and npc.behavior in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY))
 
     def step(self, dt, *, viewed_conversation=None):
-        from autonomy import reconsider, social_pair
+        from autonomy import reconsider, seek_orientation, social_pair
         from npc import Behavior
 
         self.tree.update(dt)
@@ -163,6 +163,11 @@ class Simulation:
                 interaction.update(dt, reading=True)
             else:
                 interaction.update(dt)
+        # Every newcomer seeks orientation, even after an event's pairing was used.
+        for npc in self.npcs:
+            if npc.resume_pending and npc.interaction is None:
+                npc.resume_activity(self)
+            seek_orientation(npc, self)
         if self.social_opportunity:
             choice = social_pair(self)
             if choice is not None:
@@ -174,8 +179,6 @@ class Simulation:
                 self.social_opportunity = False
                 self.social_rotation = (self.npcs.index(initiator) + 1) % len(self.npcs)
         for npc in self.npcs:
-            if npc.resume_pending and npc.conversation is None and npc.gift is None:
-                npc.resume_activity(self)
             reconsider(npc, self)
             npc.update(dt, self.tree)
         # Each person benefits once, regardless of how many neighbors are present.

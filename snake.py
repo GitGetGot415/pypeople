@@ -216,7 +216,8 @@ class SnakeEncounter:
         resident.snake_encounter = self
         world.snake.encounter = self
         world.snake.target_id = resident.id
-        world.snake.activity = "judging" if purpose == "judgment" else "bargaining"
+        world.snake.activity = ("judging" if purpose == "judgment" else
+                                "introducing" if purpose == "introduction" else "bargaining")
         self.reserved = (purpose == "bargain" and resident.id not in world.snake.advances
                          and world.tree.fruit > 0 and resident.inventory_space > 0)
         self.active = True

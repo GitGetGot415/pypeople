@@ -2927,6 +2927,11 @@ def _snake_turn_snapshot(snapshot, decision, turns):
         if decision.snake_account_id and role == "recipient":
             speaker["stance_on_disclosed_account"] = decision.account_stance
 
+    if snapshot["purpose"] == "introduction":
+        task += (" Help the resident find their bearings before routine activities. Address the unfamiliar "
+                 "surroundings, missing arrival memory, or where to find help and safety, responding to "
+                 "the preceding speaker. The python's explanation is its own claim, not established truth. "
+                 "Do not initiate an apple bargain or ask for payment or private information.")
     if snapshot["purpose"] == "judgment" and role == "recipient":
         task += (" You are the resident being judged for your own conduct; the listener is the python "
                  "judging you. Keep your actions distinct from the listener's actions.")

@@ -12,6 +12,11 @@ from social import (claim_by_id, fact_by_id, goal_attempt_cooling_down, pair_obj
                     pending_promises, selected_beliefs)
 
 
+ORIENTATION_TOPIC = (
+    "Find my bearings: understand these surroundings, the missing transition, or where to find help and safety"
+)
+
+
 def target_valid(npc, world):
     if npc.behavior == Behavior.EAT:
         return npc.inventory.get("fruit", 0) > 0
@@ -28,6 +33,36 @@ def target_valid(npc, world):
     return True
 
 
+def seek_orientation(npc, world):
+    """Find a first conversation without spending a world-event opportunity."""
+    if (not orientation_context(npc)["needs_orientation"] or npc.departure is not None or npc.interaction is not None
+            or npc.resume_pending or npc.owner != "autonomous" or npc.selected or npc.request_pending
+            or any(npc.id in (action.npc_id, action.target_id) for action in world.pending_actions)):
+        return
+    partners = [other for other in world.npcs if other is not npc and world.company_available(other)
+                and other.id not in npc.cooldowns and npc.id not in other.cooldowns
+                and company_point(npc, other, allow_vertical=True) is not None]
+    # Keep wandering while waiting, without resetting the route each tick.
+    reason = (f"Waiting to find my bearings with {SNAKE_NAME}" if len(world.npcs) == 1 else
+              "Waiting to find my bearings with another resident")
+    if npc.behavior != Behavior.WANDER:
+        npc.begin_activity(Behavior.WANDER, world, reason=reason)
+    else:
+        npc.reason = reason
+    if partners:
+        partner = min(partners, key=lambda other: math.dist((npc.x, npc.y), (other.x, other.y)))
+        world.start_conversation(npc, partner, ORIENTATION_TOPIC, origin="autonomous", purpose="orientation")
+        npc.reason = f"Finding my bearings with {partner.name}"
+        partner.reason = f"Helping {npc.name} find their bearings"
+    elif len(world.npcs) == 1:
+        snake = world.snake
+        if (snake.encounter or snake.selected or snake.request_pending or snake.recovery_remaining
+                or snake.id in npc.cooldowns or not npc.can_reach(world.tree.interaction_point)):
+            return
+        from snake import SnakeEncounter
+        SnakeEncounter(world, npc, "introduction", ORIENTATION_TOPIC)
+
+
 def reconsider(npc, world):
     if npc.interaction is not None or npc.resume_pending:
         return
@@ -36,6 +71,8 @@ def reconsider(npc, world):
     if npc.owner != "autonomous" or npc.selected or npc.request_pending:
         return
     if any(npc.id in (action.npc_id, action.target_id) for action in world.pending_actions):
+        return
+    if orientation_context(npc)["needs_orientation"]:
         return
     if npc.decision_remaining > 0:
         return
@@ -142,7 +179,7 @@ def social_pair(world):
             priority, objective = pair_objective(world, npc, other)
             if orientation_context(npc)["needs_orientation"] and priority < ORIENTATION_PRIORITY:
                 priority = ORIENTATION_PRIORITY
-                objective = "Find my bearings: understand these surroundings, the missing transition, or where to find help and safety"
+                objective = ORIENTATION_TOPIC
             # A known immediate danger keeps its place above routine orientation.
             if priority < 2 and any(b.stance != "disbelieved" and
                     fact_by_id(world, claim_by_id(world, b.claim_id).fact_id).kind in ("eating", "judgment", "defiance")
