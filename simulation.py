@@ -49,7 +49,6 @@ class Simulation:
         self.facts = []
         self.claims = []
         self.disclosures = []
-        self.social_opportunity = assign_goals
         self.social_rotation = 0
         for npc in self.npcs:
             npc.world = self
@@ -60,6 +59,11 @@ class Simulation:
                 remember_description(npc)
             for npc in self.npcs:
                 assign_goal(npc, self)
+        from social import refresh_concern
+        for npc in self.npcs:
+            if npc.current_concern is None:
+                refresh_concern(npc)
+                npc.decision_remaining = 0.0
 
     @property
     def phase_index(self):
@@ -89,7 +93,6 @@ class Simulation:
             npc.social = max(0.0, npc.social - SATISFACTION_PHASE_LOSS)
         self.tree.fruit = len(self.npcs)
         advance_social_phase(self)
-        self.social_opportunity = True
         self.publish("phase", [], f"Time changed to {self.phase}.")
 
     def publish(self, kind, participants, text, record=None):
@@ -103,12 +106,14 @@ class Simulation:
         del self.events[:-200]
         return event
 
-    def start_conversation(self, initiator, recipient, topic, *, origin="player", purpose="chat", spacing=0):
+    def start_conversation(self, initiator, recipient, topic, *, origin="player", purpose="chat", spacing=0,
+                           opening_kind=None, focus_claim_id=None, goal_id=None):
         from npc import Conversation
 
         if any(self.npc_by_id(p.id) is not p for p in (initiator, recipient)):
             raise ValueError("Only living residents can begin this conversation.")
-        interaction = Conversation(initiator, recipient, topic, self.tree, spacing, origin=origin, purpose=purpose)
+        interaction = Conversation(initiator, recipient, topic, self.tree, spacing, origin=origin, purpose=purpose,
+                                   opening_kind=opening_kind, focus_claim_id=focus_claim_id, goal_id=goal_id)
         self.history.append(interaction.record)
         return interaction
 
@@ -140,7 +145,8 @@ class Simulation:
                 and npc.behavior in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY))
 
     def step(self, dt, *, viewed_conversation=None):
-        from autonomy import reconsider, seek_orientation, social_pair
+        from autonomy import lone_introduction, reconsider, social_pair
+        from social import refresh_concern
         from npc import Behavior
 
         self.tree.update(dt)
@@ -163,22 +169,30 @@ class Simulation:
                 interaction.update(dt, reading=True)
             else:
                 interaction.update(dt)
-        # Every newcomer seeks orientation, even after an event's pairing was used.
+        # Check necessary work for every actor before an idle initiator can reserve them.
         for npc in self.npcs:
             if npc.resume_pending and npc.interaction is None:
                 npc.resume_activity(self)
-            seek_orientation(npc, self)
-        if self.social_opportunity:
-            choice = social_pair(self)
-            if choice is not None:
-                initiator, recipient, purpose, topic, reason = choice
-                self.start_conversation(initiator, recipient, topic, origin="autonomous", purpose=purpose)
-                initiator.reason = reason
-                recipient.reason = (f"Answering {initiator.name}'s request for an apple" if purpose == "food_request"
-                                    else f"Chatting with {initiator.name}")
-                self.social_opportunity = False
-                self.social_rotation = (self.npcs.index(initiator) + 1) % len(self.npcs)
+            reconsider(npc, self, pressing_only=True)
+        due = {npc.id for npc in self.npcs if npc.decision_remaining == 0 and self.company_available(npc)}
         for npc in self.npcs:
+            if npc.id in due:
+                refresh_concern(npc)
+        while due:
+            choice = social_pair(self, due=due)
+            if choice is None:
+                break
+            initiator, recipient, purpose, topic, reason, opening, focus, goal_id = choice
+            self.start_conversation(initiator, recipient, topic, origin="autonomous", purpose=purpose,
+                                    opening_kind=opening, focus_claim_id=focus, goal_id=goal_id)
+            initiator.reason = reason
+            recipient.reason = (f"Answering {initiator.name}'s request for an apple" if purpose == "food_request"
+                                else f"Chatting with {initiator.name}")
+            due.difference_update((initiator.id, recipient.id))
+            self.social_rotation = (self.npcs.index(initiator) + 1) % len(self.npcs)
+        for npc in self.npcs:
+            if npc.id in due:
+                lone_introduction(npc, self)
             reconsider(npc, self)
             npc.update(dt, self.tree)
         # Each person benefits once, regardless of how many neighbors are present.
@@ -229,7 +243,6 @@ class Simulation:
                 continue
             partner = target if actor is subject else subject
             remember(actor, partner, event, kind, text, -4 if kind == "eating" else 0)
-        self.social_opportunity = True
         return event, fact
 
     def seek_bargain(self, npc):
@@ -418,8 +431,11 @@ class Simulation:
                 interaction.pending_opinions.clear()
             for person, saved in zip((interaction.initiator, interaction.recipient), interaction.saved_states):
                 person.conversation = person.gift = None
-                person.restore_activity(saved)
-                person.resume_pending = True
+                other = interaction.recipient if person is interaction.initiator else interaction.initiator
+                person.restore_after_interaction(saved, other.id)
+                person.pause_after_conversation(bool(interaction.record.turns))
+                if not interaction.record.turns:
+                    person.cooldowns[other.id] = FAILURE_COOLDOWN
                 person.command_revision += 1
         encounter = target.snake_encounter
         if encounter:
@@ -518,7 +534,6 @@ class Simulation:
         encounter.finish()
         encounter.record.status = "Eaten; resident archived"
         encounter.record.outcomes.append(f"{target.name} departed on day {self.day}. Their destination is unverified.")
-        self.social_opportunity = True
         return True
 
     def deliver_arrivals(self):
@@ -552,9 +567,11 @@ class Simulation:
         self.pending_arrival_days.pop(0)
         self.roster_revision += 1
         assign_goal(npc, self)
+        from social import refresh_concern
+        refresh_concern(npc)
+        npc.decision_remaining = 0.0
         observers = [npc, *self.listeners(npc, 220)]
         if math.dist((npc.x, npc.y), (self.snake.x, self.snake.y)) <= 220:
             observers.append(self.snake)
         self.observed_event("arrival", npc, self.snake, f"{npc.name} arrived for dawn on day {day}, remembering a former life.", witnesses=observers)
-        self.social_opportunity = True
         return npc

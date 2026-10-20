@@ -428,7 +428,8 @@ class Application:
         try:
             replacement = self.simulation.start_conversation(
                 conversation.initiator, conversation.recipient, conversation.topic,
-                origin=conversation.origin, purpose=conversation.purpose)
+                origin=conversation.origin, purpose=conversation.purpose, opening_kind=conversation.opening_kind,
+                focus_claim_id=conversation.focus_claim_id, goal_id=conversation.goal_id)
         except ValueError as exc:
             conversation.error = str(exc)
             return

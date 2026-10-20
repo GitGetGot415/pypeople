@@ -11,12 +11,12 @@ from emotions import portrait_expression
 from purgatory import initial_attitudes
 from conversation_history import (ConversationRecord, describe_opinion_change, relevant_memories, remember,
                                   shared_conversation_history)
-from social import (Goal, check_relationship_goals, commit_agreements, commit_information, conversation_references, gossip_claim,
+from social import (ConversationConcern, Goal, check_relationship_goals, commit_agreements, commit_concern_use, commit_information, concern_topic, conversation_references,
                     information_views, on_transfer, permitted_proposals, phase_label, prepare_information,
                     private_context, validate_live_agreements)
 from constants import (
     APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DEFAULT_CHARACTER_NAME, DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS,
-    FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, GIFT_SECONDS, INVENTORY_CAPACITY,
+    CONVERSATION_PAUSE_RANGE, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, GIFT_SECONDS, INVENTORY_CAPACITY,
     MOVEMENT_SPEED, NPC_RADIUS, PARTNER_COOLDOWN,
     POST_DIALOGUE_SECONDS, SHAKE_SECONDS, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED, WANDER_PAUSE, WORLD_HEIGHT, WORLD_WIDTH,
     STARTING_DAY, STARTING_FACING, STARTING_NPC_FRUIT, STARTING_NPC_GENEROSITY_RANGE,
@@ -131,6 +131,8 @@ class NPC:
     goal: Goal | None = None
     pending_social_opinions: list = field(default_factory=list)
     beliefs: list = field(default_factory=list)
+    current_concern: ConversationConcern | None = None
+    conversation_pause_remaining: float = 0.0
     known_names: dict = field(default_factory=dict)
     owner: str = "autonomous"
     target_id: str | None = None
@@ -193,6 +195,10 @@ class NPC:
         # Reacquire physical claims on the next simulation tick.
         self.resume_pending = True
 
+    def pause_after_conversation(self, completed):
+        self.conversation_pause_remaining = (self.rng.uniform(*CONVERSATION_PAUSE_RANGE)
+                                             if completed else FAILURE_COOLDOWN)
+
     def release_claims(self, world):
         world.tree.release(self)
 
@@ -254,6 +260,10 @@ class NPC:
 
     def update_cooldowns(self, dt):
         self.decision_remaining = max(0.0, self.decision_remaining - dt)
+        if self.interaction is None and not self.request_pending and not self.end_conversation:
+            self.conversation_pause_remaining = max(0.0, self.conversation_pause_remaining - dt)
+            if self.current_concern:
+                self.current_concern.remaining = max(0.0, self.current_concern.remaining - dt)
         self.cooldowns = {key: value - dt for key, value in self.cooldowns.items() if value > dt}
         interaction = self.conversation or self.gift
         if interaction is not None:
@@ -614,17 +624,24 @@ def assign_npc_names(npcs, *, used_names=()):
 class Conversation:
     """Temporarily reserve two NPCs, then restore their interrupted activities."""
 
-    def __init__(self, initiator, recipient, topic, tree, spacing=0, *, origin="player", purpose="chat"):
+    def __init__(self, initiator, recipient, topic, tree, spacing=0, *, origin="player", purpose="chat",
+                 opening_kind=None, focus_claim_id=None, goal_id=None):
         if initiator is recipient or initiator.busy or recipient.busy:
             raise ValueError("Choose another NPC who is free to talk.")
+        if purpose not in ("chat", "food_request"):
+            raise ValueError("Resident meetings use chat or food_request.")
+        if focus_claim_id and not any(b.claim_id == focus_claim_id for b in initiator.beliefs):
+            raise ValueError("The initiator does not know the required account.")
         self.initiator = initiator
         self.recipient = recipient
         self.topic = topic
         self.id = uuid4().hex
         self.origin, self.purpose = origin, purpose
-        self.focus_claim_id = gossip_claim(initiator, recipient) if purpose == "gossip" else None
-        if purpose == "gossip" and self.focus_claim_id is None:
-            raise ValueError("There is no permitted account to discuss with this person.")
+        self.concerns = {role: ConversationConcern(**asdict(npc.current_concern)) if npc.current_concern else None
+                         for role, npc in (("initiator", initiator), ("recipient", recipient))}
+        self.opening_kind = opening_kind
+        self.focus_claim_id = focus_claim_id  # Required task account; an ordinary concern is optional.
+        self.goal_id = goal_id
         self.dialogue_state = "waiting"
         self.wait_elapsed = 0.0
         self.talking_remaining = POST_DIALOGUE_SECONDS
@@ -695,7 +712,7 @@ class Conversation:
                 "recipient": self.recipient.snapshot(self.initiator.world.tree),
                 "_information_validation": asdict(self.information_context) if self.information_context else None})
         name_snapshot = {"request_kind": "conversation", "interaction_id": self.id,
-                         "purpose": self.purpose, "_dialogue_validation": dialogue_validation,
+                         "purpose": self.purpose, "arrival_focus": self.opening_kind == "orientation", "_dialogue_validation": dialogue_validation,
                          "initiator": self.initiator.snapshot(self.initiator.world.tree),
                          "recipient": self.recipient.snapshot(self.initiator.world.tree),
                          "_name_actors": actor_catalog(self.initiator.world)}
@@ -736,9 +753,10 @@ class Conversation:
             commit_agreements(self)
             commit_information(self)
             commit_names(self, name_changes)
-            for npc, partner in ((self.initiator, self.recipient), (self.recipient, self.initiator)):
-                if self.purpose != "orientation" and npc.goal and npc.goal.status == "active" and npc.goal.target_id == partner.id:
-                    npc.goal.last_attempt_phase = npc.world.phase_index
+            goal = self.initiator.goal
+            if goal and goal.id == self.goal_id and goal.status == "active":
+                goal.last_attempt_phase = self.initiator.world.phase_index
+            commit_concern_use(self)
             self.social_effects_applied = True
         self.remember_opinions()
         self.reactions = [
@@ -849,6 +867,10 @@ class Conversation:
         for role, state in (("initiator", initiator), ("recipient", recipient)):
             state["private_context"].pop("known_accounts", None)
             state["private_context"]["permitted_accounts"] = views.get(role, [])
+            concern = self.concerns[role]
+            state["private_context"]["concern"] = ({"kind": concern.kind, "claim_id": concern.claim_id,
+                "guidance": concern_topic(self.initiator if role == "initiator" else self.recipient, concern)}
+                if concern else None)
         initiator["private_context"]["discussion_focus_claim_id"] = self.focus_claim_id
         initiator["private_context"]["immediate_objective"] = self.topic
         recipient["private_context"]["immediate_objective"] = "Respond to what is actually said using only my own knowledge."
@@ -858,6 +880,8 @@ class Conversation:
             "interaction_id": self.id,
             "origin": self.origin,
             "purpose": self.purpose,
+            "opening_kind": self.opening_kind,
+            "arrival_focus": self.opening_kind == "orientation",
             "food_request": {"item": "fruit", "quantity": 1, "outcome": self.food_outcome,
                              "reason": self.food_reason, "transferred": False} if self.purpose == "food_request" else None,
             "initiator": initiator,
@@ -909,6 +933,9 @@ class Conversation:
         for npc, state in zip((self.initiator, self.recipient), self.saved_states):
             npc.conversation = None
             npc.restore_after_interaction(state, self.other(npc).id)
+            npc.pause_after_conversation(self.social_effects_applied)
+            if not self.social_effects_applied:
+                npc.cooldowns[self.other(npc).id] = FAILURE_COOLDOWN
 
     def handoff(self):
         """Reverse the roles without restoring activities or reacquiring tree claims."""
@@ -996,3 +1023,5 @@ class Gift:
             other = self.recipient if npc is self.initiator else self.initiator
             npc.gift = None
             npc.restore_after_interaction(state, other.id, preserve_facing=True)
+            if self.record.purpose == "food_request":
+                npc.pause_after_conversation(True)

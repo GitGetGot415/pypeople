@@ -12,7 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from character_data import normalize_character, normalize_opinions
 from constants import (
-    APPLE_ADVANCE_SECONDS, DECISION_SECONDS, DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, GIFT_GIVE_SECONDS, GIFT_SECONDS,
+    APPLE_ADVANCE_SECONDS, CONCERN_LIFETIME_RANGE, CONVERSATION_PAUSE_RANGE, FAILURE_COOLDOWN,
+    DECISION_SECONDS, DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, GIFT_GIVE_SECONDS, GIFT_SECONDS,
     MAX_SIMULATION_STEP_SECONDS, SHAKE_SECONDS, SNAKE_EAT_SECONDS,
     POST_DIALOGUE_SECONDS, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME, WORLD_HEIGHT, WORLD_WIDTH,
 )
@@ -23,7 +24,7 @@ from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree
 from simulation import PendingAction, Simulation
 from snake import Snake, SnakeEncounter
 from purgatory import Attitudes
-from social import (Belief, Claim, Disclosure, Fact, FactKind, Goal, GoalKind, OpinionEffect, Promise, Proposal,
+from social import (Belief, Claim, ConcernKind, ConversationConcern, Disclosure, Fact, FactKind, Goal, GoalKind, OpinionEffect, Promise, Proposal,
                     Stance, information_from_dict, phase_index, validate_agreements, validate_information)
 
 SAVE_DIRECTORY = Path(__file__).resolve().parent / "saves"
@@ -226,6 +227,18 @@ class LearnedNameState(SaveModel):
     turn: int = Field(ge=0)
 
 
+class ConcernState(SaveModel):
+    kind: ConcernKind
+    claim_id: str | None
+    remaining: float = Field(ge=0, le=CONCERN_LIFETIME_RANGE[1])
+
+    @model_validator(mode="after")
+    def validate_account_kind(self):
+        if (self.kind in ("recollection", "news")) != bool(self.claim_id):
+            raise ValueError("Only recollection and news concerns require an account.")
+        return self
+
+
 class NPCState(ActivityState):
     id: str = Field(min_length=1)
     character: dict
@@ -243,6 +256,8 @@ class NPCState(ActivityState):
     goal: GoalState | None
     pending_social_opinions: list[OpinionEffectState]
     beliefs: list[BeliefState]
+    current_concern: ConcernState | None
+    conversation_pause_remaining: float = Field(ge=0, le=max(CONVERSATION_PAUSE_RANGE[1], FAILURE_COOLDOWN))
     known_names: dict[str, LearnedNameState] = Field(default_factory=dict)
     command_revision: int = Field(ge=0)
     attitudes: Attitudes
@@ -293,7 +308,10 @@ class HistoryState(SaveModel):
 class ConversationState(SaveModel):
     id: str = Field(min_length=1)
     origin: Literal["player", "autonomous"]
-    purpose: Literal["chat", "orientation", "food_request", "gossip"]
+    purpose: Literal["chat", "food_request"]
+    concerns: dict[Literal["initiator", "recipient"], ConcernState]
+    opening_kind: ConcernKind | None
+    goal_id: str | None
     focus_claim_id: str | None
     dialogue_state: Literal["waiting", "pending", "ready"]
     wait_elapsed: float = Field(ge=0, le=DIALOGUE_TIMEOUT_SECONDS + MAX_SIMULATION_STEP_SECONDS)
@@ -442,7 +460,6 @@ class SimulationState(SaveModel):
     facts: list[FactState]
     claims: list[ClaimState]
     disclosures: list[DisclosureState]
-    social_opportunity: bool
     social_rotation: int = Field(ge=0)
     npcs: list[NPCState] = Field(min_length=1)
     tree: TreeState
@@ -592,7 +609,22 @@ class SimulationState(SaveModel):
                     if source is None or source.listener_id != actor.id or source.claim_id != claim.id or source.speaker_id != belief.source_id:
                         raise ValueError("Hearsay requires its actual disclosure source.")
         goal_ids = set()
+        def validate_concern(concern, owner):
+            if concern is None:
+                return
+            if concern.claim_id:
+                claim = claims.get(concern.claim_id)
+                belief = next((b for b in owner.beliefs if b.claim_id == concern.claim_id), None)
+                if claim is None or belief is None:
+                    raise ValueError("A concern requires its owner's existing knowledge.")
+                fact = facts[claim.fact_id]
+                if concern.kind == "recollection" and not (belief.direct and claim.affirmed and not claim.deliberate
+                        and fact.kind == "former_life" and fact.subject_id == owner.id):
+                    raise ValueError("A recollection concern requires the owner's direct former-life account.")
         for npc in residents:
+            if npc.id in live_ids and npc.current_concern is None:
+                raise ValueError("A living resident must have a concern.")
+            validate_concern(npc.current_concern, npc)
             from name_knowledge import forms
             for target_id, learned in npc.known_names.items():
                 learned = learned.model_dump()
@@ -667,6 +699,14 @@ class SimulationState(SaveModel):
             if rewritten and (len(rewritten) != len(thanks) or any(not text.strip() for text in rewritten)):
                 raise ValueError("Rewritten thanks must match the original parts.")
             if isinstance(interaction, ConversationState):
+                if set(interaction.concerns) != {"initiator", "recipient"}:
+                    raise ValueError("A meeting must retain both frozen concerns.")
+                for role, index in zip(("initiator", "recipient"), pair):
+                    validate_concern(interaction.concerns[role], self.npcs[index])
+                if interaction.goal_id and (self.npcs[pair[0]].goal is None or interaction.goal_id != self.npcs[pair[0]].goal.id):
+                    raise ValueError("A meeting goal must belong to its initiator.")
+                if interaction.focus_claim_id and not any(b.claim_id == interaction.focus_claim_id for b in self.npcs[pair[0]].beliefs):
+                    raise ValueError("A required meeting account must be known to its initiator.")
                 ready = interaction.dialogue_state == "ready"
                 if record.id != interaction.id or ready != bool(interaction.turns) or ready != interaction.social_effects_applied:
                     raise ValueError("Invalid conversation commit progress.")
@@ -674,6 +714,8 @@ class SimulationState(SaveModel):
                     context = interaction.information_context
                     if context.participants != {"initiator": self.npcs[pair[0]].id, "recipient": self.npcs[pair[1]].id}:
                         raise ValueError("Invalid information speakers.")
+                    if context.focus_claim_id != interaction.focus_claim_id:
+                        raise ValueError("The required meeting account must match its information snapshot.")
                     if any(o.fact_id not in facts for o in context.options):
                         raise ValueError("Missing snapshot facts.")
                 validate_agreements(interaction.accepted_proposals, [p.model_dump() for p in interaction.proposals], interaction.turns, self.npcs[pair[0]].id, self.npcs[pair[1]].id)
@@ -886,6 +928,7 @@ def capture_resident(npc):
         NPCState, npc, emotion=EmotionReaction(name=npc.emotion, intensity=npc.emotion_intensity),
         memories=[asdict(memory) for memory in npc.memories],
         goal=asdict(npc.goal) if npc.goal else None,
+        current_concern=asdict(npc.current_concern) if npc.current_concern else None,
         pending_social_opinions=[asdict(effect) for effect in npc.pending_social_opinions],
         beliefs=[asdict(belief) for belief in npc.beliefs],
     )
@@ -918,6 +961,7 @@ def capture_simulation(app):
             pending_opinions=[(npc_indices[id(person)], opinions) for person, opinions in conversation.pending_opinions],
             proposals=[asdict(p) for p in conversation.proposals],
             information_context=asdict(conversation.information_context) if conversation.information_context else None,
+            concerns={role: asdict(c) if c else None for role, c in conversation.concerns.items()},
         ))
     world = app.simulation
     encounter = world.snake.encounter
@@ -927,7 +971,7 @@ def capture_simulation(app):
         promises=[asdict(promise) for promise in world.promises],
         facts=[asdict(fact) for fact in world.facts], claims=[asdict(claim) for claim in world.claims],
         disclosures=[asdict(disclosure) for disclosure in world.disclosures],
-        social_opportunity=world.social_opportunity, social_rotation=world.social_rotation,
+        social_rotation=world.social_rotation,
         snake=_capture_fields(SnakeState, world.snake, beliefs=[asdict(b) for b in world.snake.beliefs]),
         archived=[capture_resident(npc) for npc in world.archived],
         arrival_error=world.arrival_error,
@@ -962,6 +1006,8 @@ def restore_simulation(state):
             goal=Goal(**saved.goal.model_dump()) if saved.goal else None,
             pending_social_opinions=[OpinionEffect(**effect.model_dump()) for effect in saved.pending_social_opinions],
             beliefs=[Belief(**belief.model_dump()) for belief in saved.beliefs],
+            current_concern=ConversationConcern(**saved.current_concern.model_dump()) if saved.current_concern else None,
+            conversation_pause_remaining=saved.conversation_pause_remaining,
             known_names=deepcopy(saved.model_dump()["known_names"]),
             attitudes=saved.attitudes.model_dump(),
             arrival_day=saved.arrival_day, departure=saved.departure.model_dump() if saved.departure else None,
@@ -997,7 +1043,7 @@ def restore_simulation(state):
     world.facts = [Fact(**fact.model_dump()) for fact in state.facts]
     world.claims = [Claim(**claim.model_dump()) for claim in state.claims]
     world.disclosures = [Disclosure(**disclosure.model_dump()) for disclosure in state.disclosures]
-    world.social_opportunity, world.social_rotation = state.social_opportunity, state.social_rotation
+    world.social_rotation = state.social_rotation
     for saved in state.conversations:
         # Loading bypasses __init__: it would interrupt the saved activities again.
         conversation = Conversation.__new__(Conversation)
@@ -1005,6 +1051,7 @@ def restore_simulation(state):
             initiator=npcs[saved.initiator], recipient=npcs[saved.recipient], record=history[saved.record],
             proposals=[Proposal(**proposal.model_dump()) for proposal in saved.proposals],
             information_context=information_from_dict(saved.information_context.model_dump()) if saved.information_context else None,
+            concerns={role: ConversationConcern(**c.model_dump()) if c else None for role, c in saved.concerns.items()},
             pending_opinions=[(npcs[index], opinions) for index, opinions in saved.pending_opinions],
             saved_states=[activity.model_dump() for activity in saved.saved_states])
         conversation.active = True

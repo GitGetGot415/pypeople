@@ -599,8 +599,8 @@ Each resident's situation gives days_here, needs_orientation and actual accepted
 orientation_discussions. New residents usually seek bearings, help or safety;
 personality may make them anxious, skeptical, irritated, methodical, withdrawn
 or practically focused. Match emotional delivery to that response. An established
-resident can guide a newcomer without forgetting their own experience. A prior
-orientation exchange allows routines, never proves an explanation or route home.
+resident can guide a newcomer without forgetting their own experience. Several accepted
+arrival discussions can shift attention to routines, never proving an explanation or route home.
 Urgent circumstances and explicit player topics can take precedence.
 Satisfaction measures resources/company, not peace about displacement. Known
 danger can disturb calm; experience can ease distress. A new partner resets
@@ -613,7 +613,7 @@ ORIENTATION_SPEAKING_BRIEF = NAME_INSTRUCTION + """Write direct English dialogue
 Use I/my for yourself and you/your for the listener. Give only this speaker's
 words, without narration, speaker labels or the listener's answer. Reply to
 what they actually just said before pursuing another concern.
-You are finding your bearings in the supplied surroundings. The cause of
+Respond from your own adjustment state; an established listener retains their experience. The cause of
 arrival and a way home are unknown. Use only your own supplied situation and
 accepted speech; do not invent discoveries, past meetings or private memories.
 Let personality shape your response without reciting the profile or directions.
@@ -851,7 +851,7 @@ def _base_preceding_turns(turns, names=()):
 
 def _orientation_world_context(snapshot, *, correction=False):
     """A present concern must not compete with private goals or a menu of bargains."""
-    context = {"request_kind": "conversation", "purpose": "orientation",
+    context = {"request_kind": "conversation", "purpose": "chat", "arrival_focus": True,
                "environment": {"place": "One unfamiliar grassy area", "objects": ["One apple tree guarded by a python"]},
                "day": snapshot["initiator"].get("day", 1),
                "time_of_day": snapshot["initiator"].get("time_of_day", "day")}
@@ -868,7 +868,8 @@ def _orientation_world_context(snapshot, *, correction=False):
             "first_turn_address": learned["name"] if learned else "you",
             "opinion_of_partner": _base_opinions(private.get("opinions", {}), person["npc_name"]).get(partner["npc_name"]),
             "private_context": {"situation": {key: value for key, value in private.get("situation", {}).items()
-                                             if key not in ("known_danger", "apple_bargain")}},
+                                             if key not in ("known_danger", "apple_bargain")},
+                                "concern": deepcopy(private.get("concern"))},
             "self_introduction_name": own_name(person),
         }
     history = deepcopy(snapshot.get("shared_history", {}))
@@ -889,7 +890,7 @@ def _speech_references(person, catalog):
 
 def world_context(snapshot, *, correction=False):
     """Supply relevant state without exposing other NPCs' private knowledge."""
-    if snapshot.get("request_kind") == "conversation" and snapshot.get("purpose") == "orientation":
+    if snapshot.get("request_kind") == "conversation" and snapshot.get("arrival_focus", False):
         return _orientation_world_context(snapshot, correction=correction)
     if snapshot.get("request_kind") in ("snake_turn", "conversation_closing", "resident_turn", "resident_assessment", "handoff_thanks"):
         context = {k: v for k, v in snapshot.items() if not k.startswith("_")}
@@ -1291,7 +1292,7 @@ def _available_speech_fields(schema):
 def _resident_contract(snapshot, *, correction=False):
     assessment = snapshot["request_kind"] == "resident_assessment"
     thanks = snapshot["request_kind"] == "handoff_thanks"
-    orientation = snapshot.get("purpose") == "orientation"
+    orientation = snapshot.get("arrival_focus", False)
     model = ResidentAssessment if assessment else DialoguePartsResponse if thanks else ResidentTurnResponse
     schema = structured_schema(model)
     properties = schema["properties"]
@@ -1339,12 +1340,12 @@ def _resident_contract(snapshot, *, correction=False):
                                                                                          if delta and abs(influence + delta) <= 6]}
                             branches.append(branch)
                         properties[field]["items"] = branches[0] if len(branches) == 1 else {"anyOf": branches}
-        if snapshot.get("purpose") == "gossip" and snapshot["turn_index"] == 0:
+        if bool(snapshot.get("discussion_focus_claim_id")) and snapshot["turn_index"] == 0:
             properties["disclosures"]["minItems"] = 1
     schema["required"] = (["opinion"] if assessment else ["parts"])
     if snapshot.get("pending_reactions"):
         schema["required"].append("reactions")
-    if snapshot.get("purpose") == "gossip" and snapshot["turn_index"] == 0 and not assessment:
+    if bool(snapshot.get("discussion_focus_claim_id")) and snapshot["turn_index"] == 0 and not assessment:
         schema["required"].append("disclosures")
     _available_speech_fields(schema)
     instruction = (f"You are {snapshot['speaker']['name']}, speaking directly to {snapshot['listener']['name']}.\n"
@@ -1369,7 +1370,7 @@ def _resident_contract(snapshot, *, correction=False):
         if "disclosures" in properties:
             instruction += (" Tell at most one selected account, with its actual owner and source, and record only its claim and intent. "
                             "Do not recite other private details; the listener chooses their own stance later. "
-                            + ("Report the supplied gossip focus now." if snapshot.get("purpose") == "gossip" and snapshot["turn_index"] == 0
+                            + ("Disclose the required task account now." if bool(snapshot.get("discussion_focus_claim_id")) and snapshot["turn_index"] == 0
                                else "Ordinary replies normally need no disclosure; omit optional metadata unless your speech actually performs it."))
         if "offers" in properties or "acceptances" in properties:
             instruction += (" Only a giver can offer an available future apple proposal, explicitly naming its apple and deadline. "
@@ -1383,7 +1384,7 @@ def _resident_contract(snapshot, *, correction=False):
             instruction += " Leverage is explicit pressure using an already known account; ordinary requests need no leverage."
         if any(field in properties for field in ("offers", "acceptances", "disclosures", "reactions", "third_party_opinions", "leverage")):
             instruction += " All metadata belongs to this speaker and this turn; Python assigns indices. Do not choose the listener's effects."
-    if snapshot.get("purpose") == "orientation":
+    if snapshot.get("arrival_focus", False):
         instruction += ("\nDiscuss arrival, surroundings or seeking help and safety. Defer routine apple goals. "
             "Ask an unfamiliar partner's name and answer their name question; refusals remain possible. "
             "Offer only your authored name. The cause of arrival and way home are unknown. "
@@ -2708,7 +2709,7 @@ def _pending_reactions(snapshot, draft, role):
     return pending
 
 
-def _resident_accounts_for_turn(accounts, info, role, draft, catalog):
+def _resident_accounts_for_turn(accounts, info, role, draft, catalog, *, concern_id=None):
     """Offer one own private fact, keeping heard accounts and garden evidence."""
     options = {option.id: option for option in info.options}
     owner = info.participants[role]
@@ -2718,10 +2719,15 @@ def _resident_accounts_for_turn(accounts, info, role, draft, catalog):
     personal_facts = {options[a["claim_id"]].fact_id for a in personal}
     heard = draft["turns"][-1].text if draft["turns"] and draft["turns"][-1].speaker != role else ""
     names = [p["name"] for p in catalog.values()]
-    selected = next((options[a["claim_id"]].fact_id for a in personal if mentions_account(heard, a["assertion"], names)), None)
+    required = info.focus_claim_id if role == "initiator" else None
+    selected = next((options[a["claim_id"]].fact_id for a in personal if a["claim_id"] == required), None)
+    if selected is None:
+        selected = next((options[a["claim_id"]].fact_id for a in personal if mentions_account(heard, a["assertion"], names)), None)
     if selected is None:
         selected = next((options[d.claim_id].fact_id for d in reversed(draft["disclosures"])
                          if draft["turns"][d.turn].speaker == role and options[d.claim_id].fact_id in personal_facts), None)
+    if selected is None:
+        selected = next((options[a["claim_id"]].fact_id for a in personal if a["claim_id"] == concern_id), None)
     if selected is None:
         used = {options[d.claim_id].fact_id for d in draft["disclosures"] if draft["turns"][d.turn].speaker == role}
         available = [o for o in info.options if o.fact_id in personal_facts - used and o.creator_id is None]
@@ -2783,12 +2789,12 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
             raise ValueError("Disclose only your own permitted or previously heard accounts.")
         projected["disclosures"].append(SimpleNamespace(turn=index, claim_id=entry.claim_id,
                                                         intent=entry.intent, listener_stance=None))
-    if snapshot.get("purpose") == "gossip" and index == 0:
+    if bool((snapshot.get("_information_validation") or {}).get("focus_claim_id")) and index == 0:
         info = snapshot["_information_validation"]
         options = {o["id"]: o for o in info["options"]}
         focus_fact = options[info["focus_claim_id"]]["fact_id"]
         if not any(options[d.claim_id]["fact_id"] == focus_fact for d in candidate.disclosures):
-            raise ValueError("Open gossip by disclosing the selected focus or a permitted denial of that same fact.")
+            raise ValueError("Disclose the required task account or a permitted denial of that same fact.")
     for entry in candidate.third_party_opinions:
         if entry.claim_id not in choices["third_party_opinions"]:
             raise ValueError("Assess only an eligible account you heard earlier.")
@@ -2815,13 +2821,13 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
     validate_names(projected["turns"], snapshot)
     if snapshot.get("_dialogue_validation", True):
         validate_resident_grounding(SimpleNamespace(**projected), snapshot)
-        if snapshot.get("purpose") == "orientation" and index == 0:
+        if snapshot.get("arrival_focus", False) and index == 0:
             if not orientation_speech([turn.text]):
                 raise ValueError("Open this orientation exchange with an arrival or surroundings concern; routine apple goals are deferred.")
             other = snapshot["recipient"]
             if actor_id(other) not in state["speaker"]["name_knowledge"]["known_names"] and not asks_name(turn.text):
                 raise ValueError("Ask the unfamiliar partner what to call them during your orientation opening.")
-        if snapshot.get("purpose") == "orientation" and index >= RESIDENT_TURN_COUNT - 2:
+        if snapshot.get("arrival_focus", False) and index >= RESIDENT_TURN_COUNT - 2:
             knowledge, _, _ = validate_names(projected["turns"], snapshot)
             other = "recipient" if role == "initiator" else "initiator"
             if actor_id(snapshot[other]) not in knowledge[role] and not any(
@@ -2839,7 +2845,7 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
     person, partner = snapshot[role], snapshot[other]
     knowledge, _, _ = validate_names(draft["turns"], snapshot)
     catalog = snapshot.get("_name_actors", {})
-    orientation = snapshot.get("purpose") == "orientation"
+    orientation = snapshot.get("arrival_focus", False)
     # This helper sanitizes historical reasons and presentation. Select only the
     # current actor; the other private view never enters the returned state.
     owned_context = world_context(snapshot)
@@ -2848,7 +2854,7 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
     speaker = dict(npc_id=actor_id(person), name=own_name(person), kind="human resident",
                    opinion_record_name=person["npc_name"], personality=character_context(person["character"]).get("personality", ""),
                    name_knowledge={"own_name": own_name(person), "known_names": knowledge[role]},
-                   situation=private.get("situation", {}),
+                   situation=private.get("situation", {}), concern=deepcopy(private.get("concern")),
                    opinion_of_listener=private.get("opinions", {}).get(partner["npc_name"]))
     listener = dict(npc_id=actor_id(partner), name=listener_address(person, partner, knowledge[role]), kind="human resident")
     speaker["speech_references"] = _speech_references(speaker, catalog)
@@ -2862,9 +2868,6 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
         original_views = {a["claim_id"]: a for a in private.get("permitted_accounts", [])}
         for claim_id in dict.fromkeys([*info.allowed[role], *acquired[role], *[p["claim_id"] for p in pending]]):
             option = options[claim_id]
-            if snapshot.get("purpose") == "gossip" and info.focus_claim_id:
-                if option.fact_id != options[info.focus_claim_id].fact_id:
-                    continue
             belief = beliefs[role].get(claim_id)
             # An account newly heard is hearsay with this speaker as its knowledge
             # owner. Never copy the discloser's private motive, stance or evidence.
@@ -2894,8 +2897,8 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
                 for field in ("object_id", "object_name", "object_relation"):
                     view.pop(field, None)  # A goal target is not evidence of an event with that person.
             accounts.append(view)
-        if snapshot.get("purpose") != "gossip":
-            accounts = _resident_accounts_for_turn(accounts, info, role, draft, catalog)
+        accounts = _resident_accounts_for_turn(accounts, info, role, draft, catalog,
+                                               concern_id=(private.get("concern") or {}).get("claim_id"))
     choices = dict(offers=[], acceptances=[], disclosures=[], third_party_opinions=[], leverage=[])
     if not orientation and snapshot.get("purpose") != "food_request":
         used = {a.proposal_id for a in draft["accepted_proposals"]}
@@ -2931,7 +2934,7 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
     preceding = [dict(name=own_name(snapshot[t.speaker]), role=t.speaker, text=t.text) for t in draft["turns"]]
     state = dict(request_kind="resident_assessment" if assessment else "handoff_thanks" if thanks else "resident_turn",
                  speaker_role=role, turn_index=index, purpose=snapshot.get("purpose", "chat"),
-                 interaction_id=snapshot.get("interaction_id"), speaker=speaker, listener=listener,
+                 interaction_id=snapshot.get("interaction_id"), arrival_focus=orientation, speaker=speaker, listener=listener,
                  self_introduction_name=own_name(person), listener_address=listener["name"],
                  opinion_target=partner["npc_name"], pending_reactions=pending, choices=choices,
                  day=person.get("day", 1), time_of_day=person.get("time_of_day", "day"),
@@ -2959,7 +2962,11 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
                          "Offer your own authored name, unless already introduced. " if index == 0 else
                          "Answer the partner's actual point about arrival or surroundings; answer name questions with your own authored name or an explicit refusal. "
                          "Suggest or respond to one practical first step, without inventing discoveries. ")
-        if index < 2:
+        if index == 0 and actor_id(partner) in knowledge[role]:
+            state["task"] = ("Continue your arrival questions or one practical next step from accepted earlier discussion. "
+                             "You already know what to call this partner. Use that learned form; do not ask their name "
+                             "or restart your own introduction. The cause of arrival and way home remain unknown. ")
+        if index < 2 and not speaker["situation"].get("orientation_discussions"):
             state["task"] += ("In your first reply, give your own self_introduction_name naturally or explicitly decline "
                               "to share your name. Ask what to call the partner if they have not introduced themselves yet. ")
     elif snapshot.get("purpose") == "food_request":
@@ -2971,21 +2978,25 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
                          "Your private motives guide behavior; do not quote them or recite your biography."
                          if index == 0 else
                          "Reply directly to the listener's actual last message, answering their questions first. "
-                         "Use your own knowledge and objectives to move that discussion forward.")
+                         "Use your own knowledge to move that discussion forward; connect your private concern only when natural. "
+                         "You need not introduce another subject or story.")
         focus = (snapshot.get("_information_validation") or {}).get("focus_claim_id")
         if role == "initiator" and index == 0 and focus:
             state["discussion_focus_claim_id"] = focus
             focus_fact = next(o.fact_id for o in info.options if o.id == focus)
             choices["disclosures"] = [claim for claim in choices["disclosures"]
                                       if next(o.fact_id for o in info.options if o.id == claim) == focus_fact]
-            state["task"] += " Disclose the discussion focus or a permitted denial of the same fact now."
+            state["task"] += " Disclose the required task account or a permitted denial of the same fact now."
+        elif index == 0 and snapshot.get("opening_kind") in ("recollection", "news"):
+            state["task"] += (" Lead with your concern's selected account in your own words, retaining its actual owner, source and stance. "
+                              "Discuss the account itself rather than promising a later story. Record a disclosure only if actually spoken.")
     if assessment:
         state["task"] = "Assess your partner from the fixed transcript and your own knowledge. Resolve only your pending heard disclosures. Add no speech or other effects."
     elif thanks:
         state["task"] = "Thank the listener briefly for the one apple just successfully handed to you. This speech is reserved for the actual handoff."
         state["food_request"]["transferred"] = True
         speaker["inventory"]["fruit"] = speaker["inventory"].get("fruit", 0) + 1
-        for field in ("permitted_accounts", "goal", "promises", "snake_attitudes", "snake_apple_advance", "immediate_objective"):
+        for field in ("permitted_accounts", "goal", "promises", "snake_attitudes", "snake_apple_advance", "immediate_objective", "concern"):
             speaker.pop(field, None)
     elif closing:
         state["question_to_answer"] = _last_question(draft["turns"][-1].text)

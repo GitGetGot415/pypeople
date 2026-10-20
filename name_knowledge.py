@@ -267,11 +267,13 @@ def snake_name_witnesses(snapshot, decision):
 
 def orientation_context(npc):
     world = npc.world
-    discussed = [record for record in world.history if npc.name in record.participants
-                 and record.orientation_discussed and record.turns]
+    from constants import ARRIVAL_DISCUSSION_THRESHOLD
+    discussed = {record.id for record in world.history if npc.name in record.participants
+                 and record.orientation_discussed and record.turns
+                 and orientation_speech(text for _, text in record.turns)}
     return {"days_here": world.day - npc.arrival_day,
             "orientation_discussions": len(discussed),
-            "needs_orientation": not discussed,
+            "needs_orientation": len(discussed) < ARRIVAL_DISCUSSION_THRESHOLD,
             "adjustment": "finding bearings" if not discussed else "developing routines; questions remain unanswered"}
 
 
@@ -290,7 +292,7 @@ def validate_orientation(response, snapshot):
     # A structured claim alone is insufficient. Derive the accepted record's
     # marker from actual speech, including when the model omitted the flag.
     discussed = orientation_speech(turn.text for turn in response.turns)
-    if snapshot.get("purpose") == "orientation":
+    if snapshot.get("arrival_focus"):
         if any((response.accepted_proposals, response.disclosures, response.third_party_opinions, response.leverage)):
             raise ValueError("This orientation exchange does not authorize apple promises, private disclosures or leverage. Meet the person and find your bearings.")
         if snapshot.get("_dialogue_validation", True):

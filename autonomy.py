@@ -1,15 +1,13 @@
 """Small, local activity choices. Autonomous activities never call a model."""
 
 import math
-from constants import ORIENTATION_PRIORITY
 from name_knowledge import orientation_context
 
 from npc import Behavior
 from conversation_history import memory_bias
-from constants import APPLE_SATISFACTION, DECISION_SECONDS, MOVEMENT_SPEED, SOCIAL_START, SNAKE_NAME
+from constants import APPLE_SATISFACTION, DECISION_SECONDS, MOVEMENT_SPEED, SOCIAL_PARTNER_RANDOMNESS, SOCIAL_START, SNAKE_NAME
 from interactions import company_point
-from social import (claim_by_id, fact_by_id, goal_attempt_cooling_down, pair_objective,
-                    pending_promises, selected_beliefs)
+from social import concern_topic, goal_attempt_cooling_down, pair_objective, pending_promises
 
 
 ORIENTATION_TOPIC = (
@@ -33,37 +31,20 @@ def target_valid(npc, world):
     return True
 
 
-def seek_orientation(npc, world):
-    """Find a first conversation without spending a world-event opportunity."""
-    if (not orientation_context(npc)["needs_orientation"] or npc.departure is not None or npc.interaction is not None
-            or npc.resume_pending or npc.owner != "autonomous" or npc.selected or npc.request_pending
-            or any(npc.id in (action.npc_id, action.target_id) for action in world.pending_actions)):
+def lone_introduction(npc, world):
+    if (len(world.npcs) != 1 or not world.company_available(npc) or npc.conversation_pause_remaining
+            or orientation_context(npc)["orientation_discussions"]
+            or any(r.purpose == "introduction" and r.turns and npc.name in r.participants for r in world.history)):
         return
-    partners = [other for other in world.npcs if other is not npc and world.company_available(other)
-                and other.id not in npc.cooldowns and npc.id not in other.cooldowns
-                and company_point(npc, other, allow_vertical=True) is not None]
-    # Keep wandering while waiting, without resetting the route each tick.
-    reason = (f"Waiting to find my bearings with {SNAKE_NAME}" if len(world.npcs) == 1 else
-              "Waiting to find my bearings with another resident")
-    if npc.behavior != Behavior.WANDER:
-        npc.begin_activity(Behavior.WANDER, world, reason=reason)
-    else:
-        npc.reason = reason
-    if partners:
-        partner = min(partners, key=lambda other: math.dist((npc.x, npc.y), (other.x, other.y)))
-        world.start_conversation(npc, partner, ORIENTATION_TOPIC, origin="autonomous", purpose="orientation")
-        npc.reason = f"Finding my bearings with {partner.name}"
-        partner.reason = f"Helping {npc.name} find their bearings"
-    elif len(world.npcs) == 1:
-        snake = world.snake
-        if (snake.encounter or snake.selected or snake.request_pending or snake.recovery_remaining
-                or snake.id in npc.cooldowns or not npc.can_reach(world.tree.interaction_point)):
-            return
-        from snake import SnakeEncounter
-        SnakeEncounter(world, npc, "introduction", ORIENTATION_TOPIC)
+    snake = world.snake
+    if (snake.encounter or snake.selected or snake.request_pending or snake.recovery_remaining
+            or snake.id in npc.cooldowns or not npc.can_reach(world.tree.interaction_point)):
+        return
+    from snake import SnakeEncounter
+    SnakeEncounter(world, npc, "introduction", ORIENTATION_TOPIC)
 
 
-def reconsider(npc, world):
+def reconsider(npc, world, *, pressing_only=False):
     if npc.interaction is not None or npc.resume_pending:
         return
     if not target_valid(npc, world):
@@ -72,11 +53,8 @@ def reconsider(npc, world):
         return
     if any(npc.id in (action.npc_id, action.target_id) for action in world.pending_actions):
         return
-    if orientation_context(npc)["needs_orientation"]:
-        return
     if npc.decision_remaining > 0:
         return
-    npc.decision_remaining = DECISION_SECONDS
     if npc.behavior in (Behavior.HARVEST, Behavior.EAT):
         return
 
@@ -98,6 +76,16 @@ def reconsider(npc, world):
                 return
     apples_needed = len({target_id for target_id, _ in delivery_targets})
     needs_apple = npc.inventory.get("fruit", 0) < min(apples_needed, npc.inventory_capacity)
+    tree = world.tree
+    tree_available = (world.available_fruit > 0 and tree.reserved_by in (None, npc) and npc.inventory_space > 0
+                      and tree.id not in npc.cooldowns and npc.can_reach(tree.interaction_point))
+    if pressing_only:
+        if obligations and needs_apple and tree_available:
+            npc.begin_activity(Behavior.HARVEST, world, tree.id, "Seeking an apple bargain to fulfill a commitment")
+        return
+    npc.decision_remaining = DECISION_SECONDS
+    if actionable_obligation(npc, world):
+        return
     if npc.behavior == Behavior.COMPANY and not needs_apple:
         return
 
@@ -107,9 +95,7 @@ def reconsider(npc, world):
     candidates = [(1 + npc.rng.random(), Behavior.WANDER, None, "Exploring the world")]
     if npc.inventory.get("fruit", 0) > apples_needed and npc.social <= 100 - APPLE_SATISFACTION:
         candidates.append((130 - npc.social, Behavior.EAT, None, "Eating an apple to improve satisfaction"))
-    tree = world.tree
-    if (world.available_fruit > 0 and tree.reserved_by in (None, npc) and npc.inventory_space > 0
-            and tree.id not in npc.cooldowns and npc.can_reach(tree.interaction_point)):
+    if tree_available:
         score = 24 - sum(npc.inventory.values()) * 4 - distance(tree.interaction_point) + (110 if needs_apple else 0)
         candidates.append((score, Behavior.HARVEST, tree.id,
                            "Seeking an apple bargain to help someone" if needs_apple else f"Seeking an apple bargain with {SNAKE_NAME}"))
@@ -125,6 +111,8 @@ def reconsider(npc, world):
             candidates.append((score, Behavior.COMPANY, partner.id,
                                f"Wanting company; spending time with {partner.name}{memory_reason(npc, partner)}"))
     _, behavior, target, reason = max(candidates, key=lambda c: c[0] + npc.rng.uniform(0, 3))
+    if behavior == npc.behavior == Behavior.WANDER:
+        return  # Waiting for company must not reset an existing route.
     npc.begin_activity(behavior, world, target, reason)
 
 
@@ -156,80 +144,80 @@ def donor_choice(donor, requester):
     return "refused", "The donor prefers to keep their apples this time."
 
 
-def social_pair(world):
-    """Spend one phase opportunity; rotating ties prevents a fixed first speaker."""
+def actionable_obligation(npc, world):
+    # Preserve a free receiver for a delivery that is already physically possible,
+    # even when the giver's ordinary decision timer has not elapsed yet.
+    if npc.inventory_space > 0:
+        for promise in pending_promises(world):
+            giver = world.npc_by_id(promise.promisor_id)
+            if (promise.recipient_id == npc.id and giver is not None and world.company_available(giver)
+                    and giver.inventory.get("fruit", 0) and giver.id not in npc.cooldowns and npc.id not in giver.cooldowns
+                    and company_point(giver, npc) is not None):
+                return True
+    obligations = pending_promises(world, npc.id)
+    if not obligations:
+        return False
+    if npc.inventory.get("fruit", 0):
+        return any((target := world.npc_by_id(p.recipient_id)) is not None and world.company_available(target)
+                   and target.inventory_space > 0 and target.id not in npc.cooldowns and npc.id not in target.cooldowns
+                   and company_point(npc, target) is not None for p in obligations)
+    tree = world.tree
+    return (world.available_fruit > 0 and tree.reserved_by in (None, npc) and npc.inventory_space > 0
+            and tree.id not in npc.cooldowns and npc.can_reach(tree.interaction_point))
+
+
+def social_pair(world, *, due=None):
+    """Reserve through the caller immediately; rotate initiators and vary partners."""
     ordered = world.npcs[world.social_rotation:] + world.npcs[:world.social_rotation]
-    available = [npc for npc in ordered if world.company_available(npc)]
+    available = [npc for npc in ordered if world.company_available(npc)
+                 and not npc.conversation_pause_remaining and not actionable_obligation(npc, world)]
 
     def partners(npc):
         return [other for other in available if other is not npc
                 and other.id not in npc.cooldowns and npc.id not in other.cooldowns
-                and (pair_objective(world, npc, other)[0] >= 2
-                     or not (goal_attempt_cooling_down(npc, other, world)
-                             or goal_attempt_cooling_down(other, npc, world)))
-                and company_point(npc, other) is not None]
+                and company_point(npc, other, allow_vertical=True) is not None]
 
     def rank(npc, other):
         return (npc.opinions.get(other.name, {}).get("opinion", 0) * 0.08
-                + memory_bias(npc, other.id) - math.hypot(npc.x - other.x, npc.y - other.y) / 90)
+                + memory_bias(npc, other.id) - math.dist((npc.x, npc.y), (other.x, other.y)) / MOVEMENT_SPEED
+                + npc.rng.uniform(0, SOCIAL_PARTNER_RANDOMNESS))
 
     purposeful = []
     for npc in available:
         for other in partners(npc):
+            if due is not None and npc.id not in due and other.id not in due:
+                continue
             priority, objective = pair_objective(world, npc, other)
-            if orientation_context(npc)["needs_orientation"] and priority < ORIENTATION_PRIORITY:
-                priority = ORIENTATION_PRIORITY
-                objective = ORIENTATION_TOPIC
-            # A known immediate danger keeps its place above routine orientation.
-            if priority < 2 and any(b.stance != "disbelieved" and
-                    fact_by_id(world, claim_by_id(world, b.claim_id).fact_id).kind in ("eating", "judgment", "defiance")
-                    for b in selected_beliefs(npc, other.id)):
-                priority, objective = 2, "Seek safety or help after a known alarming event, using its actual source"
+            if priority == 1 and (goal_attempt_cooling_down(npc, other, world)
+                                  or npc.current_concern.kind == "orientation"):
+                continue
             if priority:
-                deadline = min((p.deadline for p in pending_promises(world)
-                                if {p.promisor_id, p.recipient_id} == {npc.id, other.id}), default=world.phase_index)
-                purposeful.append((priority, -deadline, rank(npc, other), npc, other, objective))
+                purposeful.append((priority, rank(npc, other), npc, other, objective))
     if purposeful:
-        priority, _, _, npc, partner, objective = max(purposeful, key=lambda choice: choice[:3])
-        purpose = ("orientation" if priority == ORIENTATION_PRIORITY else
-                   "gossip" if priority == 0.5 or (priority == 1 and npc.goal and npc.goal.kind == "sabotage_relationship") else "chat")
-        return npc, partner, purpose, objective, f"Meeting {partner.name}: {objective}"
+        priority, _, npc, partner, objective = max(purposeful, key=lambda choice: choice[:2])
+        goal = npc.goal if priority == 1 else None
+        focus = goal.claim_id if goal and goal.kind == "sabotage_relationship" else None
+        return npc, partner, "chat", objective, f"Meeting {partner.name}: {objective}", "news" if priority == 2 else None, focus, goal.id if goal else None
 
-    food = []
     for npc in available:
-        if npc.social > SOCIAL_START or npc.inventory.get("fruit", 0) or npc.inventory_space < 1:
+        if due is not None and npc.id not in due:
             continue
-        donors = [other for other in partners(npc) if other.inventory.get("fruit", 0) > 0]
-        if not donors:
-            continue
-        donor = max(donors, key=lambda other: rank(npc, other))
-        tree = world.tree
-        if (world.available_fruit > 0 and tree.reserved_by is None and npc.can_reach(tree.interaction_point)
-                and math.dist((npc.x, npc.y), tree.interaction_point)
-                < math.dist((npc.x, npc.y), (donor.x, donor.y))):
-            continue
-        food.append((npc, donor))
-    if food:
-        npc, donor = min(food, key=lambda pair: pair[0].social)
-        return npc, donor, "food_request", "An apple", f"Asking {donor.name} for an apple{memory_reason(npc, donor)}"
-    choices = []
-    for npc in available:
         others = partners(npc)
-        if others:
-            partner = max(others, key=lambda other: rank(npc, other))
-            score = (npc.preferences["sociability"] * 10 + (100 - npc.social) * 0.1 + rank(npc, partner))
-            choices.append((score, npc, partner))
-    if not choices:
-        return None
-    _, npc, partner = max(choices, key=lambda choice: choice[0])
-    recollection = next((memory for memory in reversed(npc.memories) if memory.partner_id == partner.id), None)
-    danger = next((belief for belief in selected_beliefs(npc, partner.id)
-                   if belief.stance != "disbelieved" and fact_by_id(world, claim_by_id(world, belief.claim_id).fact_id).kind
-                   in ("eating", "judgment", "defiance")), None)
-    if danger:
-        topic = f"Safety around {SNAKE_NAME} after a known alarming event or sourced warning"
-    elif recollection:
-        topic = f"Remembering: {recollection.summary}"
-    else:
-        topic = "Life here and whatever still feels unresolved, building on what we have already discussed"
-    return npc, partner, "chat", topic, f"Seeking a chat with {partner.name}{memory_reason(npc, partner)}"
+        if not others:
+            continue
+        # Keep the existing fixed food-request eligibility and donor decision.
+        if (npc.current_concern.kind != "orientation" and npc.social <= SOCIAL_START
+                and not npc.inventory.get("fruit", 0) and npc.inventory_space):
+            donors = [other for other in others if other.inventory.get("fruit", 0) > 0]
+            if donors:
+                donor = max(donors, key=lambda other: rank(npc, other))
+                tree = world.tree
+                if not (world.available_fruit > 0 and tree.reserved_by is None and npc.can_reach(tree.interaction_point)
+                        and math.dist((npc.x, npc.y), tree.interaction_point)
+                        < math.dist((npc.x, npc.y), (donor.x, donor.y))):
+                    return npc, donor, "food_request", "An apple", f"Asking {donor.name} for an apple", None, None, None
+        partner = max(others, key=lambda other: rank(npc, other))
+        concern = npc.current_concern
+        topic = concern_topic(npc, concern)
+        return npc, partner, "chat", topic, f"Seeking a chat with {partner.name}: {topic}", concern.kind, None, None
+    return None

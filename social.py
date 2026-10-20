@@ -5,13 +5,123 @@ from dataclasses import asdict, dataclass
 from typing import Literal
 from uuid import uuid4
 
-from constants import GOAL_IMPROVEMENT, LEVERAGE_ACCOUNT_KINDS
+from constants import CONCERN_LIFETIME_RANGE, CONCERN_WEIGHTS, GOAL_IMPROVEMENT, LEVERAGE_ACCOUNT_KINDS
 from conversation_history import remember
 from dialogue_rules import named_references, validate_account_speech, validate_apple_promise
 
 GoalKind = Literal["obtain_apple", "help_with_apple", "repair_relationship", "sabotage_relationship"]
 FactKind = Literal["apple_given", "apple_refused", "promise_kept", "promise_broken", "private_motive", "former_life", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating"]
 Stance = Literal["uncertain", "believed", "disbelieved"]
+ConcernKind = Literal["orientation", "recollection", "news", "surroundings", "plans"]
+
+
+@dataclass
+class ConversationConcern:
+    kind: ConcernKind
+    claim_id: str | None
+    remaining: float
+
+
+def valid_concern(npc, concern):
+    if concern is None:
+        return False
+    if concern.kind not in ("recollection", "news"):
+        return concern.claim_id is None and concern.kind in ("orientation", "surroundings", "plans")
+    belief = next((b for b in npc.beliefs if b.claim_id == concern.claim_id), None)
+    claim = next((c for c in npc.world.claims if c.id == concern.claim_id), None)
+    if belief is None or claim is None:
+        return False
+    fact = fact_by_id(npc.world, claim.fact_id)
+    return concern.kind == "news" or (belief.direct and claim.affirmed and not claim.deliberate
+                                     and fact.kind == "former_life" and fact.subject_id == npc.id)
+
+
+def concern_key(npc, concern):
+    if concern is None:
+        return None
+    claim = next((c for c in npc.world.claims if c.id == concern.claim_id), None)
+    return ("account", claim.fact_id) if claim else (concern.kind, None)
+
+
+def concern_topic(npc, concern):
+    guidance = {
+        "orientation": "Find my bearings: understand these surroundings, the missing transition, or where to find help and safety",
+        "recollection": "Reflect on a remembered former-life experience, keeping its actual owner",
+        "news": "Discuss a known account, keeping its actual source, stance and uncertainty",
+        "surroundings": "Reflect on the supplied surroundings or my present situation, without inventing discoveries",
+        "plans": "Consider my actual commitments, goals or possible next steps without reciting private instructions",
+    }
+    return guidance[concern.kind]
+
+
+def danger_topic(npc, claim_id):
+    claim = claim_by_id(npc.world, claim_id)
+    return "Seek safety or help about a known alarming account: " + account_content(npc.world, fact_by_id(npc.world, claim.fact_id), claim.affirmed)
+
+
+def undisclosed_danger(npc):
+    """A new alarming fact can interrupt routine thoughts; a repeated source cannot."""
+    world = npc.world
+    discussed = {claim_by_id(world, d.claim_id).fact_id for d in world.disclosures if d.speaker_id == npc.id}
+    return next((b.claim_id for b in reversed(npc.beliefs) if b.stance != "disbelieved"
+                 and claim_by_id(world, b.claim_id).fact_id not in discussed
+                 and fact_by_id(world, claim_by_id(world, b.claim_id).fact_id).kind in ("eating", "judgment", "defiance")
+                 and not any(r.turns and r.topic == danger_topic(npc, b.claim_id) and npc.name in r.participants
+                             for r in world.history)), None)
+
+
+def refresh_concern(npc):
+    """Choose locally at a safe decision boundary, never during an interaction."""
+    if npc.interaction is not None or npc.departure is not None:
+        return
+    from name_knowledge import orientation_context
+    previous = npc.current_concern
+    danger = undisclosed_danger(npc)
+    # Do not repeatedly replace a thought with another witness/denial of the same fact.
+    if danger and (previous is None or concern_key(npc, previous) != ("account", claim_by_id(npc.world, danger).fact_id)):
+        npc.current_concern = ConversationConcern("news", danger, npc.rng.uniform(*CONCERN_LIFETIME_RANGE))
+        return
+    if valid_concern(npc, previous) and previous.remaining > 0:
+        return
+    if orientation_context(npc)["needs_orientation"]:
+        npc.current_concern = ConversationConcern("orientation", None, npc.rng.uniform(*CONCERN_LIFETIME_RANGE))
+        return
+    candidates = {"orientation": [None], "surroundings": [None], "plans": [None], "recollection": [], "news": []}
+    for belief in npc.beliefs:
+        claim = claim_by_id(npc.world, belief.claim_id)
+        fact = fact_by_id(npc.world, claim.fact_id)
+        if belief.direct and claim.affirmed and not claim.deliberate and fact.kind == "former_life" and fact.subject_id == npc.id:
+            candidates["recollection"].append(claim.id)
+        elif fact.kind != "private_motive" or fact.subject_id != npc.id:
+            candidates["news"].append(claim.id)
+    retired = concern_key(npc, previous)
+    candidates = {kind: [claim_id for claim_id in entries
+                         if concern_key(npc, ConversationConcern(kind, claim_id, 0)) != retired]
+                  for kind, entries in candidates.items()}
+    kinds = [kind for kind, entries in candidates.items() if entries]
+    kind = npc.rng.choices(kinds, weights=[CONCERN_WEIGHTS[k] for k in kinds])[0]
+    npc.current_concern = ConversationConcern(kind, npc.rng.choice(candidates[kind]), npc.rng.uniform(*CONCERN_LIFETIME_RANGE))
+
+
+def commit_concern_use(conversation):
+    """Accepted base effects alone consume an account; private presence consumes nothing."""
+    world = conversation.initiator.world
+    options = {o.id: o for o in conversation.information_context.options} if conversation.information_context else {}
+    for role, npc in (("initiator", conversation.initiator), ("recipient", conversation.recipient)):
+        concern = conversation.concerns[role]
+        if concern is None or npc.current_concern != concern:
+            continue
+        if concern.claim_id:
+            fact_id = claim_by_id(world, concern.claim_id).fact_id
+            used = any(conversation.turns[d.turn].speaker == role and options[d.claim_id].fact_id == fact_id
+                       for d in conversation.accepted_disclosures)
+        elif concern.kind == "orientation":
+            used = conversation.record.orientation_discussed
+        else:
+            used = (role == "initiator" and conversation.opening_kind == concern.kind
+                    and conversation.purpose == "chat" and conversation.origin == "autonomous")
+        if used:
+            npc.current_concern.remaining = 0.0
 
 
 def phase_index(day, phase):
@@ -269,14 +379,15 @@ def can_deceive(npc):
                                                      and npc.goal.status == "active")
 
 
-def selected_beliefs(npc, partner_id=None):
+def selected_beliefs(npc, partner_id=None, *, pinned=()):
     world = npc.world
     goal = npc.goal
     order = {id(b): i for i, b in enumerate(npc.beliefs)}
     def rank(belief):
         claim = claim_by_id(world, belief.claim_id)
         fact = fact_by_id(world, claim.fact_id)
-        return (bool(goal and goal.claim_id == claim.id),
+        return (claim.id in pinned or bool(npc.current_concern and npc.current_concern.claim_id == claim.id),
+                bool(goal and goal.claim_id == claim.id),
                 fact.kind in ("eating", "judgment", "defiance"),
                 fact.kind in ("eating", "judgment", "pardon", "snake_claim", "defiance", "bargain", "endorsement", "arrival"),
                 partner_id in (fact.subject_id, fact.object_id, belief.source_id),
@@ -298,7 +409,9 @@ def prepare_information(conversation):
     world = conversation.initiator.world
     options, allowed = {}, {}
     for role, npc in pair.items():
-        selected = selected_beliefs(npc, conversation.other(npc).id)
+        concern = conversation.concerns[role]
+        selected = selected_beliefs(npc, conversation.other(npc).id,
+                                   pinned=(concern.claim_id,) if concern and concern.claim_id else ())
         if role == "initiator" and conversation.focus_claim_id:
             focus = next(b for b in npc.beliefs if b.claim_id == conversation.focus_claim_id)
             selected = [focus, *[b for b in selected if b is not focus]]
@@ -616,6 +729,15 @@ def trim_information(world):
                 keep.add(b.claim_id)
         if npc.goal and npc.goal.claim_id:
             keep.add(npc.goal.claim_id)
+        if npc.current_concern and npc.current_concern.claim_id:
+            keep.add(npc.current_concern.claim_id)
+        if npc.conversation:
+            role = "initiator" if npc.conversation.initiator is npc else "recipient"
+            concern = npc.conversation.concerns[role]
+            if concern and concern.claim_id:
+                keep.add(concern.claim_id)
+            if npc.conversation.information_context:
+                keep.update(b.claim_id for b in npc.conversation.information_context.beliefs[role])
         if npc.conversation and npc.conversation.initiator is npc and npc.conversation.focus_claim_id:
             keep.add(npc.conversation.focus_claim_id)
         npc.beliefs[:] = [b for b in npc.beliefs if b.claim_id in keep]
@@ -768,7 +890,7 @@ def check_relationship_goals(world, opinion_owner, record=None):
 
 
 def permitted_proposals(conversation):
-    if conversation.purpose in ("food_request", "orientation"):
+    if conversation.purpose == "food_request" or conversation.opening_kind == "orientation":
         return []
     world = conversation.initiator.world
     proposals = []
@@ -971,6 +1093,8 @@ def private_context(npc, partner_id=None):
     if goal_view:
         goal_view.pop("baseline_opinion")
     return {"owner_id": npc.id, "visibility": "Only this speaker knows their private motive and memories.",
+            "concern": ({"kind": npc.current_concern.kind, "claim_id": npc.current_concern.claim_id,
+                         "guidance": concern_topic(npc, npc.current_concern)} if npc.current_concern else None),
             "goal": goal_view,
             "known_accounts": known,
             "promises": [dict(asdict(p), deadline_label=phase_label(p.deadline)) for p in promises[:8]]}
@@ -978,31 +1102,34 @@ def private_context(npc, partner_id=None):
 
 def pair_objective(world, npc, other):
     pair = {npc.id, other.id}
+    def discussed(topic):
+        return any(r.turns and set(r.participants) == {npc.name, other.name} and r.topic == topic for r in world.history)
     promises = [p for p in world.promises if {p.promisor_id, p.recipient_id} == pair]
     pending = [p for p in promises if p.status == "pending"]
     if pending:
         promise = min(pending, key=lambda p: p.deadline)
         giver, recipient = world.actor_by_id(promise.promisor_id), world.actor_by_id(promise.recipient_id)
-        return 3, f"Arrange {giver.name}'s promised apple for {recipient.name}, due {phase_label(promise.deadline)}"
+        topic = f"Arrange {giver.name}'s promised apple for {recipient.name}, due {phase_label(promise.deadline)}"
+        if not discussed(topic):
+            return 3, topic
     if promises and promises[-1].status == "broken":
-        return 2, f"Discuss the missed apple promise: {promises[-1].outcome} Seek an explanation or practical repair"
+        topic = f"Discuss the missed apple promise: {promises[-1].outcome} Seek an explanation or practical repair"
+        if not discussed(topic):
+            return 2, topic
     for belief in selected_beliefs(npc, other.id):
         claim = claim_by_id(world, belief.claim_id)
         contrary = [b for b in npc.beliefs if claim_by_id(world, b.claim_id).fact_id == claim.fact_id
                     and claim_by_id(world, b.claim_id).affirmed != claim.affirmed]
         if contrary and other.id in (belief.source_id, claim.originator_id):
-            return 2, f"Ask {other.name} to explain conflicting accounts about {world.actor_by_id(claim.subject_id).name}"
+            topic = f"Ask {other.name} to explain conflicting accounts about {world.actor_by_id(claim.subject_id).name}"
+            if not discussed(topic):
+                return 2, topic
+    danger = undisclosed_danger(npc)
+    if danger:
+        return 2, danger_topic(npc, danger)
     goal = npc.goal
     if goal and goal.status == "active" and goal.target_id == other.id:
         return 1, f"{goal.objective}, by {phase_label(goal.deadline)}"
-    news = gossip_claim(npc, other)
-    if news:
-        claim = claim_by_id(world, news)
-        subject = world.actor_by_id(claim.subject_id)
-        firsthand = any(b.direct and claim_by_id(world, b.claim_id).fact_id == claim.fact_id for b in npc.beliefs)
-        if firsthand:
-            return 0.5, f"Share a firsthand experience about {subject.name}; I already know what happened"
-        return 0.5, f"Discuss a secondhand account about {subject.name}, keeping its source and uncertainty clear"
     return 0, ""
 
 
@@ -1010,18 +1137,6 @@ def goal_attempt_cooling_down(npc, other, world):
     goal = npc.goal
     return bool(goal and goal.status == "active" and goal.target_id == other.id
                 and goal.last_attempt_phase is not None and world.phase_index < goal.last_attempt_phase + 2)
-
-
-def gossip_claim(npc, partner):
-    if npc.goal and npc.goal.status == "active" and npc.goal.kind == "sabotage_relationship" and npc.goal.target_id == partner.id:
-        return npc.goal.claim_id
-    # Witnesses have distinct claim IDs for the same fact. Another source's ID
-    # does not make an already known assertion new gossip.
-    claims = {claim.id: claim for claim in npc.world.claims}
-    known = {(claims[b.claim_id].fact_id, claims[b.claim_id].affirmed) for b in partner.beliefs}
-    return next((b.claim_id for b in selected_beliefs(npc, partner.id)
-                 if (claims[b.claim_id].fact_id, claims[b.claim_id].affirmed) not in known
-                 and claim_by_id(npc.world, b.claim_id).subject_id not in (npc.id, partner.id)), None)
 
 
 def learn_account(world, speaker, listener, claim_id, record, turn, stance, *, private=False):

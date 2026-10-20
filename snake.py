@@ -376,6 +376,7 @@ class SnakeEncounter:
             npc.snake_encounter = None
             if self.world.npc_by_id(npc.id) is npc:
                 npc.restore_after_interaction(self.saved_state, self.initiator.id, self.world.tree.id)
+                npc.pause_after_conversation(self.committed)
         if self.initiator.encounter is self:
             self.initiator.encounter = None
             self.initiator.target_id = None
