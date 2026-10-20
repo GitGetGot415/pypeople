@@ -27,6 +27,7 @@ class StatsScreen:
             ("Statistics", (512, 146, 108, 36)), ("Opinions", (628, 146, 100, 36)),
             ("Conversations", (736, 146, 144, 36)), ("Model logs", (888, 146, 112, 36)))}
         self.original_toggle = Button((888, 102, 192, 30), "Original dialogue: Off")
+        self.condense_toggle = Button((888, 66, 192, 30), "Condense: Off")
         self.follow_toggle = Button((1008, 146, 72, 36), "Follow")
         self.list_rect = pygame.Rect(200, 184, 264, 440)
         self.detail_rect = pygame.Rect(512, 200, 568, 424)
@@ -104,7 +105,8 @@ class StatsScreen:
         def message(speaker, parts, *, original=True):
             npc = next((npc for npc in app.simulation.actors if npc.name == speaker), None)
             indent = 112 if npc is not None else 0
-            for emotion, page in paginate_parts(parts, app.font, self.detail_rect.width - 20 - indent):
+            for emotion, page in paginate_parts(parts, app.font, self.detail_rect.width - 20 - indent,
+                                                condensed=getattr(app, "condensed_dialogue", False)):
                 top = height()
                 add(speaker, color=ACCENT, indent=indent)
                 add(page, indent=indent)
@@ -444,6 +446,11 @@ class StatsScreen:
             self.follow_log = not self.follow_log
             return
 
+        if self.tab == "Conversations" and self.condense_toggle.clicked(event):
+            app.condensed_dialogue = not getattr(app, "condensed_dialogue", False)
+            self._scroll("detail", self.detail_scroll, self._scroll_limits(app))
+            return
+
         if self.tab == "Conversations" and self.original_toggle.clicked(event):
             app.original_dialogue = not app.original_dialogue
             self._scroll("detail", self.detail_scroll, self._scroll_limits(app))
@@ -530,6 +537,8 @@ class StatsScreen:
             if self.tab == name:
                 pygame.draw.line(surface, PAPER, (button.rect.left + 16, 176), (button.rect.right - 16, 176), 2)
         if self.tab == "Conversations":
+            self.condense_toggle.label = "Condense: " + ("On" if getattr(app, "condensed_dialogue", False) else "Off")
+            self.condense_toggle.draw(surface, app.small_font)
             self.original_toggle.label = "Original dialogue: " + ("On" if app.original_dialogue else "Off")
             self.original_toggle.draw(surface, app.small_font)
         if self.tab == "Model logs":

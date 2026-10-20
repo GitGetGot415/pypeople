@@ -33,7 +33,7 @@ from model_debug import check_cancelled, cancellable_stream, disconnect_response
 from conversation_history import rewrite_validation_error, usable_rewrite
 from social import (information_from_dict, listener_stances, phase_index, validate_agreements, validate_information)
 from purgatory import Attitudes
-from name_knowledge import (NAME_INSTRUCTION, account_references, name_forms, permitted_forms, validate_name_use,
+from name_knowledge import (NAME_INSTRUCTION, account_references, account_speech_context, name_forms, permitted_forms, validate_name_use,
                             actor_id, forms, listener_address, own_name, record_self_introductions,
                             asks_name, declines_name, introduction_supported, orientation_speech,
                             snake_name_witnesses, validate_names, validate_orientation)
@@ -1359,7 +1359,11 @@ def _resident_contract(snapshot, *, correction=False):
         schema["required"].append("disclosures")  # [] remains valid when no account is spoken.
     _available_speech_fields(schema)
     instruction = (f"You are {snapshot['speaker']['name']}, speaking directly to {snapshot['listener']['name']}.\n"
-        + (ORIENTATION_SPEAKING_BRIEF if orientation else SPEAKING_BRIEF) + "\n" + EMOTION_INSTRUCTION + "\n"
+        + ("Answer the listener's latest point in fresh words; do not copy either speaker or recite your profile. "
+           "Use only supplied knowledge, I/my for yourself and you/your for the listener. "
+           "Keep names, sources, memories and obligations with their actual owners."
+           if snapshot.get("_compact_rewrite") else ORIENTATION_SPEAKING_BRIEF if orientation else SPEAKING_BRIEF)
+        + "\n" + EMOTION_INSTRUCTION + "\n"
         "Use only your own supplied context and accepted preceding speech. The listener's private views are unknown. "
         "Your exact self-name is self_introduction_name; listener_address is the permitted address. "
         "Technical roster labels never grant name knowledge. Give only your own reply, never the listener's answer. "
@@ -1368,7 +1372,8 @@ def _resident_contract(snapshot, *, correction=False):
         "a heard account is hearsay, never your own remembered life. Denials, uncertainty and deliberate lies remain distinct. "
         "Hearing a divine claim is different from believing its theology. Introductions come from identifying words actually spoken. "
         "Respond to what the partner actually said; do not invent transfers, events, discoveries or shared experiences.\n"
-        + CONVERSATION_HISTORY_INSTRUCTION + "\n" + DIALOGUE_VARIETY_INSTRUCTION + "\n"
+        + ("Do not repeat accepted speech or invent earlier events.\n" if snapshot.get("_compact_rewrite") else
+           CONVERSATION_HISTORY_INSTRUCTION + "\n" + DIALOGUE_VARIETY_INSTRUCTION + "\n")
         + snapshot["speaker"].get("personality", "") + "\nCurrent task: " + snapshot["task"])
     if assessment:
         instruction += ("\nThe transcript is fixed. Return your own opinion of opinion_target, with a first-person reason in plain prose. "
@@ -1388,7 +1393,7 @@ def _resident_contract(snapshot, *, correction=False):
                 instruction += (" Your selected account is account_focus. If you tell its content, include "
                                 + json.dumps({"disclosures": [{"claim_id": focus["claim_id"], "intent": "share"}]})
                                 + " alongside parts. Its authored you/your refers to its named owner; use I/my for your own memory.")
-            elif focus:
+            elif focus and any(d.claim_id == focus["claim_id"] for d in snapshot["_draft"]["disclosures"]):
                 instruction += (" account_focus has already been shared in this exchange. Respond to the listener's reaction "
                                 "without another disclosure entry for it; an ordinary follow-up uses disclosures: [].")
         if "offers" in properties or "acceptances" in properties:
@@ -1745,6 +1750,8 @@ def _reply_context(snapshot):
     return dict(last_heard=heard,
                 questions_to_answer=[s for s in split_sentences(heard) if _has_question(s)],
                 name_requested=asks_name(heard, self_name=listener_name),
+                listener_name_asked=any(t["role"] == role and asks_name(t["text"], self_name=own_name(speaker))
+                                        for t in preceding),
                 self_name_already_spoken=any(introduction_supported(t["text"], name, "self", name_requested=bool(
                     i and asks_name(preceding[i - 1]["text"], self_name=listener_name)))
                     for i, t in enumerate(preceding) if t["role"] == role for name in forms(own_name(speaker))),
@@ -1792,7 +1799,7 @@ def validate_dialogue_format(turns):
         if contains_speaker_label(turn.text):
             raise ValueError("Return only directly spoken words, without narrator or speaker-name prefixes. The interface supplies the speaker label.")
         speech = unquoted_speech(turn.text)
-        if re.search(r"\b(?:account_to_share|question_to_answer|preceding_turns|zero-based|unreserved|new[_ ]apple[_ ]count)\b|"
+        if re.search(r"\b(?:account_to_share|question_to_answer|preceding_turns|zero-based|new[_ ]apple[_ ]count)\b|\bunreserved\s*[:=]|"
                      r"\bconcrete event from (?:my|the|a supplied) (?:account|assertion)\b|"
                      r"\b(?:retain|store) this knowledge as\b|\bowner and source of this recollection\b|"
                      r"\b(?:this|the) (?:account|recollection) (?:is |was )?(?:owned by|sourced from)\b|"
@@ -2317,7 +2324,7 @@ def _request_payload(message, snapshot, correction):
                            ensure_ascii=False, separators=(",", ":")))
     instruction, schema, _ = response_contract(snapshot, correction=bool(correction))
     context = world_context(snapshot, correction=bool(correction))
-    if snapshot.get("_compact_rewrite"):
+    if snapshot.get("_compact_rewrite") and snapshot.get("request_kind") != "resident_turn":
         instruction = (
             f"You are {_actor_name(snapshot['speaker'])}, speaking only to {_actor_name(snapshot['listener'])}. "
             "Write fresh speech for this one step. The structured outcome and account selection are fixed. "
@@ -2458,7 +2465,12 @@ def _request_payload(message, snapshot, correction):
             instruction += " You have already given your name here. Do not introduce yourself again."
         if focus["listener_declined_name"] and not focus["listener_name_known"]:
             instruction += " The listener declined to give a name; respect that and continue the actual discussion."
+        elif snapshot.get("arrival_focus") and not focus["listener_name_known"] and not focus["listener_name_asked"]:
+            instruction += (" You have not yet asked what to call this unfamiliar partner. Include a brief name question "
+                            "in this reply alongside your response about the surroundings.")
     instruction = named_references(instruction)
+    if snapshot.get("request_kind") in ("resident_turn", "snake_turn", "conversation_closing"):
+        context = account_speech_context(context, snapshot["speaker"], snapshot["listener"], snapshot.get("_name_actors", {}))
     payload = {"world_state": context, "player_message": message}
     if correction:
         if snapshot.get("request_kind") in ("resident_turn", "snake_turn", "conversation_closing"):
@@ -3278,7 +3290,7 @@ def _snake_turn_snapshot(snapshot, decision, turns):
 def _speech_retry_snapshot(snapshot):
     """Rewrite only this speech step, retaining its chosen action, sources and full validation context."""
     state = deepcopy(snapshot)
-    state["_compact_rewrite"] = state["request_kind"] not in ("resident_turn", "handoff_thanks")
+    state["_compact_rewrite"] = state["request_kind"] != "handoff_thanks"
     if state["request_kind"] == "resident_turn":
         return state  # Keep the conversation messages and unanswered questions on every attempt.
     state["preceding_turns"] = state["preceding_turns"][-1:]
@@ -3344,12 +3356,15 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
         correction = ""
         last_error = None
         disclosure_repair = None
+        disclosure_choices = None
         for attempt in range(DIALOGUE_STAGE_ATTEMPTS):
             report(("Generating " if attempt == 0 else "Correcting " if attempt == 1 else "Recovery: rewriting ") + activity)
             retry_state = (_speech_retry_snapshot(state) if attempt == DIALOGUE_STAGE_ATTEMPTS - 1
                            and kind in ("snake_turn", "conversation_closing", "resident_turn", "handoff_thanks") else state)
             if disclosure_repair:
                 retry_state = {**retry_state, "_disclosure_repair": disclosure_repair}
+            if disclosure_choices is not None:
+                retry_state = {**retry_state, "choices": {**retry_state["choices"], "disclosures": disclosure_choices}}
             try:
                 result = request(retry_state, correction)
                 if kind == "intent":
@@ -3369,6 +3384,7 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                         and mentions_private_recollection(" ".join(p.text for p in getattr(exc.response, "parts", [])),
                                                           focus["assertion"], ())):
                     disclosure_repair = focus["claim_id"]
+                    disclosure_choices = None
                 if exc.repeated_turns and isinstance(exc.response, DialoguePartsResponse):
                     candidate = exc.response.model_copy(deep=True)
                     candidate.parts = _deduplicate_dialogue_parts(candidate)
@@ -3383,6 +3399,32 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                               "Correct the error using your supplied choices and own knowledge. "
                               "Keep accepted preceding speech and effects unchanged. Write shorter complete sentences. "
                               "Do not read internal records aloud or write the listener's answer.")
+                if kind == "resident_turn" and str(exc).startswith("The speaker has not learned the name form"):
+                    correction = ("Your last reply used a name you have not learned. Regenerate only this reply, "
+                                  "using you/your for the current listener and an observable description from "
+                                  "speaker.speech_references.unknown_people for anyone else whose name is unknown. "
+                                  "Use only speaker.speech_references.allowed_name_forms as spoken names. "
+                                  "Keep the meaning, source and accepted effects; do not introduce anyone from a roster label.")
+                if (kind == "resident_turn" and str(exc).startswith("The selected account is not actually told")
+                        and not state.get("discussion_focus_claim_id") and not disclosure_repair):
+                    speech = " ".join(p.text for p in getattr(exc.response, "parts", []))
+                    disclosure_choices = []
+                    for account in state["speaker"].get("permitted_accounts", []):
+                        if account["claim_id"] not in state["choices"]["disclosures"]:
+                            continue
+                        try:
+                            validate_account_speech(speech, account["assertion"],
+                                names=name_forms(state.get("_name_actors", {})), speaker=state["speaker"]["name"],
+                                listener=state.get("_listener_identity"), kind=account["kind"],
+                                firsthand=account.get("basis") == "firsthand",
+                                actor_references=account_references(state.get("_name_actors", {})))
+                        except ValueError:
+                            continue
+                        disclosure_choices.append(account["claim_id"])
+                    correction = ("Your disclosure metadata did not match what you said. Regenerate only this reply. "
+                                  "For an ordinary reaction with no account, omit disclosures and introduce no new story. "
+                                  "If your reply actually reports an available account, use only its matching claim ID. "
+                                  "Keep accepted speech and the listener's reaction unchanged; never invent events to justify a tag.")
         raise RequestError(f"The model's reply failed validation after bounded correction: {last_error}")
 
     try:

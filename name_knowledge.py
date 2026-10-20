@@ -75,6 +75,35 @@ def account_references(catalog):
     return {actor["name"]: actor.get("references", []) for actor in catalog.values()}
 
 
+def account_speech_context(value, speaker, listener, catalog):
+    """Keep factual account references speakable without granting name knowledge."""
+    allowed = permitted_forms(speaker, catalog, speaker.get("name_knowledge", {}).get("known_names", {}))
+    replacements = {}
+    for target_id, actor in catalog.items():
+        reference = ("you" if isinstance(listener, dict) and target_id == actor_id(listener) else
+                     next(iter(actor.get("references", [])), None) if actor["self_name"] not in allowed else None)
+        if target_id == actor_id(speaker) or reference is None:
+            continue
+        for name in {actor["name"], actor["self_name"]}:
+            if name and sum(name in (entry["name"], entry["self_name"]) for entry in catalog.values()) == 1:
+                replacements[name.casefold()] = reference
+    pattern = "|".join(name_pattern(name) for name in sorted(replacements, key=len, reverse=True))
+
+    def project(item):
+        if isinstance(item, list):
+            return [project(entry) for entry in item]
+        if not isinstance(item, dict):
+            return item
+        result = {key: project(entry) for key, entry in item.items()}
+        if pattern and isinstance(item.get("assertion"), str) and item.get("kind") not in ("former_life", "private_motive"):
+            def reference(match):
+                target = replacements[match[1].casefold()]
+                return "your" if target == "you" and match[2] else target + ("'s" if match[2] else "")
+            result["assertion"] = re.sub(rf"({pattern})(['’]s)?", reference, item["assertion"], flags=re.I)
+        return result
+    return project(value)
+
+
 def _participants(snapshot):
     if snapshot.get("request_kind") in ("conversation",):
         return {role: snapshot[role] for role in ("initiator", "recipient")}

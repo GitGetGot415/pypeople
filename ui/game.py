@@ -417,11 +417,19 @@ class GameScreen:
         rect = pygame.Rect(self.reply_rect.x, 594, self.reply_rect.width, 96)
         source = conversation.turns or conversation.record.failed_turns
         failed = bool(source) and not conversation.turns
-        version = (id(source), app.original_dialogue)
+        version = (id(source), app.original_dialogue, getattr(app, "condensed_dialogue", False))
         if self._conversation_page_turns != version:
+            anchor = None
+            if (self.conversation_pages and self._conversation_page_turns is not None
+                    and self._conversation_page_turns[0] == id(source)):
+                old_index = max(0, min(self.conversation_page_index, len(self.conversation_pages) - 1))
+                previous_turn = self.conversation_pages[old_index][0]
+                turn_ids = list(dict.fromkeys(id(turn) for turn, _, _ in self.conversation_pages))
+                anchor = turn_ids.index(id(previous_turn))
+            turns = conversation.turns or [ConversationTurn.model_validate(turn) for turn in source]
             self.conversation_pages = [
                 (turn, part, text)
-                for index, turn in enumerate(conversation.turns or [ConversationTurn.model_validate(turn) for turn in source])
+                for index, turn in enumerate(turns)
                 for part, text in paginate_parts(display_parts([(part.text, part) for part in turn.parts],
                                                  () if failed else conversation.record.rewritten_parts.get(index, ()),
                                                  original=app.original_dialogue,
@@ -429,10 +437,13 @@ class GameScreen:
                                                  introductions=conversation.record.name_introductions.get(index, ()),
                                                  speaker=(conversation.initiator if turn.speaker == "initiator" else conversation.recipient).name,
                                                  listener=(conversation.recipient if turn.speaker == "initiator" else conversation.initiator).name),
-                                                 app.font, rect.width - 12)
+                                                 app.font, rect.width - 12, condensed=version[2])
             ]
             self._conversation_page_turns = version
             self.conversation_page_index = min(self.conversation_page_index, max(0, len(self.conversation_pages) - 1))
+            if anchor is not None and anchor < len(turns):
+                self.conversation_page_index = next((index for index, page in enumerate(self.conversation_pages)
+                                                     if page[0] is turns[anchor]), self.conversation_page_index)
             self.dialogue_scroll = 0
         page = self.conversation_pages[self.conversation_page_index] if self.conversation_pages else None
         turn, part, text = page if page is not None else (None, None, "")

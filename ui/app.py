@@ -48,6 +48,7 @@ class Application:
         self.running = True
         self.screen = "menu"
         self.original_dialogue = False
+        self.condensed_dialogue = False
 
         # Load the Gemini API key from the project's .env
         load_dotenv(

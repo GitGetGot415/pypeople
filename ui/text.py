@@ -48,7 +48,7 @@ def paginate_text(text, font, width, max_lines=DIALOGUE_PAGE_LINES):
     return pages
 
 
-def paginate_parts(parts, font, width, max_lines=DIALOGUE_PAGE_LINES):
+def paginate_parts(parts, font, width, max_lines=DIALOGUE_PAGE_LINES, *, condensed=False):
     """Keep complete sentences and part emotions on pages shared by both views."""
     texts, sources, offset = [], [], 0
     for text, source in parts:
@@ -57,6 +57,8 @@ def paginate_parts(parts, font, width, max_lines=DIALOGUE_PAGE_LINES):
             texts.append(text)
             offset += len(text) + 1
             sources.append((offset, source))
+    if condensed:
+        return [(sources[0][1], " ".join(texts))] if texts else []
     sections, offset, source_index = [], 0, 0
     for sentence in split_sentences(" ".join(texts)):
         while offset >= sources[source_index][0]:

@@ -218,7 +218,7 @@ def mentions_account(text, assertion, names):
 def mentions_private_recollection(text, assertion, names):
     # Generic reactions or a shared theological concept do not establish a private memory.
     general = {"description", "think", "thought", "mean", "feel", "felt", "wonder", "hope", "believe",
-               "seem", "too", "find", "way", "authority"}
+               "seem", "too", "find", "way", "authority", "accept"}
     expected = _content_words(assertion, names) - general
     actual = _content_words(text, names) - general
     overlap = expected & actual
