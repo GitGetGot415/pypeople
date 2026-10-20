@@ -18,6 +18,7 @@ from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_C
                        MODEL_STREAM_REPEAT_MAX_BLOCK_CHARACTERS, MODEL_STREAM_REPEAT_MIN_CHARACTERS,
                        SNAKE_NAME, SNAKE_TURN_COUNT, VOICE_REWRITE_TEMPERATURE)
 from dialogue_text import contains_serialized_dialogue, contains_speaker_label, speech_is_complete, split_sentences
+from dialogue_code import DELIVERY_INSTRUCTION
 from dialogue_rules import (is_name_reference, mentions_account, mentions_private_recollection, named_context, named_references, name_pattern, unquoted_speech,
                            validate_account_speech, validate_apple_roles, validate_continuity,
                            validate_base_prose, validate_claim_source, validate_english, validate_opinion_reason,
@@ -237,7 +238,7 @@ can stay close to an already natural original. Keep short replies short. Do not 
 speech or add a tic to every sentence. Convey mannerisms through spoken delivery,
 without narration, stage directions, wrappers, labels, outer quotes or field readouts.
 Use the supplied emotion subtly. Keep each slot's complete original meaning.
-"""
+""" + "\n" + DELIVERY_INSTRUCTION
 
 
 def voice_rewrite_snapshot(response, snapshot):
@@ -358,7 +359,15 @@ def _parse_voice_rewrite(raw, turns, *, speakers=None):
 
 def request_voice_rewrite(provider, api_key, response, snapshot, *, deadline,
                           ollama_model=DEFAULT_OLLAMA_MODEL, progress=None):
-    """One optional call per speaker; content checks are diagnostic only."""
+    """Interpret every full voice brief through the same bounded optional model pass."""
+    rewritten = []
+
+    def available_rewrites():
+        if not any(parts is not None for parts in rewritten):
+            return []
+        return [parts if parts is not None else [part["text"] for part in turn["parts"]]
+                for parts, turn in zip(rewritten, state["turns"])]
+
     try:
         state = voice_rewrite_snapshot(response, snapshot)
         if state is None:
@@ -367,8 +376,8 @@ def request_voice_rewrite(provider, api_key, response, snapshot, *, deadline,
         for indices, batch in voice_rewrite_batches(state):
             remaining = deadline - monotonic()
             if remaining <= 0:
-                logger.warning("Voice rewrite deadline expired; using original dialogue.")
-                return []
+                logger.warning("Voice rewrite deadline expired; using originals for unavailable voices.")
+                return available_rewrites()
             batch["_timeout"] = remaining
             name = next(iter(batch["speakers"].values()))["name"]
             if progress is not None:
@@ -378,7 +387,7 @@ def request_voice_rewrite(provider, api_key, response, snapshot, *, deadline,
             elif provider == "ollama":
                 generate = lambda correction="": _request_ollama("Rewrite the supplied speech.", batch, ollama_model, correction=correction)
             else:
-                return []
+                return available_rewrites()
             try:
                 result = generate()
             except StreamRepetitionError as exc:
@@ -392,17 +401,17 @@ def request_voice_rewrite(provider, api_key, response, snapshot, *, deadline,
                     progress(f"Correcting looping voice generation for {name}")
                 result = generate(correction=str(exc))
             if monotonic() > deadline:
-                logger.warning("Voice rewrite arrived after its deadline; using original dialogue.")
-                return []
+                logger.warning("Voice rewrite arrived after its deadline; using originals for unavailable voices.")
+                return available_rewrites()
             checked = retain_voice_rewrite(result.model_dump_json(), batch["turns"], speakers=batch["speakers"])
             for index, parts in zip(indices, checked.turns):
                 rewritten[index] = parts
         return rewritten
     except Exception as exc:
         # Presentation failure must never discard an accepted original or its effects.
-        logger.warning("Voice rewrite unavailable; using original dialogue: %s", exc)
-        record_output("validation", f"Voice rewrite unavailable; using original dialogue: {exc}")
-        return []
+        logger.warning("Voice rewrite unavailable; using originals for unavailable voices: %s", exc)
+        record_output("validation", f"Voice rewrite unavailable; using originals for unavailable voices: {exc}")
+        return available_rewrites()
 
 
 def structured_schema(model):
@@ -904,6 +913,9 @@ name and answer name questions. Avoid asking for a name already offered. Use you
 until the partner actually introduces a name; a later reply may use that exact form.
 Technical names and IDs do not teach names. The engine records actual spoken
 self-introductions; leave introductions empty. Do not invent a missing surname.
+Introduce yourself using self_introduction_name exactly; opinion_record_name is
+only a technical label for opinion fields. Two people can share the same authored name. Never say a roster suffix
+such as (2) unless it is actually part of character.Name.
 
 Turn 0: initiator gives their own name and asks the unknown partner's name alongside
 one arrival concern. They have not heard the recipient yet, so use you for that person.
@@ -967,7 +979,7 @@ def _orientation_world_context(snapshot, *, correction=False):
         private = person.get("private_context", {})
         learned = person.get("name_knowledge", {}).get("known_names", {}).get(actor_id(partner))
         context[role] = {
-            "npc_id": actor_id(person), "npc_name": person["npc_name"],
+            "npc_id": actor_id(person), "opinion_record_name": person["npc_name"],
             "character": {"Name": own_name(person), "personality": character_context(person["character"])["personality"]},
             "name_knowledge": deepcopy(person.get("name_knowledge", {})),
             "partner_name_known": learned["name"] if learned else None,
@@ -976,6 +988,7 @@ def _orientation_world_context(snapshot, *, correction=False):
             "opinion_of_partner": _base_opinions(private.get("opinions", {}), person["npc_name"]).get(partner["npc_name"]),
             "private_context": {"situation": {key: value for key, value in private.get("situation", {}).items()
                                              if key not in ("known_danger", "apple_bargain")}},
+            "self_introduction_name": own_name(person),
         }
     history = deepcopy(snapshot.get("shared_history", {}))
     if correction:
@@ -1389,6 +1402,9 @@ def _orientation_contract(snapshot, *, correction=False):
         turn = deepcopy(CONVERSATION_SCHEMA["properties"]["turns"]["items"])
         turn["properties"]["speaker"] = {"type": "string", "enum": [role]}
         turn["properties"]["parts"] = _dialogue_parts_schema(correction=correction)
+        turn["properties"]["parts"]["items"]["properties"]["text"]["description"] += (
+            f" This {role}'s self-introduction name is {own_name(snapshot[role])!r}; "
+            "never use an opinion-record label or add a roster suffix.")
         turn["properties"]["introductions"] = {
             "type": "array", "maxItems": 0,
             "description": "Empty. The engine records names from actual spoken self-introductions.",
@@ -2585,12 +2601,24 @@ def _request_payload(message, snapshot, correction):
     instruction += ("\nUse ordinary capitalization and plain prose for base speech and opinion/attitude reasons. "
                     "Express the supplied behavioral personality; presentation is applied in a separate optional pass. "
                     "Do not imitate casing, accents or verbal tics from previous speech.")
+    if snapshot.get("request_kind") in ("snake_turn", "dialogue_repair", "conversation_closing"):
+        context["spoken_identity"] = {
+            "speaker_self_name": own_name(snapshot["speaker"]),
+            "listener_address": listener_address(snapshot["speaker"], snapshot["listener"],
+                snapshot["speaker"].get("name_knowledge", {}).get("known_names", {}))
+                if isinstance(snapshot["listener"], dict) else "you",
+        }
+        instruction += (" Use spoken_identity.speaker_self_name for your own introduction and "
+                        "spoken_identity.listener_address when addressing the listener. "
+                        "Technical roster names can have disambiguation suffixes; never copy those into speech.")
     instruction += "\n" + NAME_INSTRUCTION
     if snapshot.get("request_kind") == "conversation":
         for role in ("initiator", "recipient"):
             context[role]["name_knowledge"] = snapshot[role].get("name_knowledge", {})
             context[role]["speech_references"] = _speech_references(snapshot[role], snapshot.get("_name_actors", {}))
         instruction += (" For every turn, check that speaker's speech_references before naming anyone. "
+                        "Use character.Name for self-introductions, even when two people share it; "
+                        "npc_name and numbered roster suffixes are bookkeeping only. "
                         "Address an unnamed partner as you; introduce yourself before later replies use your name. "
                         "Private objectives are motivations, never lines to read aloud. orientation_discussed is true only for arrival or surroundings discussion.")
     elif snapshot.get("request_kind") in ("snake_turn", "dialogue_repair", "conversation_closing"):
@@ -2873,7 +2901,8 @@ def _snake_turn_snapshot(snapshot, decision, turns):
     snake, resident = context["snake"], context["resident"]
     identities = {
         "initiator": {"actor_id": snake["actor_id"], "name": snake["name"], "kind": "python"},
-        "recipient": {"actor_id": resident["npc_id"], "name": resident["npc_name"], "kind": "human resident"},
+        "recipient": {"actor_id": resident["npc_id"], "name": resident["npc_name"], "kind": "human resident",
+                      "name_knowledge": {"own_name": own_name(snapshot["resident"])}},
     }
     index = len(turns)
     role = "initiator" if index % 2 == 0 else "recipient"

@@ -166,7 +166,7 @@ def validate_opinion_reason(reason, owner, target=""):
         aliases = {owner} if owner else set()
         if owner and (not target or owner.split()[0].casefold() != target.split()[0].casefold()):
             aliases.add(owner.split()[0])
-        if any(re.search(name_pattern(name) + r"(?:['’]s\b|\s+(?:kept|seemed|was|appeared|dismissed|ignored|refused)\b|\s+is\s+(?:trying|being)\b)",
+        if any(re.search(name_pattern(name) + r"(?:['’]s\s+(?!well-being\b|wellbeing\b|safety\b|welfare\b|needs\b|health\b|hunger\b|survival\b)\w+|\s+(?:kept|seemed|was|appeared|dismissed|ignored|refused)\b|\s+is\s+(?:trying|being)\b)",
                          sentence, re.I) for name in aliases):
             raise ValueError("An opinion reason must explain the owner's view of their partner, not criticize the owner by name. "
                              "The initiator judges the recipient; the recipient judges the initiator. Use I/my for the owner.")
@@ -215,9 +215,9 @@ def mentions_account(text, assertion, names):
 
 
 def mentions_private_recollection(text, assertion, names):
-    # Generic thought/reaction words cannot establish that private biography was spoken.
+    # Generic reactions or a shared theological concept do not establish a private memory.
     general = {"description", "think", "thought", "mean", "feel", "felt", "wonder", "hope", "believe",
-               "seem", "too", "find", "way"}
+               "seem", "too", "find", "way", "authority"}
     expected = _content_words(assertion, names) - general
     actual = _content_words(text, names) - general
     return bool(expected) and len(expected & actual) >= min(2, len(expected))
