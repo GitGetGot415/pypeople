@@ -15,7 +15,7 @@ from social import (Goal, check_relationship_goals, commit_agreements, commit_in
                     information_views, on_transfer, permitted_proposals, phase_label, prepare_information,
                     private_context, validate_live_agreements)
 from constants import (
-    APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS,
+    APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DEFAULT_CHARACTER_NAME, DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS,
     FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, GIFT_SECONDS, INVENTORY_CAPACITY,
     MOVEMENT_SPEED, NPC_RADIUS, PARTNER_COOLDOWN,
     POST_DIALOGUE_SECONDS, SHAKE_SECONDS, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED, WANDER_PAUSE, WORLD_HEIGHT, WORLD_WIDTH,
@@ -602,7 +602,7 @@ def assign_npc_names(npcs, *, used_names=()):
     """Assign new labels without renaming any existing residents."""
     used = {name.casefold() for name in used_names} | {"python", SNAKE_NAME.casefold()}
     for npc in npcs:
-        base = npc.character["Name"].strip() or "Resident"
+        base = npc.character["Name"].strip() or DEFAULT_CHARACTER_NAME
         label, number = base, 2
         while label.casefold() in used:
             label = f"{base} ({number})"

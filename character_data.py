@@ -5,7 +5,7 @@ from colorsys import hls_to_rgb
 from pathlib import Path
 import random
 
-from constants import (RANDOM_EYE_STYLES_BY_SEX, RANDOM_HAIR_STYLES_BY_SEX,
+from constants import (DEFAULT_CHARACTER_NAME, RANDOM_EYE_STYLES_BY_SEX, RANDOM_HAIR_STYLES_BY_SEX,
                        RANDOM_SKIN_HUE_RANGE, RANDOM_SKIN_LIGHTNESS_RANGE)
 
 
@@ -49,6 +49,8 @@ def normalize_character(data):
         if not isinstance(value, (str, int, float)):
             raise ValueError(f"{name} must be text.")
         values[name] = str(value)
+    if not values["Name"].strip():
+        values["Name"] = DEFAULT_CHARACTER_NAME
     if "Hair" not in data or data["Hair"] not in HAIR_STYLES:
         raise ValueError("Hair must be one, two, three, or four.")
     values["Hair"] = data["Hair"]
