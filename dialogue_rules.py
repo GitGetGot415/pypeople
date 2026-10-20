@@ -337,7 +337,12 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
 
 
 def validate_apple_promise(offer, acceptance, deadline, *, current_phase=None):
-    offer, acceptance = unquoted_speech(offer), unquoted_speech(acceptance)
+    validate_apple_offer(offer, deadline, current_phase=current_phase)
+    validate_apple_acceptance(acceptance)
+
+
+def validate_apple_offer(offer, deadline, *, current_phase=None):
+    offer = unquoted_speech(offer)
     giving = re.search(r"\bi\s+(?:(?:will|shall|can|could|promise to|intend to|plan to)\s+)?"
                       r"(?:give|bring|deliver|share|save|offer)\b|\bi['’]ll\s+(?:give|bring|deliver|share|save)\b|"
                       r"\bi(?:['’]ll|\s+(?:will|can))?\s+get you (?:an?|one) (?:apple|fruit)\b", offer, re.I)
@@ -353,6 +358,11 @@ def validate_apple_promise(offer, acceptance, deadline, *, current_phase=None):
             or current_phase is not None and re.search(r"\btomorrow\b", offer, re.I)
             and deadline // 3 != current_phase // 3 + 1):
         raise ValueError("State the apple promise's actual deadline in the offer; do not invent a different day or phase.")
+
+
+def validate_apple_acceptance(acceptance):
+    acceptance = unquoted_speech(acceptance)
+    negative = r"\b(?:cannot|can['’]t|won['’]t|wouldn['’]t|will not|do not|don['’]t|decline|refuse|maybe|perhaps|might)\b"
     if ("?" in acceptance or re.search(negative, acceptance, re.I)
             or not re.search(r"\b(?:yes|agreed|deal|that works|i accept|i agree|thank you|thanks|i['’]ll take)\b", acceptance, re.I)):
         raise ValueError("The apple receiver must explicitly accept the spoken promise before it can be recorded.")

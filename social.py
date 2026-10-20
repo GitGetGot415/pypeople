@@ -347,9 +347,11 @@ def information_views(context, world):
         for claim_id in context.allowed[role]:
             option = options[claim_id]
             belief = beliefs.get(claim_id)
-            view = {**fact_context(world, fact_by_id(world, option.fact_id), option.affirmed),
+            fact = fact_by_id(world, option.fact_id)
+            view = {**fact_context(world, fact, option.affirmed),
                     "claim_id": claim_id, "subject_id": option.subject_id,
                     "subject_name": world.actor_by_id(option.subject_id).name,
+                    "object_id": fact.object_id, "object_name": world.actor_by_id(fact.object_id).name,
                     "knowledge_owner_name": world.actor_by_id(npc_id).name,
                     "original_speaker_id": option.originator_id,
                     "original_speaker_name": world.actor_by_id(option.originator_id).name,
@@ -376,8 +378,24 @@ def information_views(context, world):
     return result
 
 
+def listener_stances(option, beliefs, options, *, firsthand_source=False):
+    """The same belief constraints govern a pending reaction and the final record."""
+    related = [b for b in beliefs.values() if options[b.claim_id].fact_id == option.fact_id]
+    firsthand = next((b for b in related if b.direct), None)
+    prior = beliefs.get(option.id)
+    if firsthand:
+        return ["believed" if options[firsthand.claim_id].affirmed == option.affirmed else "disbelieved"]
+    if prior is not None:
+        return [prior.stance]
+    stances = ["uncertain", "believed", "disbelieved"]
+    if (not firsthand_source and any(options[b.claim_id].affirmed == option.affirmed
+                                    and b.stance != "believed" for b in related)):
+        stances.remove("believed")
+    return stances
+
+
 def validate_information(response, context, *, names=(), participant_names=None, dialogue_validation=True,
-                         actor_references=None):
+                         actor_references=None, incomplete=False):
     """Simulate knowledge in speech order before any real state is touched."""
     if isinstance(context, dict):
         context = information_from_dict(context)
@@ -459,16 +477,16 @@ def validate_information(response, context, *, names=(), participant_names=None,
                     raise ValueError("The disclosure intent must respect the speaker's firsthand knowledge of this event.")
             prior = beliefs[listener].get(option.id)
             related = [b for b in beliefs[listener].values() if options[b.claim_id].fact_id == option.fact_id]
-            firsthand = next((b for b in related if b.direct), None)
-            if firsthand:
-                stance = "believed" if options[firsthand.claim_id].affirmed == option.affirmed else "disbelieved"
-                if entry.listener_stance != stance:
-                    raise ValueError(f"The listener knows this event firsthand; their stance must remain {stance}.")
-            elif prior is not None and entry.listener_stance != prior.stance:
-                raise ValueError("Repeating an account is not new independent confirmation.")
-            elif (any(options[b.claim_id].affirmed == option.affirmed and b.stance != "believed" for b in related)
-                  and entry.listener_stance == "believed" and not (belief and belief.direct)):
-                raise ValueError("Hearsay repeated through another source is not independent confirmation.")
+            if incomplete and entry.listener_stance is None:
+                # The assertion has been spoken, but only its listener can choose
+                # a stance. Do not authorize downstream effects until they do.
+                continue
+            stances = listener_stances(option, beliefs[listener], options,
+                                       firsthand_source=bool(belief and belief.direct))
+            if entry.listener_stance not in stances:
+                raise ValueError("The listener's stance must respect firsthand evidence and prior beliefs; "
+                                 "repeated hearsay is not independent confirmation. "
+                                 f"Permitted stances: {', '.join(stances)}.")
             if entry.listener_stance == "believed":
                 for other in related:
                     if (options[other.claim_id].affirmed != option.affirmed and not other.direct
@@ -481,11 +499,12 @@ def validate_information(response, context, *, names=(), participant_names=None,
                 prior.stance = entry.listener_stance
             acquired[listener].add(option.id)
             heard[listener, option.id] = turn
-    if context.focus_claim_id:
+    if context.focus_claim_id and not incomplete:
         focus = options[context.focus_claim_id]
         if not any(response.turns[entry.turn].speaker == "initiator" and options[entry.claim_id].fact_id == focus.fact_id
                    for entry in response.disclosures):
             raise ValueError("A gossip exchange must disclose its chosen account or a permitted denial of it.")
+    return beliefs, acquired, heard
 
 
 def information_from_dict(value):

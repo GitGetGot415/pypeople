@@ -88,6 +88,12 @@ def streaming_output():
     return _current_log.get() is not None
 
 
+def check_cancelled():
+    control = _current_control.get()
+    if control is not None:
+        control.check()
+
+
 def record_output(kind, text):
     control = _current_control.get()
     if control is not None and kind in ("call", "output", "reasoning"):
