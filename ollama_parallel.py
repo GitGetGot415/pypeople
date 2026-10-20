@@ -1,6 +1,7 @@
 """Read and edit local Ollama parallelism, and inspect loaded runner capacity."""
 
 from dataclasses import dataclass, field
+import json
 import os
 import platform
 import re
@@ -131,15 +132,20 @@ def _restart_mac():
 
 def _restart_windows():
     # Target the local API listener and its desktop app, rather than every model
-    # process on the machine. Child launches inherit the newly set environment.
+    # process on the machine. Return its executable for a direct hidden launch.
     script = r'''
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $listeners = @(Get-NetTCPConnection -LocalPort 11434 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)
 $executable = (Get-Command ollama.exe -ErrorAction SilentlyContinue).Source
 foreach ($serverId in $listeners) {
     $server = Get-CimInstance Win32_Process -Filter "ProcessId = $serverId"
     if ($server.Name -ne 'ollama.exe' -or $server.CommandLine -notmatch '\bserve\b') { throw 'Unexpected process on the Ollama port.' }
     $executable = $server.ExecutablePath
+}
+if (-not $executable) {
+    $candidate = Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) { $executable = $candidate }
 }
 if (-not $executable) { throw 'Ollama executable was not found.' }
 $directory = Split-Path $executable
@@ -156,13 +162,19 @@ foreach ($serverId in $listeners) {
         Wait-Process -Id $serverId -Timeout 10 -ErrorAction SilentlyContinue
     }
 }
-Start-Process -FilePath $executable -ArgumentList 'serve' -WindowStyle Hidden
+Write-Output $executable
 '''
     result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                            capture_output=True, text=True, timeout=30,
+                            capture_output=True, text=True, encoding="utf-8", timeout=30,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    if result.returncode:
+    executable = result.stdout.strip()
+    if result.returncode or not executable:
         raise ValueError("Could not restart the local Ollama server. Close it and try Apply again.")
+    # Avoid PowerShell child-process pipe inheritance and preserve paths with
+    # spaces. Pass the updated process environment explicitly to the API server.
+    subprocess.Popen([executable, "serve"], stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), env=os.environ.copy())
 
 
 def apply_parallel_limit(limit, model, progress=None):
@@ -232,9 +244,10 @@ class ParallelStatus:
         return launch, f"Loaded model slots: {slots} confirmed for the selected model.", note
 
 
-def _command(arguments):
+def _command(arguments, *, timeout=2):
     try:
-        result = subprocess.run(arguments, capture_output=True, text=True, timeout=2,
+        result = subprocess.run(arguments, capture_output=True, text=True, timeout=timeout,
+                                encoding="utf-8" if platform.system() == "Windows" else None,
                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if platform.system() == "Windows" else 0)
     except (OSError, UnicodeError, subprocess.TimeoutExpired):
         return None
@@ -286,12 +299,27 @@ def _launch_setting():
 
 
 def _runner_slots():
-    if platform.system() == "Windows":
+    windows = platform.system() == "Windows"
+    if windows:
         commands = _command([
             "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+            "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
             "Get-CimInstance Win32_Process -Filter \"Name = 'ollama.exe' OR Name = 'llama-server.exe' OR Name = 'ollama_llama_server.exe'\" "
-            "| Select-Object -ExpandProperty CommandLine",
-        ])
+            "| Select-Object Name,CommandLine | ConvertTo-Json -Compress",
+        ], timeout=10)
+        # Windows command lines may leave executable paths containing spaces
+        # unquoted. Use the OS-reported process name instead of guessing it.
+        try:
+            processes = json.loads(commands or "[]")
+            if isinstance(processes, dict):
+                processes = [processes]
+            commands = "\n".join(
+                process["CommandLine"] for process in processes
+                if process["Name"].lower() in ("ollama.exe", "llama-server.exe", "ollama_llama_server.exe")
+                and isinstance(process["CommandLine"], str)
+            )
+        except (ValueError, KeyError, TypeError, AttributeError):
+            return {}
     else:
         commands = _command(["ps", "-axww", "-o", "command="])
     if commands is None:
@@ -299,7 +327,7 @@ def _runner_slots():
     slots = {}
     for line in commands.splitlines():
         # Match Ollama's runner binaries, including older `ollama runner` builds.
-        if not re.match(r'^\s*(?:"[^"]*(?:ollama|llama-server|ollama_llama_server)(?:\.exe)?"|\S*(?:ollama|llama-server|ollama_llama_server)(?:\.exe)?)\s', line):
+        if not windows and not re.match(r'^\s*(?:"[^"]*(?:ollama|llama-server|ollama_llama_server)(?:\.exe)?"|\S*(?:ollama|llama-server|ollama_llama_server)(?:\.exe)?)\s', line):
             continue
         digest = re.search(r'\bsha256-([a-fA-F0-9]{64})\b', line)
         parallel = re.search(r'(?:^|\s)(?:--parallel|-np)(?:=|\s+)([1-9][0-9]*)(?=\s|$)', line)
