@@ -14,6 +14,8 @@ from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_C
                        DIALOGUE_PART_TARGET_CHARACTERS, DIALOGUE_PARTS_PER_TURN,
                        DIALOGUE_REPAIR_WORD_LIMIT, DIALOGUE_TIMEOUT_SECONDS,
                        EMOTION_THRESHOLD, FURIOUS_THRESHOLD, LEVERAGE_ACCOUNT_KINDS,
+                       MODEL_STREAM_REPEAT_CHECK_CHARACTERS, MODEL_STREAM_REPEAT_COUNT,
+                       MODEL_STREAM_REPEAT_MAX_BLOCK_CHARACTERS, MODEL_STREAM_REPEAT_MIN_CHARACTERS,
                        SNAKE_NAME, SNAKE_TURN_COUNT, VOICE_REWRITE_TEMPERATURE)
 from dialogue_text import contains_serialized_dialogue, contains_speaker_label, speech_is_complete, split_sentences
 from dialogue_rules import (is_name_reference, mentions_account, mentions_private_recollection, named_context, named_references, name_pattern, unquoted_speech,
@@ -372,11 +374,23 @@ def request_voice_rewrite(provider, api_key, response, snapshot, *, deadline,
             if progress is not None:
                 progress(f"Rewriting {name}'s voice")
             if provider == "gemini":
-                result = _request_gemini(api_key, "Rewrite the supplied speech.", batch)
+                generate = lambda correction="": _request_gemini(api_key, "Rewrite the supplied speech.", batch, correction=correction)
             elif provider == "ollama":
-                result = _request_ollama("Rewrite the supplied speech.", batch, ollama_model)
+                generate = lambda correction="": _request_ollama("Rewrite the supplied speech.", batch, ollama_model, correction=correction)
             else:
                 return []
+            try:
+                result = generate()
+            except StreamRepetitionError as exc:
+                # Only an interrupted generation gets a retry. Completed rewrite
+                # content/identity diagnostics remain nonblocking and never retry.
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise
+                batch["_timeout"] = remaining
+                if progress is not None:
+                    progress(f"Correcting looping voice generation for {name}")
+                result = generate(correction=str(exc))
             if monotonic() > deadline:
                 logger.warning("Voice rewrite arrived after its deadline; using original dialogue.")
                 return []
@@ -2275,6 +2289,46 @@ class InvalidResponseError(ValueError):
         self.failed_turns = list(failed_turns)
 
 
+class StreamRepetitionError(InvalidResponseError):
+    """A still-generating response loop, before usable JSON or speech exists."""
+
+
+class _StreamRepetitionGuard:
+    """Bounded, request-local checks, independent of provider chunk boundaries."""
+
+    def __init__(self):
+        self.tails = {}
+        self.unchecked = {}
+
+    def add(self, kind, text):
+        window = max(MODEL_STREAM_REPEAT_MIN_CHARACTERS,
+                     MODEL_STREAM_REPEAT_COUNT * MODEL_STREAM_REPEAT_MAX_BLOCK_CHARACTERS)
+        tail = self.tails.get(kind, "")
+        unchecked = self.unchecked.get(kind, 0)
+        for offset in range(0, len(text), MODEL_STREAM_REPEAT_CHECK_CHARACTERS):
+            piece = text[offset:offset + MODEL_STREAM_REPEAT_CHECK_CHARACTERS].casefold()
+            tail = (tail + piece)[-window:]
+            unchecked += len(piece)
+            if unchecked < MODEL_STREAM_REPEAT_CHECK_CHARACTERS:
+                continue
+            unchecked = 0
+            if len(tail) < MODEL_STREAM_REPEAT_MIN_CHARACTERS:
+                continue
+            for size in range(1, min(MODEL_STREAM_REPEAT_MAX_BLOCK_CHARACTERS,
+                                     len(tail) // MODEL_STREAM_REPEAT_COUNT) + 1):
+                if tail[-size:] != tail[-2 * size:-size]:
+                    continue
+                length = max(MODEL_STREAM_REPEAT_MIN_CHARACTERS, MODEL_STREAM_REPEAT_COUNT * size)
+                sample = tail[-length:]
+                if sample[:-size] == sample[size:]:
+                    reason = (f"Generation stopped: the {kind} stream kept repeating the same text. "
+                              "Start fresh and return one finite JSON response for the current task. "
+                              "Do not repeat phrases, paragraphs, or reasoning in a loop; finish the response.")
+                    record_output("validation", reason)
+                    raise StreamRepetitionError(reason)
+        self.tails[kind], self.unchecked[kind] = tail, unchecked
+
+
 class DialogueTurnError(ValueError):
     def __init__(self, message, turn_indices):
         super().__init__(message)
@@ -2589,6 +2643,7 @@ def _request_gemini(api_key, message, snapshot, *, correction=""):
             else:
                 responses = [client.models.generate_content(model=MODEL, contents=content, config=config)]
             chunks, reason = [], None
+            repetition = _StreamRepetitionGuard()
             deadline = monotonic() + _request_timeout(snapshot)
             for response in responses:
                 if monotonic() > deadline:
@@ -2605,7 +2660,9 @@ def _request_gemini(api_key, message, snapshot, *, correction=""):
                 if live:
                     for part in (candidate.content.parts if candidate.content else ()) or ():
                         if part.text:
-                            record_output("reasoning" if part.thought else "output", part.text)
+                            kind = "reasoning" if part.thought else "output"
+                            record_output(kind, part.text)
+                            repetition.add(kind, part.text)
                             if not part.thought:
                                 chunks.append(part.text)
                 elif response.text:
@@ -2685,6 +2742,7 @@ def _request_ollama(message, snapshot, model=DEFAULT_OLLAMA_MODEL, *, correction
         if streaming_output():
             deadline = monotonic() + _request_timeout(snapshot)
             chunks, data = [], {}
+            repetition = _StreamRepetitionGuard()
             receiving = False
             with httpx.stream("POST", OLLAMA_URL, json=payload, timeout=_request_timeout(snapshot)) as response, cancellable_stream(lambda: disconnect_response(response)):
                 check_response(response)
@@ -2701,8 +2759,10 @@ def _request_ollama(message, snapshot, model=DEFAULT_OLLAMA_MODEL, *, correction
                         receiving = True
                         record_output("status", "running")
                     record_output("reasoning", part.get("thinking", ""))
+                    repetition.add("reasoning", part.get("thinking", ""))
                     text = part.get("content", "")
                     record_output("output", text)
+                    repetition.add("output", text)
                     chunks.append(text)
                     if data.get("done"):
                         break
