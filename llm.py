@@ -17,7 +17,7 @@ from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_C
                        EMOTION_THRESHOLD, FURIOUS_THRESHOLD, LEVERAGE_ACCOUNT_KINDS,
                        MODEL_STREAM_REPEAT_CHECK_CHARACTERS, MODEL_STREAM_REPEAT_COUNT,
                        MODEL_STREAM_REPEAT_MAX_BLOCK_CHARACTERS, MODEL_STREAM_REPEAT_MIN_CHARACTERS,
-                       RESIDENT_TURN_COUNT, FOOD_REQUEST_TURN_COUNT, DIALOGUE_STAGE_ATTEMPTS,
+                       RESIDENT_TURN_COUNT, FOOD_REQUEST_TURN_COUNT, CONVERSATION_MAX_TURNS, DIALOGUE_STAGE_ATTEMPTS,
                        DIALOGUE_REPEAT_PHRASE_WORDS, DIALOGUE_REPEAT_SENTENCE_WORDS, DIALOGUE_REPEAT_TURN_WORDS,
                        CONVERSATION_MAX_AGREEMENTS, CONVERSATION_MAX_DISCLOSURES,
                        CONVERSATION_MAX_REPUTATION_EFFECTS, CONVERSATION_MAX_LEVERAGE,
@@ -141,19 +141,19 @@ class ConversationTurn(DialoguePartsResponse):
 
 class AcceptedProposal(StrictResponse):
     proposal_id: str = Field(min_length=1)
-    offer_turn: int = Field(ge=0, le=7)
-    accept_turn: int = Field(ge=1, le=7)
+    offer_turn: int = Field(ge=0, le=CONVERSATION_MAX_TURNS - 1)
+    accept_turn: int = Field(ge=1, le=CONVERSATION_MAX_TURNS - 1)
 
 
 class DisclosureChoice(StrictResponse):
-    turn: int = Field(ge=0, le=7)
+    turn: int = Field(ge=0, le=CONVERSATION_MAX_TURNS - 1)
     claim_id: str = Field(min_length=1)
     intent: Literal["share", "challenge", "lie"]
     listener_stance: Literal["uncertain", "believed", "disbelieved"]
 
 
 class ThirdPartyOpinion(StrictResponse):
-    turn: int = Field(ge=0, le=7)
+    turn: int = Field(ge=0, le=CONVERSATION_MAX_TURNS - 1)
     claim_id: str = Field(min_length=1)
     subject_id: str = Field(min_length=1)
     delta: int = Field(ge=-6, le=6)
@@ -161,7 +161,7 @@ class ThirdPartyOpinion(StrictResponse):
 
 
 class LeverageUse(StrictResponse):
-    turn: int = Field(ge=0, le=7)
+    turn: int = Field(ge=0, le=CONVERSATION_MAX_TURNS - 1)
     claim_id: str = Field(min_length=1)
     demand: Literal["apple", "repayment", "disclosure"]
 
@@ -172,7 +172,7 @@ class AccountDisclosure(StrictResponse):
 
 
 class AccountReaction(StrictResponse):
-    disclosure_turn: int = Field(ge=0, le=7)
+    disclosure_turn: int = Field(ge=0, le=CONVERSATION_MAX_TURNS - 1)
     stance: Literal["uncertain", "believed", "disbelieved"]
 
 
@@ -212,7 +212,7 @@ class SnakeDecision(StrictResponse):
 
 
 class SnakeResponse(SnakeDecision):
-    turns: list[ConversationTurn] = Field(min_length=SNAKE_TURN_COUNT, max_length=SNAKE_TURN_COUNT + 1)
+    turns: list[ConversationTurn] = Field(min_length=SNAKE_TURN_COUNT, max_length=CONVERSATION_MAX_TURNS)
 
 
 class SnakePlayerResponse(StrictResponse):
@@ -220,7 +220,7 @@ class SnakePlayerResponse(StrictResponse):
 
 
 class ConversationResponse(StrictResponse):
-    turns: list[ConversationTurn] = Field(min_length=2, max_length=8,
+    turns: list[ConversationTurn] = Field(min_length=FOOD_REQUEST_TURN_COUNT, max_length=CONVERSATION_MAX_TURNS,
         description="Conversation in chronological order. Each turn is one uninterrupted stretch of speech before the partner replies.")
     initiator_opinion: OpinionUpdate
     recipient_opinion: OpinionUpdate
@@ -1175,6 +1175,8 @@ def validate_snake_response(result, snapshot, *, dialogue_validation=None):
         _validate_base_presentation(result, snapshot)
         validate_dialogue_format(result.turns)
         validate_dialogue_completion(result.turns)
+        if len(result.turns) == CONVERSATION_MAX_TURNS and _has_question(result.turns[-1].text):
+            raise ValueError("At the turn limit, finish with an answer or closing rather than a new question.")
     for i, turn in enumerate(result.turns):
         if turn.speaker != ("initiator" if i % 2 == 0 else "recipient"):
             raise ValueError("Alternate snake and resident speech, beginning with the snake.")
@@ -2142,9 +2144,9 @@ def _validate_response(raw, snapshot, model):
                 validate_resident_grounding(SimpleNamespace(turns=[*result.turns, thanks], disclosures=result.disclosures), snapshot)
                 _validate_speaker(" ".join(part.text for part in result.handoff_thanks),
                                   snapshot["initiator"]["npc_name"], snapshot["recipient"]["npc_name"])
-        elif len(result.turns) < 4 or result.food_outcome or result.handoff_thanks:
+        elif len(result.turns) < RESIDENT_TURN_COUNT or result.food_outcome or result.handoff_thanks:
             raise ValueError("Chats need at least four turns and cannot include a food outcome or handoff thanks.")
-        if check_dialogue and len(result.turns) == 8 and _has_question(result.turns[-1].text):
+        if check_dialogue and len(result.turns) == CONVERSATION_MAX_TURNS and _has_question(result.turns[-1].text):
             raise ValueError("At the turn limit, finish with an answer or closing rather than a new question.")
         for entry, partner in (
             (result.initiator_opinion, snapshot["recipient"]),
@@ -3032,7 +3034,7 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
     elif closing:
         state["question_to_answer"] = _last_question(draft["turns"][-1].text)
         state["task"] += " Answer the last question and finish with a statement. The listener will not reply; make no new offer."
-    elif index == (FOOD_REQUEST_TURN_COUNT if snapshot.get("purpose") == "food_request" else RESIDENT_TURN_COUNT) - 1:
+    elif snapshot.get("purpose") == "food_request" and index == FOOD_REQUEST_TURN_COUNT - 1:
         state["task"] += " Finish naturally; prefer a statement rather than a new question."
     state["_factual_context"] = [a["assertion"] for a in accounts]
     state["_factual_context"].extend(e["text"] for e in state["shared_history"].get("confirmed_events", []))
@@ -3178,10 +3180,11 @@ def _snake_turn_snapshot(snapshot, decision, turns):
             account = next(a for a in snake["known_accounts"] if a["claim_id"] == decision.snake_account_id)
             task += " Also disclose the supplied known account now, retaining its actual owner and source."
     else:
-        task = ("Give one short personal reaction to what the listener has just done or revealed, then close. "
+        task = ("Respond to the listener's latest point or question using your own knowledge. "
                 "Do not restate the bargain, the listener's explanation, or your earlier reply. "
                 "Preserve the settled outcome and any accepted obligation; introduce no new bargain "
-                "or request to hear an account already told. Finish without another question.")
+                "or request to hear an account already told. A relevant follow-up question may continue the exchange; "
+                "when nothing needs answering, finish naturally with a statement.")
         if decision.snake_account_id and role == "recipient":
             speaker["stance_on_disclosed_account"] = decision.account_stance
 
@@ -3389,12 +3392,13 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
             draft = _resident_draft() if resident else {"turns": []}
             decision = None if resident else validated_request({**snapshot, "request_kind": "snake_decision"})
             budget = (FOOD_REQUEST_TURN_COUNT if snapshot.get("purpose") == "food_request" else RESIDENT_TURN_COUNT) if resident else SNAKE_TURN_COUNT
-            # The same loop owns base turns and at most one closing answer.
-            for index in range(budget + 1):
-                closing = index == budget
-                if closing and (not snapshot.get("_dialogue_validation", True)
-                                or not _has_question(draft["turns"][-1].text)):
+            limit = FOOD_REQUEST_TURN_COUNT + 1 if resident and snapshot.get("purpose") == "food_request" else CONVERSATION_MAX_TURNS
+            # Continue unanswered questions after the base exchange, closing at the cap.
+            for index in range(limit):
+                if index >= budget and (not snapshot.get("_dialogue_validation", True)
+                                        or not _has_question(draft["turns"][-1].text)):
                     break
+                closing = index == limit - 1
                 check_cancelled()
                 if resident:
                     state = _resident_turn_snapshot(snapshot, draft, closing=closing)

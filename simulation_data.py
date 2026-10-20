@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from character_data import normalize_character, normalize_opinions
 from constants import (
     APPLE_ADVANCE_SECONDS, CONCERN_LIFETIME_RANGE, CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN,
-    DECISION_SECONDS, DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, GIFT_GIVE_SECONDS, GIFT_SECONDS,
+    CONVERSATION_MAX_TURNS, DECISION_SECONDS, DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, GIFT_GIVE_SECONDS, GIFT_SECONDS,
     MAX_SIMULATION_STEP_SECONDS, SHAKE_SECONDS, SNAKE_EAT_SECONDS,
     POST_DIALOGUE_SECONDS, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME, WORLD_HEIGHT, WORLD_WIDTH,
 )
@@ -184,7 +184,7 @@ class DisclosureState(SaveModel):
     conversation_id: str
     speaker_id: str
     listener_id: str
-    turn: int = Field(ge=0, le=7)
+    turn: int = Field(ge=0, le=CONVERSATION_MAX_TURNS - 1)
     intent: Literal["share", "challenge", "lie"]
     stance: Stance
     source_disclosure_id: str | None
@@ -329,7 +329,7 @@ class ConversationState(SaveModel):
     record: int = Field(ge=0)
     topic: str
     arrived: bool
-    turns: list[ConversationTurn] = Field(max_length=8)
+    turns: list[ConversationTurn] = Field(max_length=CONVERSATION_MAX_TURNS)
     saved_states: tuple[ActivityState, ActivityState]
     pending_opinions: list[tuple[int, dict]]
     proposals: list[ProposalState] = Field(max_length=2)
@@ -438,7 +438,7 @@ class SnakeEncounterState(SaveModel):
     outcome_event_id: str | None
     stage: Literal["approach", "waiting", "dialogue", "condemned_approach", "eating"]
     elapsed: float = Field(ge=0, le=SNAKE_EAT_SECONDS + MAX_SIMULATION_STEP_SECONDS)
-    turns: list[ConversationTurn]
+    turns: list[ConversationTurn] = Field(max_length=CONVERSATION_MAX_TURNS)
     request_context: dict | None
 
 
