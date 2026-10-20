@@ -1325,6 +1325,8 @@ def _resident_contract(snapshot, *, correction=False):
                              ("third_party_opinions", CONVERSATION_MAX_REPUTATION_EFFECTS - len(draft["third_party_opinions"])),
                              ("leverage", CONVERSATION_MAX_LEVERAGE - len(draft["leverage"]))):
             properties[field]["maxItems"] = max(0, limit) if choices[field] else 0
+            if field in ("offers", "acceptances"):
+                properties[field]["maxItems"] = min(properties[field]["maxItems"], len(choices[field]))
             if choices[field]:
                 item = properties[field]["items"]
                 if field in ("offers", "acceptances"):
@@ -1622,17 +1624,78 @@ def _speech_phrases(text):
     return (tuple(words[index:index + size]) for index in range(len(words) - size + 1))
 
 
-def validate_dialogue_repetition(turns, recent_dialogue=(), *, factual_context=()):
+def _resident_repetition_facts(snapshot, response):
+    """Stage and complete-response checks exempt the same disclosed facts."""
+    disclosed = {entry.claim_id for entry in response.disclosures}
+    facts = [option["assertion"] for option in (snapshot.get("_information_validation") or {}).get("options", [])
+             if option["id"] in disclosed]
+    facts.extend(event["text"] for event in (snapshot.get("shared_history") or {}).get("confirmed_events", []))
+    return facts
+
+
+def _repetition_references(snapshot):
+    return {actor_id: [actor["name"], *forms(actor["self_name"]), *actor.get("references", [])]
+            for actor_id, actor in snapshot.get("_name_actors", {}).items()}
+
+
+def validate_dialogue_repetition(turns, recent_dialogue=(), *, factual_context=(), actor_references=None, participant_ids=None):
     """Reject copied speech before dialogue or its social effects are committed."""
     previous = {phrase for entry in recent_dialogue for _, text in entry["excerpts"]
                 for phrase in _speech_phrases(text)}
     factual = {phrase for text in factual_context for phrase in _speech_phrases(text)}
     current, signatures, repeated, sentences_by_speaker, own_turns = {}, [], set(), set(), set()
     factual_sentences = {tuple(_speech_words(sentence)) for text in factual_context for sentence in split_sentences(text)}
+    aliases = {}
+    for actor, names in (actor_references or {}).items():
+        for name in names:
+            if name:
+                name = name.casefold()
+                marker = "actor:" + actor
+                aliases[name] = marker if name not in aliases or aliases[name] == marker else None
+    aliases = {name: marker for name, marker in aliases.items() if marker is not None}
+    reference_pattern = "|".join(name_pattern(name) for name in sorted(aliases, key=len, reverse=True))
+
+    def fact_tokens(text, role=None):
+        text = unicodedata.normalize("NFKC", text).replace("\u2019", "'").casefold()
+        references = [(m.start(), m.end(), aliases[m[0]]) for m in re.finditer(reference_pattern, text, re.I)
+                      if is_name_reference(m, text)] if reference_pattern else []
+        # Collapsing actor references keeps even a window beginning in
+        # the middle of a long positional description aligned with its fact.
+        tokens = []
+        for match in re.finditer(r"\w+(?:'\w+)*", text):
+            reference = next((entry for entry in references if entry[0] <= match.start() and match.end() <= entry[1]), None)
+            word = match[0]
+            if reference:
+                word = reference[2] if match.start() == reference[0] else None
+            elif word in {"i", "me", "my", "you", "your"}:
+                owner = role if word in {"i", "me", "my"} else "recipient" if role == "initiator" else "initiator"
+                known_id = (participant_ids or {}).get(owner) if role else None
+                word = "actor:" + known_id if known_id else "actor"
+            elif word in {"he", "him", "his", "she", "her", "they", "them", "their", "it", "its"}:
+                word = "actor"
+            elif word in {"and", "the", "a", "an"}:
+                word = None
+            tokens.append(word)
+        return tokens
+
+    fact_sequences = [tuple(word for word in fact_tokens(text) if word) for text in factual_context]
+    fact_sentence_sequences = [tuple(word for word in fact_tokens(sentence) if word)
+                               for text in factual_context for sentence in split_sentences(text)]
+
+    def same_fact_words(words, sequence):
+        return bool(words) and len(words) == len(sequence) and all(
+            left == right or left == "actor" and right.startswith("actor:") or right == "actor" and left.startswith("actor:")
+            for left, right in zip(words, sequence))
+
+    def matches_fact(words):
+        return bool(words) and any(same_fact_words(words, sequence[offset:offset + len(words)])
+                                  for sequence in fact_sequences for offset in range(len(sequence) - len(words) + 1))
+
     copied = False
     for index, turn in enumerate(turns):
         # Joining parts catches loops split across multiple display pages too.
         phrases = list(_speech_phrases(turn.text))
+        normalized = fact_tokens(turn.text, turn.speaker) if factual_context else []
         signature = tuple(_speech_words(turn.text))
         if (len(phrases) != len(set(phrases))
                 or len(signature) >= DIALOGUE_REPEAT_PHRASE_WORDS and signature in signatures):
@@ -1647,22 +1710,26 @@ def validate_dialogue_repetition(turns, recent_dialogue=(), *, factual_context=(
         current_sentences = set()
         for sentence in split_sentences(turn.text):
             words = tuple(_speech_words(unquoted_speech(sentence)))
+            factual_sentence = words in factual_sentences or bool(factual_context and any(
+                same_fact_words(tuple(word for word in fact_tokens(sentence, turn.speaker) if word), sequence)
+                for sequence in fact_sentence_sequences))
             key = (turn.speaker, words)
             answering_name = index > 0 and asks_name(turns[index - 1].text) and any(
                 intro.reference == "self" and introduction_supported(sentence, intro.name, "self", name_requested=True)
                 for intro in turn.introductions)
             if ((len(words) >= DIALOGUE_REPEAT_SENTENCE_WORDS and key in sentences_by_speaker
                     or len(words) >= DIALOGUE_REPEAT_TURN_WORDS and words in current_sentences)
-                    and words not in factual_sentences and not answering_name):
+                    and not factual_sentence and not answering_name):
                 repeated.add(index)
             sentences_by_speaker.add(key)
             current_sentences.add(words)
-        for phrase in phrases:
+        for offset, phrase in enumerate(phrases):
             # Two speakers can refer to the same recorded fact while answering
             # each other. Repeating their prose or cycling through it is a loop.
-            if phrase in current and (phrase not in factual or current[phrase] >= 2):
+            is_fact = phrase in factual or matches_fact(tuple(word for word in normalized[offset:offset + DIALOGUE_REPEAT_PHRASE_WORDS] if word))
+            if phrase in current and (not is_fact or current[phrase] >= 2):
                 repeated.add(index)
-            if phrase in previous and phrase not in factual:
+            if phrase in previous and not is_fact:
                 repeated.add(index)
                 copied = True
             current[phrase] = current.get(phrase, 0) + 1
@@ -1758,7 +1825,15 @@ def _reply_context(snapshot):
     speaker, listener = snapshot["speaker"], snapshot["listener"]
     listener_name = snapshot.get("_listener_identity", own_name(listener) if isinstance(listener, dict) else listener)
     known = speaker.get("name_knowledge", {}).get("known_names", {})
-    return dict(last_heard=heard,
+    allowed = permitted_forms(speaker, snapshot.get("_name_actors", {}), known)
+    mentioned = []
+    for actor in snapshot.get("_name_actors", {}).values():
+        for name in sorted(forms(actor["self_name"]), key=len, reverse=True):
+            match = re.search(name_pattern(name), heard, re.I)
+            if match and name not in allowed and is_name_reference(match, heard):
+                mentioned.append(match[0])
+                break
+    return dict(last_heard=heard, unidentified_names_mentioned=mentioned,
                 questions_to_answer=[s for s in split_sentences(heard) if _has_question(s)],
                 name_requested=asks_name(heard, self_name=listener_name),
                 listener_name_asked=any(t["role"] == role and asks_name(t["text"], self_name=own_name(speaker))
@@ -1858,7 +1933,8 @@ def validate_speech_grounding(text, snapshot):
         validate_account_speech(text, account["assertion"], names=(*names, *account_names),
                                 speaker=_actor_name(speaker), listener=listener_name, kind=account.get("kind"),
                                 firsthand=account.get("basis") == "firsthand",
-                                actor_references=account_references(snapshot.get("_name_actors", {})))
+                                actor_references=account_references(snapshot.get("_name_actors", {})),
+                                known_events=[event for event in firsthand if event.get("basis") == "firsthand"])
     if snapshot.get("request_kind") != "snake_turn":
         return
     outcome, index = transaction.get("selected_outcome"), snapshot["turn_index"]
@@ -2027,11 +2103,11 @@ def _validate_response(raw, snapshot, model):
         record_self_introductions([current], snapshot)
         result.introductions = current.introductions
         validate_names([current], snapshot)
-        if isinstance(result, ResidentTurnResponse):
-            _apply_resident_candidate(snapshot["_baseline"], snapshot["_draft"], result, snapshot)
-        elif snapshot.get("request_kind") == "handoff_thanks" and result.introductions:
+        if snapshot.get("request_kind") == "handoff_thanks" and result.introductions:
             raise ValueError("Reserved thanks cannot add name-learning effects.")
         if not check_dialogue:
+            if isinstance(result, ResidentTurnResponse):
+                _apply_resident_candidate(snapshot["_baseline"], snapshot["_draft"], result, snapshot)
             return result
         validate_dialogue_format([current])
         validate_speech_grounding(current.text, snapshot)
@@ -2052,13 +2128,20 @@ def _validate_response(raw, snapshot, model):
         if (snapshot.get("request_kind") == "conversation_closing" or snapshot.get("_closing")) and any(
                 _has_question(part.text) for part in result.parts):
             raise ValueError("Answer the last question and close without asking another question.")
+        if isinstance(result, ResidentTurnResponse):
+            projected = _apply_resident_candidate(snapshot["_baseline"], snapshot["_draft"], result, snapshot)
+            facts = _resident_repetition_facts(snapshot["_baseline"], SimpleNamespace(**projected))
+        else:
+            account = snapshot.get("account_to_share")
+            facts = [account["assertion"]] if account else snapshot.get("_factual_context", [])
         if snapshot.get("request_kind") in ("snake_turn", "conversation_closing", "resident_turn"):
             preceding = [ConversationTurn(speaker=turn["role"], parts=[ConversationPart(text=turn["text"])])
                          for turn in snapshot.get("_preceding_turns", snapshot["preceding_turns"])]
-            account = snapshot.get("account_to_share")
             validate_dialogue_repetition([*preceding, current], snapshot.get("shared_history", {}).get("recent_dialogue", []),
-                                        factual_context=([account["assertion"]] if account else
-                                                         snapshot.get("_factual_context", [])))
+                                        factual_context=facts, actor_references=_repetition_references(snapshot),
+                                        participant_ids={role: actor_id(snapshot[who]) for role, who in
+                                            ((current.speaker, "speaker"), ("recipient" if current.speaker == "initiator" else "initiator", "listener"))
+                                            if isinstance(snapshot.get(who), dict)})
         return result
     if isinstance(result, SnakeResponse):
         validate_snake_response(result, snapshot)
@@ -2142,10 +2225,6 @@ def _validate_response(raw, snapshot, model):
             validate_dialogue_completion(result.turns)
             validate_resident_grounding(result, snapshot)
         history = snapshot.get("shared_history") or {}
-        disclosed = {entry.claim_id for entry in result.disclosures}
-        facts = [option["assertion"] for option in (snapshot.get("_information_validation") or {}).get("options", [])
-                 if option["id"] in disclosed]
-        facts.extend(event["text"] for event in history.get("confirmed_events", []))
         if snapshot.get("purpose") == "food_request":
             outcome = snapshot["food_request"]["outcome"]
             if (result.accepted_proposals or len(result.turns) not in (2, 3) or result.food_outcome != outcome
@@ -2174,7 +2253,10 @@ def _validate_response(raw, snapshot, model):
                 raise ValueError("Conversation opinions must refer to the other participant.")
         if check_dialogue:
             validate_dialogue_speakers(result.turns, {role: snapshot[role]["npc_name"] for role in ("initiator", "recipient")})
-            validate_dialogue_repetition(result.turns, history.get("recent_dialogue", []), factual_context=facts)
+            validate_dialogue_repetition(result.turns, history.get("recent_dialogue", []),
+                                        factual_context=_resident_repetition_facts(snapshot, result),
+                                        actor_references=_repetition_references(snapshot),
+                                        participant_ids={role: actor_id(snapshot[role]) for role in ("initiator", "recipient")})
         knowledge, _, _ = validate_names(result.turns, snapshot)
         validate_orientation(result, snapshot)
         if result.handoff_thanks:
@@ -2481,6 +2563,10 @@ def _request_payload(message, snapshot, correction):
         elif snapshot.get("arrival_focus") and not focus["listener_name_known"] and not focus["listener_name_asked"]:
             instruction += (" You have not yet asked what to call this unfamiliar partner. Include a brief name question "
                             "in this reply alongside your response about the surroundings.")
+        if focus["unidentified_names_mentioned"]:
+            instruction += (" The listener mentioned names you have not learned in reply_context.unidentified_names_mentioned. "
+                            "If asking who was meant, quote the exact mentioned name explicitly; otherwise describe the person "
+                            "without using that name. A mention does not identify a visible actor or teach their name.")
     instruction = named_references(instruction)
     if snapshot.get("request_kind") in ("resident_turn", "snake_turn", "conversation_closing", "handoff_thanks"):
         context = account_speech_context(context, snapshot["speaker"], snapshot["listener"], snapshot.get("_name_actors", {}))
@@ -2517,6 +2603,14 @@ def _provider_messages(content, snapshot):
         content = (json.dumps({"parts": [{"text": turn["text"]}]}, ensure_ascii=False, separators=(",", ":"))
                    if role == "assistant" else turn["text"])
         messages.append({"role": role, "content": content})
+    if snapshot.get("_compact_rewrite"):
+        reminder = (f"Writing request: now generate only {own_name(snapshot['speaker'])}'s next reply. "
+                    "Answer the listener above from your own perspective in one or two fresh complete sentences. "
+                    "Do not copy their speech, adopt their I/my, or recite planning notes. Use only your permitted names "
+                    "and effects; quote an unfamiliar name only when asking who was mentioned. Return the required JSON.")
+        if snapshot.get("_closing") or snapshot.get("request_kind") == "conversation_closing":
+            reminder += " This is the final answer. End with a statement and ask no question."
+        messages.append({"role": "user", "content": reminder})
     return messages
 
 
@@ -3072,8 +3166,6 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
         state["task"] += " Answer the last question and finish with a statement. The listener will not reply; make no new offer."
     elif snapshot.get("purpose") == "food_request" and index == FOOD_REQUEST_TURN_COUNT - 1:
         state["task"] += " Finish naturally; prefer a statement rather than a new question."
-    state["_factual_context"] = [a["assertion"] for a in accounts]
-    state["_factual_context"].extend(e["text"] for e in state["shared_history"].get("confirmed_events", []))
     # Permit third-party identification only for accounts actually available to
     # this speaker, rather than the partner's private list or the visible roster.
     state["_account_names"] = [v for a in accounts for k, v in a.items() if k.endswith("_name") and isinstance(v, str)]
@@ -3382,14 +3474,19 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
         last_error = None
         disclosure_repair = None
         disclosure_choices = None
+        effect_repairs = {}
         for attempt in range(DIALOGUE_STAGE_ATTEMPTS):
             report(("Generating " if attempt == 0 else "Correcting " if attempt == 1 else "Recovery: rewriting ") + activity)
             retry_state = (_speech_retry_snapshot(state) if attempt == DIALOGUE_STAGE_ATTEMPTS - 1
                            and kind in ("snake_turn", "conversation_closing", "resident_turn", "handoff_thanks") else state)
             if disclosure_repair:
-                retry_state = {**retry_state, "_disclosure_repair": disclosure_repair}
+                account = next(a for a in state["speaker"]["permitted_accounts"] if a["claim_id"] == disclosure_repair)
+                retry_state = {**retry_state, "_disclosure_repair": disclosure_repair,
+                               "speaker": {**retry_state["speaker"], "account_focus": account}}
             if disclosure_choices is not None:
                 retry_state = {**retry_state, "choices": {**retry_state["choices"], "disclosures": disclosure_choices}}
+            if effect_repairs:
+                retry_state = {**retry_state, "choices": {**retry_state["choices"], **effect_repairs}}
             try:
                 result = request(retry_state, correction)
                 if kind == "intent":
@@ -3402,14 +3499,15 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                 last_error = exc
                 # A chosen, concrete own memory needs speech and metadata together.
                 # Constrain only its regenerated reply; infer no live disclosure.
-                focus = state.get("speaker", {}).get("account_focus")
-                if (kind == "resident_turn" and str(exc).startswith("A new private recollection is spoken without")
-                        and focus and focus["kind"] == "former_life" and focus["subject_id"] == actor_id(state["speaker"])
-                        and focus["claim_id"] in state["choices"]["disclosures"]
-                        and mentions_private_recollection(" ".join(p.text for p in getattr(exc.response, "parts", [])),
-                                                          focus["assertion"], ())):
-                    disclosure_repair = focus["claim_id"]
-                    disclosure_choices = None
+                if kind == "resident_turn" and str(exc).startswith("A new private recollection is spoken without"):
+                    speech = " ".join(p.text for p in getattr(exc.response, "parts", []))
+                    memories = [account for account in state["speaker"].get("permitted_accounts", [])
+                                if account["kind"] == "former_life" and account["subject_id"] == actor_id(state["speaker"])
+                                and account.get("basis") == "firsthand" and account["claim_id"] in state["choices"]["disclosures"]
+                                and mentions_private_recollection(speech, account["assertion"], ())]
+                    if len(memories) == 1:
+                        disclosure_repair = memories[0]["claim_id"]
+                        disclosure_choices = None
                 if exc.repeated_turns and isinstance(exc.response, DialoguePartsResponse):
                     candidate = exc.response.model_copy(deep=True)
                     candidate.parts = _deduplicate_dialogue_parts(candidate)
@@ -3429,9 +3527,20 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                                   "using you/your for the current listener and an observable description from "
                                   "speaker.speech_references.unknown_people for anyone else whose name is unknown. "
                                   "Use only speaker.speech_references.allowed_name_forms as spoken names. "
+                                  "If asking who the listener mentioned, use an explicit quotation of their name. "
                                   "Keep the meaning, source and accepted effects; do not introduce anyone from a roster label.")
+                if kind == "resident_turn" and str(exc).startswith("A recorded apple promise needs"):
+                    effect_repairs["offers"] = []
+                    correction = ("Your speech made no supported apple commitment. Regenerate this reply without offers; "
+                                  "the schema now provides no new offer for this stage. Respond naturally using your own knowledge. "
+                                  "Keep earlier accepted speech, agreements and other permitted effects unchanged.")
+                if kind == "resident_turn" and str(exc).startswith("The apple receiver must explicitly accept"):
+                    effect_repairs["acceptances"] = []
+                    correction = ("Your speech did not accept an apple commitment. Regenerate this reply without acceptances; "
+                                  "the schema now provides none for this stage. Keep earlier accepted speech and effects unchanged.")
                 if (kind == "resident_turn" and str(exc).startswith("The selected account is not actually told")
-                        and not state.get("discussion_focus_claim_id") and not disclosure_repair):
+                        and not state.get("discussion_focus_claim_id")):
+                    disclosure_repair = None  # An optional memory may be withdrawn on an unaccepted retry.
                     speech = " ".join(p.text for p in getattr(exc.response, "parts", []))
                     disclosure_choices = []
                     for account in state["speaker"].get("permitted_accounts", []):

@@ -624,7 +624,9 @@ def validate_information(response, context, *, names=(), participant_names=None,
                 validate_account_speech(speech.text, option.assertion, names=names,
                                         speaker=(participant_names or {}).get(role),
                                         listener=(participant_names or {}).get(listener), kind=option.kind,
-                                        firsthand=bool(belief and belief.direct), actor_references=actor_references)
+                                        firsthand=bool(belief and belief.direct), actor_references=actor_references,
+                                        known_events=[{"assertion": options[b.claim_id].assertion, "kind": options[b.claim_id].kind}
+                                                      for b in beliefs[role].values() if b.direct and b.claim_id in options])
             seen_disclosures.add((role, entry.claim_id))
             fabricating = option.creator_id is not None and belief is None
             if fabricating:
@@ -1020,10 +1022,10 @@ def validate_live_agreements(conversation, response, *, dialogue_validation=True
                         for other in world.actors if other is not npc}
             if changed or related or opinions != context.opinions[role] or can_deceive(npc) != context.can_lie[role]:
                 raise ValueError("A speaker's knowledge or opinion changed during generation. Please try again.")
-    from name_knowledge import actor_catalog, account_references
+    from name_knowledge import account_references
     validate_information(response, context, names=[actor.name for actor in world.actors],
                          participant_names={"initiator": pair[0].name, "recipient": pair[1].name},
-                         dialogue_validation=dialogue_validation, actor_references=account_references(actor_catalog(world)))
+                         dialogue_validation=dialogue_validation, actor_references=account_references(conversation.name_actors))
     validate_agreements(response.accepted_proposals, [asdict(p) for p in conversation.proposals],
                         response.turns, pair[0].id, pair[1].id, current_phase=world.phase_index,
                         dialogue_validation=dialogue_validation)

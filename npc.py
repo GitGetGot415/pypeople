@@ -669,6 +669,7 @@ class Conversation:
         self.accepted_proposals = []
         self.social_effects_applied = False
         self.context_references = {}
+        self.name_actors = {}
         self.information_context = None
         self.accepted_disclosures = []
         self.third_party_opinions = []
@@ -715,7 +716,7 @@ class Conversation:
             validate_dialogue_format(response.turns)
             validate_dialogue_speakers(response.turns, {"initiator": self.initiator.name, "recipient": self.recipient.name})
             validate_resident_grounding(response, {
-                "_name_actors": actor_catalog(self.initiator.world),
+                "_name_actors": self.name_actors,
                 "initiator": self.initiator.snapshot(self.initiator.world.tree),
                 "recipient": self.recipient.snapshot(self.initiator.world.tree),
                 "_information_validation": asdict(self.information_context) if self.information_context else None})
@@ -723,7 +724,7 @@ class Conversation:
                          "purpose": self.purpose, "arrival_focus": self.opening_kind == "orientation", "_dialogue_validation": dialogue_validation,
                          "initiator": self.initiator.snapshot(self.initiator.world.tree),
                          "recipient": self.recipient.snapshot(self.initiator.world.tree),
-                         "_name_actors": actor_catalog(self.initiator.world)}
+                         "_name_actors": self.name_actors}
         record_self_introductions(response.turns, name_snapshot)
         knowledge, _, name_changes = validate_names(response.turns, name_snapshot)
         if response.handoff_thanks:
@@ -870,6 +871,7 @@ class Conversation:
             self.proposals = permitted_proposals(self)
             self.context_references = conversation_references(self)
             self.information_context = prepare_information(self)
+            self.name_actors = actor_catalog(self.initiator.world)
         views = information_views(self.information_context, self.initiator.world)
         initiator, recipient = participant(self.initiator), participant(self.recipient)
         for role, state in (("initiator", initiator), ("recipient", recipient)):
@@ -884,7 +886,7 @@ class Conversation:
         recipient["private_context"]["immediate_objective"] = "Respond to what is actually said using only my own knowledge."
         return {
             "request_kind": "conversation",
-            "_name_actors": actor_catalog(self.initiator.world),
+            "_name_actors": self.name_actors,
             "interaction_id": self.id,
             "origin": self.origin,
             "purpose": self.purpose,

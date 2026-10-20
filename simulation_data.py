@@ -1061,6 +1061,7 @@ def restore_simulation(state):
             pending_opinions=[(npcs[index], opinions) for index, opinions in saved.pending_opinions],
             saved_states=[activity.model_dump() for activity in saved.saved_states])
         conversation.active = True
+        conversation.name_actors = {}  # Pending generation takes a fresh reference snapshot after loading.
         for npc in (conversation.initiator, conversation.recipient):
             npc.conversation = conversation
         if conversation.dialogue_state == "pending":

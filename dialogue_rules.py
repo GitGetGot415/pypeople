@@ -277,7 +277,7 @@ def validate_claim_source(text, *, names=(), speaker=None, listener=None, actor_
 
 
 def validate_account_speech(text, assertion, *, names=(), speaker=None, listener=None, kind=None, firsthand=False,
-                            actor_references=None):
+                            actor_references=None, known_events=()):
     """Require content evidence, rather than an ID or a promise to tell it later.
 
     This is a conservative vocabulary check, not a proof of semantic equivalence.
@@ -307,7 +307,20 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
             past_event = re.search(r"\bi\s+(?:remember|recall|worked|kept|helped|saw|received|returned|organized|lost|saved)\b", sentence, re.I)
             simple_reaction = re.search(r"\bi\s+(?:remember|recall)\s+(?:it|that|this|those times)\s+(?:well|fondly|clearly)\b", sentence, re.I)
             if past_event and not simple_reaction and not source_words & _content_words(sentence, names):
-                raise ValueError("The recollection invents an additional remembered event outside the selected account. Tell only its supplied memory and your present reaction.")
+                # A remembered garden event is not extra former-life backstory.
+                # It cannot supply the selected memory's content, either.
+                for event in known_events:
+                    if event["kind"] in ("former_life", "private_motive"):
+                        continue
+                    try:
+                        validate_account_speech(sentence, event["assertion"], names=names, speaker=speaker, listener=listener,
+                                                kind=event["kind"], firsthand=True, actor_references=actor_references)
+                    except ValueError:
+                        continue
+                    break
+                else:
+                    raise ValueError("The recollection invents an additional remembered event outside the selected account. Tell only its supplied memory and your present reaction.")
+                continue
             reference = max(references, key=lambda s: len(_content_words(s, names) & _content_words(sentence, names)), default="")
             denies_event = re.search(r"\b(?:have not|haven['’]t|had not|hadn['’]t|did not|didn['’]t|never)\s+"
                                      r"(?:\w+\s+){0,2}(?:received|seen|kept|worked|met|gave|helped|returned|sew(?:ed|n)?|repair(?:ed)?|mend(?:ed)?|fix(?:ed)?)\b", sentence, re.I)

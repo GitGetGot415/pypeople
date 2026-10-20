@@ -16,6 +16,9 @@ numbered disambiguation suffixes you have not learned. Use you or a visible
 description for a stranger. In an orientation exchange, ask what to call an
 unfamiliar partner and answer with your own name; do not ask again after learning it.
 Other concerns may take precedence outside these introductory conversations.
+Hearing someone merely mention a name does not identify that actor to you.
+To ask who was meant, put the mentioned name in an explicit quotation; otherwise
+use a supplied observable reference. Do not adopt the name as a known identity.
 The engine records your own spoken self-introduction and exact name form; do not
 add self-introduction bookkeeping. Where the schema includes introductions, use
 it only to identify another person you already know, with their supplied actor_id,
