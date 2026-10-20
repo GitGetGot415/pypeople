@@ -128,9 +128,13 @@ def validate_name_use(text, permitted, catalog):
         raise ValueError(f"The speaker has not learned the name form {used!r}. Use you or an observable description; metadata does not teach names.")
 
 
-def introduction_supported(text, name, reference):
+def introduction_supported(text, name, reference, *, name_requested=False):
     speech = unquoted_speech(text)
     escaped = name_pattern(name)
+    if reference == "self" and name_requested:
+        first = next(iter(split_sentences(speech)), "").strip()
+        if re.fullmatch(escaped + r"[.!]?", first, re.I):
+            return True  # A direct, exact name answer is identifying speech too.
     if reference == "self":
         pattern = (r"\b(?:my name is|my name['’]s|name['’]s|i am|i['’]m|call me|you can call me|i go by|i['’]m called)\s+"
                    + escaped + r"|\bi,\s*" + escaped + r"\s*,|(?:^|[.!?]\s*|,\s*)"
@@ -148,16 +152,30 @@ def introduction_supported(text, name, reference):
     return False
 
 
+def _name_requested(turns, index, snapshot, people):
+    turn = turns[index]
+    if index:
+        previous = turns[index - 1]
+        return previous.speaker != turn.speaker and asks_name(previous.text, self_name=own_name(people[previous.speaker]))
+    preceding = snapshot.get("_preceding_turns", snapshot.get("preceding_turns", []))
+    if not preceding or preceding[-1]["role"] == turn.speaker:
+        return False
+    listener = snapshot.get("listener", {})
+    name = snapshot.get("_listener_identity", own_name(listener) if isinstance(listener, dict) else listener)
+    return asks_name(preceding[-1]["text"], self_name=name)
+
+
 def record_self_introductions(turns, snapshot):
     """Derive unambiguous self effects from generated words, never invent speech."""
     from llm import NameIntroduction
     people = _participants(snapshot)
-    for turn in turns:
+    for index, turn in enumerate(turns):
         person = people[turn.speaker]
         if not actor_id(person) or any(intro.reference == "self" for intro in turn.introductions):
             continue
         introduced = next((name for name in sorted(forms(own_name(person)), key=len, reverse=True)
-                           if introduction_supported(turn.text, name, "self")), None)
+                           if introduction_supported(turn.text, name, "self",
+                                                     name_requested=_name_requested(turns, index, snapshot, people))), None)
         if introduced:
             turn.introductions.append(NameIntroduction(actor_id=actor_id(person), name=introduced, reference="self"))
 
@@ -177,6 +195,7 @@ def validate_names(turns, snapshot, *, check_use=True, require_effects=True):
     permissions, changes = [], []
     for index, turn in enumerate(turns):
         person = people[turn.speaker]
+        requested = _name_requested(turns, index, snapshot, people)
         permitted = permitted_forms(person, catalog, knowledge[turn.speaker])
         permissions.append(sorted(permitted))
         if check_use and check_dialogue:
@@ -201,10 +220,10 @@ def validate_names(turns, snapshot, *, check_use=True, require_effects=True):
                 # cannot teach a phantom actor or overwrite another actor's name.
                 continue
             seen.add(intro.actor_id)
-            if check_dialogue and not introduction_supported(turn.text, intro.name, intro.reference):
+            if check_dialogue and not introduction_supported(turn.text, intro.name, intro.reference, name_requested=requested):
                 raise ValueError("The introduction effect is unsupported by actual unquoted identifying speech.")
             if (check_dialogue and intro.name != target["self_name"]
-                    and introduction_supported(turn.text, target["self_name"], intro.reference)):
+                    and introduction_supported(turn.text, target["self_name"], intro.reference, name_requested=requested)):
                 raise ValueError("Record the exact name form actually introduced, including a spoken surname.")
             for role, hearer in people.items():
                 if role == turn.speaker or actor_id(hearer) == intro.actor_id:
@@ -220,7 +239,7 @@ def validate_names(turns, snapshot, *, check_use=True, require_effects=True):
                 changes.append((actor_id(hearer), intro.actor_id, entry))
         if check_dialogue and check_use and require_effects and catalog:
             spoken_intros = [name for name in sorted(forms(own_name(person)), key=len, reverse=True)
-                             if introduction_supported(turn.text, name, "self")]
+                             if introduction_supported(turn.text, name, "self", name_requested=requested)]
             if spoken_intros and not any(intro.actor_id == actor_id(person) and intro.name == spoken_intros[0]
                                         and intro.reference == "self" for intro in turn.introductions):
                 raise ValueError("A spoken self-introduction needs its matching structured introduction effect.")
@@ -288,7 +307,21 @@ def validate_orientation(response, snapshot):
     return discussed
 
 
-def asks_name(text):
+def asks_name(text, *, self_name=None):
     speech = unquoted_speech(text)
-    return bool(re.search(r"\b(?:your name|call you(?:rself)?|address you|who are you)\b[^.!?]*\?|"
-                          r"\b(?:and you|(?:and )?yours)\s*\?", speech, re.I))
+    if re.search(r"\b(?:your (?:full |first |last |family |preferred )?name|call you(?:rself)?|address you|who are you)\b[^.!?]*\?", speech, re.I):
+        return True
+    reciprocal = re.search(r"\b(?:and you|(?:and )?yours)\s*\?", speech, re.I)
+    preceding = next(iter(reversed(split_sentences(speech[:reciprocal.start()]))), "") if reciprocal else ""
+    return bool(reciprocal and (self_name is None or any(
+        introduction_supported(preceding, name, "self", name_requested=True) for name in forms(self_name))))
+
+
+def declines_name(text):
+    """An explicit refusal/unavailability answers a name question without teaching a name."""
+    speech = unquoted_speech(text).replace("\u2019", "'")
+    return bool(re.search(
+        r"\b(?:rather|prefer|want|wish)\s+(?:to\s+)?(?:keep (?:(?:my |the )?name|mine) (?:private|to myself)|not (?:to )?(?:say|share|tell|give|answer))\b|"
+        r"\b(?:won't|will not|don't want to|do not want to|not ready to)\s+(?:share|tell|give|say)\b[^.!?]{0,35}\b(?:name|call)\b|"
+        r"\b(?:my name is private|keep my name (?:private|to myself)|decline to (?:give|share|answer)|"
+        r"(?:can't|cannot|don't|do not) remember my name)\b", speech, re.I))

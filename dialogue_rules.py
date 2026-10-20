@@ -24,7 +24,8 @@ def named_context(value):
     if isinstance(value, list):
         return [named_context(item) for item in value]
     if isinstance(value, dict):
-        return {key: item if key in ("preceding_turns", "recent_dialogue", "player_dialogue", "former_life", "Background")
+        return {key: item if key in ("preceding_turns", "recent_dialogue", "player_dialogue", "former_life", "Background",
+                                    "name", "references", "speech_references", "listener_address")
                 or key == "assertion" and value.get("kind") == "former_life" else named_context(item)
                 for key, item in value.items()}
     return value

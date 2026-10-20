@@ -467,6 +467,8 @@ class SimulationState(SaveModel):
         live_ids = {n.id for n in self.npcs}
         actors = {n.id: (n.display_name or n.character["Name"]) for n in residents}
         actors[self.snake.id] = SNAKE_NAME
+        authored_names = {actors[n.id]: n.character["Name"] for n in residents}
+        authored_names[SNAKE_NAME] = SNAKE_NAME
         ids = set(actors)
         now = phase_index(self.day, self.phase)
         if len(ids) != len(residents) + 1 or self.tree.id in ids or len({v.casefold() for v in actors.values()}) != len(ids):
@@ -492,6 +494,12 @@ class SimulationState(SaveModel):
             return record
         def participant(actor_id, record):
             return actor_id in ids and actors[actor_id] in record.participants
+        from name_knowledge import asks_name, introduction_supported
+        def introduction_evidence(record, index, intro):
+            previous = record.turns[index - 1] if index else None
+            requested = bool(previous and previous[0] != record.turns[index][0]
+                and asks_name(previous[1], self_name=authored_names.get(previous[0], "")))
+            return introduction_supported(record.turns[index][1], intro.name, intro.reference, name_requested=requested)
         for event in self.events:
             if not set(event.participants) <= ids or phase_index(event.day, event.phase) > now:
                 raise ValueError("Invalid event actors or date.")
@@ -505,7 +513,6 @@ class SimulationState(SaveModel):
             for index, parts in record.dialogue_parts.items():
                 if index >= len(record.turns) or " ".join(p.text.strip() for p in parts) != record.turns[index][1]:
                     raise ValueError("Dialogue parts do not match their recorded turn.")
-            from name_knowledge import introduction_supported
             for index, introductions in record.name_introductions.items():
                 if not 0 <= index < len(record.turns):
                     raise ValueError("Invalid introduction turn.")
@@ -516,7 +523,7 @@ class SimulationState(SaveModel):
                 if len({i.actor_id for i in introductions}) != len(introductions):
                     raise ValueError("Invalid introduction turn or duplicate introduced actor.")
                 for intro in introductions:
-                    missing_speech = not introduction_supported(record.turns[index][1], intro.name, intro.reference)
+                    missing_speech = not introduction_evidence(record, index, intro)
                     if (intro.actor_id not in ids or missing_speech
                             or intro.reference == "self" and record.turns[index][0] != actors[intro.actor_id]):
                         raise ValueError("Invalid introduction identity or spoken evidence.")
@@ -599,9 +606,8 @@ class SimulationState(SaveModel):
                 if (type(turn) is not int or not 0 <= turn < len(source.turns)
                         or actors[npc.id] not in source.participants and npc.id not in source.name_witnesses.get(turn, [])):
                     raise ValueError("A learned name requires accepted spoken source evidence.")
-                from name_knowledge import introduction_supported
                 if not any(intro.actor_id == target_id and intro.name == learned["name"]
-                           and (source.dialogue_errors or introduction_supported(source.turns[turn][1], intro.name, intro.reference))
+                           and (source.dialogue_errors or introduction_evidence(source, turn, intro))
                            and (intro.reference != "self" or source.turns[turn][0] == actors[target_id])
                            and source.turns[turn][0] != actors[npc.id]
                            for intro in source.name_introductions.get(turn, [])):
