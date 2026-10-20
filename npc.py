@@ -12,12 +12,12 @@ from purgatory import initial_attitudes
 from conversation_history import (ConversationRecord, describe_opinion_change, relevant_memories, remember,
                                   shared_conversation_history)
 from social import (ConversationConcern, Goal, check_relationship_goals, commit_agreements, commit_concern_use, commit_information,
-                    concern_description, concern_topic, conversation_references,
+                    concern_description, concern_topic, conversation_references, dialogue_failure_cooldown,
                     information_views, on_transfer, permitted_proposals, phase_label, prepare_information,
                     private_context, validate_live_agreements)
 from constants import (
     APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DEFAULT_CHARACTER_NAME, DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS,
-    CONVERSATION_PAUSE_RANGE, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, GIFT_SECONDS, INVENTORY_CAPACITY,
+    CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, GIFT_SECONDS, INVENTORY_CAPACITY,
     MOVEMENT_SPEED, NPC_RADIUS, PARTNER_COOLDOWN,
     POST_DIALOGUE_SECONDS, SHAKE_SECONDS, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED, WANDER_PAUSE, WORLD_HEIGHT, WORLD_WIDTH,
     STARTING_DAY, STARTING_FACING, STARTING_NPC_FRUIT, STARTING_NPC_GENEROSITY_RANGE,
@@ -134,6 +134,7 @@ class NPC:
     beliefs: list = field(default_factory=list)
     current_concern: ConversationConcern | None = None
     conversation_pause_remaining: float = 0.0
+    conversation_return_remaining: float = 0.0
     known_names: dict = field(default_factory=dict)
     owner: str = "autonomous"
     target_id: str | None = None
@@ -199,6 +200,8 @@ class NPC:
     def pause_after_conversation(self, completed):
         self.conversation_pause_remaining = (self.rng.uniform(*CONVERSATION_PAUSE_RANGE)
                                              if completed else FAILURE_COOLDOWN)
+        if completed:
+            self.conversation_return_remaining = CONVERSATION_RETURN_PAUSE
 
     def release_claims(self, world):
         world.tree.release(self)
@@ -263,6 +266,7 @@ class NPC:
         self.decision_remaining = max(0.0, self.decision_remaining - dt)
         if self.interaction is None and not self.request_pending and not self.end_conversation:
             self.conversation_pause_remaining = max(0.0, self.conversation_pause_remaining - dt)
+            self.conversation_return_remaining = max(0.0, self.conversation_return_remaining - dt)
             if self.current_concern:
                 self.current_concern.remaining = max(0.0, self.current_concern.remaining - dt)
         self.cooldowns = {key: value - dt for key, value in self.cooldowns.items() if value > dt}
@@ -939,7 +943,7 @@ class Conversation:
             npc.restore_after_interaction(state, self.other(npc).id)
             npc.pause_after_conversation(self.social_effects_applied)
             if not self.social_effects_applied:
-                npc.cooldowns[self.other(npc).id] = FAILURE_COOLDOWN
+                npc.cooldowns[self.other(npc).id] = dialogue_failure_cooldown(npc, self.other(npc))
 
     def handoff(self):
         """Reverse the roles without restoring activities or reacquiring tree claims."""

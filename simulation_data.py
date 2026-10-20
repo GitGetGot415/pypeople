@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from character_data import normalize_character, normalize_opinions
 from constants import (
-    APPLE_ADVANCE_SECONDS, CONCERN_LIFETIME_RANGE, CONVERSATION_PAUSE_RANGE, FAILURE_COOLDOWN,
+    APPLE_ADVANCE_SECONDS, CONCERN_LIFETIME_RANGE, CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN,
     DECISION_SECONDS, DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, GIFT_GIVE_SECONDS, GIFT_SECONDS,
     MAX_SIMULATION_STEP_SECONDS, SHAKE_SECONDS, SNAKE_EAT_SECONDS,
     POST_DIALOGUE_SECONDS, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME, WORLD_HEIGHT, WORLD_WIDTH,
@@ -258,6 +258,7 @@ class NPCState(ActivityState):
     beliefs: list[BeliefState]
     current_concern: ConcernState | None
     conversation_pause_remaining: float = Field(ge=0, le=max(CONVERSATION_PAUSE_RANGE[1], FAILURE_COOLDOWN))
+    conversation_return_remaining: float = Field(ge=0, le=CONVERSATION_RETURN_PAUSE)
     known_names: dict[str, LearnedNameState] = Field(default_factory=dict)
     command_revision: int = Field(ge=0)
     attitudes: Attitudes
@@ -1012,6 +1013,7 @@ def restore_simulation(state):
             beliefs=[Belief(**belief.model_dump()) for belief in saved.beliefs],
             current_concern=ConversationConcern(**saved.current_concern.model_dump()) if saved.current_concern else None,
             conversation_pause_remaining=saved.conversation_pause_remaining,
+            conversation_return_remaining=saved.conversation_return_remaining,
             known_names=deepcopy(saved.model_dump()["known_names"]),
             attitudes=saved.attitudes.model_dump(),
             arrival_day=saved.arrival_day, departure=saved.departure.model_dump() if saved.departure else None,

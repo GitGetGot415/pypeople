@@ -7,7 +7,8 @@ from npc import Behavior
 from conversation_history import memory_bias
 from constants import APPLE_SATISFACTION, DECISION_SECONDS, MOVEMENT_SPEED, SOCIAL_PARTNER_RANDOMNESS, SOCIAL_START, SNAKE_NAME
 from interactions import company_point
-from social import concern_topic, goal_attempt_cooling_down, pair_objective, pending_promises
+from social import (concern_topic, goal_attempt_cooling_down, last_conversation_partner, pair_objective,
+                    pending_promises, repeat_partner_paused)
 
 
 ORIENTATION_TOPIC = (
@@ -189,7 +190,7 @@ def social_pair(world, *, due=None):
                 continue
             priority, objective = pair_objective(world, npc, other)
             if priority == 1 and (goal_attempt_cooling_down(npc, other, world)
-                                  or npc.current_concern.kind == "orientation"):
+                                  or npc.current_concern.kind == "orientation" or repeat_partner_paused(npc, other)):
                 continue
             if priority:
                 purposeful.append((priority, rank(npc, other), npc, other, objective))
@@ -202,7 +203,7 @@ def social_pair(world, *, due=None):
     for npc in available:
         if due is not None and npc.id not in due:
             continue
-        others = partners(npc)
+        others = [other for other in partners(npc) if not repeat_partner_paused(npc, other)]
         if not others:
             continue
         # Keep the existing fixed food-request eligibility and donor decision.
@@ -216,7 +217,9 @@ def social_pair(world, *, due=None):
                         and math.dist((npc.x, npc.y), tree.interaction_point)
                         < math.dist((npc.x, npc.y), (donor.x, donor.y))):
                     return npc, donor, "food_request", "An apple", f"Asking {donor.name} for an apple", None, None, None
-        partner = max(others, key=lambda other: rank(npc, other))
+        partner = max(others, key=lambda other: (
+            last_conversation_partner(npc) != other.name and last_conversation_partner(other) != npc.name,
+            rank(npc, other)))
         concern = npc.current_concern
         topic = concern_topic(npc, concern)
         return npc, partner, "chat", topic, f"Seeking a chat with {partner.name}: {topic}", concern.kind, None, None

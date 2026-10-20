@@ -5,7 +5,8 @@ from dataclasses import asdict, dataclass
 from typing import Literal
 from uuid import uuid4
 
-from constants import CONCERN_LIFETIME_RANGE, CONCERN_WEIGHTS, GOAL_IMPROVEMENT, LEVERAGE_ACCOUNT_KINDS
+from constants import (CONCERN_LIFETIME_RANGE, CONCERN_WEIGHTS, FAILURE_COOLDOWN, GOAL_IMPROVEMENT,
+                       LEVERAGE_ACCOUNT_KINDS, MAX_DIALOGUE_FAILURE_COOLDOWN)
 from conversation_history import remember
 from dialogue_rules import named_references, validate_account_speech, validate_apple_promise
 
@@ -46,12 +47,42 @@ def concern_key(npc, concern):
 def concern_topic(npc, concern):
     guidance = {
         "orientation": "Find my bearings: understand these surroundings, the missing transition, or where to find help and safety",
-        "recollection": "Reflect on a remembered former-life experience, keeping its actual owner",
-        "news": "Discuss a known account, keeping its actual source, stance and uncertainty",
-        "surroundings": "Reflect on the supplied surroundings or my present situation, without inventing discoveries",
-        "plans": "Consider my actual commitments, goals or possible next steps without reciting private instructions",
+        "recollection": "Talk about a memory from my former life",
+        "news": "Compare views on an account I know",
+        "surroundings": "Talk about life here and what is on my mind",
+        "plans": "Work out what to do next",
     }
     return guidance[concern.kind]
+
+
+def last_conversation_partner(npc):
+    return next((next(name for name in r.participants if name != npc.name)
+                 for r in reversed(npc.world.history)
+                 if npc.name in r.participants and "You" not in r.participants and r.turns), None)
+
+
+def repeat_partner_paused(npc, other):
+    return any(person.conversation_return_remaining > 0 and last_conversation_partner(person) == partner.name
+               for person, partner in ((npc, other), (other, npc)))
+
+
+def dialogue_failure_cooldown(npc, other):
+    """Repeated failed meetings back off; any accepted exchange breaks the streak."""
+    delay = FAILURE_COOLDOWN
+    pair = {npc.name, other.name}
+    failures = 0
+    for record in reversed(npc.world.history):
+        if npc.name not in record.participants:
+            continue
+        if record.turns:
+            break
+        if set(record.participants) == pair and record.error:
+            failures += 1
+            if failures > 1:
+                delay = min(MAX_DIALOGUE_FAILURE_COOLDOWN, delay * 2)
+            if delay == MAX_DIALOGUE_FAILURE_COOLDOWN:
+                break
+    return delay
 
 
 def concern_description(npc, concern):

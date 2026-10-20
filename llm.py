@@ -24,7 +24,7 @@ from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_C
                        SNAKE_NAME, SNAKE_TURN_COUNT, VOICE_REWRITE_TEMPERATURE)
 from dialogue_text import contains_serialized_dialogue, contains_speaker_label, speech_is_complete, split_sentences
 from dialogue_code import DELIVERY_INSTRUCTION
-from dialogue_rules import (is_name_reference, mentions_account, mentions_private_recollection, named_context, named_references, name_pattern, unquoted_speech,
+from dialogue_rules import (_asserts, is_name_reference, mentions_account, mentions_private_recollection, named_context, named_references, name_pattern, unquoted_speech,
                            validate_account_speech, validate_apple_roles, validate_continuity,
                            validate_base_prose, validate_claim_source, validate_english, validate_opinion_reason,
                            validate_speaker_identity)
@@ -896,6 +896,9 @@ def world_context(snapshot, *, correction=False):
         context = {k: v for k, v in snapshot.items() if not k.startswith("_")}
         names = (_actor_name(snapshot["speaker"]), _actor_name(snapshot["listener"]), SNAKE_NAME)
         context["preceding_turns"] = _base_preceding_turns(context.get("preceding_turns", []), names)
+        if correction and context.get("shared_history"):
+            context["shared_history"] = {key: value for key, value in context["shared_history"].items()
+                                         if key != "recent_dialogue"}
         context["engine_identities"] = snapshot.get("_name_actors", {})
         return named_context(context)
     conversation = snapshot.get("request_kind") == "conversation"
@@ -1340,13 +1343,18 @@ def _resident_contract(snapshot, *, correction=False):
                                                                                          if delta and abs(influence + delta) <= 6]}
                             branches.append(branch)
                         properties[field]["items"] = branches[0] if len(branches) == 1 else {"anyOf": branches}
-        if bool(snapshot.get("discussion_focus_claim_id")) and snapshot["turn_index"] == 0:
+        if snapshot.get("_disclosure_repair"):
+            properties["disclosures"]["items"]["properties"]["claim_id"]["enum"] = [snapshot["_disclosure_repair"]]
+            properties["disclosures"]["minItems"] = 1
+        elif bool(snapshot.get("discussion_focus_claim_id")) and snapshot["turn_index"] == 0:
             properties["disclosures"]["minItems"] = 1
     schema["required"] = (["opinion"] if assessment else ["parts"])
     if snapshot.get("pending_reactions"):
         schema["required"].append("reactions")
     if bool(snapshot.get("discussion_focus_claim_id")) and snapshot["turn_index"] == 0 and not assessment:
         schema["required"].append("disclosures")
+    elif not assessment and not thanks and properties["disclosures"].get("maxItems", 0):
+        schema["required"].append("disclosures")  # [] remains valid when no account is spoken.
     _available_speech_fields(schema)
     instruction = (f"You are {snapshot['speaker']['name']}, speaking directly to {snapshot['listener']['name']}.\n"
         + (ORIENTATION_SPEAKING_BRIEF if orientation else SPEAKING_BRIEF) + "\n" + EMOTION_INSTRUCTION + "\n"
@@ -1370,8 +1378,17 @@ def _resident_contract(snapshot, *, correction=False):
         if "disclosures" in properties:
             instruction += (" Tell at most one selected account, with its actual owner and source, and record only its claim and intent. "
                             "Do not recite other private details; the listener chooses their own stance later. "
-                            + ("Disclose the required task account now." if bool(snapshot.get("discussion_focus_claim_id")) and snapshot["turn_index"] == 0
-                               else "Ordinary replies normally need no disclosure; omit optional metadata unless your speech actually performs it."))
+                            + ("Regenerate the account you chose to tell, with its matching disclosure entry." if snapshot.get("_disclosure_repair") else
+                               "Disclose the required task account now." if bool(snapshot.get("discussion_focus_claim_id")) and snapshot["turn_index"] == 0
+                               else "Return disclosures: [] if you tell no account. If you tell a supplied memory or account, include its claim_id and intent in disclosures on this same reply."))
+            focus = snapshot["speaker"].get("account_focus")
+            if focus and focus["claim_id"] in snapshot["choices"]["disclosures"]:
+                instruction += (" Your selected account is account_focus. If you tell its content, include "
+                                + json.dumps({"disclosures": [{"claim_id": focus["claim_id"], "intent": "share"}]})
+                                + " alongside parts. Its authored you/your refers to its named owner; use I/my for your own memory.")
+            elif focus:
+                instruction += (" account_focus has already been shared in this exchange. Respond to the listener's reaction "
+                                "without another disclosure entry for it; an ordinary follow-up uses disclosures: [].")
         if "offers" in properties or "acceptances" in properties:
             instruction += (" Only a giver can offer an available future apple proposal, explicitly naming its apple and deadline. "
                             "Only its receiver can accept an earlier offer in spoken words. A request is not an offer; acceptance is not delivery. "
@@ -1859,7 +1876,17 @@ def validate_speech_grounding(text, snapshot):
             raise ValueError("Perform the new handoff as the apple giver now. The resident already accepted; do not collect an apple or repeat a previous transfer.")
         if re.search(r"\b(?:already received|previously gave|earlier apple|debt is (?:now )?clear)\b", speech, re.I):
             raise ValueError("This is a new apple handoff with an offering owed later, not settlement of an earlier apple debt.")
-        if not re.search(r"\b(?:owe|owed|later|obligation|outstanding|unpaid)\b|\byet to be (?:shared|provided)\b", speech, re.I):
+        waived = _asserts(r"\b(?:owe (?:me )?nothing|nothing (?:is )?(?:owed|due)|no strings attached|"
+                          r"nothing in return|no need to (?:share|provide|tell|endorse)|"
+                          r"(?:do not|don't|never) owe|(?:a|my) gift)\b", speech)
+        prefix = snapshot.get("_preceding_turns", snapshot.get("preceding_turns", []))
+        offering = "recollection|memory|secret" if outcome == "advance_secret" else "endorsement|support"
+        agreed = (len(prefix) >= 2 and prefix[0]["role"] == "initiator" and prefix[1]["role"] == "recipient"
+                  and re.search(rf"\b(?:{offering})\b", prefix[0]["text"], re.I)
+                  and re.search(r"\b(?:later|owe|owed|in return|in exchange)\b", prefix[0]["text"], re.I)
+                  and re.search(r"\b(?:accept|agree|take|yes)\b", prefix[1]["text"], re.I))
+        if waived or not (agreed or re.search(
+                r"\b(?:owe|owed|later|obligation|outstanding|unpaid)\b|\byet to be (?:shared|provided)\b", speech, re.I)):
             raise ValueError("Keep the accepted recollection or endorsement due later when handing over the new apple; do not waive it or treat it as a gift.")
     if index == 2 and outcome in ("spare", "eat"):
         words = r"spare|pardon|forgive|mercy|waive" if outcome == "spare" else r"condemn|eat|eaten|devour"
@@ -2946,6 +2973,10 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
                  _speaker_behavior=speaker["personality"])
     if not orientation:
         speaker.update(inventory=deepcopy(person.get("inventory", {})), permitted_accounts=accounts)
+        focus_id = (info.focus_claim_id if info and role == "initiator" else None) or (private.get("concern") or {}).get("claim_id")
+        focus_account = next((a for a in accounts if a["claim_id"] == focus_id), None)
+        if focus_account:
+            speaker["account_focus"] = deepcopy(focus_account)
         speaker["firsthand_events_with_listener"] = [a for a in accounts if a.get("basis") == "firsthand"
             and a["kind"] not in ("former_life", "private_motive")
             and {a["subject_id"], a.get("object_id")} == {actor_id(person), actor_id(partner)}]
@@ -2996,7 +3027,7 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
         state["task"] = "Thank the listener briefly for the one apple just successfully handed to you. This speech is reserved for the actual handoff."
         state["food_request"]["transferred"] = True
         speaker["inventory"]["fruit"] = speaker["inventory"].get("fruit", 0) + 1
-        for field in ("permitted_accounts", "goal", "promises", "snake_attitudes", "snake_apple_advance", "immediate_objective", "concern"):
+        for field in ("permitted_accounts", "account_focus", "goal", "promises", "snake_attitudes", "snake_apple_advance", "immediate_objective", "concern"):
             speaker.pop(field, None)
     elif closing:
         state["question_to_answer"] = _last_question(draft["turns"][-1].text)
@@ -3309,10 +3340,13 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                      "handoff_thanks": "reserved handoff thanks", "intent": "player intent"}.get(kind, "reply"))
         correction = ""
         last_error = None
+        disclosure_repair = None
         for attempt in range(DIALOGUE_STAGE_ATTEMPTS):
             report(("Generating " if attempt == 0 else "Correcting " if attempt == 1 else "Recovery: rewriting ") + activity)
             retry_state = (_speech_retry_snapshot(state) if attempt == DIALOGUE_STAGE_ATTEMPTS - 1
                            and kind in ("snake_turn", "conversation_closing", "resident_turn", "handoff_thanks") else state)
+            if disclosure_repair:
+                retry_state = {**retry_state, "_disclosure_repair": disclosure_repair}
             try:
                 result = request(retry_state, correction)
                 if kind == "intent":
@@ -3323,6 +3357,15 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                 return validate_response(result.model_dump_json(), state)
             except InvalidResponseError as exc:
                 last_error = exc
+                # A chosen, concrete own memory needs speech and metadata together.
+                # Constrain only its regenerated reply; infer no live disclosure.
+                focus = state.get("speaker", {}).get("account_focus")
+                if (kind == "resident_turn" and str(exc).startswith("A new private recollection is spoken without")
+                        and focus and focus["kind"] == "former_life" and focus["subject_id"] == actor_id(state["speaker"])
+                        and focus["claim_id"] in state["choices"]["disclosures"]
+                        and mentions_private_recollection(" ".join(p.text for p in getattr(exc.response, "parts", [])),
+                                                          focus["assertion"], ())):
+                    disclosure_repair = focus["claim_id"]
                 if exc.repeated_turns and isinstance(exc.response, DialoguePartsResponse):
                     candidate = exc.response.model_copy(deep=True)
                     candidate.parts = _deduplicate_dialogue_parts(candidate)

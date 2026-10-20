@@ -221,7 +221,13 @@ def mentions_private_recollection(text, assertion, names):
                "seem", "too", "find", "way", "authority"}
     expected = _content_words(assertion, names) - general
     actual = _content_words(text, names) - general
-    return bool(expected) and len(expected & actual) >= min(2, len(expected))
+    overlap = expected & actual
+    # Apples/fruit and trees are public garden observations. Those two concepts
+    # alone do not disclose a biography about an orchard or saved seeds.
+    if overlap <= {"apple", "tree"} and not re.search(
+            r"\b(?:former|past|previous) life\b|\bused to\b", unquoted_speech(text), re.I):
+        return False
+    return bool(expected) and len(overlap) >= min(2, len(expected))
 
 
 def _account_words(text, names, kind):
@@ -431,6 +437,8 @@ def validate_apple_roles(text, *, giver, receiver, speaker, owed_offering=False,
                 r"\byour promise to share your (?:secrets|recollection)\b|"
                 r"\b(?:look forward to|expect) hearing your private recollection\b|"
                 r"\b(?:thanks|thank you) for (?:the|your) offer of (?:a|your) private recollection\b", sentence, re.I)
+            or speaker == receiver and _asserts(
+                rf"\bexpect(?:ing)?\s+(?:(?:to (?:hear|receive)|hearing|receiving)\s+)?(?:the|your|a)\s+{account}\b", sentence)
             or speaker == giver and re.search(r"\byou (?:will|shall) hear (?:the|my) (?:story|recollection|secret)\b", sentence, re.I))
         if reversed_price or re.search(r"\bwe owe\s+(?:to\s+)?(?:each other|one another)\b", sentence, re.I):
             raise ValueError(f"{receiver} owes the recollection or endorsement to {giver}. This is not a mutual debt or information owed to the resident.")

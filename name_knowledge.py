@@ -138,7 +138,7 @@ def introduction_supported(text, name, reference, *, name_requested=False):
     if reference == "self":
         pattern = (r"\b(?:my name is|my name['’]s|name['’]s|i am|i['’]m|call me|you can call me|i go by|i['’]m called)\s+"
                    + escaped + r"|\bi,\s*" + escaped + r"\s*,|(?:^|[.!?]\s*|,\s*)"
-                   + escaped + r"\s+here(?=\s*[,!.]|$)")
+                   + escaped + r"\s+here(?=\s*[,!.]|$)|\bmy name\b[^.!?;]{0,45}\bit['’]s\s+" + escaped)
     else:
         ref = re.escape(reference)
         pattern = (r"\b" + ref + r"\s+(?:is|is called|goes by|is named)\s+" + escaped

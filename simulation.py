@@ -435,7 +435,8 @@ class Simulation:
                 person.restore_after_interaction(saved, other.id)
                 person.pause_after_conversation(bool(interaction.record.turns))
                 if not interaction.record.turns:
-                    person.cooldowns[other.id] = FAILURE_COOLDOWN
+                    from social import dialogue_failure_cooldown
+                    person.cooldowns[other.id] = dialogue_failure_cooldown(person, other)
                 person.command_revision += 1
         encounter = target.snake_encounter
         if encounter:
