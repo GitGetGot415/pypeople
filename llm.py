@@ -884,7 +884,7 @@ def _speech_references(person, catalog):
     knowledge = person.get("name_knowledge", {}).get("known_names", {})
     allowed = permitted_forms(person, catalog, knowledge)
     return {"allowed_name_forms": sorted(allowed), "unknown_people": {
-        actor["name"]: actor.get("references", []) for actor in catalog.values()
+        target_id: actor.get("references") or ["another resident"] for target_id, actor in catalog.items()
         if actor["self_name"] not in allowed and not forms(actor["self_name"]) & allowed}}
 
 
@@ -1358,11 +1358,23 @@ def _resident_contract(snapshot, *, correction=False):
     elif not assessment and not thanks and properties["disclosures"].get("maxItems", 0):
         schema["required"].append("disclosures")  # [] remains valid when no account is spoken.
     _available_speech_fields(schema)
+    if snapshot.get("_compact_rewrite"):
+        instruction = (f"You are {snapshot['speaker']['name']}, replying only to {snapshot['listener']['name']}. "
+            "Write your own answer to the last listener message, never a copy or continuation of their words. "
+            "Their I/my belongs to them; your I/my belongs to you. Acknowledge their point briefly, then add your own response. "
+            "Use only your supplied knowledge. Keep the owners and sources of memories, claims and obligations unchanged. "
+            "Do not invent events, read planning notes aloud, or rewrite accepted speech. "
+            "Return parts with one or two complete sentences and your own emotion. "
+            "Use only available choices for effects: disclose a claim only when actually telling its content, "
+            "omit disclosures for ordinary reactions, and resolve each pending reaction using its allowed stance. "
+            "An offer needs your spoken apple commitment and deadline; acceptance needs your spoken agreement. "
+            "Keep all accepted effects fixed.\nPersonality: " + snapshot["speaker"].get("personality", "")
+            + "\nCurrent task: " + snapshot["task"])
+        if snapshot.get("_closing"):
+            instruction += f" Answer question_to_answer in at most {DIALOGUE_CLOSING_WORD_LIMIT} words and end without a question."
+        return instruction, schema, model
     instruction = (f"You are {snapshot['speaker']['name']}, speaking directly to {snapshot['listener']['name']}.\n"
-        + ("Answer the listener's latest point in fresh words; do not copy either speaker or recite your profile. "
-           "Use only supplied knowledge, I/my for yourself and you/your for the listener. "
-           "Keep names, sources, memories and obligations with their actual owners."
-           if snapshot.get("_compact_rewrite") else ORIENTATION_SPEAKING_BRIEF if orientation else SPEAKING_BRIEF)
+        + (ORIENTATION_SPEAKING_BRIEF if orientation else SPEAKING_BRIEF)
         + "\n" + EMOTION_INSTRUCTION + "\n"
         "Use only your own supplied context and accepted preceding speech. The listener's private views are unknown. "
         "Your exact self-name is self_introduction_name; listener_address is the permitted address. "
@@ -1372,8 +1384,7 @@ def _resident_contract(snapshot, *, correction=False):
         "a heard account is hearsay, never your own remembered life. Denials, uncertainty and deliberate lies remain distinct. "
         "Hearing a divine claim is different from believing its theology. Introductions come from identifying words actually spoken. "
         "Respond to what the partner actually said; do not invent transfers, events, discoveries or shared experiences.\n"
-        + ("Do not repeat accepted speech or invent earlier events.\n" if snapshot.get("_compact_rewrite") else
-           CONVERSATION_HISTORY_INSTRUCTION + "\n" + DIALOGUE_VARIETY_INSTRUCTION + "\n")
+        + CONVERSATION_HISTORY_INSTRUCTION + "\n" + DIALOGUE_VARIETY_INSTRUCTION + "\n"
         + snapshot["speaker"].get("personality", "") + "\nCurrent task: " + snapshot["task"])
     if assessment:
         instruction += ("\nThe transcript is fixed. Return your own opinion of opinion_target, with a first-person reason in plain prose. "
@@ -2417,8 +2428,6 @@ def _request_payload(message, snapshot, correction):
         context = {"speaker": {"name": speaker}, "listener": {"name": listener},
                    "task": snapshot["task"], "account_to_share": report, "preceding_turns": context["preceding_turns"]}
     stock_instruction = "" if snapshot.get("request_kind") == "conversation_closing" or snapshot.get("_closing") else _tree_stock_instruction(context)
-    if correction:
-        instruction += "\n\n" + correction
     instruction += stock_instruction
     if snapshot.get("request_kind") in ("snake_turn", "conversation_closing"):
         instruction += (
@@ -2439,7 +2448,11 @@ def _request_payload(message, snapshot, correction):
         instruction += (" Use spoken_identity.speaker_self_name for your own introduction and "
                         "spoken_identity.listener_address when addressing the listener. "
                         "Technical roster names can have disambiguation suffixes; never copy those into speech.")
-    if NAME_INSTRUCTION not in instruction:
+    if snapshot.get("_compact_rewrite") and snapshot.get("request_kind") == "resident_turn":
+        instruction += ("\nUse only speaker.speech_references.allowed_name_forms for names; otherwise use you/your "
+                        "for the listener or a supplied observable reference for someone else. Roster labels never teach names. "
+                        "A third-party introduction must explicitly identify an already known person by their supplied reference.")
+    elif NAME_INSTRUCTION not in instruction:
         instruction += "\n" + NAME_INSTRUCTION
     if snapshot.get("request_kind") in ("snake_turn", "conversation_closing"):
         context["speaker"]["name_knowledge"] = snapshot["speaker"].get("name_knowledge", {})
@@ -2469,12 +2482,17 @@ def _request_payload(message, snapshot, correction):
             instruction += (" You have not yet asked what to call this unfamiliar partner. Include a brief name question "
                             "in this reply alongside your response about the surroundings.")
     instruction = named_references(instruction)
-    if snapshot.get("request_kind") in ("resident_turn", "snake_turn", "conversation_closing"):
+    if snapshot.get("request_kind") in ("resident_turn", "snake_turn", "conversation_closing", "handoff_thanks"):
         context = account_speech_context(context, snapshot["speaker"], snapshot["listener"], snapshot.get("_name_actors", {}))
+        # Opinion targets are needed only by the separate assessment stage.
+        context.pop("opinion_target", None)
+        context["speaker"].pop("opinion_record_name", None)
     payload = {"world_state": context, "player_message": message}
     if correction:
-        if snapshot.get("request_kind") in ("resident_turn", "snake_turn", "conversation_closing"):
-            instruction += "\nCorrection for the current reply: " + named_references(correction)
+        if snapshot.get("request_kind") in ("resident_turn", "snake_turn", "conversation_closing", "handoff_thanks"):
+            feedback = account_speech_context({"assertion": correction}, snapshot["speaker"], snapshot["listener"],
+                                               snapshot.get("_name_actors", {}))["assertion"]
+            instruction += "\nCorrection for the current reply: " + named_references(feedback)
         else:
             payload["correction_request"] = named_references(correction)
     if stock_instruction:
@@ -2899,6 +2917,10 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
                    opinion_of_listener=private.get("opinions", {}).get(partner["npc_name"]))
     listener = dict(npc_id=actor_id(partner), name=listener_address(person, partner, knowledge[role]), kind="human resident")
     speaker["speech_references"] = _speech_references(speaker, catalog)
+    if not assessment and speaker["opinion_of_listener"]:
+        # Reasons are private assessments, often long or written in third person;
+        # feeding their wording into speech teaches the model to recite them.
+        speaker["opinion_of_listener"] = {"opinion": speaker["opinion_of_listener"]["opinion"]}
     pending = _pending_reactions(snapshot, draft, role)
     projection = _resident_information(snapshot, draft)
     info = information_from_dict(snapshot["_information_validation"]) if snapshot.get("_information_validation") else None
@@ -2996,6 +3018,8 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
             and {a["subject_id"], a.get("object_id")} == {actor_id(person), actor_id(partner)}]
         for field in ("goal", "promises", "snake_attitudes", "snake_apple_advance", "immediate_objective"):
             if field in private:
+                if field == "goal" and private[field] and private[field].get("status", "active") != "active":
+                    continue
                 speaker[field] = private[field]
         state["permitted_proposals"] = [p for p in snapshot.get("permitted_proposals", [])
             if p["id"] in choices["offers"] or p["id"] in choices["acceptances"]]
@@ -3354,6 +3378,7 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                     {"snake_decision": "encounter outcome", "conversation_closing": "closing answer",
                      "handoff_thanks": "reserved handoff thanks", "intent": "player intent"}.get(kind, "reply"))
         correction = ""
+        corrections = []
         last_error = None
         disclosure_repair = None
         disclosure_choices = None
@@ -3425,6 +3450,9 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                                   "For an ordinary reaction with no account, omit disclosures and introduce no new story. "
                                   "If your reply actually reports an available account, use only its matching claim ID. "
                                   "Keep accepted speech and the listener's reaction unchanged; never invent events to justify a tag.")
+                if correction not in corrections:
+                    corrections.append(correction)
+                correction = "\n".join(corrections)
         raise RequestError(f"The model's reply failed validation after bounded correction: {last_error}")
 
     try:

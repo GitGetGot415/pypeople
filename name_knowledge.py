@@ -57,6 +57,17 @@ def actor_catalog(world):
         ordered = sorted(world.npcs, key=distance)
         if ordered and (len(ordered) == 1 or distance(ordered[0]) < distance(ordered[1])):
             catalog[ordered[0].id].setdefault("references", []).append(label)
+    # A larger roster has many people who are neither an extreme nor nearest
+    # the tree. Give those actors a unique visible reference too; their names
+    # cannot be spoken merely because an account or goal mentions them.
+    for coordinate, direction in (("x", "left"), ("y", "top")):
+        ordered = sorted(world.npcs, key=lambda p: getattr(p, coordinate))
+        for rank, person in enumerate(ordered, 1):
+            if catalog[person.id].get("references") or sum(
+                    getattr(p, coordinate) == getattr(person, coordinate) for p in ordered) != 1:
+                continue
+            suffix = "th" if 10 <= rank % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(rank % 10, "th")
+            catalog[person.id]["references"] = [f"the {rank}{suffix} person from the {direction}"]
     catalog[world.snake.id]["references"] = ["the python guarding the apple tree"]
     return catalog
 
@@ -76,30 +87,49 @@ def account_references(catalog):
 
 
 def account_speech_context(value, speaker, listener, catalog):
-    """Keep factual account references speakable without granting name knowledge."""
-    allowed = permitted_forms(speaker, catalog, speaker.get("name_knowledge", {}).get("known_names", {}))
-    replacements = {}
+    """Project writing context into known references; leave accepted speech intact."""
+    knowledge = speaker.get("name_knowledge", {}).get("known_names", {})
+    allowed = permitted_forms(speaker, catalog, knowledge)
+    replacements, addresses = {}, {}
     for target_id, actor in catalog.items():
-        reference = ("you" if isinstance(listener, dict) and target_id == actor_id(listener) else
-                     next(iter(actor.get("references", [])), None) if actor["self_name"] not in allowed else None)
-        if target_id == actor_id(speaker) or reference is None:
+        if target_id == actor_id(speaker):
+            addresses[actor["name"].casefold()] = own_name(speaker)
             continue
-        for name in {actor["name"], actor["self_name"]}:
-            if name and sum(name in (entry["name"], entry["self_name"]) for entry in catalog.values()) == 1:
+        learned = knowledge.get(target_id, {}).get("name")
+        address = (actor["self_name"] if actor["self_name"] in allowed else learned or
+                   next(iter(actor.get("references", [])), "another resident"))
+        reference = "you" if isinstance(listener, dict) and target_id == actor_id(listener) else address
+        for name in {actor["name"]} | forms(actor["self_name"]):
+            if name and sum(name in {entry["name"]} | forms(entry["self_name"])
+                            for entry in catalog.values()) == 1:
                 replacements[name.casefold()] = reference
+                addresses[name.casefold()] = address
     pattern = "|".join(name_pattern(name) for name in sorted(replacements, key=len, reverse=True))
+
+    def prose(text):
+        def reference(match):
+            if not is_name_reference(match, text):
+                return match[0]
+            target = replacements[match[1].casefold()]
+            return "your" if target == "you" and match[2] else target + ("'s" if match[2] else "")
+        return re.sub(rf"({pattern})(['’]s)?", reference, text, flags=re.I) if pattern else text
 
     def project(item):
         if isinstance(item, list):
             return [project(entry) for entry in item]
         if not isinstance(item, dict):
             return item
-        result = {key: project(entry) for key, entry in item.items()}
-        if pattern and isinstance(item.get("assertion"), str) and item.get("kind") not in ("former_life", "private_motive"):
-            def reference(match):
-                target = replacements[match[1].casefold()]
-                return "your" if target == "you" and match[2] else target + ("'s" if match[2] else "")
-            result["assertion"] = re.sub(rf"({pattern})(['’]s)?", reference, item["assertion"], flags=re.I)
+        result = {}
+        for key, entry in item.items():
+            if key in ("name_knowledge", "preceding_turns", "recent_dialogue"):
+                result[key] = deepcopy(entry)
+            elif isinstance(entry, str) and (key in ("assertion", "firsthand_evidence", "objective", "motive", "approach", "boundary",
+                    "guidance", "immediate_objective", "reason", "text", "summary", "outcome") or key.endswith("_reason")):
+                result[key] = prose(entry)
+            elif isinstance(entry, str) and (key in ("name", "self_name") or key.endswith("_name")):
+                result[key] = addresses.get(entry.casefold(), entry)
+            else:
+                result[key] = project(entry)
         return result
     return project(value)
 
