@@ -11,7 +11,7 @@ from constants import (ACCENT, FAILED_CONVERSATION_COLOR, FAILED_CONVERSATION_SE
 from conversation_history import (display_parts, has_failed_voice_rewrite, usable_rewrite,
                                   uses_original_dialogue, voice_rewrite_errors)
 from emotions import portrait_expression
-from social import assertion_text, claim_by_id, fact_by_id, phase_label, selected_beliefs
+from social import assertion_text, claim_by_id, concern_description, fact_by_id, phase_label, selected_beliefs
 
 from .button import Button
 from .text import paginate_parts, wrap_text
@@ -181,6 +181,17 @@ class StatsScreen:
             gap()
             add(f"Topic / request: {record.topic}")
             gap()
+            add("What they wanted to discuss", app.heading_font)
+            if record.intended_subjects:
+                for name in record.participants:
+                    if name in record.intended_subjects:
+                        add(name, color=ACCENT)
+                        add(record.intended_subjects[name])
+                        gap()
+                add("Interests at the start; the conversation may follow another subject.", app.small_font, MUTED)
+            else:
+                add("Individual subjects were not recorded for this exchange.", app.small_font, MUTED)
+            gap()
             if record.dialogue_errors:
                 add("Base dialogue validation", app.heading_font)
                 for reason in record.dialogue_errors:
@@ -271,6 +282,11 @@ class StatsScreen:
                 add(f"Source: {account['immediate_source_name']}; original: {account['original_speaker_name']}", app.small_font, MUTED)
             return lines
         if self.tab == "Statistics":
+            add("Last on their mind" if npc.departure else "On their mind", app.heading_font)
+            add(concern_description(npc, npc.current_concern))
+            if npc.current_concern and npc.current_concern.remaining == 0 and not npc.departure:
+                add("Will choose a new subject when free.", app.small_font, MUTED)
+            gap()
             for field in PROFILE_FIELDS:
                 add(field, app.heading_font)
                 add(npc.character[field] or "Not specified")

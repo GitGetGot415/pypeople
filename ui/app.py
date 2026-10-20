@@ -15,6 +15,7 @@ from ollama_manager import load_model
 from simulation_data import InvalidSaveName, SaveStore, capture_simulation, restore_simulation
 from simulation import PendingAction, Simulation
 from snake import SnakeEncounter
+from social import concern_description
 from name_knowledge import actor_catalog, name_forms, orientation_speech, validate_name_use, permitted_forms
 
 from .game import GameScreen
@@ -291,6 +292,10 @@ class Application:
         self.request_message = message
         if self.game.player_record is None:
             self.game.player_record = ConversationRecord(("You", npc.name), message, "Waiting for reply", purpose=purpose)
+            self.game.player_record.intended_subjects = {
+                "You": message,
+                npc.name: (concern_description(npc, npc.current_concern) if isinstance(npc, NPC)
+                           else "Responding to the player's message.")}
             self.conversation_history.append(self.game.player_record)
         self.request_history = self.game.player_record
         self.request_history.status = "Waiting for reply"

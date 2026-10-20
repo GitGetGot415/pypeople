@@ -280,6 +280,7 @@ class HistoryState(SaveModel):
     id: str = Field(min_length=1)
     participants: tuple[str, str]
     topic: str
+    intended_subjects: dict[str, str]
     status: str
     turns: list[tuple[str, str]]
     dialogue_parts: dict[int, list[ConversationPart]] = Field(default_factory=dict)
@@ -525,6 +526,9 @@ class SimulationState(SaveModel):
         for record in self.history:
             if any(name != "You" and name not in actors.values() for name in record.participants):
                 raise ValueError("Unknown historical speaker.")
+            if (not set(record.intended_subjects) <= set(record.participants)
+                    or any(not subject.strip() for subject in record.intended_subjects.values())):
+                raise ValueError("Intended subjects must describe participants in their recorded conversation.")
             if any(speaker not in record.participants or not text.strip() for speaker, text in record.turns):
                 raise ValueError("Invalid historical speech.")
             for index, parts in record.dialogue_parts.items():

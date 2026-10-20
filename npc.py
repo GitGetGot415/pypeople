@@ -11,7 +11,8 @@ from emotions import portrait_expression
 from purgatory import initial_attitudes
 from conversation_history import (ConversationRecord, describe_opinion_change, relevant_memories, remember,
                                   shared_conversation_history)
-from social import (ConversationConcern, Goal, check_relationship_goals, commit_agreements, commit_concern_use, commit_information, concern_topic, conversation_references,
+from social import (ConversationConcern, Goal, check_relationship_goals, commit_agreements, commit_concern_use, commit_information,
+                    concern_description, concern_topic, conversation_references,
                     information_views, on_transfer, permitted_proposals, phase_label, prepare_information,
                     private_context, validate_live_agreements)
 from constants import (
@@ -655,6 +656,9 @@ class Conversation:
         self.active = True
         self.record = ConversationRecord((initiator.name, recipient.name), topic, "Walking to meet",
                                          origin=origin, purpose=purpose, id=self.id)
+        self.record.intended_subjects = {
+            npc.name: concern_description(npc, self.concerns[role])
+            for role, npc in (("initiator", initiator), ("recipient", recipient))}
         self.turns = []
         self.pending_opinions = []
         self.proposals = []

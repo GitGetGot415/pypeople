@@ -212,6 +212,9 @@ class SnakeEncounter:
         self.accusation = reason
         self.record = ConversationRecord((world.snake.name, resident.name), self.topic,
                                          "Awaiting tree visitor", origin=origin, purpose=purpose, id=self.id)
+        from social import concern_description
+        self.record.intended_subjects = {world.snake.name: self.topic,
+                                        resident.name: concern_description(resident, resident.current_concern)}
         self.saved_state = resident.suspend_activity(f"Meeting {SNAKE_NAME}: {self.topic}")
         resident.snake_encounter = self
         world.snake.encounter = self

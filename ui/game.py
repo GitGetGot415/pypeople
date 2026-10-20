@@ -29,6 +29,7 @@ class GameScreen:
         self.next_button = Button((1144, 552, 112, 32), "Next")
         self.back_button = Button((self.next_button.rect.left - 116, 552, 112, 32), "Back")
         self.retry_button = Button((904, 552, 112, 32), "Retry")
+        self.subjects_button = Button((self.retry_button.rect.left - 116, 552, 112, 32), "Subjects")
         self.portrait_rect = pygame.Rect(24, 552, 148, 148)
         dialogue_x = self.portrait_rect.right + 16
         self.prompt_input = TextInput(
@@ -178,7 +179,11 @@ class GameScreen:
             if self.handle_dialogue_scroll(app, event):
                 return
             if self.viewed_conversation is not None:
-                if self.next_button.clicked(event, enabled=bool(self.conversation_pages)):
+                if self.subjects_button.clicked(event, enabled=bool(self.viewed_conversation.record.intended_subjects)):
+                    record = self.viewed_conversation.record
+                    app.open_stats()
+                    app.stats.open_record(record)
+                elif self.next_button.clicked(event, enabled=bool(self.conversation_pages)):
                     self.advance_conversation(app)
                 elif self.back_button.clicked(event, enabled=self.conversation_page_index > 0):
                     self.rewind_conversation()
@@ -449,7 +454,10 @@ class GameScreen:
             title = f"{conversation.initiator.name} & {conversation.recipient.name}"
         emotion = portrait_expression(part.emotion.name, part.emotion.intensity) if part is not None else None
         self.draw_portrait(app, speaker, emotion)
-        draw_wrapped_text(app.window, title, app.font, INK, (self.reply_rect.x, 557, self.retry_button.rect.x - self.reply_rect.x - 16, 30))
+        title_right = self.subjects_button.rect.left if conversation.record.intended_subjects else self.retry_button.rect.left
+        draw_wrapped_text(app.window, title, app.font, INK, (self.reply_rect.x, 557, title_right - self.reply_rect.x - 16, 30))
+        if conversation.record.intended_subjects:
+            self.subjects_button.draw(app.window, app.small_font)
         self.back_button.draw(app.window, app.small_font, enabled=self.conversation_page_index > 0)
         last_page = bool(self.conversation_pages) and self.conversation_page_index == len(self.conversation_pages) - 1
         self.next_button.label = "Done" if last_page else "Next"

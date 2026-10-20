@@ -54,6 +54,34 @@ def concern_topic(npc, concern):
     return guidance[concern.kind]
 
 
+def concern_description(npc, concern):
+    """Observer text only; inspecting a concern never selects or consumes one."""
+    if concern is None:
+        return "No subject selected."
+    descriptions = {
+        "orientation": "Finding their bearings: arrival, surroundings, help and safety.",
+        "surroundings": "Reflecting on their surroundings and present situation.",
+        "plans": "Considering what to do next.",
+    }
+    if concern.kind == "plans":
+        plans = [npc.goal.objective] if npc.goal and npc.goal.status == "active" else []
+        plans.extend(f"Deliver an apple to {npc.world.actor_by_id(p.recipient_id).name}, due {phase_label(p.deadline)}"
+                     for p in pending_promises(npc.world, npc.id))
+        return "Plans: " + "; ".join(plans) if plans else descriptions["plans"]
+    if concern.kind in descriptions:
+        return descriptions[concern.kind]
+    claim = next((c for c in npc.world.claims if c.id == concern.claim_id), None)
+    belief = next((b for b in npc.beliefs if b.claim_id == concern.claim_id), None)
+    if claim is None or belief is None:
+        return "The account they wanted to discuss is no longer available."
+    account = account_view(npc.world, claim, belief)
+    title = "Former-life recollection" if concern.kind == "recollection" else "News or a known account"
+    basis = ("Firsthand experience" if belief.direct else
+             f"Heard from {account['immediate_source_name']}" if belief.source_id != npc.id else "Their own assertion")
+    return (f"{title}: {account['assertion']}\n"
+            f"About {account['subject_name']}. {basis}. Stance: {belief.stance}.")
+
+
 def danger_topic(npc, claim_id):
     claim = claim_by_id(npc.world, claim_id)
     return "Seek safety or help about a known alarming account: " + account_content(npc.world, fact_by_id(npc.world, claim.fact_id), claim.affirmed)
