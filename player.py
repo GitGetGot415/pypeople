@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 import re
 from uuid import uuid4
 
-from constants import (INVENTORY_CAPACITY, PLAYER_ID, STARTING_PLAYER_FRUIT, PLAYER_CALL_LIMIT, PLAYER_CALL_SECONDS,
+from constants import (INVENTORY_CAPACITY, PLAYER_ID, STARTING_PLAYER_FRUIT, PLAYER_CALL_LIMIT,
                        PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, PLAYER_CONTEXT_WORK_LIMIT,
                        PLAYER_OPINION_STEP, GIFT_GIVE_SECONDS, GIFT_SECONDS,
                        PLAYER_CALL_GIFT_GENEROSITY, PLAYER_CALL_SOCIABILITY)
@@ -324,12 +324,8 @@ def clear_call(npc):
 def update_calls(world, dt):
     for npc in world.npcs:
         npc.player_call_cooldown = max(0.0, npc.player_call_cooldown - dt)
-        if npc.player_call:
-            if not npc.unread_player_reply:
-                npc.player_call["remaining"] = max(0.0, npc.player_call["remaining"] - dt)
-            if ((not npc.unread_player_reply and not npc.player_call["remaining"])
-                    or not call_valid(world, npc, npc.player_call)):
-                clear_call(npc)
+        if npc.player_call and not call_valid(world, npc, npc.player_call):
+            clear_call(npc)
     world.player_call_check -= dt
     if world.player_call_check > 0 or world.phase_pending:
         return
@@ -342,7 +338,7 @@ def update_calls(world, dt):
             continue
         reason = call_reason(world, npc)
         if reason and reason["key"] not in npc.resolved_player_calls:
-            npc.player_call = dict(**reason, remaining=PLAYER_CALL_SECONDS)
+            npc.player_call = reason.copy()
             event = world.publish("player_call", (npc,), f"{npc.name} would like to talk to you.")
             npc.player_call["event_id"] = event.id
             count += 1

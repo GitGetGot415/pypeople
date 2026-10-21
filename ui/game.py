@@ -291,7 +291,7 @@ class GameScreen:
             self.panning = False
             return True
         if self.clock_button.clicked(event):
-            if not app.simulation.paused and not app.simulation.phase_pending:
+            if not app.simulation.paused and not app.simulation.phase_pending and not app.simulation.player_attention_pending:
                 app.simulation.next_phase()
             return True
         return False
@@ -300,14 +300,18 @@ class GameScreen:
         paused = app.simulation.paused
         self.pause_button.label = "Resume" if paused else "Pause"
         self.pause_button.draw(app.window, app.small_font)
-        self.clock_button.draw(app.window, app.small_font, enabled=not paused and not app.simulation.phase_pending)
+        self.clock_button.draw(app.window, app.small_font, enabled=not paused and not app.simulation.phase_pending
+                               and not app.simulation.player_attention_pending)
         x, y = self.clock_button.rect.center
         pygame.draw.circle(app.window, PAPER, (x, y), 12, width=2)
         pygame.draw.line(app.window, PAPER, (x, y), (x, y - 8), 2)
         pygame.draw.line(app.window, PAPER, (x, y), (x + 6, y + 3), 2)
         color = PAPER if app.screen == "game" and app.simulation.phase == "night" else INK
         app.window.blit(app.small_font.render(app.simulation.phase_label, True, color), GAME_PHASE_POSITION)
-        if app.simulation.phase_pending:
+        if app.simulation.player_attention_pending:
+            draw_wrapped_text(app.window, "Address the waiting NPCs before changing the time.",
+                              app.small_font, color, PHASE_PENDING_RECT)
+        elif app.simulation.phase_pending:
             draw_wrapped_text(app.window, f"{app.simulation.next_phase_label} pending: finishing conversations.",
                               app.small_font, color, PHASE_PENDING_RECT)
         if paused:
@@ -540,7 +544,7 @@ class GameScreen:
         app.window.blit(overlay, (0, 0))
         pygame.draw.rect(app.window, PAPER, CALL_CHOICE_RECT)
         draw_wrapped_text(app.window, f"{npc.name} would like to talk to you.", app.heading_font, INK, CALL_CHOICE_TITLE_RECT)
-        draw_wrapped_text(app.window, self.call_status or "Talk when you are ready. Not now leaves this call available until it expires.",
+        draw_wrapped_text(app.window, self.call_status or "Talk or dismiss this invitation to continue. Not now keeps the resident waiting and time changes blocked.",
                           app.font, MUTED, CALL_CHOICE_STATUS_RECT)
         for label, button in self.call_buttons.items():
             button.draw(app.window, app.small_font, enabled=label != "Talk" or not app.simulation.paused)

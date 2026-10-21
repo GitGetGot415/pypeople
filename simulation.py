@@ -87,8 +87,12 @@ class Simulation:
     def next_phase_label(self):
         return {"day": "Evening", "evening": "Night", "night": f"Day {self.day + 1}"}[self.phase]
 
+    @property
+    def player_attention_pending(self):
+        return any(npc.player_call is not None for npc in self.npcs)
+
     def next_phase(self):
-        if self.paused or self.phase_pending:
+        if self.paused or self.phase_pending or self.player_attention_pending:
             return
         self.phase_pending = True
         self.finish_phase_change()
@@ -96,7 +100,7 @@ class Simulation:
     def finish_phase_change(self):
         """Commit one clock request only after existing speech and handoffs finish."""
         from social import advance_social_phase
-        if (not self.phase_pending or self.paused or self.snake.encounter is not None
+        if (not self.phase_pending or self.paused or self.player_attention_pending or self.snake.encounter is not None
                 or self.snake.request_pending or self.pending_actions
                 or any(npc.interaction is not None or npc.request_pending
                        or npc.selected and npc.end_conversation for npc in self.npcs)):

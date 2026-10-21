@@ -27,7 +27,7 @@ from llm import (AcceptedProposal, ConversationPart, ConversationTurn, Disclosur
 from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree
 from simulation import PendingAction, Simulation
 from player import Player, PlayerHandoff
-from constants import PLAYER_ID, PLAYER_LABEL, PLAYER_CALL_SECONDS, PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, PLAYER_CALL_LIMIT
+from constants import PLAYER_ID, PLAYER_LABEL, PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, PLAYER_CALL_LIMIT
 from snake import Snake, SnakeEncounter
 from purgatory import Attitudes
 from social import (Belief, Claim, ConcernKind, ConversationConcern, Disclosure, Fact, FactKind, Goal, GoalKind, OpinionEffect, Promise, Proposal,
@@ -243,7 +243,6 @@ class PlayerCallState(SaveModel):
     kind: Literal["gift", "news", "followup"]
     reference: str = Field(min_length=1)
     reason: str = Field(min_length=1)
-    remaining: float = Field(gt=0, le=PLAYER_CALL_SECONDS)
     event_id: str = Field(min_length=1)
 
 
@@ -1135,9 +1134,8 @@ class SimulationState(SaveModel):
                     or npc.owner != "autonomous"
                     or npc.id in reserved_ids
                     or any(npc.id in (a.npc_id, a.target_id) for a in self.pending_actions)
-                    or set(call) != {"key", "kind", "reference", "reason", "remaining", "event_id"}
+                    or set(call) != {"key", "kind", "reference", "reason", "event_id"}
                     or call["kind"] not in ("gift", "news", "followup")
-                    or not 0 < call["remaining"] <= PLAYER_CALL_SECONDS
                     or call["key"] in npc.resolved_player_calls):
                 raise ValueError("Invalid waiting player call.")
             if call:
