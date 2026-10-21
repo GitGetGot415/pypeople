@@ -295,7 +295,8 @@ class VoiceRewriteValidationError(ValueError):
 
 
 VOICE_REWRITE_INSTRUCTION = """Rewrite ONE speaker's supplied utterances in their Voice and Mannerisms.
-Each part_N is an independent slot: speaker_name says original to listener_name.
+Each part_N is an independent slot containing the current speaker's original.
+Optional speaker_name and listener_name identify only names already in that original.
 I/my belongs to the speaker; you/your belongs to the listener. Never answer as the
 listener or borrow a different slot's words. Return only the flat part_N JSON strings.
 
@@ -306,6 +307,9 @@ directions, private memories, thanks, answers or additional questions.
 
 Preserve every proper name EXACTLY. Names are protected text, not style.
 Keep names_to_preserve EXACTLY, in the same slot.
+These names are literal protected spans: do not translate, transliterate, respell,
+or replace them with emoji. All surrounding text follows the requested delivery.
+Internal role descriptions are context, never names or greetings to add to speech.
 Do not add a name absent from that original, even your own name or the listener's.
 Keep name questions and self-introductions intact, including the exact name form.
 When Voice asks for third-person self-reference or titles, apply it only where it
@@ -316,6 +320,8 @@ can stay close to an already natural original. Keep short replies short. Do not 
 speech or add a tic to every sentence. Convey mannerisms through spoken delivery,
 without narration, stage directions, wrappers, labels, outer quotes or field readouts.
 Use the supplied emotion subtly. Keep each slot's complete original meaning.
+Emotion changes tone only: anger is not a refusal. Never turn can into cannot,
+agreement into disagreement, or a positive statement into its negation.
 """ + "\n" + DELIVERY_INSTRUCTION
 
 
@@ -1497,6 +1503,8 @@ def _resident_contract(snapshot, *, correction=False):
             "Collections are unlimited and separate from apple capacity. You know your own works; do not infer the listener's private collection.")
     if assessment:
         instruction += ("\nThe transcript is fixed. Return your own opinion of opinion_target, with a first-person reason in plain prose. "
+                        "Explain your assessment of the OTHER person from this exchange, not a summary of your own personality, "
+                        "interests, confusion, or behavior. Use I/my for yourself; do not describe yourself by name. "
                         "Preserve established views unless the exchange warrants a change. Resolve pending_reactions using only their allowed stances. "
                         "Add no dialogue, introductions or other effects, and never revise an accepted stance.")
     elif not thanks:
@@ -2745,13 +2753,16 @@ def _request_payload(message, snapshot, correction):
                 if is_name_reference(match, part["original"])))
             # Names absent from this original are unnecessary style context.
             # Listing them as labels or names to avoid primed small models to add them.
-            for field, fallback in (("speaker_name", "the speaker"), ("listener_name", "the listener")):
+            for field in ("speaker_name", "listener_name"):
                 label = part[field]
                 spoken = next((name for name in part["names_to_preserve"] if name in forms(label)), None)
-                part[field] = spoken or (label if label.startswith("the ") or label == "You" else fallback)
+                if spoken:
+                    part[field] = spoken
+                else:
+                    part.pop(field)
         schema = {"type": "object", "properties": {key: {
             "type": "string", "minLength": 1,
-            "description": f"Direct utterance by {part['speaker_name']} to {part['listener_name']}. No speaker label, narration or outer quotes. Keep original names unchanged."
+            "description": f"Direct utterance by {part.get('speaker_name', 'the current speaker')} to {part.get('listener_name', 'the current listener')}. No speaker label, narration or outer quotes. Keep original names unchanged."
         } for key, part in parts.items()}, "required": list(parts)}
         return (VOICE_REWRITE_INSTRUCTION + ("\n" + correction if correction else ""), schema,
                 json.dumps({"parts": parts},
@@ -2815,6 +2826,21 @@ def _request_payload(message, snapshot, correction):
                              "offering_owed_by": receiver, "offering_owed_to": giver,
                              "offering_options": ["private recollection", "public endorsement"],
                              "offering_due_later": True, "acceptance_received": False}}
+    if (snapshot.get("request_kind") == "snake_turn" and snapshot["turn_index"] == 1
+            and transaction.get("selected_outcome") in ("advance_secret", "advance_endorsement")):
+        receiver, giver = _actor_name(snapshot["speaker"]), _actor_name(snapshot["listener"])
+        offering = "private recollection" if transaction["selected_outcome"] == "advance_secret" else "public endorsement"
+        instruction = (f"You are {receiver}, replying directly to {giver} in English. The selected decision accepts this bargain. "
+                       f"Explicitly accept one apple now and agree that YOU will provide YOUR {offering} to the listener LATER. "
+                       "Appreciating, considering, or being interested in the offer is not acceptance. "
+                       "Do not reverse the debt, request the listener's private account, or disclose your own account yet. "
+                       "Use I/you and ordinary capitalization, one or two complete sentences and your own emotion. Return only parts.\n"
+                       + snapshot["_speaker_behavior"] + "\n" + EMOTION_INSTRUCTION)
+        context = {"speaker": {"name": receiver}, "listener": {"name": giver}, "task": snapshot["task"],
+                   "acceptance": {"apple_giver": giver, "apple_receiver": receiver, "apples_offered_now": 1,
+                                  "offering_owed_by": receiver, "offering_owed_to": giver,
+                                  "offering": offering, "offering_due_later": True, "apple_already_received": False},
+                   "preceding_turns": context["preceding_turns"]}
     if snapshot.get("request_kind") == "snake_turn" and transaction.get("apple_handoff_now"):
         giver, receiver = _actor_name(snapshot["speaker"]), _actor_name(snapshot["listener"])
         offering = "private recollection" if transaction["offering"] == "secret" else "public endorsement"

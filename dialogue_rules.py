@@ -39,6 +39,7 @@ _ORDINARY_NAME_WORDS = {
     "will", "may", "hope", "joy", "rose", "grace", "faith", "pat", "mark", "bill",
     "judge", "price", "hill", "green", "brown", "white", "baker", "king", "young", "hall",
     "west", "summer", "autumn", "hunter", "chase", "river", "dawn", "june", "august", "ivy", "ray", "chance",
+    "apple", "cheese", "brick", "ash", "jazz", "argon",
 }
 
 
@@ -47,8 +48,17 @@ def is_name_reference(match, speech):
     if match.group().casefold() not in _ORDINARY_NAME_WORDS:
         return True
     before, after = speech[:match.start()], speech[match.end():]
-    return bool(re.search(r"\b(?:hello|hey|thanks|thank you|ask|tell|called|named|name is|call me|i am|i['’]m|mr|mrs|ms|dr)\.?\s*[, ]*\s*$", before, re.I)
-                or re.match(r"\s*[,!]", after))
+    if re.search(r"\b(?:hello|hey|dear|thanks|thank you|ask|tell|called|named|name is|call me|i am|i['’]m|"
+                 r"mr|mrs|ms|dr|met|meet|spoke to|talked to)\.?\s*[, ]*\s*$", before, re.I):
+        return True
+    # A comma after an object is not a vocative: "an apple, please".
+    if re.search(r"\b(?:an?|the|some|any|this|that|these|those|one|another|more|no|\d+)\s+"
+                 r"(?:[a-z-]+\s+){0,2}$", before, re.I):
+        return False
+    if re.match(r"['’]s\b|\s+(?:said|says|told|asked|wants|thinks|believes|gave|received|refused|agreed)\b", after, re.I):
+        return True
+    return bool(re.match(r"\s*[,!]", after) and
+                (match.group()[0].isupper() or not before.strip()))
 
 
 def validate_speaker_identity(text, speaker, listener, *, allow_third_person=False):
@@ -59,10 +69,13 @@ def validate_speaker_identity(text, speaker, listener, *, allow_third_person=Fal
     if own and not allow_third_person and re.search(name_pattern(own) + r"(?:['’]s\b|\s+(?:heard|said|gave|received|refused|accepted|decided|agreed|was|has|had)\b)", text, re.I):
         raise ValueError("The speaker narrates their own experience as another person. Use I/my for yourself, preserving who did what.")
     other_aliases = {other.casefold(), other.split()[0].casefold()} if other else set()
-    for name in sorted(aliases - other_aliases, key=len, reverse=True):
-        name = re.escape(name)
+    for alias in sorted(aliases - other_aliases, key=len, reverse=True):
+        name = re.escape(alias)
         pattern = rf"(?:^|[.!?]\s+)\s*{name}\s*[,!?]|(?:,\s*|\b(?:you|yes|no|thanks|hello|hey|listen|of course)\s+){name}(?=\s*[,;:.!?]|\s*$)"
         for match in re.finditer(pattern, text, re.IGNORECASE):
+            reference = re.compile(name_pattern(alias), re.I).search(text, match.start(), match.end())
+            if reference is not None and not is_name_reference(reference, text):
+                continue
             prefix = re.split(r"[.!?]", text[:match.start()])[-1]
             intro = rf"\b(?:i am|i['’]m|my name is|call me|it['’]s me|it is me)(?:\s+{re.escape(own.split()[0])})?\s*$"
             if re.search(intro, prefix, re.IGNORECASE) or re.search(r"\bi\s*$", prefix, re.IGNORECASE):
@@ -79,6 +92,8 @@ def validate_speaker_identity(text, speaker, listener, *, allow_third_person=Fal
         if allow_third_person or name == "you":
             continue  # Voice rewrites keep their existing limited diagnostic rules.
         for match in re.finditer(name_pattern(name), text, re.IGNORECASE):
+            if not is_name_reference(match, text):
+                continue
             before, after = text[:match.start()], text[match.end():]
             if name != other.casefold():
                 following = re.match(r"\s+([^\W\d_]+)\b", after)
@@ -167,8 +182,10 @@ def validate_opinion_reason(reason, owner, target=""):
         aliases = {owner} if owner else set()
         if owner and (not target or owner.split()[0].casefold() != target.split()[0].casefold()):
             aliases.add(owner.split()[0])
-        if any(re.search(name_pattern(name) + r"(?:['’]s\s+(?!well-being\b|wellbeing\b|safety\b|welfare\b|needs\b|health\b|hunger\b|survival\b)\w+|\s+(?:kept|seemed|was|appeared|dismissed|ignored|refused)\b|\s+is\s+(?:trying|being)\b)",
-                         sentence, re.I) for name in aliases):
+        predicate = (r"(?:['’]s\s+(?!well-being\b|wellbeing\b|safety\b|welfare\b|needs\b|health\b|hunger\b|survival\b)\w+|"
+                     r"\s+(?:is|kept|seemed|was|appeared|dismissed|ignored|refused)\b)")
+        if any(is_name_reference(match, sentence) and re.match(predicate, sentence[match.end():], re.I)
+               for name in aliases for match in re.finditer(name_pattern(name), sentence, re.I)):
             raise ValueError("An opinion reason must explain the owner's view of their partner, not criticize the owner by name. "
                              "The initiator judges the recipient; the recipient judges the initiator. Use I/my for the owner.")
 
@@ -197,9 +214,10 @@ _APPLE_REFUSAL = (r"\b(?:refused|declined|rejected)\s+(?:to accept\s+)?(?:the|an
 
 
 def _content_words(text, names):
-    for name in names:
-        for part in name.split():
-            text = re.sub(name_pattern(part), " ", text, flags=re.I)
+    aliases = {form for name in names for form in (name, *name.split()) if form}
+    for name in sorted(aliases, key=len, reverse=True):
+        text = re.sub(name_pattern(name), lambda match: " " if is_name_reference(match, text) else match.group(),
+                      text, flags=re.I)
     # Single-letter fragments of contractions and possessives (he's, dog's)
     # are not evidence that a private memory was mentioned.
     words = {word for word in re.findall(r"[a-z]+", text.casefold()) if len(word) > 1} - _CONTENT_NOISE
@@ -218,7 +236,7 @@ def mentions_account(text, assertion, names):
 def mentions_private_recollection(text, assertion, names):
     # Generic reactions or a shared theological concept do not establish a private memory.
     general = {"description", "think", "thought", "mean", "feel", "felt", "wonder", "hope", "believe",
-               "seem", "too", "find", "way", "authority", "accept"}
+               "seem", "too", "find", "way", "authority", "accept", "detail", "far", "listener"}
     expected = _content_words(assertion, names) - general
     actual = _content_words(text, names) - general
     overlap = expected & actual
@@ -341,7 +359,8 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
         if firsthand:
             validate_claim_source(spoken, names=names, speaker=speaker, listener=listener, actor_references=actor_references)
     missing_actor = speaker is not None and any(
-        name not in (speaker, listener) and re.search(name_pattern(name), assertion, re.I)
+        name not in (speaker, listener) and any(is_name_reference(match, assertion)
+            for match in re.finditer(name_pattern(name), assertion, re.I))
         and not (kind == "snake_claim" and name != SNAKE_NAME)
         and not any(re.search(name_pattern(ref), spoken, re.I)
                     for ref in [name.split()[0], *(actor_references or {}).get(name, []),
@@ -433,12 +452,13 @@ def validate_apple_roles(text, *, giver, receiver, speaker, owed_offering=False,
         raise ValueError(f"{giver} gives the apple to {receiver}; do not ask the resident to supply it.")
     if speaker == giver and re.search(r"\bi\s+(?:accept|receive|take)\s+(?:the|an?|your|this)\s+apple\b", speech, re.I):
         raise ValueError(f"{giver} gives the apple; only {receiver} accepts it. Preserve the settled handoff.")
-    account = r"(?:private\s+)?(?:recollection|secret|information|endorsement|story|offering)"
+    account = r"(?:private\s+)?(?:recollection|memory|secret|information|endorsement|support|story|offering|account)"
     for sentence in split_sentences(speech):
         if re.search(r"\bnot\s+(?:owed|due)\s+to\s+(?:me|you)\b", sentence, re.I):
             continue
         reversed_price = (speaker == receiver and re.search(
-            rf"\b{account}\b[^.!?]{{0,45}}\b(?:owed|due)\s+to\s+me\b|\byou\s+owe\s+me\s+(?:an?\s+|the\s+)?{account}\b", sentence, re.I)
+            rf"\b{account}\b[^.!?]{{0,45}}\b(?:owed|due)\s+to\s+me\b|\byou\s+owe\s+me\s+(?:an?\s+|the\s+)?{account}\b|"
+            rf"\bi(?:['’]m| am)\s+(?:(?:still|already|now)\s+)?owed\s+(?:an?\s+|the\s+)?{account}\b", sentence, re.I)
             or speaker == giver and re.search(
                 rf"\bi\s+owe\s+you\s+(?:an?\s+|the\s+)?{account}\b|"
                 rf"\b{account}\b[^.!?]{{0,45}}\b(?:owed|due)\s+to\s+you\b|"
