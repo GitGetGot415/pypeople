@@ -15,6 +15,10 @@ from .request_status import RequestStatus
 from .text import draw_wrapped_text, paginate_parts, wrap_text
 from .text_input import TextInput
 from .world import draw_world, snake_artwork
+from .inventory import InventoryPanel
+from constants import (INVENTORY_BUTTON_RECT, GAME_PAUSE_RECT, GAME_CLOCK_RECT, GAME_PHASE_POSITION,
+                       GAME_PAUSED_LABEL_RIGHT, GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT, CALL_CHOICE_RECT,
+                       CALL_CHOICE_TITLE_RECT, CALL_CHOICE_STATUS_RECT, CALL_CHOICE_BUTTON_RECTS)
 
 
 class GameScreen:
@@ -22,9 +26,18 @@ class GameScreen:
         self.menu_button = Button((1144, 16, 112, 38), "Menu")
         self.stats_button = Button((1024, 16, 112, 38), "Stats")
         self.save_button = Button((904, 16, 108, 38), "Save")
-        self.pause_button = Button((600, 16, 108, 38), "Pause")
+        self.inventory_button = Button(INVENTORY_BUTTON_RECT, "Inventory")
+        self.inventory = InventoryPanel()
+        self.pending_offer = None
+        self.accept_offer_button = Button(GIFT_ACCEPT_RECT, "Accept gift")
+        self.decline_offer_button = Button(GIFT_DECLINE_RECT, "Decline")
+        self.call_choice = None
+        self.call_status = ""
+        self.call_buttons = {label: Button(rect, label)
+                             for label, rect in zip(("Talk", "Not now", "Dismiss"), CALL_CHOICE_BUTTON_RECTS)}
+        self.pause_button = Button(GAME_PAUSE_RECT, "Pause")
         self.arrival_retry = Button((476, 72, 120, 32), "Retry arrival")
-        self.clock_button = Button((720, 16, 44, 38), "")
+        self.clock_button = Button(GAME_CLOCK_RECT, "")
         self.save_message = ""
         self.save_message_remaining = 0
         self.send_button = Button((1136, 644, 120, 44), "Send")
@@ -62,6 +75,8 @@ class GameScreen:
         self.apartment_close = Button(APARTMENT_INSPECTOR_CLOSE_RECT, "Close")
 
     def reset(self):
+        self.inventory.close()
+        self.call_choice = None
         self.apartment_open = False
         self.apartment_scroll = 0
         self.close_dialogue()
@@ -81,6 +96,11 @@ class GameScreen:
         self.save_message_remaining = 8
 
     def close_dialogue(self):
+        self.pending_offer = None
+        if self.player_record:
+            for offer in self.player_record.player_promise_offers:
+                if offer["status"] == "offered":
+                    offer["status"] = "closed"
         self.player_record = None
         if self.viewed_conversation is not None:
             self.viewed_conversation = None
@@ -121,6 +141,35 @@ class GameScreen:
                 self.camera_offset[1] + (WINDOW_SIZE[1] - WORLD_HEIGHT) / 2)
 
     def handle_event(self, app, event):
+        if self.call_choice:
+            from player import clear_call
+            npc = app.simulation.npc_by_id(self.call_choice)
+            if npc is None or not npc.player_call:
+                self.call_choice = None
+                return
+            for label, button in self.call_buttons.items():
+                if button.clicked(event, enabled=label != "Talk" or not app.simulation.paused):
+                    if label == "Talk":
+                        self.call_status = app.talk_to_call(npc)
+                        if not self.call_status:
+                            self.call_choice = None
+                    else:
+                        if label == "Dismiss":
+                            clear_call(npc)
+                        self.call_choice = None
+            return
+        if self.inventory_button.clicked(event):
+            self.pan_start = self.pan_last = None
+            self.prompt_input.active = self.prompt_input.backspace_held = False
+            self.inventory.open(app.simulation.player)
+            return
+        if self.pending_offer and self.dialogue_open:
+            if self.accept_offer_button.clicked(event, enabled=not app.simulation.paused):
+                app.accept_gift_offer()
+                return
+            if self.decline_offer_button.clicked(event, enabled=not app.simulation.paused):
+                app.decline_gift_offer()
+                return
         if self.apartment_open:
             if self.apartment_close.clicked(event) or event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 self.apartment_open = False
@@ -141,7 +190,7 @@ class GameScreen:
             pos = getattr(event, "pos", pygame.mouse.get_pos())
             if self.world_viewport.collidepoint(pos) and not any(
                 button.rect.collidepoint(pos)
-                for button in (self.menu_button, self.stats_button, self.save_button, self.pause_button, self.clock_button)
+                for button in (self.menu_button, self.stats_button, self.save_button, self.inventory_button, self.pause_button, self.clock_button)
             ):
                 self.zoom_at(pos, event.y)
                 return
@@ -149,7 +198,7 @@ class GameScreen:
             return
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if self.world_viewport.collidepoint(event.pos) and not any(
-                button.rect.collidepoint(event.pos) for button in (self.menu_button, self.stats_button, self.save_button, self.pause_button)
+                button.rect.collidepoint(event.pos) for button in (self.menu_button, self.stats_button, self.save_button, self.inventory_button, self.pause_button)
             ):
                 self.pan_start = event.pos
                 self.pan_last = event.pos
@@ -192,6 +241,12 @@ class GameScreen:
                 app.leave_game()
             return
         if self.dialogue_open:
+            if self.pending_offer:
+                return
+            if (self.player_record and self.player_record.error and self.retry_button.clicked(event,
+                    enabled=not paused and not self.selected_npc.request_pending)):
+                app.retry_player_dialogue()
+                return
             if self.handle_dialogue_scroll(app, event):
                 return
             if self.viewed_conversation is not None:
@@ -251,13 +306,13 @@ class GameScreen:
         pygame.draw.line(app.window, PAPER, (x, y), (x, y - 8), 2)
         pygame.draw.line(app.window, PAPER, (x, y), (x + 6, y + 3), 2)
         color = PAPER if app.screen == "game" and app.simulation.phase == "night" else INK
-        app.window.blit(app.small_font.render(app.simulation.phase_label, True, color), (774, 27))
+        app.window.blit(app.small_font.render(app.simulation.phase_label, True, color), GAME_PHASE_POSITION)
         if app.simulation.phase_pending:
             draw_wrapped_text(app.window, f"{app.simulation.next_phase_label} pending: finishing conversations.",
                               app.small_font, color, PHASE_PENDING_RECT)
         if paused:
             label = app.small_font.render("Paused", True, color)
-            app.window.blit(label, label.get_rect(midright=(584, self.pause_button.rect.centery)))
+            app.window.blit(label, label.get_rect(midright=(GAME_PAUSED_LABEL_RIGHT, self.pause_button.rect.centery)))
 
     def advance_conversation(self, app):
         conversation = self.viewed_conversation
@@ -309,6 +364,11 @@ class GameScreen:
         self.camera_offset[1] += world_pos[1] * (old_zoom - self.camera_zoom)
 
     def select_at(self, app, screen_pos):
+        from .world import calling_bubble_rect, calling_bubble_visible
+        for resident in app.simulation.outdoor_npcs:
+            if calling_bubble_visible(resident, self.view_offset, self.camera_zoom) and calling_bubble_rect(resident, self.view_offset, self.camera_zoom).clip(self.world_viewport).collidepoint(screen_pos):
+                self.open_call(app, resident)
+                return
         world_pos = self.screen_to_world(screen_pos)
         if pygame.Rect(APARTMENT_RECT).collidepoint(world_pos):
             self.close_dialogue()
@@ -349,6 +409,7 @@ class GameScreen:
         self.menu_button.draw(app.window, app.small_font)
         self.stats_button.draw(app.window, app.small_font)
         self.save_button.draw(app.window, app.small_font)
+        self.inventory_button.draw(app.window, app.small_font)
         self.draw_clock(app)
         self.feed.draw(app)
         self.request_status.draw(app)
@@ -388,6 +449,13 @@ class GameScreen:
             status = "Click Done when you've finished reading."
         elif self.selected_npc.request_pending:
             status = f"Applying player request / {status}"
+        if self.pending_offer:
+            offer = self.pending_offer
+            work = next((w for w in app.simulation.creations if w.id == offer["item"]), None)
+            status = f'Gift offer: {offer["quantity"]} × {work.title + " [" + work.id[:8] + "]" if work else "apples"}'
+        elif self.player_record and self.player_record.error:
+            self.retry_button.draw(app.window, app.small_font, enabled=not app.simulation.paused and not self.selected_npc.request_pending)
+            status = "Reply failed."
         rendered_status = app.small_font.render(status, True, MUTED)
         app.window.blit(rendered_status, rendered_status.get_rect(topright=(1256, 558)))
         app.window.blit(app.font.render(self.selected_npc.name, True, INK), (self.reply_rect.x, 557))
@@ -401,7 +469,10 @@ class GameScreen:
                                                      self.reply_rect.width - 12), app.font, self.reply_rect,
                                  color=INK if self.reply else MUTED)
         closing = self.selected_npc.end_conversation
-        if closing:
+        if self.pending_offer:
+            self.accept_offer_button.draw(app.window, app.small_font, enabled=not app.simulation.paused)
+            self.decline_offer_button.draw(app.window, app.small_font, enabled=not app.simulation.paused)
+        elif closing:
             self.done_button.draw(app.window, app.font)
         else:
             self.prompt_input.draw(app.window, app.font)
@@ -420,6 +491,32 @@ class GameScreen:
         if not closing:
             count = app.small_font.render(f"{len(self.prompt_input.text)}/300", True, MUTED)
             app.window.blit(count, count.get_rect(topright=(1256, 696)))
+
+    def open_call(self, app, npc):
+        if self.dialogue_open or app.request_history is not None:
+            self.show_save_message("Finish the current exchange before opening another call.")
+            return
+        if npc.player_call:
+            self.call_choice = npc.id
+            self.call_status = ""
+            self.pan_start = self.pan_last = None
+
+    def draw_call_choice(self, app):
+        if not self.call_choice:
+            return
+        npc = app.simulation.npc_by_id(self.call_choice)
+        if not npc or not npc.player_call:
+            self.call_choice = None
+            return
+        overlay = pygame.Surface(WINDOW_SIZE, pygame.SRCALPHA)
+        overlay.fill(MODAL_OVERLAY_COLOR)
+        app.window.blit(overlay, (0, 0))
+        pygame.draw.rect(app.window, PAPER, CALL_CHOICE_RECT)
+        draw_wrapped_text(app.window, f"{npc.name} would like to talk to you.", app.heading_font, INK, CALL_CHOICE_TITLE_RECT)
+        draw_wrapped_text(app.window, self.call_status or "Talk when you are ready. Not now leaves this call available until it expires.",
+                          app.font, MUTED, CALL_CHOICE_STATUS_RECT)
+        for label, button in self.call_buttons.items():
+            button.draw(app.window, app.small_font, enabled=label != "Talk" or not app.simulation.paused)
 
     def apartment_rows(self, app):
         rect = pygame.Rect(APARTMENT_INSPECTOR_RECT)

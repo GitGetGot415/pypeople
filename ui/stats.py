@@ -11,12 +11,14 @@ from constants import (ACCENT, FAILED_CONVERSATION_COLOR, FAILED_CONVERSATION_SE
 from conversation_history import (display_parts, has_failed_voice_rewrite, usable_rewrite,
                                   uses_original_dialogue, voice_rewrite_errors)
 from emotions import portrait_expression
+from npc import NPC
 from social import assertion_text, claim_by_id, concern_description, fact_by_id, phase_label, selected_beliefs
 
 from constants import STATS_TAB_RECTS, STATS_FOLLOW_RECT
 from .creations import CreationsGallery
+from constants import STATS_INVENTORY_RECT, STATS_INVENTORY_DETAIL_TOP
 from .button import Button
-from .text import paginate_parts, wrap_text
+from .text import paginate_parts, wrap_text, scrollbar_rects
 from .world import snake_artwork
 
 
@@ -28,6 +30,7 @@ class StatsScreen:
         self.tabs = {name: Button(rect, name) for name, rect in zip(
             ("Statistics", "Opinions", "Conversations", "Creations", "Model logs"), STATS_TAB_RECTS)}
         self.gallery = CreationsGallery()
+        self.inventory_button = Button(STATS_INVENTORY_RECT, "Inventory")
         self.original_toggle = Button((888, 102, 192, 30), "Original dialogue: Off")
         self.condense_toggle = Button((888, 66, 192, 30), "Condense: Off")
         self.follow_toggle = Button(STATS_FOLLOW_RECT, "Follow")
@@ -329,7 +332,9 @@ class StatsScreen:
             gap()
             add(f"Satisfaction: {npc.social:.0f}/100")
             inventory_label = "Inventory at departure" if npc.departure else "Carrying"
-            add(f"{inventory_label}: {npc.inventory.get('fruit', 0)} fruit / {npc.inventory_capacity} items")
+            add(f"{inventory_label}: {npc.inventory.get('fruit', 0)} / {npc.inventory_capacity} apples")
+            add(f"Owned works: {len(app.simulation.owned_works(npc.id))} (unlimited storage)")
+            add(f"Opinion of player: {npc.player_opinion['opinion']:+d}. {npc.player_opinion['reason']}")
             advance = app.simulation.snake.advances.get(npc.id)
             if advance:
                 offering = "private information" if advance["offering"] == "secret" else "a public endorsement"
@@ -363,8 +368,8 @@ class StatsScreen:
                 for belief in selected_beliefs(npc):
                     claim = claim_by_id(app.simulation, belief.claim_id)
                     fact = fact_by_id(app.simulation, claim.fact_id)
-                    source = app.simulation.actor_by_id(belief.source_id)
-                    originator = app.simulation.actor_by_id(claim.originator_id)
+                    source = app.simulation.participant_by_id(belief.source_id)
+                    originator = app.simulation.participant_by_id(claim.originator_id)
                     add(assertion_text(app.simulation, fact, claim.affirmed), app.small_font)
                     add(f"{belief.stance.title()} / {'firsthand' if belief.direct else 'personal assertion' if belief.source_id == npc.id else 'hearsay'}", app.small_font, MUTED)
                     add(f"Immediate source: {source.name}; original account: {originator.name}", app.small_font, MUTED)
@@ -385,8 +390,8 @@ class StatsScreen:
             if not promises:
                 add("No promises yet.", color=MUTED)
             for promise in promises[:8]:
-                giver = app.simulation.actor_by_id(promise.promisor_id)
-                recipient = app.simulation.actor_by_id(promise.recipient_id)
+                giver = app.simulation.participant_by_id(promise.promisor_id)
+                recipient = app.simulation.participant_by_id(promise.recipient_id)
                 top = height()
                 add(f"{giver.name} -> {recipient.name}: one apple / {promise.status} [view]", app.small_font, ACCENT)
                 bottom = height()
@@ -437,12 +442,13 @@ class StatsScreen:
 
     @staticmethod
     def _scrollbar(rect, scroll, limit):
-        track = pygame.Rect(rect.right - 8, rect.top, 8, rect.height)
-        height = max(24, round(rect.height * rect.height / (rect.height + limit)))
-        top = track.top + round((track.height - height) * scroll / limit) if limit else track.top
-        return track, pygame.Rect(track.x, top, track.width, height)
+        return scrollbar_rects(rect, scroll, limit)
 
     def handle_event(self, app, event):
+        self._position_detail()
+        if self.tab == "Statistics" and isinstance(self.selected_npc, NPC) and self.inventory_button.clicked(event):
+            app.game.inventory.open(self.selected_npc)
+            return
         if app.game.handle_clock_event(app, event):
             return
         if self.back_button.clicked(event) or (
@@ -559,6 +565,7 @@ class StatsScreen:
                 self._scroll(pane, scroll + steps[event.key], limits)
 
     def draw(self, app):
+        self._position_detail()
         surface = app.window
         surface.fill(GRASS)
         self.back_button.draw(surface, app.small_font)
@@ -671,6 +678,8 @@ class StatsScreen:
                 surface.blit(app.small_font.render(label, True, MUTED),
                              (rect.x, rect.bottom + 6 + index * app.small_font.get_linesize()))
         surface.set_clip(previous_clip)
+        if self.tab == "Statistics" and isinstance(self.selected_npc, NPC):
+            self.inventory_button.draw(surface, app.small_font)
         if self.tab == "Creations":
             self.gallery.draw(app, self.detail_scroll)
         for pane, rect in (("list", self.list_rect), ("detail", self.detail_rect)):
@@ -679,3 +688,8 @@ class StatsScreen:
                 pygame.draw.rect(surface, GRASS, track)
                 pygame.draw.rect(surface, MUTED, thumb)
         surface.blit(app.small_font.render("Scroll or use Up/Down and Page Up/Down. Escape returns to the game.", True, MUTED), (184, 655))
+
+    def _position_detail(self):
+        top = STATS_INVENTORY_DETAIL_TOP if self.tab == "Statistics" and isinstance(self.selected_npc, NPC) else 200
+        self.detail_rect.top = top
+        self.detail_rect.height = 624 - top

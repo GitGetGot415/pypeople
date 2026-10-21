@@ -36,6 +36,10 @@ class Simulation:
         self.snake.world = self
         self.archived = []
         self.creations = []
+        from player import Player
+        self.player = Player()
+        self.player_call_check = 0.0
+        self.player_acknowledgments = []
         from apartments import assign_rooms
         assign_rooms(self)
         self.arrival_error = ""
@@ -145,6 +149,37 @@ class Simulation:
     def npc_by_id(self, npc_id):
         return next((npc for npc in self.npcs if npc.id == npc_id), None)
 
+    def participant_by_id(self, actor_id):
+        """Social/inventory lookup; physical actor lookup deliberately stays unchanged."""
+        return self.player if actor_id == self.player.id else self.actor_by_id(actor_id)
+
+    def owned_works(self, owner_id):
+        from player import owned_works
+        return owned_works(self, owner_id)
+
+    def cancel_gifts(self, reason):
+        for npc in self.npcs:
+            conversation = npc.conversation
+            if conversation and conversation.initiator is npc and conversation.accepted_gift:
+                conversation.accepted_gift = None
+                conversation.record.outcomes.append(f"The uncommitted gift handoff was cancelled. {reason}")
+        gifts = {id(n.gift): n.gift for n in self.npcs if n.gift}
+        for gift in gifts.values():
+            gift.finish(reason)
+        retained = []
+        for action in self.pending_actions:
+            if action.action != "GIVE_ITEM":
+                retained.append(action)
+                continue
+            npc = self.npc_by_id(action.npc_id)
+            if npc:
+                npc.request_pending = False
+            if action.record is not None:
+                record = self.history[action.record]
+                record.status, record.error = "Cancelled", reason
+                record.outcomes.append(reason)
+        self.pending_actions = retained
+
     @property
     def outdoor_npcs(self):
         return [npc for npc in self.npcs if not npc.indoors]
@@ -158,7 +193,7 @@ class Simulation:
         if (not job or job.accepted is None or job.remaining > 0 or not self.is_creative_job(npc, job)):
             return
         if not any(work.job_id == job.id for work in self.creations):
-            self.creations.append(Creation(id=uuid4().hex, job_id=job.id, creator_id=npc.id, kind=job.kind,
+            self.creations.append(Creation(id=uuid4().hex, job_id=job.id, creator_id=npc.id, owner_id=npc.id, kind=job.kind,
                 day=self.day, phase=self.phase, **job.accepted))
         npc.creative_job = None
         from npc import Behavior
@@ -270,6 +305,8 @@ class Simulation:
         # work cannot reserve a fresh partner before the requested phase applies.
         # Dawn arrivals then run before pairing on the following tick as usual.
         self.finish_phase_change()
+        from player import update_calls
+        update_calls(self, dt)
 
     @property
     def residents(self):
@@ -483,8 +520,14 @@ class Simulation:
 
     def interrupt_resident(self, target, reason, *, departing=False):
         """Cancel only unfinished work; preserve every committed handoff and record."""
-        from npc import Behavior
+        from npc import Behavior, Gift
         interaction = target.conversation or target.gift
+        from player import PlayerHandoff, clear_call
+        clear_call(target)
+        self.player_acknowledgments = [a for a in self.player_acknowledgments if a["npc_id"] != target.id]
+        if isinstance(interaction, (Gift, PlayerHandoff)):
+            interaction.finish(reason)
+            interaction = None
         if interaction:
             interaction.active = False
             interaction.record.status = "Cancelled"
@@ -514,7 +557,8 @@ class Simulation:
         # An unrelated interaction can have suspended a task aimed at this resident.
         interactions = {id(p.conversation or p.gift): p.conversation or p.gift
                         for p in self.npcs if p.conversation or p.gift}
-        states = [state for interaction in interactions.values() for state in interaction.saved_states]
+        states = [state for interaction in interactions.values()
+                  for state in (interaction.saved_states if hasattr(interaction, "saved_states") else [interaction.saved_state])]
         if self.snake.encounter is not None:
             states.append(self.snake.encounter.saved_state)
         for state in states:
@@ -563,7 +607,7 @@ class Simulation:
         for promise in self.promises:
             if promise.status == "pending" and target.id in (promise.promisor_id, promise.recipient_id):
                 promise.status, promise.resolved_phase, promise.outcome = "cancelled", self.phase_index, reason
-                event = self.publish("promise_cancelled", (self.actor_by_id(promise.promisor_id), self.actor_by_id(promise.recipient_id)), reason,
+                event = self.publish("promise_cancelled", (self.participant_by_id(promise.promisor_id), self.participant_by_id(promise.recipient_id)), reason,
                                      next(r for r in self.history if r.id == promise.conversation_id))
                 promise.resolution_event_id = promise.consequence_event_id = event.id
         for person in self.npcs:

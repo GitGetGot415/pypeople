@@ -1,7 +1,14 @@
 import pygame
 
-from constants import DIALOGUE_PAGE_LINES, DIALOGUE_PAGE_WIDTH, INK
+from constants import DIALOGUE_PAGE_LINES, DIALOGUE_PAGE_WIDTH, INK, SCROLLBAR_WIDTH, SCROLLBAR_MIN_THUMB
 from dialogue_text import split_sentences
+
+
+def scrollbar_rects(rect, scroll, limit):
+    track = pygame.Rect(rect.right - SCROLLBAR_WIDTH, rect.top, SCROLLBAR_WIDTH, rect.height)
+    height = max(SCROLLBAR_MIN_THUMB, round(rect.height * rect.height / (rect.height + limit)))
+    top = track.top + round((track.height - height) * scroll / limit) if limit else track.top
+    return track, pygame.Rect(track.x, top, track.width, height)
 
 
 def draw_centered_text(surface, text, font, y, color=INK):

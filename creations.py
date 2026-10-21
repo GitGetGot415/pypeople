@@ -112,11 +112,14 @@ class Creation(TitledData):
     creator_id: str = Field(min_length=1)
     kind: Literal["art", "music"]
     day: int = Field(strict=True, ge=1)
+    owner_id: str = Field(min_length=1)
     phase: Literal["day", "evening", "night"]
     payload: dict
 
     @model_validator(mode="after")
     def valid_payload(self):
+        if self.id == "fruit":
+            raise ValueError("A work ID cannot use the reserved apple item key.")
         result = validate_creation(self.kind, {"title": self.title, "payload": self.payload})
         self.payload = result.payload.model_dump()
         return self

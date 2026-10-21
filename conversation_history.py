@@ -26,6 +26,12 @@ class ConversationRecord:
     orientation_discussed: bool = False
     dialogue_errors: list[str] = field(default_factory=list)
     intended_subjects: dict[str, str] = field(default_factory=dict)
+    participant_ids: list[str] = field(default_factory=list)
+    transfers: list[dict] = field(default_factory=list)
+    accepted_player_turns: list[int] = field(default_factory=list)
+    authorization_id: str | None = None
+    transfer_intent: dict | None = None
+    player_promise_offers: list[dict] = field(default_factory=list)
 
     def add_turn(self, speaker, text, parts, rewritten=()):
         if rewritten:

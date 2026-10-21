@@ -40,6 +40,17 @@ class CreationsGallery:
     def selected(self, world):
         return next((work for work in world.creations if work.id == self.selected_id), None)
 
+    def painting_preview(self, work, scale=ART_PREVIEW_SCALE):
+        key = (work.id, scale)
+        if self.preview_id != key:
+            original = pygame.Surface((ART_SIZE, ART_SIZE))
+            for y, row in enumerate(work.payload["pixels"]):
+                for column, index in enumerate(row):
+                    original.set_at((column, y), ART_PALETTE[index])
+            self.preview = pygame.transform.scale(original, (ART_SIZE * scale,) * 2)
+            self.preview_id = key
+        return self.preview
+
     def select(self, work):
         if work.id != self.selected_id:
             self.stop()
@@ -160,6 +171,8 @@ class CreationsGallery:
         add(work.title, app.heading_font)
         creator = app.simulation.actor_by_id(work.creator_id)
         add(f"By {creator.name}" + (" (departed)" if creator.departure else ""), app.small_font)
+        owner = app.simulation.participant_by_id(work.owner_id)
+        add(f"Owned by {owner.name}" + (" (departed)" if getattr(owner, "departure", None) else ""), app.small_font)
         add(f"Day {work.day} / {work.phase.title()} / {work.kind.title()}", app.small_font, MUTED)
         if work.kind == "art":
             self.preview_top = max(y, CREATIONS_PREVIEW_TOP)
@@ -190,14 +203,7 @@ class CreationsGallery:
             surface.blit(font.render(text, True, color), (x, top + y - scroll))
         work = self.selected(app.simulation)
         if work and work.kind == "art":
-            if self.preview_id != work.id:
-                original = pygame.Surface((ART_SIZE, ART_SIZE))
-                for y, row in enumerate(work.payload["pixels"]):
-                    for column, index in enumerate(row):
-                        original.set_at((column, y), ART_PALETTE[index])
-                self.preview = pygame.transform.scale(original, (ART_SIZE * ART_PREVIEW_SCALE,) * 2)
-                self.preview_id = work.id
-            surface.blit(self.preview, (x + CREATIONS_CONTENT_PADDING, top + self.preview_top - scroll))
+            surface.blit(self.painting_preview(work), (x + CREATIONS_CONTENT_PADDING, top + self.preview_top - scroll))
         elif work:
             for button in (self.play_button, self.stop_button):
                 moved = Button(button.rect.move(0, -scroll), button.label)

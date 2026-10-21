@@ -240,7 +240,7 @@ def _account_words(text, names, kind):
         text = re.sub(r"\b(?:wanted|need(?:ed)?|hope[d]?)\b", "want", text, flags=re.I)
     elif kind == "defiance":
         text = re.sub(r"\bunwilling to\b", "refused to", text, flags=re.I)
-    elif kind == "apple_given":
+    elif kind in ("apple_given", "work_given"):
         text = re.sub(r"\b(?:share[ds]?|sharing|pass(?:ed|ing)?)\b", "give", text, flags=re.I)
     words = _content_words(text, names)
     if kind == "snake_claim":

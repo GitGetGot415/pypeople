@@ -47,6 +47,8 @@ class StrictResponse(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
     # Computed locally, never requested from the model or trusted across the queue.
     _dialogue_errors: list[str] = PrivateAttr(default_factory=list)
+    _authorized_intent: dict = PrivateAttr(default_factory=dict)
+    _clarification: str = PrivateAttr(default="")
 
 
 class OpinionUpdate(StrictResponse):
@@ -81,11 +83,38 @@ class PlayerIntent(ActionIntent):
     message_type: Literal["COMMENT", "QUESTION", "COMMAND"]
 
 
+class GiftOffer(StrictResponse):
+    recipient_id: str
+    item: str
+    quantity: int = Field(ge=1)
+
+
+class ResidentGift(GiftOffer):
+    giver_id: str
+    offer_turn: int = Field(ge=0)
+    accept_turn: int | None = Field(default=None, ge=0)
+
+
+class PlayerOpinionChange(StrictResponse):
+    delta: int = Field(ge=-4, le=4)
+    reason: str = Field(min_length=1, max_length=200)
+    evidence: str = Field(min_length=1, max_length=200)
+
+
+class PlayerApplePromise(StrictResponse):
+    giver_id: str
+    deadline: int = Field(ge=0)
+
+
 class ActionResponse(ActionIntent):
     reply: str = Field(description="Your words to the player. If end_conversation is true, give only a brief closing without a question or invitation to continue.")
     end_conversation: bool = Field(default=False, description="True when you finish talking without asking a question. If your SAY reply asks the player a question, this must be false so they can answer. End when the player is done or declines further conversation.")
     opinion_updates: list[OpinionUpdate] = Field(default_factory=list, max_length=8)
     emotion: EmotionReaction = Field(default_factory=EmotionReaction)
+    gift_offer: GiftOffer | None = None
+    gift_acceptance: bool = False
+    player_opinion: PlayerOpinionChange | None = None
+    apple_promise: PlayerApplePromise | None = None
 
     @model_validator(mode="after")
     def close_for_action(self):
@@ -189,6 +218,8 @@ class LeverageChoice(StrictResponse):
 
 
 class ResidentTurnResponse(DialoguePartsResponse):
+    gift_offer: GiftOffer | None = None
+    accept_gift: bool = False
     offers: list[str] = Field(default_factory=list, max_length=CONVERSATION_MAX_AGREEMENTS)
     acceptances: list[str] = Field(default_factory=list, max_length=CONVERSATION_MAX_AGREEMENTS)
     disclosures: list[AccountDisclosure] = Field(default_factory=list, max_length=1)
@@ -220,6 +251,7 @@ class SnakePlayerResponse(StrictResponse):
 
 
 class ConversationResponse(StrictResponse):
+    gift: ResidentGift | None = None
     turns: list[ConversationTurn] = Field(min_length=FOOD_REQUEST_TURN_COUNT, max_length=CONVERSATION_MAX_TURNS,
         description="Conversation in chronological order. Each turn is one uninterrupted stretch of speech before the partner replies.")
     initiator_opinion: OpinionUpdate
@@ -300,11 +332,13 @@ def voice_rewrite_snapshot(response, snapshot):
             speakers = {role: resident_brief(snapshot[role]) for role in ("initiator", "recipient")}
         turns = [{"speaker": turn.speaker, "parts": [part.model_dump() for part in turn.parts]}
                  for turn in response.turns]
+        thanks_role = ("recipient" if isinstance(response, ConversationResponse) and response.gift
+                       and response.gift.recipient_id == actor_id(snapshot.get("recipient", {})) else "initiator")
         if isinstance(response, ConversationResponse) and response.handoff_thanks:
-            turns.append({"speaker": "initiator", "parts": [p.model_dump() for p in response.handoff_thanks]})
+            turns.append({"speaker": thanks_role, "parts": [p.model_dump() for p in response.handoff_thanks]})
         knowledge, permissions, _ = validate_names(response.turns, snapshot, check_use=False)
         if isinstance(response, ConversationResponse) and response.handoff_thanks:
-            permissions.append(sorted(permitted_forms(snapshot["initiator"], snapshot.get("_name_actors", {}), knowledge["initiator"])))
+            permissions.append(sorted(permitted_forms(snapshot[thanks_role], snapshot.get("_name_actors", {}), knowledge[thanks_role])))
         for index, turn in enumerate(turns):
             turn["permitted_names"] = permissions[index]
             turn["introductions"] = ([intro.model_dump() for intro in response.turns[index].introductions]
@@ -507,10 +541,9 @@ RESPONSE_SCHEMA = structured_schema(ActionResponse)
 # Keep the generation order: choose the action/closing state before writing speech.
 RESPONSE_SCHEMA["properties"] = {
     name: RESPONSE_SCHEMA["properties"][name]
-    for name in ("action", "end_conversation", "reply", "target", "item", "quantity", "emotion", "opinion_updates")
+    for name in ("action", "end_conversation", "gift_offer", "gift_acceptance", "player_opinion", "apple_promise", "reply", "target", "item", "quantity", "emotion", "opinion_updates")
 }
 RESPONSE_SCHEMA["required"] = ["action", "reply", "end_conversation", "target", "item", "quantity", "opinion_updates", "emotion"]
-RESPONSE_SCHEMA["properties"]["item"]["enum"] = ["", "fruit"]
 RESPONSE_SCHEMA["properties"]["emotion"] = EMOTION_SCHEMA
 
 INTENT_SCHEMA = structured_schema(PlayerIntent)
@@ -534,8 +567,8 @@ presence or profile is never a reason to choose TALK_TO_NPC or GIVE_ITEM.
 Return only message_type, action, target, item, and quantity; do not write dialogue or roleplay.
 Supported actions are WANDER (wander around), STOP (stay still), GO_TO_TREE
 (walk to the tree), SHAKE_TREE (walk to the tree and shake it), TALK_TO_NPC
-(approach another NPC to speak to them), GIVE_ITEM (give carried items to another
-NPC), EAT (eat one carried apple), and SAY (reply to the player).
+(approach another NPC to speak to them), GIVE_ITEM (give carried apples or one
+owned work to another resident or the player), EAT (eat one carried apple), and SAY (reply to the player).
 Requests to eat an apple or fruit are EAT, with target "", item "", and quantity 0.
 Questions about eating are SAY. Apples are the "fruit" entries in inventory.
 Giving, handing, or sharing fruit is GIVE_ITEM, even if giving is an excuse to
@@ -545,6 +578,9 @@ count. Never substitute TALK_TO_NPC or SAY for a feasible gift. There is no rule
 that a recipient must need fruit. For every action except GIVE_ITEM, item is ""
 and quantity is 0. Questions about giving, such as "can Judy give fruit?", are SAY;
 polite requests such as "could you give a fruit to Judy?" are GIVE_ITEM.
+Creative gifts use the exact owned work ID and quantity one. Use resolved_work_id
+when supplied; an ambiguous work reference needs SAY clarification. The player
+appears as target You in other_npcs for giving, but is never a TALK_TO_NPC destination.
 Choose TALK_TO_NPC only if the player requests approaching or speaking to
 another NPC. Questions about someone, their activities, past conversations,
 or the selected NPC's opinions are SAY, even if another person's name appears.
@@ -697,17 +733,20 @@ EAT: eat one apple already in your inventory. Face down and eat for one second,
 then consume the apple and gain 10 satisfaction (capped at 100). Use target "",
 item "", and quantity 0. If you have no apple, explain that instead of promising to eat.
 TALK_TO_NPC: walk to another NPC and start a conversation, optionally about a topic.
-GIVE_ITEM: walk to another NPC, face them, hand over carried items, and wait for
-their thanks. This does not start a conversation. Use item "fruit" and a positive quantity. Follow the
+GIVE_ITEM: hand over apples or one owned work. For a resident, walk over and face
+them; giving to the player needs no walking destination. This does not start a
+separate resident conversation. Use item "fruit" and a positive quantity, or an
+exact owned_works ID and quantity one. Follow the
 requested count; "a fruit" and unspecified "some fruit" mean one. "All my fruit"
 means the carried count. For other actions use item "" and quantity 0.
-Inventory counts and inventory_space describe what can actually be given.
+Inventory counts and inventory_space describe apple stock/capacity. Works use
+unlimited separate storage; only the actual owner can give a work.
 Personality changes your wording, not whether a feasible command works. Do not
 demand a reason to give fruit or claim that a recipient must need it. Do not
 invent inventory, storage space, gifts, or a transfer that the action cannot do.
 Giving alone does not start a conversation or justify an opinion update.
 For GIVE_ITEM, acknowledge the plan to the player and name the recipient in your
-own words. The handoff happens after walking over; speak about the intended
+own words, using you when giving to the current player. The handoff happens later; speak about the intended
 transfer without claiming it has already happened.
 Choose TALK_TO_NPC ONLY when the player explicitly asks you to approach or speak
 to that other NPC, such as 'go talk to Judy' or 'tell Judy about the tree'.
@@ -730,8 +769,9 @@ your reply is a final acknowledgement to the PLAYER before carrying out the
 action, not the conversation with the target NPC. State what you will do without
 asking another question or inviting a reply. The player reads your words and
 clicks Done; only then does the action start. The requested topic is for
-that NPC to answer. SAY cannot start a new task, so never promise a new task
-when the action is SAY.
+that NPC to answer. SAY cannot start a new task. A structured unsolicited gift
+offer or supported one-apple promise can await acceptance without starting a task;
+do not promise unsupported work or claim any unperformed handoff.
 Never target yourself. If the target is missing, ambiguous, or busy, choose SAY
 and ask the player to name an available NPC. For all other actions, target is "".
 Return the required action/reply object. Give a complete reply expressing your character's
@@ -764,7 +804,8 @@ Only update an existing opinion if the player supplies relevant new information;
 otherwise keep its score and reason consistent. Each opinion_updates entry has
 person (exact npc_name from other_npcs), opinion (integer -100 to 100), and reason
 (at most 400 characters, useful context for later dialogue). Use [] when there
-is nothing new to remember. Never update another NPC's opinions or target yourself.
+is nothing new to remember. Use the dedicated player_opinion field for your view
+of the player, never opinion_updates. Never update another NPC's opinions or target yourself.
 For an unknown person, SAY you don't know them yet and return no opinion update."""
 
 PLAYER_DIALOGUE_INSTRUCTION = """Conversation endings:
@@ -881,7 +922,7 @@ def _orientation_world_context(snapshot, *, correction=False):
 
 
 def _catalog_for_prompt(catalog):
-    return {actor_id: {key: value for key, value in actor.items() if key != "_visible"}
+    return {actor_id: {key: value for key, value in actor.items() if not key.startswith("_")}
             for actor_id, actor in catalog.items()}
 
 
@@ -1118,6 +1159,10 @@ def intent_snapshot(snapshot):
     return {
         "request_kind": "intent",
         **identity(snapshot),
+        "owned_works": snapshot.get("owned_works", []),
+        "player_inventory": snapshot.get("player_inventory", {}),
+        "_player_message": snapshot.get("_player_message", ""),
+        "resolved_work_id": snapshot.get("resolved_work_id"),
         "other_npcs": [
             {**identity(other), "available_to_talk": other.get("available_to_talk", True)}
             for other in snapshot.get("other_npcs", [])
@@ -1272,9 +1317,10 @@ def _speaker_introductions_schema(snapshot):
             continue
         # A bargain/reaction is not a request to identify the whole visible roster.
         # Only a supplied account can call for introducing a third-party actor.
-        if person["name"] not in account_names:
+        if person["name"] not in account_names and person.get("kind") != "player":
             continue
-        names = sorted(forms(person["self_name"]) & permitted)
+        known_player = speaker.get("name_knowledge", {}).get("known_names", {}).get(target_id, {}).get("name", "")
+        names = sorted((forms(known_player) if person.get("kind") == "player" else forms(person["self_name"])) & permitted)
         references = person.get("references", [])
         if names and references:
             choices.append({"type": "object", "properties": {
@@ -1298,6 +1344,21 @@ def _available_speech_fields(schema):
             del properties[field]
     schema["required"] = [field for field in schema.get("required", []) if field in properties]
     return schema
+
+
+def _possession_offer_schema(person, recipient_id, apple_space=None):
+    stock = person.get("inventory", {}).get("fruit", 0)
+    if apple_space is not None:
+        stock = min(stock, apple_space)
+    items = [("fruit", stock)] if stock else []
+    items.extend((w["id"], 1) for w in person.get("owned_works", []))
+    choices = [{"type": "object", "properties": {
+        "recipient_id": {"type": "string", "enum": [recipient_id]},
+        "item": {"type": "string", "enum": [item]},
+        "quantity": {"type": "integer", "minimum": 1, "maximum": amount}},
+        "required": ["recipient_id", "item", "quantity"], "additionalProperties": False}
+        for item, amount in items]
+    return {"anyOf": [{"type": "null"}, *choices]} if choices else {"type": "null"}
 
 
 def _resident_contract(snapshot, *, correction=False):
@@ -1325,6 +1386,14 @@ def _resident_contract(snapshot, *, correction=False):
         properties["opinion"]["properties"]["person"] = {"type": "string", "enum": [snapshot["opinion_target"]]}
     elif not thanks:
         choices, draft = snapshot["choices"], snapshot["_draft"]
+        properties["gift_offer"] = (_possession_offer_schema(snapshot["speaker"], snapshot.get("gift_recipient_id", ""))
+                                    if not draft.get("gift") else {"type": "null"})
+        pending = draft.get("gift")
+        if not pending or pending.recipient_id != actor_id(snapshot["speaker"]) or pending.accept_turn is not None:
+            properties.pop("accept_gift", None)
+        if snapshot.get("arrival_focus") or snapshot.get("purpose") == "food_request":
+            properties.pop("gift_offer", None)
+            properties.pop("accept_gift", None)
         for field, limit in (("offers", CONVERSATION_MAX_AGREEMENTS - len(draft["offers"])),
                              ("acceptances", CONVERSATION_MAX_AGREEMENTS - len(draft["accepted_proposals"])),
                              ("disclosures", min(1, CONVERSATION_MAX_DISCLOSURES - len(draft["disclosures"]))),
@@ -1394,6 +1463,12 @@ def _resident_contract(snapshot, *, correction=False):
         "Respond to what the partner actually said; do not invent transfers, events, discoveries or shared experiences.\n"
         + CONVERSATION_HISTORY_INSTRUCTION + "\n" + DIALOGUE_VARIETY_INSTRUCTION + "\n"
         + snapshot["speaker"].get("personality", "") + "\nCurrent task: " + snapshot["task"])
+    if not assessment and not thanks and not orientation and snapshot.get("purpose") != "food_request":
+        instruction += (" You may offer one actual possession using gift_offer with recipient_id for this listener, item fruit or an exact owned_works ID, and quantity. "
+            "Say clearly what you offer; name the work title if creative. Only one gift offer per conversation. "
+            "Use accept_gift true only when you explicitly accept an earlier pending_gift directed to you. "
+            "You may decline without penalty. Gifts occur after this conversation, never claim delivery already happened. "
+            "Collections are unlimited and separate from apple capacity. You know your own works; do not infer the listener's private collection.")
     if assessment:
         instruction += ("\nThe transcript is fixed. Return your own opinion of opinion_target, with a first-person reason in plain prose. "
                         "Preserve established views unless the exchange warrants a change. Resolve pending_reactions using only their allowed stances. "
@@ -1623,10 +1698,12 @@ def response_contract(snapshot, *, correction=False):
         return instruction, {"anyOf": branches} if len(branches) > 1 else branches[0], SnakeDecision
     if snapshot.get("request_kind") == "intent":
         targets = [other["npc_name"] for other in snapshot.get("other_npcs", []) if other.get("available_to_talk", True)]
-        schema = {**INTENT_SCHEMA, "properties": {**INTENT_SCHEMA["properties"], "target": {"type": "string", "enum": ["", *targets]}}}
-        return INTENT_INSTRUCTION, schema, PlayerIntent
+        schema = {**INTENT_SCHEMA, "properties": {**INTENT_SCHEMA["properties"],
+            "item": {"type": "string", "enum": ["", "fruit", *[w["id"] for w in snapshot.get("owned_works", [])]]},
+            "target": {"type": "string", "enum": ["", *targets]}}}
+        return INTENT_INSTRUCTION + PLAYER_POSSESSIONS_INSTRUCTION, schema, PlayerIntent
     opinion_schema = RESPONSE_SCHEMA["properties"]["opinion_updates"]
-    people = [other["npc_name"] for other in snapshot.get("other_npcs", [])]
+    people = [other["npc_name"] for other in snapshot.get("other_npcs", []) if other.get("kind") != "player"]
     schema = {**RESPONSE_SCHEMA, "properties": {
         **RESPONSE_SCHEMA["properties"],
         "opinion_updates": {**opinion_schema, "maxItems": 8 if people else 0, "items": {
@@ -1637,6 +1714,16 @@ def response_contract(snapshot, *, correction=False):
         }},
     }}
     instruction = build_system_instruction(snapshot["character"])
+    schema["properties"]["gift_offer"] = _possession_offer_schema(snapshot, snapshot.get("player_id", ""),
+        snapshot.get("player_inventory", {}).get("inventory_space", 0))
+    if snapshot.get("request_kind") in ("player_gift", "player_acknowledgment"):
+        schema["properties"]["gift_offer"] = {"type": "null"}
+    if not snapshot.get("player_interaction", {}).get("incoming_gift"):
+        schema["properties"]["gift_acceptance"] = {"type": "boolean", "enum": [False]}
+    instruction += PLAYER_POSSESSIONS_INSTRUCTION
+    if snapshot.get("request_kind") in ("player_opening", "player_gift", "player_acknowledgment"):
+        instruction += " This is an engine-initiated turn, not a player command. Use action SAY, empty target/item, quantity zero. Generate speech from player_interaction, without inventing player speech."
+        snapshot = {**snapshot, "request_intent": dict(action="SAY", target="", item="", quantity=0)}
     if snapshot.get("request_intent"):
         intent = snapshot["request_intent"]
         schema = {**schema, "properties": {
@@ -2160,7 +2247,8 @@ def _validate_response(raw, snapshot, model):
         if snapshot.get("request_kind") == "handoff_thanks":
             draft = deepcopy(snapshot["_draft"])
             draft["turns"].append(current)
-            validate_resident_grounding(SimpleNamespace(**draft), snapshot["_baseline"])
+            if not draft.get("gift"):
+                validate_resident_grounding(SimpleNamespace(**draft), snapshot["_baseline"])
         validate_dialogue_completion([current], start_index=snapshot.get("turn_index", 0))
         names = {current.speaker: _actor_name(snapshot["speaker"]),
                  "recipient" if current.speaker == "initiator" else "initiator": snapshot.get("_listener_identity", _actor_name(snapshot["listener"]))}
@@ -2215,13 +2303,21 @@ def _validate_response(raw, snapshot, model):
             result.target = ""
         if result.action != "GIVE_ITEM":
             result.item, result.quantity = "", 0
+        if (result.action == "GIVE_ITEM" and result.item != "fruit" and snapshot.get("resolved_work_id") is not None
+                and result.item != snapshot["resolved_work_id"]):
+            result = ActionIntent(action="SAY")
+            result._clarification = "The work reference is ambiguous or does not match an owned work. Ask which exact work is intended."
     if isinstance(result, ActionIntent):
         intent = snapshot.get("request_intent")
+        if isinstance(result, ActionResponse) and intent:
+            result._authorized_intent = intent.copy()
         if intent and (result.action != intent["action"] or result.target.strip().casefold() != intent["target"].casefold()
                        or result.item != intent["item"] or result.quantity != intent["quantity"]):
             raise ValueError("The action, recipient, item, or quantity differs from the current request.")
         if isinstance(result, ActionResponse) and not result.reply.strip():
             raise ValueError("Empty reply")
+        if isinstance(result, ActionResponse):
+            validate_player_transfer(result, snapshot)
         if isinstance(result, ActionResponse):
             validate_names([ConversationTurn(speaker="initiator", parts=[ConversationPart(text=result.reply)])], snapshot,
                            require_effects=False)
@@ -2238,7 +2334,8 @@ def _validate_response(raw, snapshot, model):
                 "end_conversation true and acknowledge the task without questions."
             )
         if result.action == "GIVE_ITEM":
-            if result.item != "fruit" or result.quantity < 1:
+            works = {w["id"] for w in snapshot.get("owned_works", [])}
+            if (result.item != "fruit" and (result.item not in works or result.quantity != 1)) or result.quantity < 1:
                 raise ValueError("Giving requires a supported item and a positive quantity.")
         elif result.item or result.quantity:
             raise ValueError("Only giving actions may include items.")
@@ -2249,10 +2346,13 @@ def _validate_response(raw, snapshot, model):
             matches = [other for other in snapshot.get("other_npcs", []) if other["npc_name"].casefold() == target]
             if len(matches) != 1 or not matches[0].get("available_to_talk", True):
                 raise ValueError("The recipient must be another available NPC.")
+            if result.action == "TALK_TO_NPC" and matches[0].get("kind") == "player":
+                raise ValueError("The player has no walking conversation destination; reply with SAY.")
             result.target = matches[0]["npc_name"]
         elif result.target:
             raise ValueError("Only conversation and giving actions may have a target.")
     elif isinstance(result, ConversationResponse):
+        validate_resident_gift(result.gift, result.turns, snapshot)
         people = [snapshot[role]["npc_name"] for role in ("initiator", "recipient")]
         people.extend(n["npc_name"] for n in snapshot.get("nearby_npcs", []))
         validate_information(result, snapshot.get("_information_validation"), names=(*people, SNAKE_NAME),
@@ -2285,7 +2385,7 @@ def _validate_response(raw, snapshot, model):
                 validate_resident_grounding(SimpleNamespace(turns=[*result.turns, thanks], disclosures=result.disclosures), snapshot)
                 _validate_speaker(" ".join(part.text for part in result.handoff_thanks),
                                   snapshot["initiator"]["npc_name"], snapshot["recipient"]["npc_name"])
-        elif len(result.turns) < RESIDENT_TURN_COUNT or result.food_outcome or result.handoff_thanks:
+        elif len(result.turns) < RESIDENT_TURN_COUNT or result.food_outcome or (result.handoff_thanks and not (result.gift and result.gift.accept_turn is not None)):
             raise ValueError("Chats need at least four turns and cannot include a food outcome or handoff thanks.")
         if check_dialogue and len(result.turns) == CONVERSATION_MAX_TURNS and _has_question(result.turns[-1].text):
             raise ValueError("At the turn limit, finish with an answer or closing rather than a new question.")
@@ -2304,10 +2404,147 @@ def _validate_response(raw, snapshot, model):
         knowledge, _, _ = validate_names(result.turns, snapshot)
         validate_orientation(result, snapshot)
         if result.handoff_thanks:
-            validate_names([ConversationTurn(speaker="initiator", parts=result.handoff_thanks)], {
-                **snapshot, "initiator": {**snapshot["initiator"], "name_knowledge": {
-                    **snapshot["initiator"].get("name_knowledge", {}), "known_names": knowledge["initiator"]}}})
+            thanks_role = "recipient" if result.gift and result.gift.recipient_id == actor_id(snapshot["recipient"]) else "initiator"
+            validate_names([ConversationTurn(speaker=thanks_role, parts=result.handoff_thanks)], {
+                **snapshot, thanks_role: {**snapshot[thanks_role], "name_knowledge": {
+                    **snapshot[thanks_role].get("name_knowledge", {}), "known_names": knowledge[thanks_role]}}})
     return result
+
+
+PLAYER_POSSESSIONS_INSTRUCTION = """
+The player is actor_id player, target You. Only explicit feasible player commands
+authorize GIVE_ITEM. Comments, questions and NPC openings are SAY. Works are unique:
+use their exact owned_works ID as item, quantity 1; never a title as item. Duplicate
+titles or ambiguous recipients need clarification with SAY. Fruit uses item fruit.
+For SAY you may make one unsolicited gift_offer using an actual owned item and the
+player's recipient_id; say clearly that you are offering it, awaiting acceptance.
+An offer has not transferred anything. Do not claim a transfer already happened.
+Use gift_acceptance only for player_interaction.incoming_gift; explicitly accept
+or decline in your speech. No transfer occurs before engine handoff. Never promise
+unsupported tasks, creative commissions or unrecorded future transfers.
+Use player_relationship.learned_address when known; otherwise address the player
+as you and optionally ask what to call them. Player reports retain their source
+and uncertainty; reports are not witnessed events. player_opinion is optional,
+small and directional: quote exact evidence from the current player message,
+retain mixed earlier evidence, and give no reward for routine/repeated greetings.
+Only your own collection and firsthand memories describe ownership; another
+actor's opaque recipient reference never teaches a personal name or private work.
+One-apple future promises may use apple_promise with this resident's giver_id and
+an apple_promise_choices deadline, supported by spoken apple and deadline words.
+This is only an offer until the player accepts in a later message. A player's
+own explicit apple offer may use their giver_id only when your reply explicitly
+accepts that actual offer. Never promise a creative commission or arbitrary task.
+"""
+
+
+def validate_resident_gift(gift, turns, snapshot):
+    if gift is None:
+        return
+    if snapshot.get("purpose") == "food_request" or snapshot.get("arrival_focus"):
+        raise ValueError("This exchange uses its existing food or orientation rules, without a separate gift offer.")
+    from dialogue_rules import unquoted_speech
+    roles = {actor_id(snapshot[role]): role for role in ("initiator", "recipient")}
+    if gift.giver_id not in roles or gift.recipient_id not in roles or gift.giver_id == gift.recipient_id:
+        raise ValueError("A gift must stay between the actual conversation participants.")
+    giver = snapshot[roles[gift.giver_id]]
+    if gift.offer_turn >= len(turns) or turns[gift.offer_turn].speaker != roles[gift.giver_id]:
+        raise ValueError("A gift offer needs its giver's actual speech.")
+    speech = unquoted_speech(turns[gift.offer_turn].text).casefold()
+    validate_gift_offer_speech(turns[gift.offer_turn].text, gift.item, gift.quantity,
+                               giver.get("inventory", {}).get("fruit", 0))
+    if gift.item == "fruit":
+        if gift.quantity > giver.get("inventory", {}).get("fruit", 0) or not re.search(r"\b(?:apple|apples|fruit)\b", speech):
+            raise ValueError("The giver must own and offer the actual apples.")
+    else:
+        work = next((w for w in giver.get("owned_works", []) if w["id"] == gift.item), None)
+        if work is None or gift.quantity != 1 or work["title"].casefold() not in turns[gift.offer_turn].text.casefold():
+            raise ValueError("A creative offer must identify one owned work and its spoken title.")
+    if gift.accept_turn is not None:
+        if gift.item == "fruit" and snapshot[roles[gift.recipient_id]].get("inventory_space", gift.quantity) < gift.quantity:
+            raise ValueError("The recipient has no capacity for this apple gift.")
+        index = gift.accept_turn
+        if index <= gift.offer_turn or index >= len(turns) or turns[index].speaker != roles[gift.recipient_id]:
+            raise ValueError("The recipient must accept on their own later turn.")
+        acceptance = unquoted_speech(turns[index].text).casefold()
+        if not gift_acceptance_supported(acceptance):
+            raise ValueError("A gift transfer needs explicit generated acceptance.")
+
+
+def gift_acceptance_supported(text):
+    from dialogue_rules import unquoted_speech
+    speech = unquoted_speech(text).casefold()
+    return bool(re.search(r"\b(?:i accept|i['’]ll take|yes|thank you|thanks)\b", speech)
+        and not re.search(r"\b(?:no thanks|decline|cannot accept|can't accept|don't want|do not want|if|unless|maybe|perhaps|not sure)\b", speech))
+
+
+def validate_gift_offer_speech(text, item, quantity, stock):
+    from dialogue_rules import unquoted_speech
+    speech = unquoted_speech(text).casefold()
+    if (not re.search(r"\b(?:offer|would you like|want|give you|for you|have this|take this)\b", speech)
+            or re.search(r"\b(?:not|never|won't|cannot|can't|don't|do not)\b[^.!?]{0,35}\b(?:offer|give|have|take|for you)\b", speech)):
+        raise ValueError("A gift offer needs supporting offer speech.")
+    if item == "fruit":
+        counts = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+        spoken = re.findall(r"\b(\d+|one|two|three|four|five)\s+(?:of my\s+)?(?:apples?|fruit)\b", speech)
+        values = [int(word) if word.isdigit() else counts[word] for word in spoken]
+        if values and any(value != quantity for value in values):
+            raise ValueError("The spoken apple quantity differs from the offered quantity.")
+        if quantity > 1 and not values and not (quantity == stock and re.search(r"\ball (?:of )?my (?:apples|fruit)\b", speech)):
+            raise ValueError("Identify the offered apple quantity in speech.")
+
+
+def validate_player_transfer(result, snapshot):
+    """Effect authorization is independent of optional dialogue coherence checks."""
+    if snapshot.get("request_kind") in ("player_opening", "player_gift", "player_acknowledgment") and result.action != "SAY":
+        raise ValueError("An engine-initiated player turn cannot authorize a player command.")
+    from dialogue_rules import unquoted_speech
+    speech = unquoted_speech(result.reply).casefold()
+    incoming = snapshot.get("player_interaction", {}).get("incoming_gift")
+    promise = result.apple_promise
+    if promise:
+        if snapshot.get("pending_apple_promise") or snapshot.get("player_apple_offer_count", 0) >= CONVERSATION_MAX_AGREEMENTS:
+            raise ValueError("Keep the existing apple offer unchanged; this conversation has no new promise slot.")
+        from dialogue_rules import validate_apple_offer, validate_apple_promise
+        if result.action != "SAY" or incoming or result.gift_offer:
+            raise ValueError("A future apple promise is separate from a current gift.")
+        if promise.deadline not in [p["deadline"] for p in snapshot.get("apple_promise_choices", [])]:
+            raise ValueError("Use an available apple deadline.")
+        now = snapshot.get("phase_index", 0)
+        if promise.giver_id == snapshot.get("npc_id"):
+            validate_apple_offer(result.reply, promise.deadline, current_phase=now)
+        elif promise.giver_id == snapshot.get("player_id"):
+            validate_apple_promise(snapshot.get("_player_message", ""), result.reply, promise.deadline, current_phase=now)
+        else:
+            raise ValueError("An apple promise must belong to the current participants.")
+    if result.gift_acceptance:
+        if not incoming or not gift_acceptance_supported(result.reply):
+            raise ValueError("Gift acceptance needs a current incoming gift and explicit accepted speech.")
+    offer = result.gift_offer
+    if offer:
+        if (result.action != "SAY" or incoming or snapshot.get("request_kind") == "player_acknowledgment"
+                or offer.recipient_id != snapshot.get("player_id")):
+            raise ValueError("Only a SAY reply can offer one gift to the current player.")
+        validate_gift_offer_speech(result.reply, offer.item, offer.quantity, snapshot.get("inventory", {}).get("fruit", 0))
+        if offer.item == "fruit":
+            if offer.quantity > snapshot.get("inventory", {}).get("fruit", 0):
+                raise ValueError("An offer cannot spend unavailable apples.")
+            if not re.search(r"\b(?:apple|apples|fruit)\b", speech):
+                raise ValueError("Identify the offered apples in speech.")
+        else:
+            work = next((w for w in snapshot.get("owned_works", []) if w["id"] == offer.item), None)
+            if work is None or offer.quantity != 1 or work["title"].casefold() not in result.reply.casefold():
+                raise ValueError("Identify one actual owned work by ID and its title in the offer.")
+    if result.action == "GIVE_ITEM":
+        if (snapshot.get("request_intent") or result._authorized_intent).get("action") != "GIVE_ITEM":
+            raise ValueError("A directed gift requires explicit player-command authorization.")
+    if result.action == "SAY":
+        transfer_claim = re.search(r"\b(?:i (?:have |just |already )?(?:gave|given|transferred|handed)|you now own|it is now yours|it['’]s yours now)\b", speech)
+        evidence = (snapshot.get("known_player_transfers") or snapshot.get("player_interaction", {}).get("committed_transfer")
+                    or any(m.get("kind") in ("gave_fruit", "gave_work") for m in snapshot.get("memories", [])))
+        if transfer_claim and not evidence:
+            raise ValueError("SAY cannot claim an unperformed transfer.")
+        if re.search(r"\bi(?: will|['’]ll| promise to)\b[^.!?]{0,35}\b(?:paint|compose|write|make)\b[^.!?]{0,50}\b(?:for you|you a|your commission)\b", speech):
+            raise ValueError("A SAY reply cannot promise an unsupported creative commission.")
 
 
 class RequestError(Exception):
@@ -2892,7 +3129,7 @@ def _deduplicate_dialogue_parts(turn):
 
 def _resident_draft():
     """Private worker state. Pending stances are never a saved/provider contract."""
-    return dict(turns=[], offers={}, accepted_proposals=[], disclosures=[],
+    return dict(turns=[], offers={}, gift=None, accepted_proposals=[], disclosures=[],
                 third_party_opinions=[], leverage=[], opinions={})
 
 
@@ -2979,6 +3216,16 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
 
     turn = ConversationTurn(speaker=role, parts=candidate.parts, introductions=candidate.introductions)
     projected["turns"].append(turn)
+    if candidate.gift_offer:
+        if projected["gift"] is not None or snapshot.get("arrival_focus") or snapshot.get("purpose") == "food_request":
+            raise ValueError("Only one gift offer is available in an ordinary conversation.")
+        projected["gift"] = ResidentGift(**candidate.gift_offer.model_dump(), giver_id=actor_id(snapshot[role]), offer_turn=index)
+    if candidate.accept_gift:
+        gift = projected["gift"]
+        if gift is None or gift.recipient_id != actor_id(snapshot[role]) or gift.accept_turn is not None:
+            raise ValueError("Accept only an earlier pending gift addressed to you.")
+        gift.accept_turn = index
+    validate_resident_gift(projected["gift"], projected["turns"], snapshot)
     choices = state["choices"]
     for field in ("offers", "acceptances"):
         entries = getattr(candidate, field)
@@ -3164,6 +3411,10 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
                  _speaker_behavior=speaker["personality"])
     if not orientation:
         speaker.update(inventory=deepcopy(person.get("inventory", {})), permitted_accounts=accounts)
+        speaker["owned_works"] = deepcopy(person.get("owned_works", []))
+        speaker["player_relationship"] = deepcopy(person.get("player_relationship", {}))
+        state["gift_recipient_id"] = actor_id(partner)
+        state["pending_gift"] = draft["gift"].model_dump() if draft.get("gift") else None
         focus_id = (info.focus_claim_id if info and role == "initiator" else None) or (private.get("concern") or {}).get("claim_id")
         focus_account = next((a for a in accounts if a["claim_id"] == focus_id), None)
         if focus_account:
@@ -3217,9 +3468,12 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
     if assessment:
         state["task"] = "Assess your partner from the fixed transcript and your own knowledge. Resolve only your pending heard disclosures. Add no speech or other effects."
     elif thanks:
-        state["task"] = "Thank the listener briefly for the one apple just successfully handed to you. This speech is reserved for the actual handoff."
-        state["food_request"]["transferred"] = True
-        speaker["inventory"]["fruit"] = speaker["inventory"].get("fruit", 0) + 1
+        if draft.get("gift"):
+            state["task"] = "Acknowledge the accepted gift briefly after its successful handoff, preserving creator and giver roles. This speech is reserved for the actual handoff."
+        else:
+            state["task"] = "Thank the listener briefly for the one apple just successfully handed to you. This speech is reserved for the actual handoff."
+            state["food_request"]["transferred"] = True
+            speaker["inventory"]["fruit"] = speaker["inventory"].get("fruit", 0) + 1
         for field in ("permitted_accounts", "account_focus", "goal", "promises", "snake_attitudes", "snake_apple_advance", "immediate_objective", "concern"):
             speaker.pop(field, None)
     elif closing:
@@ -3239,6 +3493,7 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
 def _assemble_resident(snapshot, draft, thanks):
     _resident_information(snapshot, draft, incomplete=False)
     return ConversationResponse(turns=draft["turns"],
+        gift=draft.get("gift"),
         initiator_opinion=draft["opinions"]["initiator"], recipient_opinion=draft["opinions"]["recipient"],
         accepted_proposals=draft["accepted_proposals"],
         disclosures=[DisclosureChoice(**vars(d)) for d in draft["disclosures"]],
@@ -3693,16 +3948,23 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                 if snapshot.get("purpose") == "food_request" and snapshot["food_request"]["outcome"] == "accepted":
                     state = _resident_turn_snapshot(snapshot, draft, role="initiator", thanks=True)
                     thanks = validated_request(state).parts
+                elif draft.get("gift") and draft["gift"].accept_turn is not None:
+                    role = "recipient" if draft["gift"].recipient_id == actor_id(snapshot["recipient"]) else "initiator"
+                    state = _resident_turn_snapshot(snapshot, draft, role=role, thanks=True)
+                    state["task"] = "Generate a brief acknowledgment reserved for AFTER the accepted possession is actually handed over. Preserve giver, recipient and creator roles."
+                    thanks = validated_request(state).parts
                 result = _assemble_resident(snapshot, draft, thanks)
             else:
                 result = SnakeResponse(**decision.model_dump(), turns=draft["turns"])
             report("Validating completed conversation")
             # Final inconsistencies fail the draft; they never regenerate a transcript.
             return validate_response(result.model_dump_json(), snapshot)
-        if kind not in ("intent", "snake_player", "conversation_closing",
+        if kind not in ("intent", "snake_player", "conversation_closing", "player_opening", "player_gift", "player_acknowledgment",
                         "resident_turn", "resident_assessment", "handoff_thanks"):
             intent = validated_request(intent_snapshot(snapshot))
             snapshot["request_intent"] = intent.model_dump()
+            if intent._clarification:
+                snapshot["intent_clarification"] = intent._clarification
         return validated_request(snapshot)
     except (RequestError, ValueError) as exc:
         if not isinstance(exc, RequestError):

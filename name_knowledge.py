@@ -73,6 +73,9 @@ def actor_catalog(world):
             suffix = "th" if 10 <= rank % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(rank % 10, "th")
             catalog[person.id]["references"] = [f"the {rank}{suffix} person from the {direction}"]
     catalog[world.snake.id]["references"] = ["the python guarding the apple tree"]
+    catalog[world.player.id] = {"name": "Player", "self_name": "Player", "kind": "player",
+                               "references": ["the player"],
+                               "_aliases": list({p.known_names[world.player.id]["name"] for p in people if world.player.id in p.known_names})}
     return catalog
 
 
@@ -82,7 +85,7 @@ def name_context(npc):
 
 def name_forms(catalog):
     return sorted({form for person in catalog.values()
-                   for name in (person["name"], person["self_name"])
+                   for name in (person.get("_aliases", ()) if person.get("kind") == "player" else (person["name"], person["self_name"]))
                    for form in forms(name)}, key=lambda s: (-len(s), s))
 
 
@@ -271,7 +274,8 @@ def validate_names(turns, snapshot, *, check_use=True, require_effects=True):
             error = ""
             if target is None or intro.actor_id in seen:
                 error = "An introduction must identify one supplied actor exactly once per turn."
-            elif intro.name not in forms(target["self_name"]):
+            elif intro.name not in forms(target["self_name"]) and not (target.get("kind") == "player"
+                    and intro.name in forms(knowledge[turn.speaker].get(intro.actor_id, {}).get("name", ""))):
                 error = "An introduction must use the actor's authored name form, without a hidden surname or suffix."
             elif intro.reference == "self" and intro.actor_id != actor_id(person):
                 error = "A self-introduction must identify the current speaker."

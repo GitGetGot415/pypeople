@@ -5,7 +5,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 import re
-from typing import Literal
+from typing import Annotated, Literal
 from types import SimpleNamespace
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from character_data import normalize_character, normalize_opinions
 from constants import (
     APPLE_ADVANCE_SECONDS, CONCERN_LIFETIME_RANGE, CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN,
-    CONVERSATION_MAX_TURNS, DECISION_SECONDS, DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, GIFT_GIVE_SECONDS, GIFT_SECONDS,
+    CONVERSATION_MAX_TURNS, CONVERSATION_MAX_AGREEMENTS, DECISION_SECONDS, DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, GIFT_GIVE_SECONDS, GIFT_SECONDS,
     MAX_SIMULATION_STEP_SECONDS, SHAKE_SECONDS, SNAKE_EAT_SECONDS,
     POST_DIALOGUE_SECONDS, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME, WORLD_HEIGHT, WORLD_WIDTH,
 )
@@ -23,9 +23,11 @@ from constants import (APARTMENT_ID, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_
                        HOME_ARRIVAL_TOLERANCE, OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE, WAKE_DELAY_RANGE)
 from conversation_history import ConversationRecord, Memory, WorldEvent
 from llm import (AcceptedProposal, ConversationPart, ConversationTurn, DisclosureChoice, NameIntroduction,
-                 EmotionReaction, LeverageUse, ThirdPartyOpinion)
+                 EmotionReaction, LeverageUse, ThirdPartyOpinion, ResidentGift)
 from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree
 from simulation import PendingAction, Simulation
+from player import Player, PlayerHandoff
+from constants import PLAYER_ID, PLAYER_LABEL, PLAYER_CALL_SECONDS, PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, PLAYER_CALL_LIMIT
 from snake import Snake, SnakeEncounter
 from purgatory import Attitudes
 from social import (Belief, Claim, ConcernKind, ConversationConcern, Disclosure, Fact, FactKind, Goal, GoalKind, OpinionEffect, Promise, Proposal,
@@ -79,7 +81,7 @@ class MemoryState(SaveModel):
     partner_id: str
     kind: Literal["gave_fruit", "received_fruit", "refused", "kept_fruit", "conversation",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
-                  "claim_shared", "heard_claim", "claim_opinion", "leverage", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled"]
+                  "claim_shared", "heard_claim", "claim_opinion", "leverage", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "gave_work", "received_work"]
     summary: str = Field(max_length=400)
     weight: float = Field(ge=-12, le=12)
 
@@ -90,7 +92,7 @@ class EventState(SaveModel):
     phase: Literal["day", "evening", "night"]
     kind: Literal["phase", "food_requested", "food_refused", "fruit_shared", "conversation_completed", "interaction_failed",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
-                  "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "promise_cancelled"]
+                  "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "promise_cancelled", "work_shared", "player_call", "player_conversation"]
     participants: list[str]
     text: str
     history: int | None = Field(ge=0)
@@ -231,6 +233,51 @@ class LearnedNameState(SaveModel):
     turn: int = Field(ge=0)
 
 
+class PlayerOpinionState(SaveModel):
+    opinion: int = Field(strict=True, ge=-100, le=100)
+    reason: str = Field(max_length=400)
+
+
+class PlayerCallState(SaveModel):
+    key: str = Field(min_length=1)
+    kind: Literal["gift", "news", "followup"]
+    reference: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    remaining: float = Field(gt=0, le=PLAYER_CALL_SECONDS)
+    event_id: str = Field(min_length=1)
+
+
+class TransferIntentState(SaveModel):
+    giver_id: str = Field(min_length=1)
+    recipient_id: str = Field(min_length=1)
+    item: str = Field(min_length=1)
+    quantity: int = Field(strict=True, ge=1)
+
+
+class TransferState(TransferIntentState):
+    id: str = Field(min_length=1)
+    day: int = Field(strict=True, ge=1)
+    phase: Literal["day", "evening", "night"]
+    sequence: int = Field(strict=True, ge=0)
+
+
+class PlayerAppleOfferState(SaveModel):
+    id: str = Field(min_length=1)
+    giver_id: str = Field(min_length=1)
+    recipient_id: str = Field(min_length=1)
+    deadline: int = Field(strict=True, ge=0)
+    created_phase: int = Field(strict=True, ge=0)
+    offer_turn: int = Field(strict=True, ge=0)
+    accept_turn: int | None = Field(strict=True, ge=0)
+    status: Literal["offered", "accepted", "declined", "expired", "closed"]
+
+
+class PlayerAcknowledgmentState(SaveModel):
+    npc_id: str = Field(min_length=1)
+    record_id: str = Field(min_length=1)
+    transfer_id: str = Field(min_length=1)
+
+
 class ConcernState(SaveModel):
     kind: ConcernKind
     claim_id: str | None
@@ -253,8 +300,8 @@ class NPCState(ActivityState):
     rewritten_reply: str = ""
     emotion: EmotionReaction
     social: float = Field(ge=0, le=100)
-    inventory: dict[Literal["fruit"], int]
-    inventory_capacity: int = Field(ge=1)
+    inventory: dict[Literal["fruit"], Annotated[int, Field(strict=True, ge=0)]]
+    inventory_capacity: int = Field(strict=True, ge=1)
     preferences: PreferencesState
     memories: list[MemoryState] = Field(max_length=20)
     goal: GoalState | None
@@ -264,6 +311,10 @@ class NPCState(ActivityState):
     conversation_pause_remaining: float = Field(ge=0, le=max(CONVERSATION_PAUSE_RANGE[1], FAILURE_COOLDOWN))
     conversation_return_remaining: float = Field(ge=0, le=CONVERSATION_RETURN_PAUSE)
     known_names: dict[str, LearnedNameState] = Field(default_factory=dict)
+    player_opinion: dict
+    player_call: dict | None
+    player_call_cooldown: float = Field(ge=0, le=PLAYER_CALL_COOLDOWN)
+    resolved_player_calls: list[str]
     command_revision: int = Field(ge=0)
     attitudes: Attitudes
     arrival_day: int = Field(ge=1)
@@ -290,11 +341,38 @@ class NPCState(ActivityState):
             raise ValueError("Invalid inventory.")
         return self
 
+    @field_validator("player_opinion")
+    @classmethod
+    def validate_player_opinion(cls, value):
+        return PlayerOpinionState.model_validate(value).model_dump()
+
+    @field_validator("player_call")
+    @classmethod
+    def validate_player_call(cls, value):
+        return PlayerCallState.model_validate(value).model_dump() if value is not None else None
+
 
 class HistoryState(SaveModel):
     id: str = Field(min_length=1)
     participants: tuple[str, str]
     topic: str
+    participant_ids: list[str]
+    transfers: list[dict]
+    accepted_player_turns: list[Annotated[int, Field(strict=True, ge=0)]]
+    authorization_id: str | None
+    transfer_intent: dict | None
+    player_promise_offers: list[dict]
+
+    @field_validator("transfers", "player_promise_offers")
+    @classmethod
+    def validate_player_records(cls, value, info):
+        model = TransferState if info.field_name == "transfers" else PlayerAppleOfferState
+        return [model.model_validate(row).model_dump() for row in value]
+
+    @field_validator("transfer_intent")
+    @classmethod
+    def validate_transfer_intent(cls, value):
+        return TransferIntentState.model_validate(value).model_dump() if value is not None else None
     intended_subjects: dict[str, str]
     status: str
     turns: list[tuple[str, str]]
@@ -322,6 +400,7 @@ class HistoryState(SaveModel):
 
 
 class ConversationState(SaveModel):
+    accepted_gift: ResidentGift | None
     id: str = Field(min_length=1)
     origin: Literal["player", "autonomous"]
     purpose: Literal["chat", "food_request"]
@@ -365,7 +444,7 @@ class GiftState(SaveModel):
     initiator: int = Field(ge=0)
     recipient: int = Field(ge=0)
     record: int = Field(ge=0)
-    item: Literal["fruit"]
+    item: str = Field(min_length=1)
     quantity: int = Field(ge=1)
     arrived: bool
     elapsed: float = Field(ge=0, lt=GIFT_SECONDS)
@@ -463,12 +542,40 @@ class PendingActionState(SaveModel):
     target_id: str | None
     topic: str
     record: int | None = Field(ge=0)
-    item: Literal["", "fruit"] = ""
+    item: str = ""
     quantity: int = Field(default=0, ge=0)
+
+
+class PlayerState(SaveModel):
+    id: Literal[PLAYER_ID]
+    inventory: dict[Literal["fruit"], Annotated[int, Field(strict=True, ge=0)]]
+    inventory_capacity: int = Field(strict=True, ge=1)
+
+    @model_validator(mode="after")
+    def valid_apples(self):
+        if set(self.inventory) != {"fruit"} or not 0 <= self.inventory["fruit"] <= self.inventory_capacity:
+            raise ValueError("Invalid player apple inventory.")
+        return self
+
+
+class PlayerHandoffState(SaveModel):
+    initiator: str
+    recipient: str
+    record: int = Field(ge=0)
+    item: str = Field(min_length=1)
+    quantity: int = Field(strict=True, ge=1)
+    elapsed: float = Field(ge=0, lt=GIFT_SECONDS)
+    transferred: bool
+    outcome_event_id: str | None
+    saved_state: ActivityState
 
 
 class SimulationState(SaveModel):
     day: int = Field(ge=1)
+    player: PlayerState
+    player_handoffs: list[PlayerHandoffState]
+    player_call_check: float = Field(ge=0, le=PLAYER_CALL_CHECK_SECONDS)
+    player_acknowledgments: list[dict]
     npc_trait_mode: Literal["normal", "extreme", "both"] = "normal"
     phase: Literal["day", "evening", "night"]
     events: list[EventState] = Field(max_length=200)
@@ -495,6 +602,11 @@ class SimulationState(SaveModel):
     camera_offset: tuple[float, float]
     camera_zoom: float = Field(default=1.0, ge=0.5, le=2.5)
 
+    @field_validator("player_acknowledgments")
+    @classmethod
+    def validate_player_acknowledgments(cls, value):
+        return [PlayerAcknowledgmentState.model_validate(row).model_dump() for row in value]
+
     @model_validator(mode="after")
     def validate_references(self):
         residents = [*self.npcs, *self.archived]
@@ -503,9 +615,10 @@ class SimulationState(SaveModel):
         if len({n.room_number for n in residents}) != len(residents):
             raise ValueError("Apartment rooms must be unique, including departed assignments.")
         creation_ids, job_ids = set(), set()
+        owner_ids = {self.player.id, *[n.id for n in residents]}
         for work in self.creations:
             if (work.id in creation_ids or work.job_id in job_ids or work.creator_id not in {n.id for n in residents}
-                    or phase_index(work.day, work.phase) > phase_index(self.day, self.phase)):
+                    or work.owner_id not in owner_ids or phase_index(work.day, work.phase) > phase_index(self.day, self.phase)):
                 raise ValueError("Invalid creation identity, credit, or completion time.")
             creation_ids.add(work.id)
             job_ids.add(work.job_id)
@@ -559,6 +672,11 @@ class SimulationState(SaveModel):
         now = phase_index(self.day, self.phase)
         if len(ids) != len(residents) + 1 or self.tree.id in ids or len({v.casefold() for v in actors.values()}) != len(ids):
             raise ValueError("Actor IDs and stable display names must be unique.")
+        if (self.player.id in ids or self.tree.id == self.player.id
+                or PLAYER_LABEL.casefold() in {name.casefold() for name in actors.values()}):
+            raise ValueError("Player identity conflicts with a physical actor.")
+        actors[self.player.id] = PLAYER_LABEL
+        ids.add(self.player.id)
         if self.social_rotation >= len(self.npcs):
             raise ValueError("Invalid social rotation.")
         if any(n.departure is not None for n in self.npcs) or any(n.departure is None for n in self.archived):
@@ -591,7 +709,57 @@ class SimulationState(SaveModel):
                 raise ValueError("Invalid event actors or date.")
             if event.history is not None and event.history >= len(self.history):
                 raise ValueError("Invalid event history link.")
+        transfer_ids, transfer_order, player_offer_ids = set(), [], set()
         for record in self.history:
+            if len(record.player_promise_offers) > CONVERSATION_MAX_AGREEMENTS:
+                raise ValueError("Too many player apple offers in one conversation.")
+            for offer in record.player_promise_offers:
+                if (set(offer) != {"id", "giver_id", "recipient_id", "deadline", "offer_turn", "accept_turn", "created_phase", "status"}
+                        or offer["id"] in player_offer_ids
+                        or offer["giver_id"] not in owner_ids or offer["recipient_id"] not in owner_ids
+                        or offer["giver_id"] == offer["recipient_id"]
+                        or self.player.id not in (offer["giver_id"], offer["recipient_id"])
+                        or offer["status"] not in ("offered", "accepted", "declined", "expired", "closed")
+                        or not 0 <= offer["created_phase"] <= now or offer["deadline"] < offer["created_phase"]
+                        or not 0 <= offer["offer_turn"] < len(record.turns)
+                        or record.turns[offer["offer_turn"]][0] != actors[offer["giver_id"]]):
+                    raise ValueError("Invalid player apple offer authority or source.")
+                player_offer_ids.add(offer["id"])
+                from dialogue_rules import validate_apple_offer, validate_apple_promise
+                validate_apple_offer(record.turns[offer["offer_turn"]][1], offer["deadline"], current_phase=offer["created_phase"])
+                if offer["status"] == "accepted":
+                    turn = offer["accept_turn"]
+                    if (type(turn) is not int or not offer["offer_turn"] < turn < len(record.turns)
+                            or record.turns[turn][0] != actors[offer["recipient_id"]]
+                            or not any(p.id == offer["id"] and p.conversation_id == record.id
+                                       and p.promisor_id == offer["giver_id"] and p.recipient_id == offer["recipient_id"]
+                                       and p.deadline == offer["deadline"] for p in self.promises)):
+                        raise ValueError("An accepted player apple promise needs its actual ordered acceptance.")
+                    validate_apple_promise(record.turns[offer["offer_turn"]][1], record.turns[turn][1],
+                                           offer["deadline"], current_phase=offer["created_phase"])
+                elif offer["accept_turn"] is not None:
+                    raise ValueError("An unaccepted apple offer cannot retain an acceptance.")
+            if record.authorization_id is not None and record.authorization_id not in history:
+                raise ValueError("Missing transfer authorization conversation.")
+            if record.participant_ids and (len(record.participant_ids) != 2 or not set(record.participant_ids) <= ids
+                    or len(set(record.participant_ids)) != 2
+                    or {actors[i] for i in record.participant_ids} != set(record.participants)):
+                raise ValueError("Historical participant identities do not match the speakers.")
+            if (len(set(record.accepted_player_turns)) != len(record.accepted_player_turns)
+                    or any(i >= len(record.turns) or record.turns[i][0] != PLAYER_LABEL for i in record.accepted_player_turns)):
+                raise ValueError("Player encounter effects need unique accepted player turns.")
+            for transfer in record.transfers:
+                if (set(transfer) != {"id", "giver_id", "recipient_id", "item", "quantity", "day", "phase", "sequence"}
+                        or not isinstance(transfer["id"], str) or transfer["id"] in transfer_ids
+                        or type(transfer["sequence"]) is not int or transfer["sequence"] < 0
+                        or transfer["giver_id"] not in owner_ids or transfer["recipient_id"] not in owner_ids
+                        or transfer["giver_id"] == transfer["recipient_id"] or type(transfer["quantity"]) is not int
+                        or transfer["quantity"] < 1 or transfer["item"] != "fruit" and (
+                            transfer["item"] not in creation_ids or transfer["quantity"] != 1)
+                        or phase_index(transfer["day"], transfer["phase"]) > now):
+                    raise ValueError("Invalid committed transfer provenance.")
+                transfer_ids.add(transfer["id"])
+                transfer_order.append(transfer)
             if any(name != "You" and name not in actors.values() for name in record.participants):
                 raise ValueError("Unknown historical speaker.")
             if (not set(record.intended_subjects) <= set(record.participants)
@@ -622,6 +790,24 @@ class SimulationState(SaveModel):
                                        and f.conversation_id == record.id
                                        and witness in f.witness_ids for f in self.facts) for witness in witnesses)):
                     raise ValueError("A witnessed introduction requires a recorded hearing event.")
+        if sorted(t["sequence"] for t in transfer_order) != list(range(len(transfer_order))):
+            raise ValueError("Transfer history must retain its unique commit order.")
+        owners = {w.id: w.creator_id for w in self.creations}
+        for transfer in sorted(transfer_order, key=lambda t: t["sequence"]):
+            if transfer["item"] != "fruit":
+                if owners[transfer["item"]] != transfer["giver_id"]:
+                    raise ValueError("Transfer provenance does not follow the actual previous owner.")
+                owners[transfer["item"]] = transfer["recipient_id"]
+        if any(owners[w.id] != w.owner_id for w in self.creations):
+            raise ValueError("Current work ownership must match its committed transfer history.")
+        for ack in self.player_acknowledgments:
+            record = history.get(ack.get("record_id"))
+            if (set(ack) != {"npc_id", "record_id", "transfer_id"} or ack["npc_id"] not in live_ids
+                    or record is None or not any(t["id"] == ack["transfer_id"]
+                        and {t["giver_id"], t["recipient_id"]} == {self.player.id, ack["npc_id"]} for t in record.transfers)):
+                raise ValueError("A pending acknowledgment needs its committed player handoff.")
+        if len({a["transfer_id"] for a in self.player_acknowledgments}) != len(self.player_acknowledgments):
+            raise ValueError("Duplicate pending transfer acknowledgment.")
         for fact in self.facts:
             if (fact.subject_id not in ids or fact.object_id not in ids or fact.subject_id == fact.object_id
                     or fact.phase > now or not set(fact.witness_ids) <= ids
@@ -634,7 +820,7 @@ class SimulationState(SaveModel):
                 record_for(fact.conversation_id)
             if fact.source_id in events:
                 event = events[fact.source_id]
-                expected = {"apple_given": "fruit_shared", "apple_refused": "food_refused", "promise_kept": "promise_fulfilled"}.get(fact.kind, fact.kind)
+                expected = {"apple_given": "fruit_shared", "work_given": "work_shared", "apple_refused": "food_refused", "promise_kept": "promise_fulfilled"}.get(fact.kind, fact.kind)
                 if event.kind != expected or fact.phase != phase_index(event.day, event.phase):
                     raise ValueError("A fact must match its actual source event.")
         for claim in self.claims:
@@ -701,7 +887,8 @@ class SimulationState(SaveModel):
             for target_id, learned in npc.known_names.items():
                 learned = learned.model_dump()
                 target = next((n for n in residents if n.id == target_id), None)
-                actual_name = SNAKE_NAME if target_id == self.snake.id else target.character["Name"] if target else ""
+                actual_name = (learned["name"] if target_id == self.player.id else
+                               SNAKE_NAME if target_id == self.snake.id else target.character["Name"] if target else "")
                 if (target_id == npc.id or not actual_name or set(learned) != {"name", "conversation_id", "turn"}
                         or learned["name"] not in forms(actual_name)):
                     raise ValueError("Invalid learned name or actor reference.")
@@ -740,7 +927,7 @@ class SimulationState(SaveModel):
             if promise.id in promise_ids or promise.promisor_id == promise.recipient_id or not all(participant(i, record) for i in (promise.promisor_id, promise.recipient_id)):
                 raise ValueError("Invalid promise participants.")
             promise_ids.add(promise.id)
-            if promise.status == "pending" and not {promise.promisor_id, promise.recipient_id} <= live_ids:
+            if promise.status == "pending" and not {promise.promisor_id, promise.recipient_id} <= live_ids | {self.player.id}:
                 raise ValueError("Impossible obligations must be cancelled.")
             if promise.deadline < promise.created_phase or promise.created_phase > now or (promise.status == "pending") != (promise.resolved_phase is None):
                 raise ValueError("Invalid promise resolution.")
@@ -758,6 +945,25 @@ class SimulationState(SaveModel):
             elif target is not None:
                 raise ValueError("Unexpected action target.")
         reserved = set()
+        for handoff in self.player_handoffs:
+            pair = {handoff.initiator, handoff.recipient}
+            resident_id = next(iter(pair - {self.player.id}), None)
+            if (len(pair) != 2 or self.player.id not in pair or resident_id not in live_ids
+                    or resident_id in indoor_ids or handoff.record >= len(self.history)
+                    or handoff.saved_state.behavior in HOME_BEHAVIORS):
+                raise ValueError("Invalid player handoff participants.")
+            index = next(i for i, n in enumerate(self.npcs) if n.id == resident_id)
+            if index in reserved or set(self.history[handoff.record].participants) != {"You", actors[resident_id]}:
+                raise ValueError("Conflicting player handoff reservation or record.")
+            if (handoff.transferred != bool(handoff.outcome_event_id)
+                    or handoff.transferred != (handoff.elapsed >= GIFT_GIVE_SECONDS)
+                    or handoff.item != "fruit" and (handoff.item not in creation_ids or handoff.quantity != 1)):
+                raise ValueError("Invalid player handoff progress or possession.")
+            if self.history[handoff.record].transfer_intent != dict(giver_id=handoff.initiator,
+                    recipient_id=handoff.recipient, item=handoff.item, quantity=handoff.quantity):
+                raise ValueError("A player handoff needs matching accepted authorization.")
+            reserved.add(index)
+            activity_target(handoff.saved_state, self.npcs[index])
         for interaction in [*self.conversations, *self.gifts]:
             pair = (interaction.initiator, interaction.recipient)
             if pair[0] == pair[1] or any(i >= len(self.npcs) or i in reserved for i in pair) or interaction.record >= len(self.history):
@@ -800,8 +1006,24 @@ class SimulationState(SaveModel):
                     validate_information(SimpleNamespace(turns=interaction.turns, disclosures=interaction.accepted_disclosures,
                         third_party_opinions=interaction.third_party_opinions, leverage=interaction.leverage_uses),
                         interaction.information_context.model_dump() if interaction.information_context else None)
+                if interaction.accepted_gift:
+                    from llm import validate_resident_gift
+                    validate_resident_gift(interaction.accepted_gift, interaction.turns, {
+                        "purpose": interaction.purpose, "arrival_focus": interaction.opening_kind == "orientation",
+                        **{
+                        role: {"npc_id": self.npcs[index].id, "inventory": self.npcs[index].inventory,
+                               "owned_works": [{"id": w.id, "title": w.title} for w in self.creations
+                                               if w.owner_id == self.npcs[index].id]}
+                        for role, index in zip(("initiator", "recipient"), pair)}})
+                    if interaction.accepted_gift.accept_turn is None:
+                        raise ValueError("A pending gift handoff needs an accepted offer.")
             elif interaction.transferred != (interaction.elapsed >= GIFT_GIVE_SECONDS) or interaction.transferred != bool(interaction.outcome_event_id):
                 raise ValueError("Invalid apple handoff progress.")
+            if isinstance(interaction, GiftState):
+                if (interaction.item != "fruit" and (interaction.item not in creation_ids or interaction.quantity != 1)
+                        or record.transfer_intent != dict(giver_id=self.npcs[pair[0]].id,
+                            recipient_id=self.npcs[pair[1]].id, item=interaction.item, quantity=interaction.quantity)):
+                    raise ValueError("A handoff needs a real possession and accepted matching authorization.")
         encounter = self.snake_encounter
         if encounter:
             if (encounter.resident_id not in live_ids or encounter.resident_id in indoor_ids
@@ -851,13 +1073,21 @@ class SimulationState(SaveModel):
             raise ValueError("Invalid tree shake owner.")
         pending_owners = set()
         for action in self.pending_actions:
-            if action.npc_id not in live_ids or action.npc_id in pending_owners or action.target_id is not None and action.target_id not in live_ids:
+            if action.target_id == self.player.id and action.action != "GIVE_ITEM":
+                raise ValueError("Only a gift can use the player as a queued action recipient.")
+            if action.npc_id not in live_ids or action.npc_id in pending_owners or action.target_id is not None and action.target_id not in live_ids | {self.player.id}:
                 raise ValueError("Queued actions need living actors.")
             if action.npc_id in indoor_ids or action.target_id in indoor_ids:
                 raise ValueError("Queued outdoor actions cannot reach indoor residents.")
             pending_owners.add(action.npc_id)
             if action.record is not None and action.record >= len(self.history):
                 raise ValueError("Invalid queued history record.")
+            if action.action == "GIVE_ITEM":
+                if (action.target_id is None or action.quantity < 1
+                        or action.item != "fruit" and (action.item not in creation_ids or action.quantity != 1)
+                        or action.record is None or self.history[action.record].transfer_intent != dict(
+                            giver_id=action.npc_id, recipient_id=action.target_id, item=action.item, quantity=action.quantity)):
+                    raise ValueError("A queued gift needs its real item and accepted matching authorization.")
         pending, processed = self.pending_arrival_days, self.processed_arrival_days
         if pending != sorted(set(pending)) or processed != sorted(set(processed)) or set(pending) & set(processed) or set(pending) | set(processed) != set(range(2, self.day + 1)):
             raise ValueError("Every dawn must have exactly one pending or completed arrival.")
@@ -866,6 +1096,30 @@ class SimulationState(SaveModel):
             raise ValueError("Completed arrivals must match their preserved residents.")
         if not set(self.introductions) <= live_ids:
             raise ValueError("Invalid introduction identity.")
+        for npc in residents:
+            opinion = npc.player_opinion
+            if (set(opinion) != {"opinion", "reason"} or type(opinion["opinion"]) is not int
+                    or not -100 <= opinion["opinion"] <= 100 or not isinstance(opinion["reason"], str)):
+                raise ValueError("Invalid player opinion.")
+            call = npc.player_call
+            if call and (npc.id not in live_ids or npc.id in indoor_ids
+                    or set(call) != {"key", "kind", "reference", "reason", "remaining", "event_id"}
+                    or call["kind"] not in ("gift", "news", "followup")
+                    or not 0 < call["remaining"] <= PLAYER_CALL_SECONDS
+                    or call["key"] in npc.resolved_player_calls):
+                raise ValueError("Invalid waiting player call.")
+            if call:
+                ref = call["reference"]
+                valid = (npc.inventory["fruit"] > 0 and self.player.inventory_capacity > self.player.inventory["fruit"]
+                         if call["kind"] == "gift" and ref == "fruit" else
+                         any(w.id == ref and w.owner_id == npc.id for w in self.creations) if call["kind"] == "gift" else
+                         any(b.claim_id == ref for b in npc.beliefs) if call["kind"] == "news" else
+                         any(m.id == ref and m.partner_id == self.player.id for m in npc.memories)
+                         or any(p.id == ref and p.status == "pending" and {p.promisor_id, p.recipient_id} == {npc.id, self.player.id} for p in self.promises))
+                if not valid or not call["reason"].strip():
+                    raise ValueError("A player call needs its resident's actual unresolved source.")
+        if sum(n.player_call is not None for n in self.npcs) > PLAYER_CALL_LIMIT:
+            raise ValueError("Too many simultaneous player calls.")
         return self
 
 
@@ -1004,6 +1258,8 @@ def _restore_fields(target, saved, *, exclude=(), **overrides):
 
 
 def capture_resident(npc):
+    from player import call_valid
+    stale_call = npc.player_call and not call_valid(npc.world, npc, npc.player_call)
     return _capture_fields(
         NPCState, npc, emotion=EmotionReaction(name=npc.emotion, intensity=npc.emotion_intensity),
         memories=[asdict(memory) for memory in npc.memories],
@@ -1011,6 +1267,9 @@ def capture_resident(npc):
         current_concern=asdict(npc.current_concern) if npc.current_concern else None,
         pending_social_opinions=[asdict(effect) for effect in npc.pending_social_opinions],
         beliefs=[asdict(belief) for belief in npc.beliefs],
+        player_call=None if stale_call else deepcopy(npc.player_call),
+        player_call_cooldown=PLAYER_CALL_COOLDOWN if stale_call else npc.player_call_cooldown,
+        resolved_player_calls=[*npc.resolved_player_calls, npc.player_call["key"]] if stale_call else npc.resolved_player_calls.copy(),
     )
 
 
@@ -1019,6 +1278,10 @@ def capture_simulation(app):
     npc_indices = {id(npc): index for index, npc in enumerate(app.npcs)}
     records = {id(record): index for index, record in enumerate(app.conversation_history)}
     history = [asdict(record) for record in app.conversation_history]
+    for record in history:
+        for offer in record["player_promise_offers"]:
+            if offer["status"] == "offered":
+                offer["status"] = "closed"
     if app.request_history is not None and id(app.request_history) in records:
         record = history[records[id(app.request_history)]]
         record["status"] = "Reply pending when saved"
@@ -1027,7 +1290,7 @@ def capture_simulation(app):
     for npc in app.npcs:
         npcs.append(capture_resident(npc))
         gift = npc.gift
-        if gift is not None and gift.initiator is npc:
+        if gift is not None and not isinstance(gift, PlayerHandoff) and gift.initiator is npc:
             gifts.append(_capture_fields(GiftState, gift,
                 initiator=npc_indices[id(npc)], recipient=npc_indices[id(gift.recipient)],
                 record=records[id(gift.record)],
@@ -1047,6 +1310,11 @@ def capture_simulation(app):
     encounter = world.snake.encounter
     return SimulationState(
         day=world.day, npc_trait_mode=world.npc_trait_mode, phase=world.phase,
+        player=PlayerState(**asdict(world.player)), player_call_check=max(0.0, world.player_call_check),
+        player_acknowledgments=deepcopy(world.player_acknowledgments),
+        player_handoffs=[_capture_fields(PlayerHandoffState, npc.gift,
+            initiator=npc.gift.initiator.id, recipient=npc.gift.recipient.id,
+            record=records[id(npc.gift.record)]) for npc in world.npcs if isinstance(npc.gift, PlayerHandoff)],
         creations=world.creations,
         events=[asdict(event) for event in world.events],
         promises=[asdict(promise) for promise in world.promises],
@@ -1108,6 +1376,14 @@ def restore_simulation(state):
                 reserved_by=by_id.get(state.tree.reserved_by))
     world = Simulation(npcs, tree, assign_goals=False, npc_trait_mode=state.npc_trait_mode)
     world.archived = all_residents[len(state.npcs):]
+    world.player = Player(**state.player.model_dump())
+    world.player_call_check = state.player_call_check
+    world.player_acknowledgments = deepcopy(state.player_acknowledgments)
+    for npc, saved in zip(all_residents, [*state.npcs, *state.archived]):
+        npc.player_opinion = deepcopy(saved.player_opinion)
+        npc.player_call = deepcopy(saved.player_call)
+        npc.player_call_cooldown = saved.player_call_cooldown
+        npc.resolved_player_calls = saved.resolved_player_calls.copy()
     world.creations = [work.model_copy(deep=True) for work in state.creations]
     for npc in world.archived:
         npc.world = world
@@ -1157,6 +1433,15 @@ def restore_simulation(state):
         gift.active = True
         for npc in (gift.initiator, gift.recipient):
             npc.gift = gift
+    for saved in state.player_handoffs:
+        gift = PlayerHandoff.__new__(PlayerHandoff)
+        _restore_fields(gift, saved, initiator=world.participant_by_id(saved.initiator),
+            recipient=world.participant_by_id(saved.recipient), record=history[saved.record],
+            saved_state=saved.saved_state.model_dump())
+        gift.world = world
+        gift.resident = gift.recipient if gift.initiator is world.player else gift.initiator
+        gift.active = gift.arrived = True
+        gift.resident.gift = gift
     saved = state.snake_encounter
     if saved:
         encounter = SnakeEncounter.__new__(SnakeEncounter)
@@ -1178,4 +1463,8 @@ def restore_simulation(state):
     for npc in npcs:
         if npc.conversation is None and npc.gift is None and npc.target_id == tree.id:
             npc.resume_pending = True
+    from player import call_valid, clear_call
+    for npc in npcs:
+        if npc.player_call and not call_valid(world, npc, npc.player_call):
+            clear_call(npc)
     return world
