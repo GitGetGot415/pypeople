@@ -363,11 +363,15 @@ class HistoryState(SaveModel):
     transfer_intent: dict | None
     player_promise_offers: list[dict]
 
-    @field_validator("transfers", "player_promise_offers")
+    @field_validator("transfers")
     @classmethod
-    def validate_player_records(cls, value, info):
-        model = TransferState if info.field_name == "transfers" else PlayerAppleOfferState
-        return [model.model_validate(row).model_dump() for row in value]
+    def validate_transfers(cls, value):
+        return [TransferState.model_validate(row).model_dump() for row in value]
+
+    @field_validator("player_promise_offers")
+    @classmethod
+    def validate_player_promise_offers(cls, value):
+        return [PlayerAppleOfferState.model_validate(row).model_dump() for row in value]
 
     @field_validator("transfer_intent")
     @classmethod
@@ -1096,6 +1100,7 @@ class SimulationState(SaveModel):
             raise ValueError("Completed arrivals must match their preserved residents.")
         if not set(self.introductions) <= live_ids:
             raise ValueError("Invalid introduction identity.")
+        reserved_ids = {self.npcs[index].id for index in reserved}
         for npc in residents:
             opinion = npc.player_opinion
             if (set(opinion) != {"opinion", "reason"} or type(opinion["opinion"]) is not int
@@ -1103,6 +1108,10 @@ class SimulationState(SaveModel):
                 raise ValueError("Invalid player opinion.")
             call = npc.player_call
             if call and (npc.id not in live_ids or npc.id in indoor_ids
+                    or npc.behavior not in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY)
+                    or npc.owner != "autonomous"
+                    or npc.id in reserved_ids
+                    or any(npc.id in (a.npc_id, a.target_id) for a in self.pending_actions)
                     or set(call) != {"key", "kind", "reference", "reason", "remaining", "event_id"}
                     or call["kind"] not in ("gift", "news", "followup")
                     or not 0 < call["remaining"] <= PLAYER_CALL_SECONDS

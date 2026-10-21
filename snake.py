@@ -202,6 +202,7 @@ class SnakeEncounter:
         if world.phase_pending and origin == "autonomous":
             raise ValueError("Waiting for the pending time change before starting another automatic encounter.")
         if (world.snake.encounter or world.snake.request_pending or resident.snake_encounter
+                or resident.player_call or (origin == "autonomous" and resident.selected)
                 or not world.is_outdoors(resident) or resident.behavior.value == "GO_HOME"
                 or resident.home_reason == "night"
                 or resident.busy or resident.request_pending

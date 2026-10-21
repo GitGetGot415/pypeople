@@ -108,7 +108,7 @@ def home_priority(npc, world, dt):
         npc.bedtime_remaining = None
         if npc.behavior == Behavior.GO_HOME:
             npc.finish_activity(world)
-    if (npc.interaction or npc.eating or npc.selected or npc.request_pending or npc.end_conversation
+    if (npc.interaction or npc.eating or npc.selected or npc.request_pending or npc.player_call or npc.end_conversation
             or npc.owner != "autonomous" or npc.behavior == Behavior.GO_HOME
             or any(npc.id in (action.npc_id, action.target_id) for action in world.pending_actions)):
         return

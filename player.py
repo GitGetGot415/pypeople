@@ -65,6 +65,9 @@ def validate_transfer(world, giver, recipient, item, quantity, *, interaction=No
     for person in (giver, recipient):
         if person is world.player:
             continue
+        if (interaction is None and giver is not world.player and recipient is not world.player
+                and (person.player_call or person is recipient and person.selected)):
+            raise ValueError("The resident is waiting to talk to the player.")
         if not world.is_outdoors(person) or not available_outdoors(person):
             raise ValueError("The resident is no longer available outdoors.")
         if person.interaction is not None and person.interaction is not interaction:

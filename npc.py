@@ -572,7 +572,7 @@ class NPC:
         return move_toward(self, self.destination, dt, MOVEMENT_SPEED)
 
     def update(self, dt, tree):
-        if self.interaction is not None or self.resume_pending:
+        if self.interaction is not None or self.resume_pending or self.player_call:
             return
         world = self.world
         if self.indoors or self.behavior == Behavior.GO_HOME:
@@ -691,6 +691,7 @@ class Conversation:
                  opening_kind=None, focus_claim_id=None, goal_id=None):
         from apartments import available_outdoors
         if (initiator is recipient or initiator.busy or recipient.busy
+                or initiator.player_call or recipient.player_call or recipient.selected or recipient.request_pending
                 or not available_outdoors(initiator) or not available_outdoors(recipient)):
             raise ValueError("Choose another NPC who is free to talk.")
         if purpose not in ("chat", "food_request"):

@@ -46,9 +46,6 @@ class EventFeed:
             text = f"Day {event.day} / {event.phase.title()} - {event.text}"
             if event.history is not None:
                 text += " [view]"
-            elif event.kind == "player_call":
-                npc = app.simulation.npc_by_id(event.participants[0])
-                text += " [Talk]" if npc and npc.player_call and npc.player_call["event_id"] == event.id else " [closed]"
             lines = wrap_text(text, app.small_font, self.body.width - 28)
             height = len(lines) * app.small_font.get_linesize() + 10
             self.rows.append((event, top, height, lines))
@@ -80,13 +77,6 @@ class EventFeed:
                 self.collapsed = not self.collapsed
             elif not self.collapsed:
                 for entry, top, height, _ in self.rows:
-                    if top <= pos[1] - self.body.y + self.scroll < top + height and entry.kind == "player_call":
-                        npc = app.simulation.npc_by_id(entry.participants[0])
-                        if npc and npc.player_call and npc.player_call["event_id"] == entry.id:
-                            app.game.open_call(app, npc)
-                        else:
-                            app.game.show_save_message("This call expired or was closed.")
-                        break
                     if top <= pos[1] - self.body.y + self.scroll < top + height and entry.history is not None:
                         app.open_stats()
                         app.stats.open_record(app.conversation_history[entry.history])

@@ -290,7 +290,7 @@ class Application:
         ] if self.game.player_record is not None else []
         snapshot["other_npcs"] = [
             {**other.snapshot(self.tree, private=False),
-             "available_to_talk": not other.busy and not other.request_pending}
+             "available_to_talk": not other.busy and not other.request_pending and not other.selected and not other.player_call}
             for other in self.simulation.outdoor_npcs if other is not npc
         ]
         snapshot["other_npcs"].append(self.player_target())
@@ -330,7 +330,7 @@ class Application:
         from player import call_valid, clear_call
         if (self.simulation.paused or self.game.dialogue_open or self.request_history is not None
                 or not npc.player_call or not call_valid(self.simulation, npc, npc.player_call)
-                or not self.simulation.company_available(npc)):
+                or not self.simulation.company_available(npc, allow_player_call=True)):
             return "This call is unavailable while you or the resident are occupied."
         self.preempt_creative_request()
         call = npc.player_call.copy()
@@ -365,6 +365,8 @@ class Application:
         snapshot.update(request_kind="player_gift", player_interaction={"incoming_gift": incoming})
         self._submit_player_message(recipient, "", snapshot)
         if recipient.request_pending:
+            from player import clear_call
+            clear_call(recipient)
             self.game.set_reply("")
 
     def accept_gift_offer(self):
@@ -410,7 +412,7 @@ class Application:
                 snapshot["owned_works"] = work_choices(self.simulation, npc.id, old["player_interaction"]["call"]["reference"])
         else:
             snapshot["other_npcs"] = [{**other.snapshot(self.tree, private=False),
-                "available_to_talk": not other.busy and not other.request_pending}
+                "available_to_talk": not other.busy and not other.request_pending and not other.selected and not other.player_call}
                 for other in self.simulation.outdoor_npcs if other is not npc] + [self.player_target()]
         if self.game.player_record:
             snapshot["player_dialogue"] = [{"speaker": s, "text": t} for s, t in self.game.player_record.turns[-12:]]
@@ -826,7 +828,7 @@ class Application:
                         error = "I don't have an apple to eat."
                     elif result.action in ("TALK_TO_NPC", "GIVE_ITEM") and target is not self.simulation.player and (target is None or target.indoors
                             or target.behavior == Behavior.GO_HOME or target.home_reason == "night"
-                            or target.busy or target.request_pending):
+                            or target.busy or target.request_pending or target.selected or target.player_call):
                         error = "That person is busy now. Please try again later."
                     else:
                         if result.action == "GIVE_ITEM":

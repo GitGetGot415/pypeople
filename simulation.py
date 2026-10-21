@@ -221,12 +221,13 @@ class Simulation:
         # Ignore long window stalls; there is no elapsed world time to catch up.
         self.step(min(MAX_SIMULATION_STEP_SECONDS, max(0.0, dt)), viewed_conversation=viewed_conversation)
 
-    def company_available(self, npc):
+    def company_available(self, npc, *, allow_player_call=False):
         from npc import Behavior
 
         from apartments import available_outdoors
         return (self.is_outdoors(npc) and available_outdoors(npc)
                 and npc.interaction is None and not npc.selected and not npc.request_pending
+                and (allow_player_call or not npc.player_call)
                 and npc.owner == "autonomous" and not npc.resume_pending
                 and not any(npc.id in (action.npc_id, action.target_id) for action in self.pending_actions)
                 and npc.behavior in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY))

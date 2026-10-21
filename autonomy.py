@@ -47,7 +47,7 @@ def lone_introduction(npc, world):
 
 def reconsider(npc, world, *, pressing_only=False):
     from apartments import HOME_BEHAVIORS
-    if (world.phase_pending or npc.interaction is not None or npc.resume_pending or npc.behavior in HOME_BEHAVIORS
+    if (world.phase_pending or npc.interaction is not None or npc.resume_pending or npc.player_call or npc.behavior in HOME_BEHAVIORS
             or npc.home_reason == "night"):
         return
     if not target_valid(npc, world):

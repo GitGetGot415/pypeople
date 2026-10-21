@@ -21,7 +21,7 @@ from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_C
                        DIALOGUE_REPEAT_PHRASE_WORDS, DIALOGUE_REPEAT_SENTENCE_WORDS, DIALOGUE_REPEAT_TURN_WORDS,
                        CONVERSATION_MAX_AGREEMENTS, CONVERSATION_MAX_DISCLOSURES,
                        CONVERSATION_MAX_REPUTATION_EFFECTS, CONVERSATION_MAX_LEVERAGE,
-                       SNAKE_NAME, SNAKE_TURN_COUNT, VOICE_REWRITE_TEMPERATURE)
+                       PLAYER_LABEL, SNAKE_NAME, SNAKE_TURN_COUNT, VOICE_REWRITE_TEMPERATURE)
 from dialogue_text import contains_serialized_dialogue, contains_speaker_label, speech_is_complete, split_sentences
 from dialogue_code import DELIVERY_INSTRUCTION
 from dialogue_rules import (_asserts, is_name_reference, mentions_account, mentions_private_recollection, named_context, named_references, name_pattern, unquoted_speech,
@@ -578,6 +578,10 @@ count. Never substitute TALK_TO_NPC or SAY for a feasible gift. There is no rule
 that a recipient must need fruit. For every action except GIVE_ITEM, item is ""
 and quantity is 0. Questions about giving, such as "can Judy give fruit?", are SAY;
 polite requests such as "could you give a fruit to Judy?" are GIVE_ITEM.
+First-person requests such as "could I have an apple?", "can I get some fruit?",
+or "give me an apple" ask you to give to the PLAYER, target You. They are COMMAND,
+not information questions. Never use someone mentioned in an earlier reply as
+the recipient of this request. If you cannot give, use SAY to explain why.
 Creative gifts use the exact owned work ID and quantity one. Use resolved_work_id
 when supplied; an ambiguous work reference needs SAY clarification. The player
 appears as target You in other_npcs for giving, but is never a TALK_TO_NPC destination.
@@ -1168,6 +1172,15 @@ def intent_snapshot(snapshot):
             for other in snapshot.get("other_npcs", [])
         ],
     }
+
+
+def _personal_apple_request(message):
+    """Resolve the recipient of a complete, unambiguous first-person request."""
+    return re.fullmatch(
+        r"\s*(?:please\s+)?(?:(?:can|could|may|might)\s+i\s+(?:please\s+)?(?:have|get|receive)"
+        r"|(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:give|hand|pass)\s+me)\s+"
+        r"(?:(?:an?|some|one|two|three|\d+)\s+)?(?:of\s+your\s+)?(?:apples?|fruit)"
+        r"(?:,?\s+please)?\s*[.!?]*\s*", message, re.I) is not None
 
 
 def _dialogue_parts_schema(*, correction=False):
@@ -2299,6 +2312,10 @@ def _validate_response(raw, snapshot, model):
         # also supplied an action or irrelevant recipient/item fields.
         result = (ActionIntent(action="SAY") if result.message_type != "COMMAND" else
                   ActionIntent.model_validate(result.model_dump(exclude={"message_type"})))
+        # A first-person apple request has no third-party recipient. Resolve its
+        # pronoun before the reply is generated or any gift is authorized.
+        if result.action == "GIVE_ITEM" and _personal_apple_request(snapshot.get("_player_message", "")):
+            result.target = PLAYER_LABEL
         if result.action not in ("TALK_TO_NPC", "GIVE_ITEM"):
             result.target = ""
         if result.action != "GIVE_ITEM":

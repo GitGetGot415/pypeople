@@ -378,6 +378,9 @@ class GameScreen:
             self.apartment_scroll = 0
             return
         npc = next((npc for npc in sorted([*app.npcs, app.simulation.snake], key=lambda npc: npc.y, reverse=True) if npc.contains(world_pos)), None)
+        if npc is not None and npc is not app.simulation.snake and npc.player_call:
+            self.open_call(app, npc)
+            return
         if self.viewed_conversation is not None and npc is not None and (npc.conversation or getattr(npc, "snake_encounter", None)) is self.viewed_conversation:
             # Clicking the other participant keeps the same conversation open.
             if npc is not self.selected_npc:
