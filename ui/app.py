@@ -283,8 +283,6 @@ class Application:
             self.game.set_reply("Add an API key in Settings to generate a reply.")
             return
         self.preempt_creative_request()
-        if self.requests.busy:
-            return
         snapshot = self.player_snapshot(npc, message)
         snapshot["player_dialogue"] = [
             {"speaker": speaker, "text": text}
@@ -335,8 +333,6 @@ class Application:
                 or not self.simulation.company_available(npc)):
             return "This call is unavailable while you or the resident are occupied."
         self.preempt_creative_request()
-        if self.requests.busy:
-            return "All model slots are occupied. Try Talk again shortly."
         call = npc.player_call.copy()
         self.game.dialogue_open, self.game.selected_npc = True, npc
         npc.set_selected(True)
@@ -360,8 +356,6 @@ class Application:
             raise ValueError("The selected resident is occupied.")
         validate_transfer(self.simulation, self.simulation.player, recipient, item, quantity)
         self.preempt_creative_request()
-        if self.requests.busy:
-            raise ValueError("All model slots are occupied. Try again shortly.")
         self.game.dialogue_open, self.game.selected_npc = True, recipient
         recipient.set_selected(True)
         snapshot = self.player_snapshot(recipient)
@@ -396,7 +390,7 @@ class Application:
         npc, offer = self.game.selected_npc, self.game.pending_offer
         self.game.pending_offer = None
         self.game.show_save_message("Gift declined; no possessions changed hands.")
-        if npc and offer and not self.requests.busy and self.request_history is None:
+        if npc and offer and self.request_history is None:
             snapshot = self.player_snapshot(npc)
             snapshot.update(request_kind="player_acknowledgment", player_interaction={"declined_offer": offer})
             self._submit_player_message(npc, "", snapshot)
@@ -407,8 +401,6 @@ class Application:
                 or self.simulation.paused or self.request_npc is not npc):
             return
         self.preempt_creative_request()
-        if self.requests.busy:
-            return
         snapshot = self.player_snapshot(npc, self.request_message)
         old = self.request_snapshot
         if old.get("request_kind") in ("player_opening", "player_gift", "player_acknowledgment"):
@@ -433,6 +425,7 @@ class Application:
             self.session_id, self.provider, self.api_key, message, snapshot,
             request_id=request_id, ollama_model=self.ollama_model,
             voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation,
+            queue_if_busy=True,
         ):
             self.game.set_reply("Could not start the request. Please try again.")
             return
@@ -611,8 +604,6 @@ class Application:
         if self.screen != "game" or not message or snake.encounter or snake.request_pending or self.request_history is not None:
             return
         self.preempt_creative_request()
-        if self.requests.busy:
-            return
         snapshot = {"request_kind": "snake_player", "snake": snake.snapshot(),
                     "_name_actors": actor_catalog(self.simulation),
                     "player_dialogue": self.game.player_record.turns[-12:] if self.game.player_record else []}
@@ -914,6 +905,8 @@ class Application:
                 self.game.set_reply(npc.reply)
             self.requests.finish(active_session, request_id, error)
             self.request_id = None
+        if simulation_active:
+            self.requests.start_queued(self.session_id)
         for acknowledgment in list(self.simulation.player_acknowledgments) if self.simulation else []:
             if self.request_history is not None or self.requests.busy or paused or not simulation_active:
                 break

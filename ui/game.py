@@ -444,7 +444,8 @@ class GameScreen:
             self.draw_portrait(app, self.selected_npc, self.selected_npc.portrait_emotion)
         status = self.selected_npc.status if self.selected_npc is not None else f"{len(app.npcs)} NPCs"
         if app.request_history is not None and app.request_npc is self.selected_npc:
-            status = f"Thinking for {self.selected_npc.name}... / {status}"
+            state = "Queued" if (app.session_id, app.request_id) in app.requests.pending else "Thinking"
+            status = f"{state} for {self.selected_npc.name}... / {status}"
         elif self.selected_npc.end_conversation:
             status = "Click Done when you've finished reading."
         elif self.selected_npc.request_pending:
@@ -476,7 +477,7 @@ class GameScreen:
             self.done_button.draw(app.window, app.font)
         else:
             self.prompt_input.draw(app.window, app.font)
-            self.send_button.draw(app.window, app.font, enabled=(not app.requests.busy or bool(app.creative_requests)) and app.request_history is None
+            self.send_button.draw(app.window, app.font, enabled=app.request_history is None
                                   and not self.selected_npc.request_pending and not app.simulation.paused)
         if self.player_record and self.player_record.dialogue_errors:
             draw_wrapped_text(app.window, self.player_record.dialogue_errors[-1], app.small_font,

@@ -106,6 +106,7 @@ class RequestManager:
     def __init__(self, max_requests=MAX_LLM_REQUESTS):
         self.max_requests = max_requests
         self.workers = {}
+        self.pending = {}
         self.results = queue.Queue()
         self.progress = queue.Queue()
         self.debug_logs = DebugLogs()
@@ -130,6 +131,8 @@ class RequestManager:
 
     def expire_queued(self, session_id, request_ids):
         for key, log in self.logs.items():
+            if key in self.pending and key[0] == session_id:
+                continue
             if log.status == "queued" and key not in self.workers and (key[0] != session_id or key[1] not in request_ids):
                 self.finish(*key, error="The activity ended before a worker became available.")
 
@@ -156,13 +159,20 @@ class RequestManager:
         return tuple(self.workers.values())
 
     def submit(self, session_id, provider, api_key, message, snapshot, *, request_id=None,
-               ollama_model=DEFAULT_OLLAMA_MODEL, voice_rewrites=True, dialogue_validation=True):
+               ollama_model=DEFAULT_OLLAMA_MODEL, voice_rewrites=True, dialogue_validation=True,
+               queue_if_busy=False):
         key = (session_id, request_id)
-        if self.busy or key in self.workers:
+        if key in self.workers or key in self.pending or (self.busy and not queue_if_busy):
             return False
         snapshot = snapshot.copy()
         snapshot["_voice_rewrites"] = voice_rewrites
         snapshot["_dialogue_validation"] = dialogue_validation
+        if self.busy:
+            self.prepare(session_id, provider, snapshot, request_id=request_id, ollama_model=ollama_model)
+            self.pending[key] = dict(provider=provider, api_key=api_key, message=message, snapshot=snapshot,
+                                     request_id=request_id, ollama_model=ollama_model,
+                                     voice_rewrites=voice_rewrites, dialogue_validation=dialogue_validation)
+            return True
         participants, topic = _request_description(snapshot)
         occupied = {worker.slot for worker in self.workers.values()}
         slot = next(slot for slot in range(1, self.max_requests + 1) if slot not in occupied)
@@ -186,7 +196,22 @@ class RequestManager:
             return False
         return True
 
+    def start_queued(self, active_session):
+        """Start waiting player requests before scheduling background activity."""
+        for key in tuple(self.pending):
+            if key[0] != active_session:
+                self.cancel(*key)
+                continue
+            if self.busy:
+                break
+            request = self.pending.pop(key)
+            if not self.submit(active_session, **request):
+                self.results.put((active_session, key[1], None,
+                                  "Could not start the request. Please try again.",
+                                  request["snapshot"], [], [], None))
+
     def cancel(self, session_id, request_id):
+        self.pending.pop((session_id, request_id), None)
         worker = self.workers.pop((session_id, request_id), None)
         if worker is None:
             log = self.logs.get((session_id, request_id))
@@ -201,7 +226,7 @@ class RequestManager:
 
     def cancel_all(self):
         """Disconnect outstanding requests and detach their old session queues."""
-        for session_id, request_id in tuple(self.workers):
+        for session_id, request_id in (*self.workers, *self.pending):
             self.cancel(session_id, request_id)
         for key, log in self.logs.items():
             if log.status == "queued":
