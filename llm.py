@@ -36,7 +36,8 @@ from purgatory import Attitudes
 from name_knowledge import (NAME_INSTRUCTION, account_references, account_speech_context, name_forms, permitted_forms, validate_name_use,
                             actor_id, forms, listener_address, own_name, record_self_introductions,
                             asks_name, declines_name, introduction_supported, orientation_speech,
-                            snake_name_witnesses, validate_names, validate_orientation)
+                            snake_name_witnesses, validate_names, validate_orientation,
+                            unidentified_player_names, validate_player_reply_names)
 
 MODEL = "gemini-2.5-flash"
 OLLAMA_URL = "http://localhost:11434/api/chat"
@@ -121,6 +122,9 @@ class ActionResponse(ActionIntent):
         # Committed tasks always give the player a final line to read first.
         if self.action != "SAY":
             self.end_conversation = True
+        elif contains_question(self.reply):
+            # Preserve generated speech; a question leaves room for an answer.
+            self.end_conversation = False
         return self
 
 
@@ -833,7 +837,16 @@ question alone does not require ending the conversation.
 When ending, write only a brief, natural closing in your own character's words.
 Do not add a question, offer of help, new topic, or invitation to talk again.
 Use end_conversation false when you actually choose to continue the exchange,
-including when a clarification question is necessary."""
+including when a clarification question is necessary.
+Unfamiliar names:
+A name mentioned by the player is something you heard, not a learned identity.
+If you do not know who they mean, ask them to identify or describe that person,
+or honestly explain that you do not know. You may repeat the exact heard name
+in an identity question. Never add an unheard surname, infer which visible
+resident bears that name, or guess their activity, location or relationships
+from a matching engine label. Do not invent opinions or promises about them.
+Questions about someone are SAY replies to the player, not requests to approach
+another resident."""
 
 
 CONVERSATION_HISTORY_INSTRUCTION = """shared_history records this pair's earlier conversations, excluding the current
@@ -1727,6 +1740,12 @@ def response_contract(snapshot, *, correction=False):
         }},
     }}
     instruction = build_system_instruction(snapshot["character"])
+    if unidentified_player_names(snapshot):
+        instruction += ("\nThe current player message mentions a name you have not learned. "
+                        "For a SAY reply, clarify who they mean or acknowledge your uncertainty. "
+                        "Use only the exact name heard in an identity question, an explicit quotation, "
+                        "or a name-free clarification. Do not guess who that is from engine identities "
+                        "or invent what they are doing. Leave unrelated optional effects empty.")
     schema["properties"]["gift_offer"] = _possession_offer_schema(snapshot, snapshot.get("player_id", ""),
         snapshot.get("player_inventory", {}).get("inventory_space", 0))
     if snapshot.get("request_kind") in ("player_gift", "player_acknowledgment"):
@@ -1746,7 +1765,28 @@ def response_contract(snapshot, *, correction=False):
             "item": {"type": "string", "enum": [intent["item"]]},
             "quantity": {"type": "integer", "minimum": intent["quantity"], "maximum": intent["quantity"]},
         }}
+    if _player_name_clarification(snapshot):
+        instruction = (f"You are {own_name(snapshot)}, speaking directly to the PLAYER in English. "
+                       "The player mentioned a name but you do not know who it identifies. "
+                       "Ask the player who they mean or ask them to describe the person, or honestly acknowledge "
+                       "your uncertainty. You may repeat only the exact heard name in an identity question or "
+                       "an explicit quotation. Do not guess a surname, identity, activity, location, relationship "
+                       "or shared experience. Do not write the player's answer. "
+                       "Use your behavioral personality with ordinary capitalization and plain prose; "
+                       "presentation is applied later. Write one or two complete sentences. "
+                       "Use action SAY, empty target/item and quantity zero. A question means end_conversation false; "
+                       "a statement can end the exchange. No new task, gift, promise or opinion update is supported "
+                       "by this clarification. Return the required JSON.\n" + EMOTION_INSTRUCTION)
+        schema["properties"]["opinion_updates"] = {"type": "array", "items": structured_schema(OpinionUpdate), "maxItems": 0}
+        for field in ("gift_offer", "player_opinion", "apple_promise"):
+            schema["properties"][field] = {"type": "null"}
     return instruction, schema, ActionResponse
+
+
+def _player_name_clarification(snapshot):
+    return (snapshot.get("request_kind") not in ("player_opening", "player_gift", "player_acknowledgment")
+            and snapshot.get("request_intent", {}).get("action") == "SAY"
+            and bool(unidentified_player_names(snapshot)))
 
 
 def _speech_words(text):
@@ -2331,9 +2371,11 @@ def _validate_response(raw, snapshot, model):
             raise ValueError("Empty reply")
         if isinstance(result, ActionResponse):
             validate_player_transfer(result, snapshot)
-        if isinstance(result, ActionResponse):
-            validate_names([ConversationTurn(speaker="initiator", parts=[ConversationPart(text=result.reply)])], snapshot,
-                           require_effects=False)
+            if check_dialogue:
+                validate_player_reply_names(result.reply, snapshot)
+            if _player_name_clarification(snapshot) and any((result.opinion_updates, result.gift_offer,
+                    result.gift_acceptance, result.player_opinion, result.apple_promise)):
+                raise ValueError("An unidentified-name clarification supports no new gift, promise or opinion effects. Leave these fields empty.")
         if isinstance(result, ActionResponse) and check_dialogue:
             validate_english(result.reply, (snapshot.get("npc_name", ""), SNAKE_NAME))
             validate_dialogue_format([ConversationTurn(speaker="initiator", parts=[ConversationPart(text=result.reply)])])
@@ -2872,6 +2914,15 @@ def _request_payload(message, snapshot, correction):
         # Opinion targets are needed only by the separate assessment stage.
         context.pop("opinion_target", None)
         context["speaker"].pop("opinion_record_name", None)
+    if _player_name_clarification(snapshot):
+        # The unheard roster cannot help identify a label the player merely
+        # mentioned. Retain actual dialogue; never project its name onto an actor.
+        context = {"speaker_name": own_name(snapshot),
+                   "personality": character_context(snapshot["character"]).get("personality", ""),
+                   "player_dialogue": context.get("player_dialogue", []),
+                   "unidentified_names_heard": sorted(unidentified_player_names(snapshot)),
+                   "request_intent": snapshot["request_intent"]}
+        stock_instruction = ""
     payload = {"world_state": context, "player_message": message}
     if correction:
         if snapshot.get("request_kind") in ("resident_turn", "snake_turn", "conversation_closing", "handoff_thanks"):
@@ -3884,6 +3935,14 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                                   "Use only speaker.speech_references.allowed_name_forms as spoken names. "
                                   "If asking who the listener mentioned, use an explicit quotation of their name. "
                                   "Keep the meaning, source and accepted effects; do not introduce anyone from a roster label.")
+                if isinstance(exc.response, ActionResponse) and str(exc).startswith("The speaker has not learned the name form"):
+                    correction = ("Your reply assumed you knew someone from an engine name. Regenerate only this reply "
+                                  "to the PLAYER using your own name_knowledge. If the player mentioned an unfamiliar "
+                                  "name, ask who they mean or ask them to describe the person, or honestly state uncertainty. "
+                                  "An identity question may repeat only the exact name the player actually used; "
+                                  "otherwise use an explicit quotation or no name. Do not guess their identity, "
+                                  "activity, location or relationships. Leave unrelated optional effects empty. "
+                                  "Keep request_intent unchanged; a clarification question uses end_conversation false.")
                 if kind in ("resident_turn", "snake_turn", "conversation_closing") and str(exc).startswith("The listener just asked what to call you"):
                     correction = (f"Answer the listener's name question first. Your own authored name is {own_name(state['speaker'])}. "
                                   "Give that name or explicitly decline to give your name. Do not answer only about arrival, "

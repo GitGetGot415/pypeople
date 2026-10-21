@@ -18,7 +18,9 @@ unfamiliar partner and answer with your own name; do not ask again after learnin
 Other concerns may take precedence outside these introductory conversations.
 Hearing someone merely mention a name does not identify that actor to you.
 To ask who was meant, put the mentioned name in an explicit quotation; otherwise
-use a supplied observable reference. Do not adopt the name as a known identity.
+use a supplied observable reference. In a reply to the player, an identity
+clarification question may repeat the exact name they mentioned without quotes.
+Do not adopt the name as a known identity or infer its bearer from the roster.
 The engine records your own spoken self-introduction and exact name form; do not
 add self-introduction bookkeeping. Where the schema includes introductions, use
 it only to identify another person you already know, with their supplied actor_id,
@@ -171,16 +173,60 @@ def listener_address(person, listener, knowledge):
     return "the python guarding the apple tree" if listener.get("name_rule") == "knows_resident_names" else "the other resident"
 
 
-def validate_name_use(text, permitted, catalog):
+def mentioned_names(text, catalog):
+    """Return only name forms actually heard, without binding them to actors."""
+    candidates = name_forms(catalog)
+    if not candidates:
+        return set()
+    pattern = "|".join(name_pattern(name) for name in candidates)
+    return {match.group() for match in re.finditer(pattern, text, re.I)
+            if is_name_reference(match, text)}
+
+
+def player_heard_names(snapshot):
+    texts = [snapshot.get("_player_message", "")]
+    for turn in snapshot.get("player_dialogue", []):
+        speaker, text = (turn["speaker"], turn["text"]) if isinstance(turn, dict) else turn
+        if speaker == "You":
+            texts.append(text)
+    return mentioned_names("\n".join(texts), snapshot.get("_name_actors", {}))
+
+
+def unidentified_player_names(snapshot):
+    catalog = snapshot.get("_name_actors", {})
+    allowed = permitted_forms(snapshot, catalog, snapshot.get("name_knowledge", {}).get("known_names", {}))
+    allowed = {name.casefold() for name in allowed}
+    return {name for name in mentioned_names(snapshot.get("_player_message", ""), catalog)
+            if name.casefold() not in allowed}
+
+
+def _identity_question(speech, match):
+    """A heard label can be questioned without claiming to know its bearer."""
+    start = max((speech.rfind(mark, 0, match.start()) for mark in ".!?\uFF1F\u061F"), default=-1) + 1
+    end = re.search(r"[.!?\uFF1F\u061F]", speech[match.end():])
+    if end is None:
+        return False
+    sentence = speech[start:match.end() + end.end()].strip()
+    name = re.escape(match.group())
+    return bool(re.fullmatch(
+        rf"(?:who (?:is|was) {name}|who do you mean by {name}|which {name} do you mean|"
+        rf"(?:can|could|would) you (?:please )?tell me who {name} (?:is|was)|{name})\s*[?\uFF1F\u061F]",
+        sentence, re.I))
+
+
+def validate_name_use(text, permitted, catalog, *, heard=()):
     """Reject identifiable unknown references, leaving ambiguous ordinary words alone."""
     speech = unquoted_speech(text)
     candidates = name_forms(catalog)
     if not candidates:
         return
+    heard = {name.casefold() for name in heard}
     pattern = "|".join(name_pattern(name) for name in candidates)
     for match in re.finditer(pattern, speech, re.I):
         used = match.group()
         if used.casefold() in {name.casefold() for name in permitted}:
+            continue
+        if used.casefold() in heard and _identity_question(speech, match):
             continue
         # Ordinary words and ambiguous shared first names are insufficient to
         # identify an actor. They can never create knowledge without an effect.
@@ -192,6 +238,15 @@ def validate_name_use(text, permitted, catalog):
         # Shared first names do not establish *which* actor bears the name.
         # If the form is permitted for one actor, it was already allowed above.
         raise ValueError(f"The speaker has not learned the name form {used!r}. Use you or an observable description; metadata does not teach names.")
+
+
+def validate_player_reply_names(text, snapshot, *, person=None):
+    """Use request-time hearing/knowledge with the current catalog at acceptance."""
+    person = snapshot if person is None else person
+    catalog = person.get("_name_actors", {})
+    known = snapshot.get("name_knowledge", {}).get("known_names", {})
+    validate_name_use(text, permitted_forms(person, catalog, known), catalog,
+                      heard=player_heard_names(snapshot))
 
 
 def introduction_supported(text, name, reference, *, name_requested=False):

@@ -17,7 +17,7 @@ from simulation_data import InvalidSaveName, SaveStore, capture_simulation, rest
 from simulation import PendingAction, Simulation
 from snake import SnakeEncounter
 from social import concern_description
-from name_knowledge import actor_catalog, name_forms, orientation_speech, validate_name_use, permitted_forms
+from name_knowledge import actor_catalog, name_forms, orientation_speech, validate_player_reply_names
 
 from .game import GameScreen
 from .character import CharacterScreen
@@ -817,8 +817,7 @@ class Application:
             if not error and self.dialogue_validation:
                 try:
                     person = npc.snapshot(self.tree)
-                    known = snapshot.get("name_knowledge", {}).get("known_names", npc.known_names)
-                    validate_name_use(result.reply, permitted_forms(person, person["_name_actors"], known), person["_name_actors"])
+                    validate_player_reply_names(result.reply, snapshot, person=person)
                 except ValueError as exc:
                     error = str(exc)
             planned_action = None
