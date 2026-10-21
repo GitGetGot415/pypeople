@@ -21,14 +21,22 @@ def npc_name_font(size):
     return pygame.font.Font(None, size)
 
 
-@lru_cache(maxsize=5)
+@lru_cache(maxsize=None)
 def interaction_bubble(name):
     path = Path(__file__).resolve().parent.parent / "assets" / f"{name}.png"
     return pygame.image.load(str(path)).convert_alpha()
 
 
-def calling_bubble_rect(npc, offset, zoom):
-    return _bubble_rect(npc, "Calling Player", offset, zoom)
+def player_bubble_name(npc):
+    if npc.player_thinking:
+        return "Thinking"
+    if npc.player_call and not npc.selected:
+        return "Calling Player" if npc.unread_player_reply else "Requesting Player"
+    return None
+
+
+def player_bubble_rect(npc, offset, zoom):
+    return _bubble_rect(npc, player_bubble_name(npc), offset, zoom)
 
 
 def _bubble_rect(npc, name, offset, zoom):
@@ -46,20 +54,25 @@ def _active_bubble(npc):
     return "Eating" if npc.eating else "Giving" if npc.giving else "Thanking" if npc.thanking else None
 
 
-def calling_bubble_visible(npc, offset=None, zoom=1.0):
-    if not (npc.player_call and not npc.indoors and not npc.departure and not npc.busy
-            and not npc.selected and not _active_bubble(npc)):
+def player_bubble_visible(npc, offset=None, zoom=1.0):
+    name = player_bubble_name(npc)
+    if not (name and not npc.indoors and not npc.departure and not npc.busy):
+        return False
+    if name in ("Thinking", "Calling Player"):
+        return True
+    if _active_bubble(npc):
         return False
     if offset is not None:
-        rect = calling_bubble_rect(npc, offset, zoom)
+        rect = player_bubble_rect(npc, offset, zoom)
         for other in npc.world.outdoor_npcs:
             if other is npc:
                 continue
             active = _active_bubble(other)
             if active and rect.colliderect(_bubble_rect(other, active, offset, zoom)):
                 return False
-            if (other.id < npc.id and other.player_call and not other.busy and not other.selected
-                    and not active and rect.colliderect(calling_bubble_rect(other, offset, zoom))):
+            if ((other.unread_player_reply or other.player_thinking or other.id < npc.id)
+                    and player_bubble_name(other) and not other.busy and not active
+                    and rect.colliderect(player_bubble_rect(other, offset, zoom))):
                 return False
     return True
 
@@ -192,11 +205,10 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
         name_rect = name.get_rect(midtop=screen_point((npc.x, npc.y + 6)))
         name_rect.clamp_ip(map_rect)
         surface.blit(name, name_rect)
-    # Draw interaction bubbles above the characters, anchored to their top right.
-    for npc in npcs:
-        bubble_name = _active_bubble(npc)
-        if bubble_name is None and calling_bubble_visible(npc, camera_offset, zoom):
-            bubble_name = "Calling Player"
+    # Thinking draws above ordinary speech; ready replies have the final priority.
+    for npc in sorted(npcs, key=lambda person: (bool(person.unread_player_reply), person.player_thinking)):
+        bubble_name = (player_bubble_name(npc) if player_bubble_visible(npc, camera_offset, zoom)
+                       else _active_bubble(npc))
         if bubble_name is not None:
             width, height = npc.sprite_size or (
                 round(character_renderer.character_size[0] * CHARACTER_SCALE),

@@ -368,20 +368,24 @@ class GameScreen:
         self.camera_offset[1] += world_pos[1] * (old_zoom - self.camera_zoom)
 
     def select_at(self, app, screen_pos):
-        from .world import calling_bubble_rect, calling_bubble_visible
+        from .world import player_bubble_rect, player_bubble_visible
+        npc = None
         for resident in app.simulation.outdoor_npcs:
-            if calling_bubble_visible(resident, self.view_offset, self.camera_zoom) and calling_bubble_rect(resident, self.view_offset, self.camera_zoom).clip(self.world_viewport).collidepoint(screen_pos):
-                self.open_call(app, resident)
-                return
+            if player_bubble_visible(resident, self.view_offset, self.camera_zoom) and player_bubble_rect(resident, self.view_offset, self.camera_zoom).clip(self.world_viewport).collidepoint(screen_pos):
+                if resident.player_call:
+                    self.open_call(app, resident)
+                    return
+                npc = resident
+                break
         world_pos = self.screen_to_world(screen_pos)
-        if pygame.Rect(APARTMENT_RECT).collidepoint(world_pos):
+        if npc is None and pygame.Rect(APARTMENT_RECT).collidepoint(world_pos):
             self.close_dialogue()
             self.pan_start = self.pan_last = None
             self.panning = False
             self.apartment_open = True
             self.apartment_scroll = 0
             return
-        npc = next((npc for npc in sorted([*app.npcs, app.simulation.snake], key=lambda npc: npc.y, reverse=True) if npc.contains(world_pos)), None)
+        npc = npc or next((npc for npc in sorted([*app.npcs, app.simulation.snake], key=lambda npc: npc.y, reverse=True) if npc.contains(world_pos)), None)
         if npc is not None and npc is not app.simulation.snake and npc.player_call:
             self.open_call(app, npc)
             return
@@ -407,6 +411,8 @@ class GameScreen:
                 self.dialogue_scroll = 0
                 return
             self.set_reply(npc.reply)
+            if npc is not app.simulation.snake and npc.player_thinking and app.request_npc is npc and app.request_history is not None:
+                self.player_record = app.request_history
             self.prompt_input.focus()
 
     def draw(self, app):

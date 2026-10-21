@@ -192,6 +192,11 @@ class NPC:
         call = self.player_call
         return call if call and call["kind"] == "reply" else None
 
+    @property
+    def player_thinking(self):
+        return (self.request_pending and self.world is not None
+                and not any(action.npc_id == self.id for action in self.world.pending_actions))
+
     def can_reach(self, point):
         left, right, top, bottom = self.movement_bounds
         return left <= point[0] <= right and top <= point[1] <= bottom
