@@ -171,7 +171,7 @@ class Snake:
         if self.recovery_remaining:
             self.activity = "recovering"
             return
-        if not (self.selected or self.request_pending or self.retry_request):
+        if not (self.world.phase_pending or self.selected or self.request_pending or self.retry_request):
             from social import fact_by_id
             for npc in self.world.outdoor_npcs:
                 if npc.selected:
@@ -199,6 +199,8 @@ class SnakeEncounter:
     """One resident, one snake, one reservation, one final commit."""
 
     def __init__(self, world, resident, purpose, reason="", *, origin="autonomous"):
+        if world.phase_pending and origin == "autonomous":
+            raise ValueError("Waiting for the pending time change before starting another automatic encounter.")
         if (world.snake.encounter or world.snake.request_pending or resident.snake_encounter
                 or not world.is_outdoors(resident) or resident.behavior.value == "GO_HOME"
                 or resident.home_reason == "night"

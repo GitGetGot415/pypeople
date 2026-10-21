@@ -33,7 +33,7 @@ def target_valid(npc, world):
 
 
 def lone_introduction(npc, world):
-    if (len(world.npcs) != 1 or not world.company_available(npc) or npc.conversation_pause_remaining
+    if (world.phase_pending or len(world.npcs) != 1 or not world.company_available(npc) or npc.conversation_pause_remaining
             or orientation_context(npc)["orientation_discussions"]
             or any(r.purpose == "introduction" and r.turns and npc.name in r.participants for r in world.history)):
         return
@@ -47,7 +47,7 @@ def lone_introduction(npc, world):
 
 def reconsider(npc, world, *, pressing_only=False):
     from apartments import HOME_BEHAVIORS
-    if (npc.interaction is not None or npc.resume_pending or npc.behavior in HOME_BEHAVIORS
+    if (world.phase_pending or npc.interaction is not None or npc.resume_pending or npc.behavior in HOME_BEHAVIORS
             or npc.home_reason == "night"):
         return
     if not target_valid(npc, world):
@@ -174,6 +174,8 @@ def actionable_obligation(npc, world):
 
 def social_pair(world, *, due=None):
     """Reserve through the caller immediately; rotate initiators and vary partners."""
+    if world.phase_pending:
+        return None
     ordered = world.npcs[world.social_rotation:] + world.npcs[:world.social_rotation]
     available = [npc for npc in ordered if world.company_available(npc)
                  and not npc.conversation_pause_remaining and not actionable_obligation(npc, world)]

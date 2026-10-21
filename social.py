@@ -1045,9 +1045,12 @@ def validate_live_agreements(conversation, response, *, dialogue_validation=True
 def conversation_references(conversation):
     pair = (conversation.initiator, conversation.recipient)
     ids = {npc.id for npc in pair}
-    references = {npc.goal.id: npc.goal.status for npc in pair if npc.goal}
+    # Only the objective that actually initiated this meeting can invalidate it.
+    # Other personal goals and promises to third parties may progress elsewhere.
+    references = {npc.goal.id: npc.goal.status for npc in pair
+                  if npc.goal and npc.goal.id == conversation.goal_id}
     references.update({p.id: p.status for p in pair[0].world.promises
-                       if ids.intersection((p.promisor_id, p.recipient_id))})
+                       if ids == {p.promisor_id, p.recipient_id}})
     return references
 
 

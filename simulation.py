@@ -46,6 +46,7 @@ class Simulation:
         self.day = STARTING_DAY
         self.phase = STARTING_PHASE
         self.paused = STARTING_PAUSED
+        self.phase_pending = False
         self.pending_actions = []
         self.history = []
         self.events = []
@@ -78,10 +79,25 @@ class Simulation:
     def phase_label(self):
         return f"Day {self.day} / {self.phase.title()}"
 
+    @property
+    def next_phase_label(self):
+        return {"day": "Evening", "evening": "Night", "night": f"Day {self.day + 1}"}[self.phase]
+
     def next_phase(self):
-        from social import advance_social_phase
-        if self.paused:
+        if self.paused or self.phase_pending:
             return
+        self.phase_pending = True
+        self.finish_phase_change()
+
+    def finish_phase_change(self):
+        """Commit one clock request only after existing speech and handoffs finish."""
+        from social import advance_social_phase
+        if (not self.phase_pending or self.paused or self.snake.encounter is not None
+                or self.snake.request_pending or self.pending_actions
+                or any(npc.interaction is not None or npc.request_pending
+                       or npc.selected and npc.end_conversation for npc in self.npcs)):
+            return
+        self.phase_pending = False
         if self.phase == "day":
             self.phase = "evening"
         elif self.phase == "evening":
@@ -117,6 +133,8 @@ class Simulation:
         from npc import Conversation
 
         from apartments import available_outdoors
+        if self.phase_pending and origin == "autonomous":
+            raise ValueError("Waiting for the pending time change before starting another automatic conversation.")
         if any(not self.is_outdoors(p) or not available_outdoors(p) for p in (initiator, recipient)):
             raise ValueError("Only living residents can begin this conversation.")
         interaction = Conversation(initiator, recipient, topic, self.tree, spacing, origin=origin, purpose=purpose,
@@ -248,6 +266,10 @@ class Simulation:
         for npc in socializing:
             npc.social = min(100.0, npc.social + COMPANY_SOCIAL_RECOVERY * dt)
             npc.social_fatigue = min(100.0, npc.social_fatigue + COMPANY_FATIGUE_PER_SECOND * dt)
+        # Keep the pending flag through this tick's decision pass, so automatic
+        # work cannot reserve a fresh partner before the requested phase applies.
+        # Dawn arrivals then run before pairing on the following tick as usual.
+        self.finish_phase_change()
 
     @property
     def residents(self):

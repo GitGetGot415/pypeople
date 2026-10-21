@@ -1,7 +1,7 @@
 import pygame
 from llm import ConversationTurn
 from constants import (DIALOGUE_PANEL_HEIGHT, FAILED_CONVERSATION_SELECTED_COLOR, INK, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER,
-                       MAX_LLM_REQUESTS, WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH)
+                       MAX_LLM_REQUESTS, PHASE_PENDING_RECT, WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH)
 from emotions import portrait_expression
 from conversation_history import display_parts, uses_original_dialogue
 from name_knowledge import actor_catalog, name_forms
@@ -236,7 +236,7 @@ class GameScreen:
             self.panning = False
             return True
         if self.clock_button.clicked(event):
-            if not app.simulation.paused:
+            if not app.simulation.paused and not app.simulation.phase_pending:
                 app.simulation.next_phase()
             return True
         return False
@@ -245,13 +245,16 @@ class GameScreen:
         paused = app.simulation.paused
         self.pause_button.label = "Resume" if paused else "Pause"
         self.pause_button.draw(app.window, app.small_font)
-        self.clock_button.draw(app.window, app.small_font, enabled=not paused)
+        self.clock_button.draw(app.window, app.small_font, enabled=not paused and not app.simulation.phase_pending)
         x, y = self.clock_button.rect.center
         pygame.draw.circle(app.window, PAPER, (x, y), 12, width=2)
         pygame.draw.line(app.window, PAPER, (x, y), (x, y - 8), 2)
         pygame.draw.line(app.window, PAPER, (x, y), (x + 6, y + 3), 2)
         color = PAPER if app.screen == "game" and app.simulation.phase == "night" else INK
         app.window.blit(app.small_font.render(app.simulation.phase_label, True, color), (774, 27))
+        if app.simulation.phase_pending:
+            draw_wrapped_text(app.window, f"{app.simulation.next_phase_label} pending: finishing conversations.",
+                              app.small_font, color, PHASE_PENDING_RECT)
         if paused:
             label = app.small_font.render("Paused", True, color)
             app.window.blit(label, label.get_rect(midright=(584, self.pause_button.rect.centery)))

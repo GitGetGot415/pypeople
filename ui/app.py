@@ -762,7 +762,7 @@ class Application:
                 conversations.append(self.simulation.snake.encounter)
             # Player conversations get the first free slot. While composing,
             # leave one slot free and let other conversations use the rest.
-            composing = self.screen == "game" and self.game.prompt_input.active
+            composing = self.screen == "game" and self.game.prompt_input.active and not self.simulation.phase_pending
             for conversation in sorted(conversations, key=lambda interaction: interaction.origin != "player"):
                 self.request_conversation_dialogue(conversation,
                     start=not composing or self.requests.available_slots > 1)
