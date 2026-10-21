@@ -9,6 +9,7 @@ from constants import (INVENTORY_CAPACITY, PLAYER_ID, STARTING_PLAYER_FRUIT, PLA
                        PLAYER_OPINION_STEP, GIFT_GIVE_SECONDS, GIFT_SECONDS,
                        PLAYER_CALL_GIFT_GENEROSITY, PLAYER_CALL_SOCIABILITY)
 from conversation_history import ConversationRecord, remember
+from dialogue_text import contains_question
 
 
 @dataclass
@@ -140,6 +141,11 @@ def update_player_opinion(npc, delta, reason):
     entry["opinion"] = max(-100, min(100, entry["opinion"] + step))
     combined = (entry["reason"] + " " + reason).strip()
     entry["reason"] = combined if len(combined) <= 400 else entry["reason"][:180] + " ... " + reason[:215]
+
+
+def player_reply_closes(closing, reply, rewritten=()):
+    """A question in either presentation leaves room for a player answer."""
+    return closing and not any(contains_question(text) for text in (reply, *rewritten))
 
 
 def supplied_player_name(message, *, requested=False):

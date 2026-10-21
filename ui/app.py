@@ -858,6 +858,10 @@ class Application:
                                                   item=planned_action.item, quantity=planned_action.quantity)
                 self.simulation.pending_actions.append(planned_action)
                 npc.request_pending = True
+            closes_dialogue = bool(not error and result.end_conversation)
+            if closes_dialogue and result.action == "SAY":
+                from player import player_reply_closes
+                closes_dialogue = player_reply_closes(True, result.reply, rewritten[0] if rewritten else ())
             if not error and record is not None:
                 record.dialogue_errors = list(dict.fromkeys([*record.dialogue_errors, *result._dialogue_errors]))
                 record.outcomes.extend(opinion_outcomes)
@@ -877,13 +881,13 @@ class Application:
                     self.game.pending_offer = ({**result.gift_offer.model_dump(), "npc_id": npc.id,
                         "revision": npc.command_revision, "record_id": record.id} if result.gift_offer else None)
                 elif snapshot.get("request_kind") != "player_acknowledgment":
-                    npc.player_call = dict(kind="reply", reference=record.id, closing=result.end_conversation,
+                    npc.player_call = dict(kind="reply", reference=record.id, closing=closes_dialogue,
                         gift_offer=result.gift_offer.model_dump() if result.gift_offer else None)
                     npc.release_claims(self.simulation)
                     npc.resume_pending = True
             npc.reply = f"Request failed: {error}" if error else result.reply
             npc.rewritten_reply = rewritten[0][0] if not error and rewritten else ""
-            npc.end_conversation = bool(not error and result.end_conversation and npc.selected)
+            npc.end_conversation = bool(closes_dialogue and npc.selected)
             if error:
                 npc.set_emotion("neutral", 0)
             else:

@@ -9,6 +9,10 @@ _CLOSING_MARKS = "\"'’”»)]}"
 _ABBREVIATIONS = {"mr.", "mrs.", "ms.", "dr.", "prof.", "jr.", "sr.", "st.", "e.g.", "i.e."}
 
 
+def contains_question(text):
+    return any(mark in text for mark in ("?", "\uFF1F", "\u061F"))
+
+
 def contains_serialized_dialogue(text):
     """Recognize response envelopes masquerading as spoken text, even if truncated."""
     unescaped = text.replace('\\"', '"')

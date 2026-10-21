@@ -508,7 +508,7 @@ class GameScreen:
 
     def open_call(self, app, npc):
         if npc.unread_player_reply:
-            from player import call_valid, clear_call
+            from player import call_valid, clear_call, player_reply_closes
             call = npc.unread_player_reply
             if not call_valid(app.simulation, npc, call):
                 clear_call(npc)
@@ -519,6 +519,9 @@ class GameScreen:
             self.dialogue_open, self.selected_npc, self.player_record = True, npc, record
             npc.set_selected(True)
             npc.end_conversation = call["closing"]
+            if not npc.request_pending:
+                npc.end_conversation = player_reply_closes(npc.end_conversation, npc.reply,
+                                                          (npc.rewritten_reply,) if npc.rewritten_reply else ())
             self.pending_offer = ({**call["gift_offer"], "npc_id": npc.id,
                 "revision": npc.command_revision, "record_id": record.id} if call["gift_offer"] else None)
             clear_call(npc)

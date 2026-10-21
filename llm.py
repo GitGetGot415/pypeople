@@ -22,7 +22,7 @@ from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_C
                        CONVERSATION_MAX_AGREEMENTS, CONVERSATION_MAX_DISCLOSURES,
                        CONVERSATION_MAX_REPUTATION_EFFECTS, CONVERSATION_MAX_LEVERAGE,
                        PLAYER_LABEL, SNAKE_NAME, SNAKE_TURN_COUNT, VOICE_REWRITE_TEMPERATURE)
-from dialogue_text import contains_serialized_dialogue, contains_speaker_label, speech_is_complete, split_sentences
+from dialogue_text import contains_question, contains_serialized_dialogue, contains_speaker_label, speech_is_complete, split_sentences
 from dialogue_code import DELIVERY_INSTRUCTION
 from dialogue_rules import (_asserts, is_name_reference, mentions_account, mentions_private_recollection, named_context, named_references, name_pattern, unquoted_speech,
                            validate_account_speech, validate_apple_roles, validate_continuity,
@@ -1239,7 +1239,7 @@ def validate_snake_response(result, snapshot, *, dialogue_validation=None):
         _validate_base_presentation(result, snapshot)
         validate_dialogue_format(result.turns)
         validate_dialogue_completion(result.turns)
-        if len(result.turns) == CONVERSATION_MAX_TURNS and _has_question(result.turns[-1].text):
+        if len(result.turns) == CONVERSATION_MAX_TURNS and contains_question(result.turns[-1].text):
             raise ValueError("At the turn limit, finish with an answer or closing rather than a new question.")
     for i, turn in enumerate(result.turns):
         if turn.speaker != ("initiator" if i % 2 == 0 else "recipient"):
@@ -1953,12 +1953,8 @@ def _generated_dialogue(raw, snapshot):
     return turns
 
 
-def _has_question(text):
-    return any(mark in text for mark in ("?", "\uFF1F", "\u061F"))
-
-
 def _last_question(text):
-    return next((sentence for sentence in reversed(split_sentences(text)) if _has_question(sentence)), text)
+    return next((sentence for sentence in reversed(split_sentences(text)) if contains_question(sentence)), text)
 
 
 def _reply_context(snapshot):
@@ -1978,7 +1974,7 @@ def _reply_context(snapshot):
                 mentioned = True
                 break
     return dict(last_heard=heard, unidentified_name_mentioned=mentioned,
-                questions_to_answer=[s for s in split_sentences(heard) if _has_question(s)],
+                questions_to_answer=[s for s in split_sentences(heard) if contains_question(s)],
                 name_requested=asks_name(heard, self_name=listener_name),
                 listener_name_asked=any(t["role"] == role and asks_name(t["text"], self_name=own_name(speaker))
                                         for t in preceding),
@@ -2271,7 +2267,7 @@ def _validate_response(raw, snapshot, model):
             if isinstance(actor, dict) and actor.get("kind") == "python":
                 validate_snake_perspective(current.text, snake_role=role)
         if (snapshot.get("request_kind") == "conversation_closing" or snapshot.get("_closing")) and any(
-                _has_question(part.text) for part in result.parts):
+                contains_question(part.text) for part in result.parts):
             raise ValueError("Answer the last question and close without asking another question.")
         if isinstance(result, ResidentTurnResponse):
             projected = _apply_resident_candidate(snapshot["_baseline"], snapshot["_draft"], result, snapshot)
@@ -2344,7 +2340,7 @@ def _validate_response(raw, snapshot, model):
             for entry in result.opinion_updates:
                 validate_opinion_reason(entry.reason, snapshot.get("npc_name", snapshot.get("character", {}).get("Name", "")), entry.person)
         if (check_dialogue and isinstance(result, ActionResponse) and result.end_conversation
-                and any(mark in result.reply for mark in ("?", "？", "؟"))):
+                and contains_question(result.reply)):
             raise ValueError(
                 "A closing reply cannot ask a question. For SAY, either use end_conversation false so the player "
                 "can answer, or keep it true and finish without questions. Other actions must keep "
@@ -2391,8 +2387,8 @@ def _validate_response(raw, snapshot, model):
             if (result.accepted_proposals or len(result.turns) not in (2, 3) or result.food_outcome != outcome
                     or bool(result.handoff_thanks) != (outcome == "accepted")):
                 raise ValueError("Dialogue must respect the food decision and reserve thanks for a successful handoff.")
-            if check_dialogue and len(result.turns) == 3 and (not _has_question(result.turns[-2].text)
-                                          or _has_question(result.turns[-1].text)):
+            if check_dialogue and len(result.turns) == 3 and (not contains_question(result.turns[-2].text)
+                                          or contains_question(result.turns[-1].text)):
                 raise ValueError("A third food-request turn may only answer a closing question.")
             if check_dialogue and result.handoff_thanks:
                 thanks = ConversationTurn(speaker="initiator", parts=result.handoff_thanks)
@@ -2404,7 +2400,7 @@ def _validate_response(raw, snapshot, model):
                                   snapshot["initiator"]["npc_name"], snapshot["recipient"]["npc_name"])
         elif len(result.turns) < RESIDENT_TURN_COUNT or result.food_outcome or (result.handoff_thanks and not (result.gift and result.gift.accept_turn is not None)):
             raise ValueError("Chats need at least four turns and cannot include a food outcome or handoff thanks.")
-        if check_dialogue and len(result.turns) == CONVERSATION_MAX_TURNS and _has_question(result.turns[-1].text):
+        if check_dialogue and len(result.turns) == CONVERSATION_MAX_TURNS and contains_question(result.turns[-1].text):
             raise ValueError("At the turn limit, finish with an answer or closing rather than a new question.")
         for entry, partner in (
             (result.initiator_opinion, snapshot["recipient"]),
@@ -3938,7 +3934,7 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
             # Continue unanswered questions after the base exchange, closing at the cap.
             for index in range(limit):
                 if index >= budget and (not snapshot.get("_dialogue_validation", True)
-                                        or not _has_question(draft["turns"][-1].text)):
+                                        or not contains_question(draft["turns"][-1].text)):
                     break
                 closing = index == limit - 1
                 check_cancelled()
