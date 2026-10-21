@@ -187,6 +187,11 @@ class NPC:
     def busy(self):
         return self.interaction is not None or self.eating
 
+    @property
+    def unread_player_reply(self):
+        call = self.player_call
+        return call if call and call["kind"] == "reply" else None
+
     def can_reach(self, point):
         left, right, top, bottom = self.movement_bounds
         return left <= point[0] <= right and top <= point[1] <= bottom

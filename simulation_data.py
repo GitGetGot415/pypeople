@@ -23,7 +23,7 @@ from constants import (APARTMENT_ID, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_
                        HOME_ARRIVAL_TOLERANCE, OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE, WAKE_DELAY_RANGE)
 from conversation_history import ConversationRecord, Memory, WorldEvent
 from llm import (AcceptedProposal, ConversationPart, ConversationTurn, DisclosureChoice, NameIntroduction,
-                 EmotionReaction, LeverageUse, ThirdPartyOpinion, ResidentGift)
+                 EmotionReaction, GiftOffer, LeverageUse, ThirdPartyOpinion, ResidentGift)
 from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree
 from simulation import PendingAction, Simulation
 from player import Player, PlayerHandoff
@@ -247,6 +247,13 @@ class PlayerCallState(SaveModel):
     event_id: str = Field(min_length=1)
 
 
+class PlayerReplyCallState(SaveModel):
+    kind: Literal["reply"]
+    reference: str = Field(min_length=1)
+    closing: bool
+    gift_offer: GiftOffer | None
+
+
 class TransferIntentState(SaveModel):
     giver_id: str = Field(min_length=1)
     recipient_id: str = Field(min_length=1)
@@ -349,7 +356,10 @@ class NPCState(ActivityState):
     @field_validator("player_call")
     @classmethod
     def validate_player_call(cls, value):
-        return PlayerCallState.model_validate(value).model_dump() if value is not None else None
+        if value is None:
+            return None
+        model = PlayerReplyCallState if value.get("kind") == "reply" else PlayerCallState
+        return model.model_validate(value).model_dump()
 
 
 class HistoryState(SaveModel):
@@ -1107,6 +1117,19 @@ class SimulationState(SaveModel):
                     or not -100 <= opinion["opinion"] <= 100 or not isinstance(opinion["reason"], str)):
                 raise ValueError("Invalid player opinion.")
             call = npc.player_call
+            if call and call["kind"] == "reply":
+                record = record_for(call["reference"])
+                actions = [a for a in self.pending_actions if a.npc_id == npc.id]
+                if (npc.id not in live_ids or npc.id in indoor_ids or npc.id in reserved_ids
+                        or set(record.participant_ids) != {npc.id, self.player.id} or record.error
+                        or not record.turns or record.turns[-1] != (actors[npc.id], npc.reply)
+                        or (actions and (not call["closing"] or any(a.record is None or self.history[a.record].id != record.id for a in actions)))):
+                    raise ValueError("A waiting reply needs its resident's accepted player conversation and matching queued task.")
+                offer = call["gift_offer"]
+                if offer and (offer["recipient_id"] != self.player.id
+                              or offer["item"] != "fruit" and offer["item"] not in creation_ids):
+                    raise ValueError("A waiting reply's gift offer needs the player and a real item.")
+                continue
             if call and (npc.id not in live_ids or npc.id in indoor_ids
                     or npc.behavior not in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY)
                     or npc.owner != "autonomous"
@@ -1127,7 +1150,7 @@ class SimulationState(SaveModel):
                          or any(p.id == ref and p.status == "pending" and {p.promisor_id, p.recipient_id} == {npc.id, self.player.id} for p in self.promises))
                 if not valid or not call["reason"].strip():
                     raise ValueError("A player call needs its resident's actual unresolved source.")
-        if sum(n.player_call is not None for n in self.npcs) > PLAYER_CALL_LIMIT:
+        if sum(n.player_call is not None and n.player_call["kind"] != "reply" for n in self.npcs) > PLAYER_CALL_LIMIT:
             raise ValueError("Too many simultaneous player calls.")
         return self
 
@@ -1278,7 +1301,8 @@ def capture_resident(npc):
         beliefs=[asdict(belief) for belief in npc.beliefs],
         player_call=None if stale_call else deepcopy(npc.player_call),
         player_call_cooldown=PLAYER_CALL_COOLDOWN if stale_call else npc.player_call_cooldown,
-        resolved_player_calls=[*npc.resolved_player_calls, npc.player_call["key"]] if stale_call else npc.resolved_player_calls.copy(),
+        resolved_player_calls=([*npc.resolved_player_calls, npc.player_call["key"]]
+            if stale_call and not npc.unread_player_reply else npc.resolved_player_calls.copy()),
     )
 
 
@@ -1287,9 +1311,10 @@ def capture_simulation(app):
     npc_indices = {id(npc): index for index, npc in enumerate(app.npcs)}
     records = {id(record): index for index, record in enumerate(app.conversation_history)}
     history = [asdict(record) for record in app.conversation_history]
+    unread_records = {npc.unread_player_reply["reference"] for npc in app.npcs if npc.unread_player_reply}
     for record in history:
         for offer in record["player_promise_offers"]:
-            if offer["status"] == "offered":
+            if offer["status"] == "offered" and record["id"] not in unread_records:
                 offer["status"] = "closed"
     if app.request_history is not None and id(app.request_history) in records:
         record = history[records[id(app.request_history)]]

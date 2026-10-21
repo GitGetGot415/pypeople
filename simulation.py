@@ -213,7 +213,7 @@ class Simulation:
             actions, self.pending_actions = self.pending_actions, []
             for action in actions:
                 npc = self.npc_by_id(action.npc_id)
-                if npc is not None and npc.selected and npc.end_conversation:
+                if npc is not None and (npc.unread_player_reply or npc.selected and npc.end_conversation):
                     # Keep the closing reply visible until the player dismisses it.
                     self.pending_actions.append(action)
                     continue
@@ -265,7 +265,7 @@ class Simulation:
             self.snake.update(dt)
         # Check necessary work for every actor before an idle initiator can reserve them.
         for npc in self.npcs:
-            if npc.resume_pending and npc.interaction is None:
+            if npc.resume_pending and npc.interaction is None and not npc.player_call:
                 npc.resume_activity(self)
             reconsider(npc, self, pressing_only=True)
         due = {npc.id for npc in self.npcs if npc.decision_remaining == 0 and self.company_available(npc)}

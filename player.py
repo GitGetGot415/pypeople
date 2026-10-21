@@ -301,6 +301,9 @@ def call_valid(world, npc, call):
     if not world.is_outdoors(npc):
         return False
     ref = call["reference"]
+    if call["kind"] == "reply":
+        return any(r.id == ref and {world.player.id, npc.id} == set(r.participant_ids)
+                   and r.turns and r.turns[-1][0] == npc.name and not r.error for r in world.history)
     if call["kind"] == "gift":
         return (npc.inventory["fruit"] > 0 and world.player.inventory_space > 0 if ref == "fruit"
                 else any(w.id == ref and w.owner_id == npc.id for w in world.creations))
@@ -312,7 +315,8 @@ def call_valid(world, npc, call):
 
 def clear_call(npc):
     if npc.player_call:
-        npc.resolved_player_calls.append(npc.player_call["key"])
+        if not npc.unread_player_reply:
+            npc.resolved_player_calls.append(npc.player_call["key"])
         npc.player_call = None
     npc.player_call_cooldown = PLAYER_CALL_COOLDOWN
 
@@ -321,14 +325,16 @@ def update_calls(world, dt):
     for npc in world.npcs:
         npc.player_call_cooldown = max(0.0, npc.player_call_cooldown - dt)
         if npc.player_call:
-            npc.player_call["remaining"] = max(0.0, npc.player_call["remaining"] - dt)
-            if not npc.player_call["remaining"] or not call_valid(world, npc, npc.player_call):
+            if not npc.unread_player_reply:
+                npc.player_call["remaining"] = max(0.0, npc.player_call["remaining"] - dt)
+            if ((not npc.unread_player_reply and not npc.player_call["remaining"])
+                    or not call_valid(world, npc, npc.player_call)):
                 clear_call(npc)
     world.player_call_check -= dt
     if world.player_call_check > 0 or world.phase_pending:
         return
     world.player_call_check = PLAYER_CALL_CHECK_SECONDS
-    count = sum(n.player_call is not None for n in world.npcs)
+    count = sum(n.player_call is not None and not n.unread_player_reply for n in world.npcs)
     for npc in sorted(world.npcs, key=lambda n: n.player_opinion["opinion"] + n.preferences["sociability"], reverse=True):
         if count >= PLAYER_CALL_LIMIT:
             break

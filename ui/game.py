@@ -497,6 +497,29 @@ class GameScreen:
             app.window.blit(count, count.get_rect(topright=(1256, 696)))
 
     def open_call(self, app, npc):
+        if npc.unread_player_reply:
+            from player import call_valid, clear_call
+            call = npc.unread_player_reply
+            if not call_valid(app.simulation, npc, call):
+                clear_call(npc)
+                return
+            record = next(r for r in app.conversation_history if r.id == call["reference"])
+            self.close_dialogue()
+            self.call_choice = None
+            self.dialogue_open, self.selected_npc, self.player_record = True, npc, record
+            npc.set_selected(True)
+            npc.end_conversation = call["closing"]
+            self.pending_offer = ({**call["gift_offer"], "npc_id": npc.id,
+                "revision": npc.command_revision, "record_id": record.id} if call["gift_offer"] else None)
+            clear_call(npc)
+            record.status = "Waiting for Done" if npc.end_conversation and npc.request_pending else "Completed"
+            self.prompt_input.set_value("")
+            self.set_reply(npc.reply)
+            if not npc.end_conversation:
+                self.prompt_input.focus()
+            self.pan_start = self.pan_last = None
+            self.panning = False
+            return
         if self.dialogue_open or app.request_history is not None:
             self.show_save_message("Finish the current exchange before opening another call.")
             return

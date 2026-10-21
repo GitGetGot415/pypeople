@@ -53,7 +53,7 @@ class InventoryPanel:
     def recipients(self, app):
         from apartments import available_outdoors
         return [n for n in app.npcs if app.simulation.is_outdoors(n) and available_outdoors(n)
-                and not n.busy and not n.request_pending and not n.selected]
+                and not n.busy and not n.request_pending and not n.selected and not n.unread_player_reply]
 
     def handle_event(self, app, event):
         if self.close_button.clicked(event):

@@ -328,6 +328,9 @@ class Application:
 
     def talk_to_call(self, npc):
         from player import call_valid, clear_call
+        if npc.unread_player_reply:
+            self.game.open_call(self, npc)
+            return ""
         if (self.simulation.paused or self.game.dialogue_open or self.request_history is not None
                 or not npc.player_call or not call_valid(self.simulation, npc, npc.player_call)
                 or not self.simulation.company_available(npc, allow_player_call=True)):
@@ -352,7 +355,7 @@ class Application:
         from player import validate_transfer
         if self.simulation.paused or self.game.dialogue_open or self.request_history is not None:
             raise ValueError("Finish the current conversation and resume time before giving.")
-        if recipient.selected or recipient.request_pending or recipient.busy:
+        if recipient.selected or recipient.request_pending or recipient.busy or recipient.unread_player_reply:
             raise ValueError("The selected resident is occupied.")
         validate_transfer(self.simulation, self.simulation.player, recipient, item, quantity)
         self.preempt_creative_request()
@@ -867,12 +870,19 @@ class Application:
                 accept_player_promises(self.simulation, npc, record, result, self.request_message, opening=opening)
                 if incoming and result.gift_acceptance:
                     PlayerHandoff(self.simulation, self.simulation.player, npc, incoming["item"], incoming["quantity"], record)
-                if self.game.player_record is record:
+                reply_visible = (self.game.dialogue_open and self.game.selected_npc is npc
+                                 and self.game.viewed_conversation is None)
+                if reply_visible:
+                    self.game.player_record = record
                     self.game.pending_offer = ({**result.gift_offer.model_dump(), "npc_id": npc.id,
                         "revision": npc.command_revision, "record_id": record.id} if result.gift_offer else None)
+                elif snapshot.get("request_kind") != "player_acknowledgment":
+                    npc.player_call = dict(kind="reply", reference=record.id, closing=result.end_conversation,
+                        gift_offer=result.gift_offer.model_dump() if result.gift_offer else None)
+                    npc.release_claims(self.simulation)
+                    npc.resume_pending = True
             npc.reply = f"Request failed: {error}" if error else result.reply
             npc.rewritten_reply = rewritten[0][0] if not error and rewritten else ""
-            # A reply arriving after the player leaves must not wait for a reader.
             npc.end_conversation = bool(not error and result.end_conversation and npc.selected)
             if error:
                 npc.set_emotion("neutral", 0)
@@ -892,7 +902,10 @@ class Application:
                     record.status = "Failed"
                     record.outcomes.insert(0, f"The request could not be completed: {error}")
                 else:
-                    if waiting_for_done:
+                    if npc.unread_player_reply:
+                        record.status = "Reply waiting for player"
+                        outcome = "Reply ready; waiting for the player to return to the conversation."
+                    elif waiting_for_done:
                         record.status = "Waiting for Done"
                         outcome = "Accepted; starts after the player closes the conversation."
                     elif npc.request_pending:
@@ -913,7 +926,8 @@ class Application:
             if self.request_history is not None or self.requests.busy or paused or not simulation_active:
                 break
             npc = self.simulation.npc_by_id(acknowledgment["npc_id"])
-            if npc and (npc.busy or npc.request_pending or self.game.dialogue_open and self.game.selected_npc is not npc):
+            if npc and (npc.busy or npc.request_pending or npc.unread_player_reply
+                        or self.game.dialogue_open and self.game.selected_npc is not npc):
                 continue
             record = next(r for r in self.conversation_history if r.id == acknowledgment["record_id"])
             if npc and self.simulation.is_outdoors(npc):
