@@ -200,7 +200,9 @@ def introduction_supported(text, name, reference, *, name_requested=False):
     if reference == "self":
         pattern = (r"\b(?:my name is|my name['’]s|name['’]s|i am|i['’]m|call me|you can call me|i go by|i['’]m called)\s+"
                    + escaped + r"|\bi,\s*" + escaped + r"\s*,|(?:^|[.!?]\s*|,\s*)"
-                   + escaped + r"\s+here(?=\s*[,!.]|$)|\bmy name\b[^.!?;]{0,45}\bit['’]s\s+" + escaped)
+                   + escaped + r"\s+here(?=\s*[,!.]|$)|\bmy (?:own )?name\b[^.!?;]{0,45}\b(?:it is|it['’]s)\s+" + escaped)
+        if name_requested:
+            pattern += r"|^\s*(?:it is|it['’]s)\s+" + escaped + r"(?=\s*(?:[,!.;]|$))"
     else:
         ref = re.escape(reference)
         pattern = (r"\b" + ref + r"\s+(?:is|is called|goes by|is named)\s+" + escaped
@@ -373,7 +375,9 @@ def validate_orientation(response, snapshot):
 
 def asks_name(text, *, self_name=None):
     speech = unquoted_speech(text)
-    if re.search(r"\b(?:your (?:full |first |last |family |preferred )?name|call you(?:rself)?|address you|who are you)\b[^.!?]*\?", speech, re.I):
+    if re.search(r"\b(?:your (?:full |first |last |family |preferred )?name|call you(?:rself)?|address you|who are you|"
+                 r"(?:can|could|would|will) you (?:please )?introduce yourself|"
+                 r"(?:what|how) (?:would|do) you (?:like|prefer) to be called|what do you go by)\b[^.!?]*\?", speech, re.I):
         return True
     reciprocal = re.search(r"\b(?:and you|(?:and )?yours)\s*\?", speech, re.I)
     preceding = next(iter(reversed(split_sentences(speech[:reciprocal.start()]))), "") if reciprocal else ""

@@ -1826,14 +1826,14 @@ def _reply_context(snapshot):
     listener_name = snapshot.get("_listener_identity", own_name(listener) if isinstance(listener, dict) else listener)
     known = speaker.get("name_knowledge", {}).get("known_names", {})
     allowed = permitted_forms(speaker, snapshot.get("_name_actors", {}), known)
-    mentioned = []
+    mentioned = False
     for actor in snapshot.get("_name_actors", {}).values():
         for name in sorted(forms(actor["self_name"]), key=len, reverse=True):
             match = re.search(name_pattern(name), heard, re.I)
             if match and name not in allowed and is_name_reference(match, heard):
-                mentioned.append(match[0])
+                mentioned = True
                 break
-    return dict(last_heard=heard, unidentified_names_mentioned=mentioned,
+    return dict(last_heard=heard, unidentified_name_mentioned=mentioned,
                 questions_to_answer=[s for s in split_sentences(heard) if _has_question(s)],
                 name_requested=asks_name(heard, self_name=listener_name),
                 listener_name_asked=any(t["role"] == role and asks_name(t["text"], self_name=own_name(speaker))
@@ -2547,7 +2547,7 @@ def _request_payload(message, snapshot, correction):
         instruction += ("\nConversation messages contain actual accepted speech: assistant/model messages are your earlier "
                         "words; user messages after the context are the listener's words. Write your reply to the last "
                         "listener message. Answer their questions before moving the topic forward; do not summarize "
-                        "what they said or substitute your profile or an introduction for an answer. "
+                        "what they said or substitute your profile for an answer. A name question needs your name or an explicit refusal. "
                         "Their I/my refers to the listener; their you/your refers to you. Your first sentence should "
                         "address their specific point from your own perspective. Keep emotion labels and internal "
                         "resource terms in metadata.")
@@ -2563,8 +2563,8 @@ def _request_payload(message, snapshot, correction):
         elif snapshot.get("arrival_focus") and not focus["listener_name_known"] and not focus["listener_name_asked"]:
             instruction += (" You have not yet asked what to call this unfamiliar partner. Include a brief name question "
                             "in this reply alongside your response about the surroundings.")
-        if focus["unidentified_names_mentioned"]:
-            instruction += (" The listener mentioned names you have not learned in reply_context.unidentified_names_mentioned. "
+        if focus["unidentified_name_mentioned"]:
+            instruction += (" The listener mentioned a name you have not learned. "
                             "If asking who was meant, quote the exact mentioned name explicitly; otherwise describe the person "
                             "without using that name. A mention does not identify a visible actor or teach their name.")
     instruction = named_references(instruction)
@@ -2592,6 +2592,7 @@ def _provider_messages(content, snapshot):
         return [{"role": "user", "content": content}]
     payload = json.loads(content)
     payload["world_state"].pop("preceding_turns", None)
+    payload["world_state"].get("reply_context", {}).pop("last_heard", None)
     # Accepted current speech is authoritative, including diagnosed speech when
     # validation is off. Historical-example filtering must not drop a live reply.
     preceding = snapshot.get("preceding_turns", [])
@@ -2608,6 +2609,17 @@ def _provider_messages(content, snapshot):
                     "Answer the listener above from your own perspective in one or two fresh complete sentences. "
                     "Do not copy their speech, adopt their I/my, or recite planning notes. Use only your permitted names "
                     "and effects; quote an unfamiliar name only when asking who was mentioned. Return the required JSON.")
+        focus = _reply_context(snapshot)
+        if focus["name_requested"]:
+            reminder += (f" First answer the name question: your own name is {own_name(snapshot['speaker'])}. "
+                         "Give that name or explicitly decline to give your name; asking a different question is not an answer.")
+        if (snapshot.get("arrival_focus") and not focus["listener_name_known"]
+                and not focus["listener_name_asked"] and not focus["listener_declined_name"]):
+            reminder += " Also ask the listener what to call them; you have not yet asked their name."
+        if focus["unidentified_name_mentioned"]:
+            reminder += (" For this reply, " + ("use your own name only to answer their name question; otherwise " if focus["name_requested"] else "")
+                         + "use no personal names. Use a supplied observable description or ask who was meant without repeating the name. "
+                         "Keep the actual actor and source of the account unchanged.")
         if snapshot.get("_closing") or snapshot.get("request_kind") == "conversation_closing":
             reminder += " This is the final answer. End with a statement and ask no question."
         messages.append({"role": "user", "content": reminder})
@@ -3529,6 +3541,10 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                                   "Use only speaker.speech_references.allowed_name_forms as spoken names. "
                                   "If asking who the listener mentioned, use an explicit quotation of their name. "
                                   "Keep the meaning, source and accepted effects; do not introduce anyone from a roster label.")
+                if kind in ("resident_turn", "snake_turn", "conversation_closing") and str(exc).startswith("The listener just asked what to call you"):
+                    correction = (f"Answer the listener's name question first. Your own authored name is {own_name(state['speaker'])}. "
+                                  "Give that name or explicitly decline to give your name. Do not answer only about arrival, "
+                                  "ask a different question, or repeat their speech. Keep accepted speech and effects unchanged.")
                 if kind == "resident_turn" and str(exc).startswith("A recorded apple promise needs"):
                     effect_repairs["offers"] = []
                     correction = ("Your speech made no supported apple commitment. Regenerate this reply without offers; "
