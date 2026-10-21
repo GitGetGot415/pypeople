@@ -18,7 +18,8 @@ from .world import draw_world, snake_artwork
 from .inventory import InventoryPanel
 from constants import (INVENTORY_BUTTON_RECT, GAME_PAUSE_RECT, GAME_CLOCK_RECT, GAME_PHASE_POSITION,
                        GAME_PAUSED_LABEL_RIGHT, GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT, CALL_CHOICE_RECT,
-                       CALL_CHOICE_TITLE_RECT, CALL_CHOICE_STATUS_RECT, CALL_CHOICE_BUTTON_RECTS)
+                       CALL_CHOICE_TITLE_RECT, CALL_CHOICE_STATUS_RECT, CALL_CHOICE_BUTTON_RECTS,
+                       DIALOGUE_ORIGINAL_TOGGLE_RECT)
 
 
 class GameScreen:
@@ -47,6 +48,7 @@ class GameScreen:
         self.retry_button = Button((904, 552, 112, 32), "Retry")
         self.subjects_button = Button((self.retry_button.rect.left - 116, 552, 112, 32), "Subjects")
         self.portrait_rect = pygame.Rect(24, 552, 148, 148)
+        self.original_toggle = Button(DIALOGUE_ORIGINAL_TOGGLE_RECT, "Original: Off")
         dialogue_x = self.portrait_rect.right + 16
         self.prompt_input = TextInput(
             (dialogue_x, 644, 1122 - dialogue_x, 44), placeholder="[insert cool action here]"
@@ -241,6 +243,10 @@ class GameScreen:
                 app.leave_game()
             return
         if self.dialogue_open:
+            if self.original_toggle.clicked(event):
+                app.original_dialogue = not app.original_dialogue
+                self.dialogue_scroll = 0
+                return
             if self.pending_offer:
                 return
             if (self.player_record and self.player_record.error and self.retry_button.clicked(event,
@@ -411,8 +417,9 @@ class GameScreen:
                 self.dialogue_scroll = 0
                 return
             self.set_reply(npc.reply)
-            if npc is not app.simulation.snake and npc.player_thinking and app.request_npc is npc and app.request_history is not None:
-                self.player_record = app.request_history
+            request = app.player_request(npc)
+            if request and (request["pending"] or request["record"].error):
+                self.player_record = request["record"]
             self.prompt_input.focus()
 
     def draw(self, app):
@@ -456,8 +463,9 @@ class GameScreen:
         if self.dialogue_open:
             self.draw_portrait(app, self.selected_npc, self.selected_npc.portrait_emotion)
         status = self.selected_npc.status if self.selected_npc is not None else f"{len(app.npcs)} NPCs"
-        if app.request_history is not None and app.request_npc is self.selected_npc:
-            state = "Queued" if (app.session_id, app.request_id) in app.requests.pending else "Thinking"
+        request = app.pending_player_request(self.selected_npc)
+        if request:
+            state = "Queued" if (app.session_id, request["id"]) in app.requests.pending else "Thinking"
             status = f"{state} for {self.selected_npc.name}... / {status}"
         elif self.selected_npc.end_conversation:
             status = "Click Done when you've finished reading."
@@ -490,8 +498,7 @@ class GameScreen:
             self.done_button.draw(app.window, app.font)
         else:
             self.prompt_input.draw(app.window, app.font)
-            self.send_button.draw(app.window, app.font, enabled=app.request_history is None
-                                  and not self.selected_npc.request_pending and not app.simulation.paused)
+            self.send_button.draw(app.window, app.font, enabled=not self.selected_npc.request_pending and not app.simulation.paused)
         if self.player_record and self.player_record.dialogue_errors:
             draw_wrapped_text(app.window, self.player_record.dialogue_errors[-1], app.small_font,
                               FAILED_CONVERSATION_SELECTED_COLOR, (self.reply_rect.x, 696, self.reply_rect.width - 90, 24))
@@ -532,9 +539,6 @@ class GameScreen:
                 self.prompt_input.focus()
             self.pan_start = self.pan_last = None
             self.panning = False
-            return
-        if self.dialogue_open or app.request_history is not None:
-            self.show_save_message("Finish the current exchange before opening another call.")
             return
         if npc.player_call:
             self.call_choice = npc.id
@@ -597,6 +601,8 @@ class GameScreen:
         color = ORIGINAL_DIALOGUE_PAPER if original else PAPER
         pygame.draw.rect(app.window, color, (0, top, WINDOW_SIZE[0], DIALOGUE_PANEL_HEIGHT))
         pygame.draw.line(app.window, (129, 154, 110), (0, top), (WINDOW_SIZE[0], top), 3)
+        self.original_toggle.label = "Original: " + ("On" if app.original_dialogue else "Off")
+        self.original_toggle.draw(app.window, app.small_font)
 
     def draw_portrait(self, app, npc, emotion=None):
         pygame.draw.rect(app.window, (255, 254, 248), self.portrait_rect)

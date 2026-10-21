@@ -607,8 +607,9 @@ class StatsScreen:
                 request_id for (session_id, request_id), log in app.requests.logs.items()
                 if session_id == app.session_id and log.status in ("queued", "waiting_for_ollama")
             }
-            if app.request_id in queued_ids and app.request_history is not None:
-                queued_ids.add(app.request_history.id)
+            for request in getattr(app, "player_requests", {}).values():
+                if request["pending"] and request["id"] in queued_ids:
+                    queued_ids.add(request["record"].id)
             active_requests = {
                 worker.request_id for worker in app.requests.statuses()
                 if worker.session_id == app.session_id and worker.log is not None and worker.log.status == "running"
@@ -617,8 +618,8 @@ class StatsScreen:
                 conversation.record.id for request_id, conversation in app.conversation_requests.items()
                 if request_id in active_requests
             }
-            if app.request_id in active_requests and app.request_history is not None:
-                generating_ids.add(app.request_history.id)
+            generating_ids.update(request["record"].id for request in getattr(app, "player_requests", {}).values()
+                                  if request["pending"] and request["id"] in active_requests)
         if not rows and self.tab == "Conversations":
             surface.blit(app.small_font.render("No conversations yet.", True, MUTED), (self.list_rect.x, self.list_rect.y + 12))
         if not rows and self.tab == "Model logs":

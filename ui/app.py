@@ -67,15 +67,10 @@ class Application:
         self.voice_rewrites = settings["voice_rewrites"]
         self.dialogue_validation = settings["dialogue_validation"]
         self.session_id = 0
-        self.request_npc = None
+        self.player_requests = {}
         self.conversation_requests = {}
         self.creative_requests = {}
-        self.request_message = ""
-        self.request_history = None
         self.simulation = None
-        self.request_revision = None
-        self.request_id = None
-        self.request_world_revision = None
         self.save_store = SaveStore()
         self.save_id = None
         self.save_identity = None
@@ -132,9 +127,7 @@ class Application:
         self.stats.open()
         self.conversation_requests.clear()
         self.creative_requests.clear()
-        self.request_npc = self.request_history = None
-        self.request_revision = self.request_id = self.request_world_revision = None
-        self.request_message = ""
+        self.player_requests.clear()
         self.simulation = simulation
         self.save_id, self.save_identity = save_id, save_identity
         self.screen = "game"
@@ -246,10 +239,11 @@ class Application:
                 relax(npc)
         for npc in self.npcs:
             npc.request_pending = any(action.npc_id == npc.id for action in self.simulation.pending_actions)
-        if self.request_history is not None:
-            self.request_history.status = "Ended before the reply arrived"
-            self.request_history.outcomes.insert(0, "Left the game before a reply was received.")
-            self.request_history = None
+        for request in self.player_requests.values():
+            if request["pending"]:
+                request["record"].status = "Ended before the reply arrived"
+                request["record"].outcomes.insert(0, "Left the game before a reply was received.")
+        self.player_requests.clear()
         self.session_id += 1
         self.conversation_requests.clear()
         self.screen = "menu"
@@ -279,7 +273,7 @@ class Application:
         if npc is self.simulation.snake:
             self.submit_snake(message)
             return
-        if self.screen != "game" or npc is None or not self.simulation.is_outdoors(npc) or npc.busy or npc.end_conversation or npc.request_pending or not message or self.request_history is not None:
+        if self.screen != "game" or npc is None or not self.simulation.is_outdoors(npc) or npc.busy or npc.end_conversation or npc.request_pending or not message:
             return
         if self.provider == "gemini" and not self.api_key:
             self.game.set_reply("Add an API key in Settings to generate a reply.")
@@ -333,12 +327,13 @@ class Application:
         if npc.unread_player_reply:
             self.game.open_call(self, npc)
             return ""
-        if (self.simulation.paused or self.game.dialogue_open or self.request_history is not None
+        if (self.simulation.paused
                 or not npc.player_call or not call_valid(self.simulation, npc, npc.player_call)
                 or not self.simulation.company_available(npc, allow_player_call=True)):
             return "This call is unavailable while you or the resident are occupied."
         self.preempt_creative_request()
         call = npc.player_call.copy()
+        self.game.close_dialogue()
         self.game.dialogue_open, self.game.selected_npc = True, npc
         npc.set_selected(True)
         snapshot = self.player_snapshot(npc)
@@ -355,7 +350,7 @@ class Application:
 
     def offer_player_item(self, recipient, item, quantity):
         from player import validate_transfer
-        if self.simulation.paused or self.game.dialogue_open or self.request_history is not None:
+        if self.simulation.paused or self.game.dialogue_open:
             raise ValueError("Finish the current conversation and resume time before giving.")
         if recipient.selected or recipient.request_pending or recipient.busy or recipient.unread_player_reply:
             raise ValueError("The selected resident is occupied.")
@@ -397,19 +392,21 @@ class Application:
         npc, offer = self.game.selected_npc, self.game.pending_offer
         self.game.pending_offer = None
         self.game.show_save_message("Gift declined; no possessions changed hands.")
-        if npc and offer and self.request_history is None:
+        if npc and offer and not self.pending_player_request(npc):
             snapshot = self.player_snapshot(npc)
             snapshot.update(request_kind="player_acknowledgment", player_interaction={"declined_offer": offer})
             self._submit_player_message(npc, "", snapshot)
 
     def retry_player_dialogue(self):
         npc = self.game.selected_npc
-        if (not npc or npc.request_pending or npc.busy or self.request_history is not None
-                or self.simulation.paused or self.request_npc is not npc):
+        request = self.player_request(npc) if npc else None
+        if (not request or request["pending"] or npc.request_pending or npc.busy
+                or self.simulation.paused or self.game.player_record is not request["record"]):
             return
         self.preempt_creative_request()
-        snapshot = self.player_snapshot(npc, self.request_message)
-        old = self.request_snapshot
+        message = request["message"]
+        snapshot = self.player_snapshot(npc, message)
+        old = request["snapshot"]
         if old.get("request_kind") in ("player_opening", "player_gift", "player_acknowledgment"):
             snapshot.update(request_kind=old["request_kind"], player_interaction=old["player_interaction"])
             if old["player_interaction"].get("call"):
@@ -421,9 +418,20 @@ class Application:
                 for other in self.simulation.outdoor_npcs if other is not npc] + [self.player_target()]
         if self.game.player_record:
             snapshot["player_dialogue"] = [{"speaker": s, "text": t} for s, t in self.game.player_record.turns[-12:]]
-        self._submit_player_message(npc, self.request_message, snapshot)
+        self._submit_player_message(npc, message, snapshot)
+
+    def player_request(self, npc):
+        """Latest direct request for this actor, retained for retry after completion."""
+        return next((request for request in self.player_requests.values() if request["npc"] is npc), None)
+
+    def pending_player_request(self, npc):
+        request = self.player_request(npc)
+        return request if request and request["pending"] else None
 
     def _submit_player_message(self, npc, message, snapshot, *, purpose="chat"):
+        previous = self.player_request(npc)
+        if previous and previous["pending"]:
+            return
         kind = snapshot.get("request_kind")
         if kind in ("player_opening", "player_gift", "player_acknowledgment"):
             snapshot.pop("last_reply", None)
@@ -436,13 +444,7 @@ class Application:
         ):
             self.game.set_reply("Could not start the request. Please try again.")
             return
-        self.request_npc = npc
-        self.request_snapshot = snapshot
-        self.request_id = request_id
-        self.request_revision = npc.command_revision
-        self.request_world_revision = self.simulation.roster_revision
         npc.request_pending = True
-        self.request_message = message
         if self.game.player_record is None:
             topic = message or ("Player gift offer" if kind == "player_gift" else
                                 "Gift acknowledgment" if kind == "player_acknowledgment" else "Resident initiated conversation")
@@ -457,11 +459,15 @@ class Application:
                 incoming = snapshot["player_interaction"]["incoming_gift"]
                 self.game.player_record.intended_subjects["You"] = f'Offering {incoming["quantity"]} × {incoming["title"]}.'
             self.conversation_history.append(self.game.player_record)
-        self.request_history = self.game.player_record
-        self.request_history.status = "Waiting for reply"
-        self.request_history.error = ""
+        record = self.game.player_record
+        if previous:
+            self.player_requests.pop(previous["id"])
+        self.player_requests[request_id] = dict(id=request_id, npc=npc, snapshot=snapshot, message=message,
+            record=record, revision=npc.command_revision, world_revision=self.simulation.roster_revision, pending=True)
+        record.status = "Waiting for reply"
+        record.error = ""
         if message:
-            self.request_history.turns.append(("You", message))
+            record.turns.append(("You", message))
         if snapshot.get("request_kind") != "player_acknowledgment":
             self.game.prompt_input.set_value("")
 
@@ -608,7 +614,7 @@ class Application:
 
     def submit_snake(self, message):
         snake = self.simulation.snake
-        if self.screen != "game" or not message or snake.encounter or snake.request_pending or self.request_history is not None:
+        if self.screen != "game" or not message or snake.encounter or snake.request_pending:
             return
         self.preempt_creative_request()
         snapshot = {"request_kind": "snake_player", "snake": snake.snapshot(),
@@ -637,8 +643,9 @@ class Application:
         conversation = self.conversation_requests.pop(request_id, None)
         if conversation is not None:
             conversation.fail_dialogue(reason)
-        elif request_id == self.request_id:
-            npc, record = self.request_npc, self.request_history
+        elif request_id in self.player_requests:
+            request = self.player_requests[request_id]
+            npc, record = request["npc"], request["record"]
             if npc is not None:
                 npc.request_pending = False
                 npc.reply = reason
@@ -647,7 +654,7 @@ class Application:
                     self.game.set_reply(reason)
             if record is not None:
                 record.status, record.error = "Failed", reason
-            self.request_history = self.request_npc = self.request_id = None
+            request["pending"] = False
 
     def handle_event(self, event):
         if event.type == pygame.QUIT:
@@ -719,7 +726,7 @@ class Application:
         simulation_active = self.screen in ("game", "stats") and not paused
         session_active = self.screen in ("game", "stats", "save_sim")
         active_session = self.session_id if session_active else None
-        # Stats owns the version toggle; visiting it keeps the live reading hold.
+        # Live dialogue and Stats share the version toggle and reading hold.
         viewed = self.game.viewed_conversation if self.screen in ("game", "stats") and self.game.dialogue_open else None
         # Leave completed replies queued so they cannot change a paused world.
         replies = () if session_active and paused else self.requests.poll(active_session)
@@ -766,14 +773,16 @@ class Application:
                 else:
                     self.requests.finish(active_session, request_id, "The conversation ended before the reply arrived.")
                 continue
-            if request_id != self.request_id:
+            request = self.player_requests.get(request_id)
+            if request is None or not request["pending"]:
                 self.requests.finish(active_session, request_id, "The player request is no longer active.")
                 continue
-            npc = self.request_npc
+            request["pending"] = False
+            npc, record = request["npc"], request["record"]
+            snapshot, message = request["snapshot"], request["message"]
             if npc is self.simulation.snake:
                 npc.request_pending = False
-                record = self.request_history
-                if self.request_world_revision != self.simulation.roster_revision or npc.encounter:
+                if request["world_revision"] != self.simulation.roster_revision or npc.encounter:
                     error = "The world changed before the reply arrived. Send the message again."
                 if record:
                     record.status, record.error = ("Failed", error) if error else ("Completed", "")
@@ -787,16 +796,12 @@ class Application:
                 if self.game.selected_npc is npc:
                     self.game.set_reply(npc.reply)
                 self.requests.finish(active_session, request_id, error)
-                self.request_history = None
                 continue
             if npc is None or self.simulation.npc_by_id(npc.id) is not npc:
                 self.requests.finish(active_session, request_id, "The NPC is no longer available.")
-                self.request_history = None
                 continue
             npc.request_pending = False
-            record = self.request_history
-            snapshot = getattr(self, "request_snapshot", {})
-            if not error and (not self.simulation.is_outdoors(npc) or npc.busy or npc.command_revision != self.request_revision or self.request_world_revision != self.simulation.roster_revision):
+            if not error and (not self.simulation.is_outdoors(npc) or npc.busy or npc.command_revision != request["revision"] or request["world_revision"] != self.simulation.roster_revision):
                 error = "That reply arrived after the NPC became busy. Please send the request again."
             if not error:
                 try:
@@ -844,7 +849,7 @@ class Application:
                             planned_action = PendingAction(
                                 npc.id, result.action, npc.command_revision,
                                 target.id if result.action in ("TALK_TO_NPC", "GIVE_ITEM") else None,
-                                self.request_message,
+                                message,
                                 self.conversation_history.index(record) if record is not None else None,
                                 result.item, result.quantity,
                             )
@@ -870,9 +875,9 @@ class Application:
                 context = snapshot.get("player_interaction", {})
                 incoming = context.get("incoming_gift")
                 opening = snapshot.get("request_kind") in ("player_opening", "player_gift", "player_acknowledgment")
-                accept_player_evidence(self.simulation, npc, record, self.request_message, result, opening=opening)
+                accept_player_evidence(self.simulation, npc, record, message, result, opening=opening)
                 from player import accept_player_promises
-                accept_player_promises(self.simulation, npc, record, result, self.request_message, opening=opening)
+                accept_player_promises(self.simulation, npc, record, result, message, opening=opening)
                 if incoming and result.gift_acceptance:
                     PlayerHandoff(self.simulation, self.simulation.player, npc, incoming["item"], incoming["quantity"], record)
                 reply_visible = (self.game.dialogue_open and self.game.selected_npc is npc
@@ -920,15 +925,13 @@ class Application:
                         record.status = "Completed"
                         outcome = "Replied without changing their activity."
                     record.outcomes.insert(0, outcome)
-                self.request_history = None
             if self.game.selected_npc is npc and self.game.viewed_conversation is None:
                 self.game.set_reply(npc.reply)
             self.requests.finish(active_session, request_id, error)
-            self.request_id = None
         if simulation_active:
             self.requests.start_queued(self.session_id)
         for acknowledgment in list(self.simulation.player_acknowledgments) if self.simulation else []:
-            if self.request_history is not None or self.requests.busy or paused or not simulation_active:
+            if self.requests.busy or paused or not simulation_active:
                 break
             npc = self.simulation.npc_by_id(acknowledgment["npc_id"])
             if npc and (npc.busy or npc.request_pending or npc.unread_player_reply

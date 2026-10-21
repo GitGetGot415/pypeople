@@ -1314,10 +1314,11 @@ def capture_simulation(app):
         for offer in record["player_promise_offers"]:
             if offer["status"] == "offered" and record["id"] not in unread_records:
                 offer["status"] = "closed"
-    if app.request_history is not None and id(app.request_history) in records:
-        record = history[records[id(app.request_history)]]
-        record["status"] = "Reply pending when saved"
-        record["outcomes"].insert(0, "The reply was not saved. Send the request again after loading.")
+    for request in getattr(app, "player_requests", {}).values():
+        if request["pending"] and id(request["record"]) in records:
+            record = history[records[id(request["record"])]]
+            record["status"] = "Reply pending when saved"
+            record["outcomes"].insert(0, "The reply was not saved. Send the request again after loading.")
     npcs, conversations, gifts = [], [], []
     for npc in app.npcs:
         npcs.append(capture_resident(npc))
