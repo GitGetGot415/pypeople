@@ -33,6 +33,8 @@ from constants import (FPS, INTERACTION_GAP, STARTING_CHARACTER_FILE, STARTING_N
                        STARTING_SPAWN_ORIGIN, STARTING_SPAWN_SIDE_OFFSET, STARTING_SPAWN_SPREAD, WINDOW_SIZE,
                        PLAYER_CONTEXT_TRANSFER_LIMIT, PLAYER_PROMISE_DEADLINE_STEPS)
 from .world import CHARACTER_SCALE
+from .fonts import UnicodeFont
+from constants import UI_TITLE_FONT_SIZE, UI_HEADING_FONT_SIZE, UI_TEXT_FONT_SIZE, UI_SMALL_FONT_SIZE
 
 
 STARTING_CHARACTER_PATH = Path(__file__).resolve().parent.parent / STARTING_CHARACTER_FILE
@@ -43,10 +45,10 @@ class Application:
         self.window = pygame.display.set_mode(WINDOW_SIZE)
         pygame.display.set_caption("Pypeople")
         self.clock = pygame.time.Clock()
-        self.title_font = pygame.font.Font(None, 78)
-        self.heading_font = pygame.font.Font(None, 36)
-        self.font = pygame.font.Font(None, 26)
-        self.small_font = pygame.font.Font(None, 22)
+        self.title_font = UnicodeFont(UI_TITLE_FONT_SIZE)
+        self.heading_font = UnicodeFont(UI_HEADING_FONT_SIZE)
+        self.font = UnicodeFont(UI_TEXT_FONT_SIZE)
+        self.small_font = UnicodeFont(UI_SMALL_FONT_SIZE)
         self.running = True
         self.screen = "menu"
         self.original_dialogue = False

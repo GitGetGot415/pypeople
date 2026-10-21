@@ -5,7 +5,8 @@ import pygame
 
 from constants import INK, PAPER, SHADOW_COLOR, WORLD_COLORS, WORLD_HEIGHT, WORLD_WIDTH
 from constants import APARTMENT_COLOR, APARTMENT_DOOR_COLOR, APARTMENT_DOOR_RECT, APARTMENT_RECT
-from constants import DEFAULT_BUBBLE_SPRITE_SIZE
+from constants import DEFAULT_BUBBLE_SPRITE_SIZE, UI_SMALL_FONT_SIZE
+from .fonts import UnicodeFont
 
 
 
@@ -18,7 +19,7 @@ _tree_artwork = None
 
 @lru_cache(maxsize=64)
 def npc_name_font(size):
-    return pygame.font.Font(None, size)
+    return UnicodeFont(size)
 
 
 @lru_cache(maxsize=None)
@@ -159,7 +160,7 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
         return image if image.get_size() == size else pygame.transform.scale(image, size)
 
     label_color = PAPER if phase == "night" else INK
-    name_font = npc_name_font(max(1, round(22 * zoom)))
+    name_font = npc_name_font(max(1, round(UI_SMALL_FONT_SIZE * zoom)))
     map_rect = pygame.Rect(screen_point((0, 0)), (round(WORLD_WIDTH * zoom), round(WORLD_HEIGHT * zoom)))
     tree_image, apple_image = tree_artwork()
     # NPC y is at their feet; use the bottom of the tree's trunk for the same comparison.

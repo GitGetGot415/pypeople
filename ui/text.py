@@ -2,6 +2,7 @@ import pygame
 
 from constants import DIALOGUE_PAGE_LINES, DIALOGUE_PAGE_WIDTH, INK, SCROLLBAR_WIDTH, SCROLLBAR_MIN_THUMB
 from dialogue_text import split_sentences
+from .fonts import text_units
 
 
 def scrollbar_rects(rect, scroll, limit):
@@ -29,7 +30,7 @@ def wrap_text(text, font, width):
             lines.append(line)
             line = ""
         # A single unbroken word must fit too.
-        for char in word:
+        for char in text_units(word):
             if line and font.size(line + char)[0] > width:
                 lines.append(line)
                 line = ""

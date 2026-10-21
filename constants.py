@@ -1,5 +1,15 @@
 """Shared game rules and UI styling. Keep this module free of project imports."""
 
+# Unifont for all text; Upper supplies supplementary Unicode characters.
+UNICODE_FONT_FILES = (
+    "assets/fonts/unifont-17.0.04.otf",
+    "assets/fonts/unifont_upper-17.0.04.otf",
+)
+UI_TITLE_FONT_SIZE = 56
+UI_HEADING_FONT_SIZE = 26
+UI_TEXT_FONT_SIZE = 18
+UI_SMALL_FONT_SIZE = 16
+
 # World geometry and resident presentation.
 WORLD_WIDTH = 960
 WORLD_HEIGHT = 460
