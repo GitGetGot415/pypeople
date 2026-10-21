@@ -4,13 +4,14 @@ from dotenv import load_dotenv
 import math
 from pathlib import Path
 from uuid import uuid4
+from time import monotonic
 
 import pygame
 
 from app_settings import load_settings
 from character_data import load_character, random_character
 from conversation_history import ConversationRecord, describe_opinion_change
-from npc import NPC, assign_npc_names
+from npc import Behavior, NPC, assign_npc_names
 from ollama_manager import load_model
 from simulation_data import InvalidSaveName, SaveStore, capture_simulation, restore_simulation
 from simulation import PendingAction, Simulation
@@ -65,6 +66,7 @@ class Application:
         self.session_id = 0
         self.request_npc = None
         self.conversation_requests = {}
+        self.creative_requests = {}
         self.request_message = ""
         self.request_history = None
         self.simulation = None
@@ -116,10 +118,15 @@ class Application:
     def _activate_simulation(self, simulation, *, save_id=None, save_identity=None):
         """Switch sessions only after the new world is fully prepared."""
         self.requests.cancel_all()
+        from apartments import discard_work
+        for npc in self.npcs:
+            if npc.creative_job:
+                discard_work(npc)
         self.session_id += 1
         self.game.reset()
         self.stats.open()
         self.conversation_requests.clear()
+        self.creative_requests.clear()
         self.request_npc = self.request_history = None
         self.request_revision = self.request_id = self.request_world_revision = None
         self.request_message = ""
@@ -224,6 +231,12 @@ class Application:
 
     def leave_game(self):
         self.requests.cancel_all()
+        self.stats.gallery.close()
+        self.creative_requests.clear()
+        from apartments import relax
+        for npc in self.npcs:
+            if npc.creative_job:
+                relax(npc)
         for npc in self.npcs:
             npc.request_pending = any(action.npc_id == npc.id for action in self.simulation.pending_actions)
         if self.request_history is not None:
@@ -259,10 +272,13 @@ class Application:
         if npc is self.simulation.snake:
             self.submit_snake(message)
             return
-        if self.screen != "game" or npc is None or npc.busy or npc.end_conversation or npc.request_pending or not message or self.requests.busy or self.request_history is not None:
+        if self.screen != "game" or npc is None or not self.simulation.is_outdoors(npc) or npc.busy or npc.end_conversation or npc.request_pending or not message or self.request_history is not None:
             return
         if self.provider == "gemini" and not self.api_key:
             self.game.set_reply("Add an API key in Settings to generate a reply.")
+            return
+        self.preempt_creative_request()
+        if self.requests.busy:
             return
         snapshot = npc.snapshot(self.tree)
         snapshot["player_dialogue"] = [
@@ -272,7 +288,7 @@ class Application:
         snapshot["other_npcs"] = [
             {**other.snapshot(self.tree, private=False),
              "available_to_talk": not other.busy and not other.request_pending}
-            for other in self.npcs if other is not npc
+            for other in self.simulation.outdoor_npcs if other is not npc
         ]
         self._submit_player_message(npc, message, snapshot)
 
@@ -341,7 +357,7 @@ class Application:
             return
         npc.request_pending = False
         error = ""
-        if npc.busy or npc.command_revision != action.revision:
+        if not self.simulation.is_outdoors(npc) or npc.busy or npc.command_revision != action.revision:
             error = "That request is no longer available because the NPC's activity changed."
         elif action.action == "TALK_TO_NPC":
             target = self.simulation.npc_by_id(action.target_id)
@@ -447,7 +463,10 @@ class Application:
 
     def submit_snake(self, message):
         snake = self.simulation.snake
-        if self.screen != "game" or not message or self.requests.busy or snake.encounter or snake.request_pending or self.request_history is not None:
+        if self.screen != "game" or not message or snake.encounter or snake.request_pending or self.request_history is not None:
+            return
+        self.preempt_creative_request()
+        if self.requests.busy:
             return
         snapshot = {"request_kind": "snake_player", "snake": snake.snapshot(),
                     "_name_actors": actor_catalog(self.simulation),
@@ -459,6 +478,18 @@ class Application:
             return
         if session_id != self.session_id:
             return
+        creative = self.creative_requests.pop(request_id, None)
+        if creative is not None:
+            npc = self.simulation.npc_by_id(creative[0])
+            if npc and npc.creative_job and npc.creative_job.id == request_id:
+                from apartments import relax
+                relax(npc)
+            return
+        for npc in self.npcs:
+            if npc.creative_job and npc.creative_job.id == request_id:
+                from apartments import relax
+                relax(npc)
+                return
         reason = "Model request cancelled by player. Retry when ready."
         conversation = self.conversation_requests.pop(request_id, None)
         if conversation is not None:
@@ -481,7 +512,63 @@ class Application:
             return
         self.screens[self.screen].handle_event(self, event)
 
+    def preempt_creative_request(self):
+        if self.requests.available_slots == 0:
+            for job_id in tuple(self.creative_requests):
+                self.cancel_model_request(self.session_id, job_id)
+                break
+
+    def schedule_creations(self, dt, *, composing=False):
+        from apartments import discard_work, relax
+        from constants import CREATIVE_REQUEST_SECONDS
+        for job_id, (creator_id, revision, started) in tuple(self.creative_requests.items()):
+            npc = self.simulation.npc_by_id(creator_id)
+            job = npc.creative_job if npc else None
+            if (not job or job.id != job_id or not self.simulation.is_creative_job(npc, job)
+                    or monotonic() - started > CREATIVE_REQUEST_SECONDS):
+                self.requests.cancel(self.session_id, job_id)
+                self.requests.finish(self.session_id, job_id, "Creative work ended or exceeded its time budget.")
+                self.creative_requests.pop(job_id, None)
+                if job and job.id == job_id:
+                    discard_work(npc)
+        queued = set()
+        for npc in self.npcs:
+            job = npc.creative_job
+            if not job or job.accepted is not None or job.id in self.creative_requests:
+                continue
+            if not self.simulation.is_creative_job(npc, job):
+                discard_work(npc)
+                continue
+            job.queue_remaining = max(0.0, job.queue_remaining - dt)
+            if job.queue_remaining == 0:
+                self.requests.finish(self.session_id, job.id, "No creative worker became available in time.")
+                relax(npc)
+                continue
+            # Only this resident's authored profile enters a creative prompt.
+            snapshot = {"request_kind": "create_" + job.kind,
+                        "author": {key: value for key, value in npc.character.items()
+                                   if key in ("Name", "Personality", "Background")}}
+            self.requests.prepare(self.session_id, self.provider, snapshot, request_id=job.id, ollama_model=self.ollama_model)
+            queued.add(job.id)
+            reserve = 1 if self.requests.max_requests > 1 or composing else 0
+            if self.creative_requests or self.requests.available_slots <= reserve:
+                continue
+            if self.provider == "gemini" and not self.api_key:
+                self.requests.finish(self.session_id, job.id, "No API key is configured for creation generation.")
+                relax(npc)
+                continue
+            if self.requests.submit(self.session_id, self.provider, self.api_key, "Create a private work.", snapshot,
+                    request_id=job.id, ollama_model=self.ollama_model, voice_rewrites=False):
+                self.creative_requests[job.id] = (npc.id, job.revision, monotonic())
+            else:
+                self.requests.finish(self.session_id, job.id, "Could not start creative generation.")
+                relax(npc)
+        return queued
+
     def update(self, dt):
+        if self.screen != "stats" or self.stats.tab != "Creations":
+            self.stats.gallery.stop()
+        self.stats.gallery.update()
         paused = self.simulation is not None and self.simulation.paused
         simulation_active = self.screen in ("game", "stats") and not paused
         session_active = self.screen in ("game", "stats", "save_sim")
@@ -499,6 +586,24 @@ class Application:
                     pending.request_stage = worker.stage
                     pending.wait_elapsed = 0.0
         for request_id, result, error, failed_turns, rewritten in replies:
+            creative = self.creative_requests.pop(request_id, None)
+            if creative is not None:
+                from creations import validate_creation
+                from apartments import discard_work
+                npc = self.simulation.npc_by_id(creative[0])
+                job = npc.creative_job if npc else None
+                if (not job or job.id != request_id or job.revision != creative[1]
+                        or not self.simulation.is_creative_job(npc, job)):
+                    error = "The creative activity changed before its result arrived."
+                elif not error:
+                    try:
+                        job.accepted = validate_creation(job.kind, result.model_dump()).model_dump()
+                    except (ValueError, TypeError, AttributeError):
+                        error = "The model returned invalid creation data."
+                if error and job and job.id == request_id:
+                    discard_work(npc)
+                self.requests.finish(active_session, request_id, error)
+                continue
             conversation = self.conversation_requests.pop(request_id, None)
             if conversation is not None:
                 if conversation.id == request_id and conversation.accepts_response:
@@ -544,7 +649,7 @@ class Application:
                 continue
             npc.request_pending = False
             record = self.request_history
-            if not error and (npc.busy or npc.command_revision != self.request_revision or self.request_world_revision != self.simulation.roster_revision):
+            if not error and (not self.simulation.is_outdoors(npc) or npc.busy or npc.command_revision != self.request_revision or self.request_world_revision != self.simulation.roster_revision):
                 error = "That reply arrived after the NPC became busy. Please send the request again."
             if not error and self.dialogue_validation:
                 try:
@@ -567,7 +672,9 @@ class Application:
                     target = next((other for other in self.npcs if other.name == result.target), None)
                     if result.action == "EAT" and npc.inventory.get("fruit", 0) < 1:
                         error = "I don't have an apple to eat."
-                    elif result.action in ("TALK_TO_NPC", "GIVE_ITEM") and (target is None or target.busy or target.request_pending):
+                    elif result.action in ("TALK_TO_NPC", "GIVE_ITEM") and (target is None or target.indoors
+                            or target.behavior == Behavior.GO_HOME or target.home_reason == "night"
+                            or target.busy or target.request_pending):
                         error = "That person is busy now. Please try again later."
                     else:
                         if result.action == "GIVE_ITEM":
@@ -643,7 +750,7 @@ class Application:
             self.simulation.advance(dt, active=simulation_active, action_handler=self.apply_pending_action,
                                     viewed_conversation=viewed)
         if simulation_active:
-            if self.game.selected_npc is not None and self.game.selected_npc is not self.simulation.snake and self.simulation.npc_by_id(self.game.selected_npc.id) is not self.game.selected_npc:
+            if self.game.selected_npc is not None and self.game.selected_npc is not self.simulation.snake and not self.simulation.is_outdoors(self.game.selected_npc):
                 self.game.close_dialogue()
             # Initialize arriving sprites before the next render.
             for npc in self.npcs:
@@ -659,7 +766,9 @@ class Application:
             for conversation in sorted(conversations, key=lambda interaction: interaction.origin != "player"):
                 self.request_conversation_dialogue(conversation,
                     start=not composing or self.requests.available_slots > 1)
-            self.requests.expire_queued(self.session_id, {
+            from constants import MAX_SIMULATION_STEP_SECONDS
+            queued_creations = self.schedule_creations(min(MAX_SIMULATION_STEP_SECONDS, max(0.0, dt)), composing=composing)
+            self.requests.expire_queued(self.session_id, queued_creations | {
                 conversation.id for conversation in conversations
                 if conversation.accepts_response and conversation.arrived and conversation.dialogue_state == "waiting"
             })
@@ -681,6 +790,7 @@ class Application:
                     self.draw()
         finally:
             self.requests.cancel_all()
+            self.stats.gallery.close()
 
 
 def run():

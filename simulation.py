@@ -2,12 +2,13 @@
 
 from dataclasses import dataclass
 import math
+from uuid import uuid4
 
 from constants import (
     APPLE_ADVANCE_SECONDS, COMPANY_SOCIAL_RECOVERY, CROWD_LIMIT, DECISION_SECONDS,
     FAILURE_COOLDOWN, HEARING_RADIUS, MAX_SIMULATION_STEP_SECONDS, PROTECTED_POPULATION,
     RECOVERY_SECONDS, SATISFACTION_PHASE_LOSS, SOCIAL_RADIUS, SNAKE_NAME,
-    STARTING_DAY, STARTING_PAUSED, STARTING_PHASE, WITNESS_RADIUS,
+    STARTING_DAY, STARTING_PAUSED, STARTING_PHASE, WITNESS_RADIUS, COMPANY_FATIGUE_PER_SECOND,
 )
 
 
@@ -34,6 +35,9 @@ class Simulation:
         self.snake = Snake()
         self.snake.world = self
         self.archived = []
+        self.creations = []
+        from apartments import assign_rooms
+        assign_rooms(self)
         self.arrival_error = ""
         self.pending_arrival_days = []
         self.processed_arrival_days = []
@@ -92,6 +96,8 @@ class Simulation:
         for npc in self.npcs:
             npc.social = max(0.0, npc.social - SATISFACTION_PHASE_LOSS)
         self.tree.fruit = len(self.npcs)
+        from apartments import phase_changed
+        phase_changed(self)
         advance_social_phase(self)
         self.publish("phase", [], f"Time changed to {self.phase}.")
 
@@ -110,7 +116,8 @@ class Simulation:
                            opening_kind=None, focus_claim_id=None, goal_id=None):
         from npc import Conversation
 
-        if any(self.npc_by_id(p.id) is not p for p in (initiator, recipient)):
+        from apartments import available_outdoors
+        if any(not self.is_outdoors(p) or not available_outdoors(p) for p in (initiator, recipient)):
             raise ValueError("Only living residents can begin this conversation.")
         interaction = Conversation(initiator, recipient, topic, self.tree, spacing, origin=origin, purpose=purpose,
                                    opening_kind=opening_kind, focus_claim_id=focus_claim_id, goal_id=goal_id)
@@ -119,6 +126,32 @@ class Simulation:
 
     def npc_by_id(self, npc_id):
         return next((npc for npc in self.npcs if npc.id == npc_id), None)
+
+    @property
+    def outdoor_npcs(self):
+        return [npc for npc in self.npcs if not npc.indoors]
+
+    def is_outdoors(self, npc):
+        return self.npc_by_id(npc.id) is npc and not npc.indoors
+
+    def commit_creation(self, npc):
+        from creations import Creation
+        job = npc.creative_job
+        if (not job or job.accepted is None or job.remaining > 0 or not self.is_creative_job(npc, job)):
+            return
+        if not any(work.job_id == job.id for work in self.creations):
+            self.creations.append(Creation(id=uuid4().hex, job_id=job.id, creator_id=npc.id, kind=job.kind,
+                day=self.day, phase=self.phase, **job.accepted))
+        npc.creative_job = None
+        from npc import Behavior
+        npc.behavior = Behavior.REST
+        npc.reason = "Finished creating; relaxing in my apartment"
+
+    def is_creative_job(self, npc, job):
+        from npc import Behavior
+        return (self.npc_by_id(npc.id) is npc and npc.creative_job is job and self.phase != "night"
+                and npc.behavior == (Behavior.PAINT if job.kind == "art" else Behavior.COMPOSE)
+                and npc.command_revision == job.revision and job.creator_id == npc.id)
 
     def advance(self, dt, *, active=True, action_handler=None, viewed_conversation=None):
         if not active or self.paused:
@@ -138,7 +171,8 @@ class Simulation:
     def company_available(self, npc):
         from npc import Behavior
 
-        return (npc.departure is None
+        from apartments import available_outdoors
+        return (self.is_outdoors(npc) and available_outdoors(npc)
                 and npc.interaction is None and not npc.selected and not npc.request_pending
                 and npc.owner == "autonomous" and not npc.resume_pending
                 and not any(npc.id in (action.npc_id, action.target_id) for action in self.pending_actions)
@@ -151,9 +185,9 @@ class Simulation:
 
         self.tree.update(dt)
         self.deliver_arrivals()
-        self.snake.update(dt)
         encounter = self.snake.encounter
         if encounter is not None:
+            self.snake.update(dt)
             encounter.update(dt, reading=encounter is viewed_conversation)
         for npc in self.npcs:
             npc.update_cooldowns(dt)
@@ -169,6 +203,12 @@ class Simulation:
                 interaction.update(dt, reading=True)
             else:
                 interaction.update(dt)
+        from apartments import home_priority
+        for npc in self.npcs:
+            home_priority(npc, self, dt)
+        if encounter is None:
+            # Free residents establish bedtime intent before a new snake follow-up.
+            self.snake.update(dt)
         # Check necessary work for every actor before an idle initiator can reserve them.
         for npc in self.npcs:
             if npc.resume_pending and npc.interaction is None:
@@ -207,6 +247,7 @@ class Simulation:
                 socializing.append(npc)
         for npc in socializing:
             npc.social = min(100.0, npc.social + COMPANY_SOCIAL_RECOVERY * dt)
+            npc.social_fatigue = min(100.0, npc.social_fatigue + COMPANY_FATIGUE_PER_SECOND * dt)
 
     @property
     def residents(self):
@@ -226,16 +267,16 @@ class Simulation:
 
     def listeners(self, actor, radius=None):
         radius = HEARING_RADIUS if radius is None else radius
-        return [p for p in self.npcs if math.dist((p.x, p.y), (actor.x, actor.y)) <= radius]
+        return [p for p in self.outdoor_npcs if not getattr(actor, "indoors", False) and math.dist((p.x, p.y), (actor.x, actor.y)) <= radius]
 
     def observed_event(self, kind, subject, target, text, record=None, *, witnesses=None):
         from social import add_fact
         from conversation_history import remember
         if witnesses is None:
             witnesses = [subject, target, *self.listeners(subject, WITNESS_RADIUS)]
-            if math.dist((self.snake.x, self.snake.y), (subject.x, subject.y)) <= WITNESS_RADIUS:
+            if not getattr(subject, "indoors", False) and math.dist((self.snake.x, self.snake.y), (subject.x, subject.y)) <= WITNESS_RADIUS:
                 witnesses.append(self.snake)
-        witnesses = list({p.id: p for p in witnesses}.values())
+        witnesses = list({p.id: p for p in witnesses if not getattr(p, "indoors", False)}.values())
         event = self.publish(kind, (subject, target), text, record)
         fact = add_fact(self, kind, subject, target, event.id, record, text, witnesses)
         for actor in witnesses:
@@ -247,7 +288,7 @@ class Simulation:
 
     def seek_bargain(self, npc):
         from snake import SnakeEncounter
-        if self.npc_by_id(npc.id) is not npc or math.dist((npc.x, npc.y), self.tree.interaction_point) > 8:
+        if not self.is_outdoors(npc) or math.dist((npc.x, npc.y), self.tree.interaction_point) > 8:
             return None
         collecting = npc.id in self.snake.advances
         if ((not collecting and (npc.inventory_space < 1 or self.available_fruit < 1)) or self.snake.encounter
@@ -271,7 +312,7 @@ class Simulation:
             return None
 
     def intercept_harvest(self, npc):
-        if math.dist((npc.x, npc.y), self.tree.interaction_point) > 8:
+        if not self.is_outdoors(npc) or math.dist((npc.x, npc.y), self.tree.interaction_point) > 8:
             return None
         event, fact = self.observed_event("defiance", npc, self.snake,
             f"{npc.name} attempted to take guarded fruit without an offering; no apple was taken.")
@@ -285,7 +326,7 @@ class Simulation:
         if self.snake.eaten_today >= 1 and len(self.npcs) <= CROWD_LIMIT:
             return False
         if target is not None:
-            if self.npc_by_id(target.id) is not target:
+            if not self.is_outdoors(target):
                 return False
             if reachable and math.dist((self.snake.x, self.snake.y), (target.x, target.y)) > 32:
                 return False
@@ -507,6 +548,10 @@ class Simulation:
             goal = person.goal
             if goal and goal.status == "active" and (person is target or target.id in (goal.target_id, goal.third_npc_id)):
                 resolve_goal(person, self, "cancelled", reason, encounter.record)
+        from apartments import cancel_work
+        cancel_work(target)
+        target.home_reason = target.bedtime_remaining = target.wake_remaining = None
+        target.home_remaining = 0.0
         self.interrupt_resident(target, reason, departing=True)
         self.npcs[:] = [p for p in self.npcs if p is not target]
         self.archived.append(target)
@@ -564,6 +609,8 @@ class Simulation:
         npc.world = self
         remember_description(npc)
         self.npcs.append(npc)
+        from apartments import assign_rooms
+        assign_rooms(self)
         self.processed_arrival_days.append(day)
         self.pending_arrival_days.pop(0)
         self.roster_revision += 1

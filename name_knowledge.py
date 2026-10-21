@@ -48,7 +48,8 @@ def forms(name):
 
 def actor_catalog(world):
     people = [*world.npcs, *world.archived]
-    catalog = {p.id: {"name": p.name, "self_name": p.character["Name"]} for p in people}
+    visible_ids = {p.id for p in world.outdoor_npcs}
+    catalog = {p.id: {"name": p.name, "self_name": p.character["Name"], "_visible": p.id in visible_ids} for p in people}
     catalog[world.snake.id] = {"name": SNAKE_NAME, "self_name": SNAKE_NAME}
     # Only unique, observable descriptions can bind a third-party introduction.
     # Ties deliberately provide no reference; position alone never teaches a name.
@@ -57,14 +58,14 @@ def actor_catalog(world):
                  ("the person closest to the apple tree",
                   lambda p: (p.x - world.tree.x) ** 2 + (p.y - world.tree.y) ** 2))
     for label, distance in selectors:
-        ordered = sorted(world.npcs, key=distance)
+        ordered = sorted(world.outdoor_npcs, key=distance)
         if ordered and (len(ordered) == 1 or distance(ordered[0]) < distance(ordered[1])):
             catalog[ordered[0].id].setdefault("references", []).append(label)
     # A larger roster has many people who are neither an extreme nor nearest
     # the tree. Give those actors a unique visible reference too; their names
     # cannot be spoken merely because an account or goal mentions them.
     for coordinate, direction in (("x", "left"), ("y", "top")):
-        ordered = sorted(world.npcs, key=lambda p: getattr(p, coordinate))
+        ordered = sorted(world.outdoor_npcs, key=lambda p: getattr(p, coordinate))
         for rank, person in enumerate(ordered, 1):
             if catalog[person.id].get("references") or sum(
                     getattr(p, coordinate) == getattr(person, coordinate) for p in ordered) != 1:

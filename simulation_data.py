@@ -17,6 +17,10 @@ from constants import (
     MAX_SIMULATION_STEP_SECONDS, SHAKE_SECONDS, SNAKE_EAT_SECONDS,
     POST_DIALOGUE_SECONDS, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME, WORLD_HEIGHT, WORLD_WIDTH,
 )
+from creations import Creation, CreativeJob
+from apartments import HOME_BEHAVIORS, INDOOR_BEHAVIORS, entrance
+from constants import (APARTMENT_ID, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_RANGE, CREATIVE_QUEUE_SECONDS,
+                       HOME_ARRIVAL_TOLERANCE, OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE, WAKE_DELAY_RANGE)
 from conversation_history import ConversationRecord, Memory, WorldEvent
 from llm import (AcceptedProposal, ConversationPart, ConversationTurn, DisclosureChoice, NameIntroduction,
                  EmotionReaction, LeverageUse, ThirdPartyOpinion)
@@ -264,6 +268,16 @@ class NPCState(ActivityState):
     attitudes: Attitudes
     arrival_day: int = Field(ge=1)
     departure: DepartureState | None
+    sprite_size: tuple[int, int] | None
+    room_number: int = Field(strict=True, ge=1)
+    social_fatigue: float = Field(ge=0, le=100)
+    home_remaining: float = Field(ge=0, le=max(REST_SECONDS_RANGE[1], CREATION_WORK_SECONDS_RANGE[1]))
+    outdoor_remaining: float = Field(ge=0, le=OUTDOOR_COOLDOWN_SECONDS)
+    bedtime_remaining: float | None = Field(ge=0, le=BEDTIME_DELAY_RANGE[1])
+    wake_remaining: float | None = Field(ge=0, le=WAKE_DELAY_RANGE[1])
+    home_reason: Literal["night", "retreat"] | None
+    last_creative_day: int = Field(strict=True, ge=0)
+    creative_job: CreativeJob | None
 
     @field_validator("character")
     @classmethod
@@ -464,6 +478,7 @@ class SimulationState(SaveModel):
     disclosures: list[DisclosureState]
     social_rotation: int = Field(ge=0)
     npcs: list[NPCState] = Field(min_length=1)
+    creations: list[Creation]
     tree: TreeState
     snake: SnakeState
     archived: list[NPCState]
@@ -484,6 +499,58 @@ class SimulationState(SaveModel):
     def validate_references(self):
         residents = [*self.npcs, *self.archived]
         live_ids = {n.id for n in self.npcs}
+        indoor_ids = {n.id for n in self.npcs if n.behavior in INDOOR_BEHAVIORS}
+        if len({n.room_number for n in residents}) != len(residents):
+            raise ValueError("Apartment rooms must be unique, including departed assignments.")
+        creation_ids, job_ids = set(), set()
+        for work in self.creations:
+            if (work.id in creation_ids or work.job_id in job_ids or work.creator_id not in {n.id for n in residents}
+                    or phase_index(work.day, work.phase) > phase_index(self.day, self.phase)):
+                raise ValueError("Invalid creation identity, credit, or completion time.")
+            creation_ids.add(work.id)
+            job_ids.add(work.job_id)
+        for n in residents:
+            if n.last_creative_day > self.day or n.sprite_size is not None and any(size <= 0 for size in n.sprite_size):
+                raise ValueError("Invalid resident home state.")
+            if n.departure and (n.creative_job or n.behavior in HOME_BEHAVIORS):
+                raise ValueError("Departed residents cannot keep active home work.")
+            if n.behavior in HOME_BEHAVIORS:
+                resident = NPC(character=n.character, sprite_size=n.sprite_size)
+                approach = entrance(resident)
+                import math
+                if n.owner != "autonomous" or n.home_reason is None or n.resume_pending:
+                    raise ValueError("Home activities must be autonomous and cannot be suspended.")
+                if n.behavior == Behavior.GO_HOME:
+                    if n.target_id != APARTMENT_ID or n.destination != approach:
+                        raise ValueError("A home trip needs its reachable apartment entrance.")
+                    if n.home_reason == "night" and self.phase != "night":
+                        raise ValueError("A night-only trip cannot continue after dawn.")
+                elif (n.destination is not None or n.target_id is not None
+                      or math.dist((n.x, n.y), approach) > HOME_ARRIVAL_TOLERANCE):
+                    raise ValueError("Indoor activities must commit at the entrance.")
+            if n.behavior == Behavior.SLEEP and n.home_reason != "night":
+                raise ValueError("Sleep must retain its night intent.")
+            if self.phase == "night" and n.behavior in INDOOR_BEHAVIORS and n.behavior != Behavior.SLEEP:
+                raise ValueError("Indoor residents must sleep during night.")
+            if n.behavior not in HOME_BEHAVIORS and n.home_reason is not None and (
+                    n.home_reason != "night" or self.phase != "night"):
+                raise ValueError("Only pending bedtime can retain outdoor home intent.")
+            if n.wake_remaining is not None and (n.behavior != Behavior.SLEEP or self.phase != "day"):
+                raise ValueError("Only daytime sleepers can be waking.")
+            if n.bedtime_remaining is not None and n.home_reason != "night":
+                raise ValueError("A bedtime delay needs night intent.")
+            job = n.creative_job
+            if (job is None) != (n.behavior not in (Behavior.PAINT, Behavior.COMPOSE)):
+                raise ValueError("An active hobby needs exactly one creative job.")
+            if job:
+                if (job.id in job_ids or job.creator_id != n.id or n.id not in live_ids
+                        or n.command_revision != job.revision or job.started_day != n.last_creative_day
+                        or phase_index(job.started_day, job.started_phase) > phase_index(self.day, self.phase)
+                        or job.remaining > CREATION_WORK_SECONDS_RANGE[1] or job.queue_remaining > CREATIVE_QUEUE_SECONDS
+                        or n.behavior != (Behavior.PAINT if job.kind == "art" else Behavior.COMPOSE)
+                        or self.phase == "night"):
+                    raise ValueError("Invalid active creative job or completed job reuse.")
+                job_ids.add(job.id)
         actors = {n.id: (n.display_name or n.character["Name"]) for n in residents}
         actors[self.snake.id] = SNAKE_NAME
         authored_names = {actors[n.id]: n.character["Name"] for n in residents}
@@ -682,6 +749,9 @@ class SimulationState(SaveModel):
             if activity.behavior in (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING, Behavior.HARVEST):
                 if target != self.tree.id:
                     raise ValueError("Invalid tree task target.")
+            elif activity.behavior == Behavior.GO_HOME:
+                if target != APARTMENT_ID:
+                    raise ValueError("Invalid apartment target.")
             elif activity.behavior == Behavior.COMPANY:
                 if target not in live_ids or target == owner.id:
                     raise ValueError("A company target must be living.")
@@ -693,6 +763,8 @@ class SimulationState(SaveModel):
             if pair[0] == pair[1] or any(i >= len(self.npcs) or i in reserved for i in pair) or interaction.record >= len(self.history):
                 raise ValueError("Invalid live interaction participants.")
             for index, activity in zip(pair, interaction.saved_states):
+                if self.npcs[index].id in indoor_ids or activity.behavior in HOME_BEHAVIORS:
+                    raise ValueError("Home residents cannot occupy outdoor interactions, including suspended work.")
                 activity_target(activity, self.npcs[index])
             record = self.history[interaction.record]
             if set(record.participants) != {actors[self.npcs[i].id] for i in pair}:
@@ -732,7 +804,8 @@ class SimulationState(SaveModel):
                 raise ValueError("Invalid apple handoff progress.")
         encounter = self.snake_encounter
         if encounter:
-            if encounter.resident_id not in live_ids or encounter.record >= len(self.history):
+            if (encounter.resident_id not in live_ids or encounter.resident_id in indoor_ids
+                    or encounter.saved_state.behavior in HOME_BEHAVIORS or encounter.record >= len(self.history)):
                 raise ValueError("A snake encounter needs a living resident.")
             resident_index = next(i for i, n in enumerate(self.npcs) if n.id == encounter.resident_id)
             if resident_index in reserved or self.history[encounter.record].id != encounter.id or self.snake.target_id != encounter.resident_id:
@@ -772,7 +845,7 @@ class SimulationState(SaveModel):
             if index in reserved and npc.behavior != Behavior.WAIT:
                 raise ValueError("Encounter participants must wait.")
         for reference in (self.tree.reserved_by, self.tree.shaker):
-            if reference is not None and reference not in live_ids:
+            if reference is not None and (reference not in live_ids or reference in indoor_ids):
                 raise ValueError("A tree reservation requires a living owner.")
         if self.tree.shaker is not None and self.tree.shaker != self.tree.reserved_by or bool(self.tree.shaker) != (self.tree.shake_elapsed is not None):
             raise ValueError("Invalid tree shake owner.")
@@ -780,6 +853,8 @@ class SimulationState(SaveModel):
         for action in self.pending_actions:
             if action.npc_id not in live_ids or action.npc_id in pending_owners or action.target_id is not None and action.target_id not in live_ids:
                 raise ValueError("Queued actions need living actors.")
+            if action.npc_id in indoor_ids or action.target_id in indoor_ids:
+                raise ValueError("Queued outdoor actions cannot reach indoor residents.")
             pending_owners.add(action.npc_id)
             if action.record is not None and action.record >= len(self.history):
                 raise ValueError("Invalid queued history record.")
@@ -972,6 +1047,7 @@ def capture_simulation(app):
     encounter = world.snake.encounter
     return SimulationState(
         day=world.day, npc_trait_mode=world.npc_trait_mode, phase=world.phase,
+        creations=world.creations,
         events=[asdict(event) for event in world.events],
         promises=[asdict(promise) for promise in world.promises],
         facts=[asdict(fact) for fact in world.facts], claims=[asdict(claim) for claim in world.claims],
@@ -1004,6 +1080,11 @@ def restore_simulation(state):
             id=saved.id, character=saved.character, display_name=saved.display_name, x=saved.x, y=saved.y,
             reply=saved.reply, emotion=saved.emotion.name, emotion_intensity=saved.emotion.intensity,
             social=saved.social,
+            sprite_size=saved.sprite_size, room_number=saved.room_number, social_fatigue=saved.social_fatigue,
+            home_remaining=saved.home_remaining, outdoor_remaining=saved.outdoor_remaining,
+            bedtime_remaining=saved.bedtime_remaining, wake_remaining=saved.wake_remaining,
+            home_reason=saved.home_reason, last_creative_day=saved.last_creative_day,
+            creative_job=saved.creative_job.model_copy(deep=True) if saved.creative_job else None,
             inventory=saved.inventory.copy(), inventory_capacity=saved.inventory_capacity,
             rewritten_reply=saved.rewritten_reply,
             preferences=saved.preferences.model_dump(), command_revision=saved.command_revision,
@@ -1027,6 +1108,7 @@ def restore_simulation(state):
                 reserved_by=by_id.get(state.tree.reserved_by))
     world = Simulation(npcs, tree, assign_goals=False, npc_trait_mode=state.npc_trait_mode)
     world.archived = all_residents[len(state.npcs):]
+    world.creations = [work.model_copy(deep=True) for work in state.creations]
     for npc in world.archived:
         npc.world = world
     snake_values = state.snake.model_dump()

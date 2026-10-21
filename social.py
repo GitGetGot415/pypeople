@@ -397,6 +397,8 @@ def add_fact(world, kind, subject, target, source_id, record, summary, witnesses
     existing = next((fact for fact in world.facts if fact.source_id == source_id and fact.kind == kind), None)
     if existing is not None:
         return existing
+    if kind not in ("private_motive", "former_life"):
+        witnesses = [p for p in witnesses if not getattr(p, "indoors", False)]
     fact = Fact(uuid4().hex, kind, subject.id, target.id, source_id,
                 record.id if record else None, world.phase_index, summary, [npc.id for npc in witnesses])
     world.facts.append(fact)
@@ -428,7 +430,7 @@ def record_event_fact(world, event, record):
     first, second = [world.actor_by_id(npc_id) for npc_id in event.participants]
     subject, target = (second, first) if kind == "apple_refused" else (first, second)
     observers = [subject, target, *world.listeners(subject)]
-    if ((world.snake.x - subject.x) ** 2 + (world.snake.y - subject.y) ** 2) ** 0.5 <= 150:
+    if not getattr(subject, "indoors", False) and ((world.snake.x - subject.x) ** 2 + (world.snake.y - subject.y) ** 2) ** 0.5 <= 150:
         observers.append(world.snake)
     add_fact(world, kind, subject, target, event.id, record, event.text, list({p.id: p for p in observers}.values()))
 
@@ -1002,7 +1004,7 @@ def validate_agreements(agreements, proposals, turns, initiator_id, recipient_id
 def validate_live_agreements(conversation, response, *, dialogue_validation=True):
     world = conversation.initiator.world
     pair = (conversation.initiator, conversation.recipient)
-    if any(npc.conversation is not conversation or not any(person is npc for person in world.npcs) for npc in pair):
+    if any(npc.conversation is not conversation or not world.is_outdoors(npc) for npc in pair):
         raise ValueError("The conversation participants are no longer available.")
     if conversation.context_references != conversation_references(conversation):
         raise ValueError("An objective or promise changed while the reply was being generated. Please try again.")

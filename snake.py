@@ -173,7 +173,7 @@ class Snake:
             return
         if not (self.selected or self.request_pending or self.retry_request):
             from social import fact_by_id
-            for npc in self.world.npcs:
+            for npc in self.world.outdoor_npcs:
                 if npc.selected:
                     continue
                 advance = self.advances.get(npc.id)
@@ -200,7 +200,8 @@ class SnakeEncounter:
 
     def __init__(self, world, resident, purpose, reason="", *, origin="autonomous"):
         if (world.snake.encounter or world.snake.request_pending or resident.snake_encounter
-                or world.npc_by_id(resident.id) is not resident
+                or not world.is_outdoors(resident) or resident.behavior.value == "GO_HOME"
+                or resident.home_reason == "night"
                 or resident.busy or resident.request_pending
                 or any(resident.id in (action.npc_id, action.target_id) for action in world.pending_actions)):
             raise ValueError(f"{SNAKE_NAME} or the resident is busy.")
@@ -252,7 +253,7 @@ class SnakeEncounter:
     @property
     def accepts_response(self):
         return (self.active and not self.committed and self.dialogue_state in ("waiting", "pending")
-                and self.world.npc_by_id(self.recipient.id) is self.recipient
+                and self.world.is_outdoors(self.recipient)
                 and self.initiator.encounter is self)
 
     def other(self, actor):
@@ -377,7 +378,7 @@ class SnakeEncounter:
         npc = self.recipient
         if npc.snake_encounter is self:
             npc.snake_encounter = None
-            if self.world.npc_by_id(npc.id) is npc:
+            if self.world.is_outdoors(npc):
                 npc.restore_after_interaction(self.saved_state, self.initiator.id, self.world.tree.id)
                 npc.pause_after_conversation(self.committed)
         if self.initiator.encounter is self:
@@ -390,7 +391,7 @@ class SnakeEncounter:
         if not self.active:
             return
         npc, snake = self.recipient, self.initiator
-        if self.world.npc_by_id(npc.id) is not npc:
+        if not self.world.is_outdoors(npc):
             self.finish(error="The resident is no longer here.")
             return
         if self.stage == "waiting" and math.dist((npc.x, npc.y), self.world.tree.interaction_point) > 8:

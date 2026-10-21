@@ -13,6 +13,8 @@ from conversation_history import (display_parts, has_failed_voice_rewrite, usabl
 from emotions import portrait_expression
 from social import assertion_text, claim_by_id, concern_description, fact_by_id, phase_label, selected_beliefs
 
+from constants import STATS_TAB_RECTS, STATS_FOLLOW_RECT
+from .creations import CreationsGallery
 from .button import Button
 from .text import paginate_parts, wrap_text
 from .world import snake_artwork
@@ -23,17 +25,22 @@ class StatsScreen:
 
     def __init__(self):
         self.back_button = Button((184, 56, 170, 38), "Back to game")
-        self.tabs = {name: Button(rect, name) for name, rect in (
-            ("Statistics", (512, 146, 108, 36)), ("Opinions", (628, 146, 100, 36)),
-            ("Conversations", (736, 146, 144, 36)), ("Model logs", (888, 146, 112, 36)))}
+        self.tabs = {name: Button(rect, name) for name, rect in zip(
+            ("Statistics", "Opinions", "Conversations", "Creations", "Model logs"), STATS_TAB_RECTS)}
+        self.gallery = CreationsGallery()
         self.original_toggle = Button((888, 102, 192, 30), "Original dialogue: Off")
         self.condense_toggle = Button((888, 66, 192, 30), "Condense: Off")
-        self.follow_toggle = Button((1008, 146, 72, 36), "Follow")
+        self.follow_toggle = Button(STATS_FOLLOW_RECT, "Follow")
         self.list_rect = pygame.Rect(200, 184, 264, 440)
         self.detail_rect = pygame.Rect(512, 200, 568, 424)
         self.open()
 
     def open(self):
+        self.gallery.close()
+        self.gallery.selected_id = None
+        self.gallery.filter = "All"
+        self.gallery.status = ""
+        self._creation_order = set()
         self.selected_npc = None
         self.selected_conversation = None
         self.selected_log = None
@@ -65,7 +72,10 @@ class StatsScreen:
     def _list_rows(self, app):
         rows = []
         top = 0
-        if self.tab == "Model logs":
+        if self.tab == "Creations":
+            entries = [(work, f"{work.kind.title()}: {work.title}\n{app.simulation.actor_by_id(work.creator_id).name}\nDay {work.day} / {work.phase.title()}")
+                       for work in self.gallery.entries(app.simulation)]
+        elif self.tab == "Model logs":
             entries = [(log, f"{log.metadata['participants']}\n{log.status_label} / "
                        f"{('Thread ' + str(log.metadata['slot'])) if log.metadata['slot'] is not None else 'Waiting for a thread'}\n"
                        f"{log.metadata['started'][:19]} UTC")
@@ -78,10 +88,17 @@ class StatsScreen:
         else:
             entries = [(npc, npc.name + (" (departed)" if getattr(npc, "departure", None) else "")) for npc in app.simulation.actors]
         for entry, label in entries:
-            lines = wrap_text(label, app.font, self.list_rect.width - 30)
+            lines = ([line for paragraph in label.splitlines()
+                      for line in wrap_text(paragraph, app.font, self.list_rect.width - 30)]
+                     if self.tab == "Creations" else wrap_text(label, app.font, self.list_rect.width - 30))
             height = max(48, len(lines) * app.font.get_linesize() + 20)
             rows.append((entry, top, height, lines))
             top += height + 8
+        if self.tab == "Creations":
+            current_ids = {entry.id for entry, *_ in rows}
+            if self._creation_order and self.list_scroll > 0:
+                self.list_scroll += sum(height + 8 for entry, _, height, _ in rows if entry.id not in self._creation_order)
+            self._creation_order = current_ids
         return rows, max(0, top - 8)
 
     def _detail_lines(self, app):
@@ -90,6 +107,9 @@ class StatsScreen:
         self.promise_links = []
         self.dialogue_portraits = []
         self.dialogue_backgrounds = []
+
+        if self.tab == "Creations":
+            return lines
 
         def add(text, font=app.font, color=INK, indent=0):
             for paragraph in str(text).splitlines() or [""]:
@@ -295,6 +315,8 @@ class StatsScreen:
                 gap()
             add(f"Arrival: day {npc.arrival_day}")
             add(f"Activity: {npc.status}")
+            add(f"Room {npc.room_number} / {'Indoors' if npc.indoors else 'Outdoors'} / fatigue {npc.social_fatigue:.0f}/100")
+            add(f"Creations: {sum(work.creator_id == npc.id for work in app.simulation.creations)}")
             if npc.departure:
                 source = next(f for f in app.simulation.facts if f.source_id == npc.departure["event_id"] and f.kind == "eating")
                 top = height()
@@ -400,7 +422,8 @@ class StatsScreen:
 
     def _scroll_limits(self, app):
         _, list_height = self._list_rows(app)
-        detail_height = sum(font.get_linesize() for _, font, _, _ in self._detail_lines(app))
+        detail_height = (self.gallery.layout(app)[1] if self.tab == "Creations" else
+                         sum(font.get_linesize() for _, font, _, _ in self._detail_lines(app)))
         limits = {
             "list": max(0, list_height - self.list_rect.height),
             "detail": max(0, detail_height - self.detail_rect.height),
@@ -425,12 +448,15 @@ class StatsScreen:
         if self.back_button.clicked(event) or (
             event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
         ):
+            self.gallery.stop()
             app.screen = "game"
             return
         for name, button in self.tabs.items():
             if button.clicked(event):
                 if self.tab != name and (self.tab not in ("Statistics", "Opinions") or name not in ("Statistics", "Opinions")):
                     self.list_scroll = 0
+                if self.tab != name:
+                    self.gallery.stop()
                 self.tab = name
                 if name == "Conversations" and self.selected_conversation is None and app.conversation_history:
                     self.selected_conversation = app.conversation_history[-1]
@@ -440,6 +466,17 @@ class StatsScreen:
                         self.open_log(logs[0])
                 self.detail_scroll = 0
                 self.scroll_focus = "detail"
+                return
+
+        if self.tab == "Creations":
+            action = self.gallery.handle_event(app, event, self.detail_scroll)
+            if action:
+                if action == "filter":
+                    self.list_scroll = self.detail_scroll = 0
+                    self._creation_order = set()
+                    selected = self.gallery.selected(app.simulation)
+                    if selected and selected not in self.gallery.entries(app.simulation):
+                        self.gallery.selected_id = None
                 return
 
         if self.tab == "Model logs" and self.follow_toggle.clicked(event):
@@ -495,7 +532,9 @@ class StatsScreen:
                     rows, _ = self._list_rows(app)
                     for entry, top, height, _ in rows:
                         if top <= pos[1] - rect.top + scroll < top + height:
-                            if self.tab == "Conversations":
+                            if self.tab == "Creations":
+                                self.gallery.select(entry)
+                            elif self.tab == "Conversations":
                                 self.selected_conversation = entry
                             elif self.tab == "Model logs":
                                 self.open_log(entry)
@@ -531,7 +570,8 @@ class StatsScreen:
         list_title = ("Model requests" if self.tab == "Model logs" else
                       f"Conversations ({len(app.conversation_history)})" if self.tab == "Conversations" else
                       f"Living {len(app.npcs)} / Departed {len(app.simulation.archived)}")
-        surface.blit(app.font.render(list_title, True, INK), (200, 150))
+        if self.tab != "Creations":
+            surface.blit(app.font.render(list_title, True, INK), (200, 150))
         for name, button in self.tabs.items():
             button.draw(surface, app.small_font)
             if self.tab == name:
@@ -580,7 +620,8 @@ class StatsScreen:
             row = pygame.Rect(self.list_rect.x, self.list_rect.y + top - self.list_scroll, self.list_rect.width - 14, height)
             if not row.colliderect(self.list_rect):
                 continue
-            selected_entry = (self.selected_log if self.tab == "Model logs" else
+            selected_entry = (self.gallery.selected(app.simulation) if self.tab == "Creations" else
+                              self.selected_log if self.tab == "Model logs" else
                               self.selected_conversation if self.tab == "Conversations" else self.selected_npc)
             selected = entry is selected_entry
             if self.tab == "Model logs":
@@ -630,6 +671,8 @@ class StatsScreen:
                 surface.blit(app.small_font.render(label, True, MUTED),
                              (rect.x, rect.bottom + 6 + index * app.small_font.get_linesize()))
         surface.set_clip(previous_clip)
+        if self.tab == "Creations":
+            self.gallery.draw(app, self.detail_scroll)
         for pane, rect in (("list", self.list_rect), ("detail", self.detail_rect)):
             if limits[pane]:
                 track, thumb = self._scrollbar(rect, getattr(self, f"{pane}_scroll"), limits[pane])

@@ -5,6 +5,9 @@ from constants import (DIALOGUE_PANEL_HEIGHT, FAILED_CONVERSATION_SELECTED_COLOR
 from emotions import portrait_expression
 from conversation_history import display_parts, uses_original_dialogue
 from name_knowledge import actor_catalog, name_forms
+from constants import (APARTMENT_INSPECTOR_CLOSE_RECT, APARTMENT_INSPECTOR_RECT, APARTMENT_INSPECTOR_ROW_HEIGHT,
+                       APARTMENT_INSPECTOR_CONTENT_INSET, APARTMENT_INSPECTOR_CONTENT_TOP,
+                       APARTMENT_INSPECTOR_TITLE_OFFSET, APARTMENT_RECT, MODAL_OVERLAY_COLOR)
 
 from .button import Button
 from .event_feed import EventFeed
@@ -54,8 +57,13 @@ class GameScreen:
         self.panning = False
         self.request_status = RequestStatus(max_requests)
         self.feed = EventFeed()
+        self.apartment_open = False
+        self.apartment_scroll = 0
+        self.apartment_close = Button(APARTMENT_INSPECTOR_CLOSE_RECT, "Close")
 
     def reset(self):
+        self.apartment_open = False
+        self.apartment_scroll = 0
         self.close_dialogue()
         self.prompt_input.set_value("")
         self.reply = ""
@@ -113,6 +121,14 @@ class GameScreen:
                 self.camera_offset[1] + (WINDOW_SIZE[1] - WORLD_HEIGHT) / 2)
 
     def handle_event(self, app, event):
+        if self.apartment_open:
+            if self.apartment_close.clicked(event) or event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                self.apartment_open = False
+            elif event.type == pygame.MOUSEWHEEL:
+                _, content, height = self.apartment_rows(app)
+                limit = max(0, height - content.height)
+                self.apartment_scroll = max(0, min(limit, self.apartment_scroll - event.y * APARTMENT_INSPECTOR_ROW_HEIGHT))
+            return
         paused = app.simulation.paused
         if self.arrival_retry.clicked(event, enabled=not paused):
             app.retry_arrival()
@@ -291,6 +307,13 @@ class GameScreen:
 
     def select_at(self, app, screen_pos):
         world_pos = self.screen_to_world(screen_pos)
+        if pygame.Rect(APARTMENT_RECT).collidepoint(world_pos):
+            self.close_dialogue()
+            self.pan_start = self.pan_last = None
+            self.panning = False
+            self.apartment_open = True
+            self.apartment_scroll = 0
+            return
         npc = next((npc for npc in sorted([*app.npcs, app.simulation.snake], key=lambda npc: npc.y, reverse=True) if npc.contains(world_pos)), None)
         if self.viewed_conversation is not None and npc is not None and (npc.conversation or getattr(npc, "snake_encounter", None)) is self.viewed_conversation:
             # Clicking the other participant keeps the same conversation open.
@@ -342,6 +365,8 @@ class GameScreen:
             draw_wrapped_text(app.window, self.save_message, app.small_font, color, (24, 480, 1232, 44))
 
         if not self.dialogue_open:
+            if self.apartment_open:
+                self.draw_apartments(app)
             return
         if self.viewed_conversation is not None:
             self.draw_conversation(app)
@@ -377,7 +402,7 @@ class GameScreen:
             self.done_button.draw(app.window, app.font)
         else:
             self.prompt_input.draw(app.window, app.font)
-            self.send_button.draw(app.window, app.font, enabled=not app.requests.busy and app.request_history is None
+            self.send_button.draw(app.window, app.font, enabled=(not app.requests.busy or bool(app.creative_requests)) and app.request_history is None
                                   and not self.selected_npc.request_pending and not app.simulation.paused)
         if self.player_record and self.player_record.dialogue_errors:
             draw_wrapped_text(app.window, self.player_record.dialogue_errors[-1], app.small_font,
@@ -392,6 +417,40 @@ class GameScreen:
         if not closing:
             count = app.small_font.render(f"{len(self.prompt_input.text)}/300", True, MUTED)
             app.window.blit(count, count.get_rect(topright=(1256, 696)))
+
+    def apartment_rows(self, app):
+        rect = pygame.Rect(APARTMENT_INSPECTOR_RECT)
+        content = rect.inflate(*(-value for value in APARTMENT_INSPECTOR_CONTENT_INSET))
+        content.top = rect.top + APARTMENT_INSPECTOR_CONTENT_TOP
+        rows, top = [], 0
+        for npc in sorted((npc for npc in app.npcs if npc.indoors), key=lambda npc: npc.room_number):
+            for paragraph in (f"Room {npc.room_number}: {npc.name}", npc.status):
+                for line in wrap_text(paragraph, app.small_font, content.width):
+                    rows.append((line, top))
+                    top += app.small_font.get_linesize()
+            top += APARTMENT_INSPECTOR_ROW_HEIGHT - app.small_font.get_linesize()
+        return rows, content, top
+
+    def draw_apartments(self, app):
+        overlay = pygame.Surface(app.window.get_size(), pygame.SRCALPHA)
+        overlay.fill(MODAL_OVERLAY_COLOR)
+        app.window.blit(overlay, (0, 0))
+        rect = pygame.Rect(APARTMENT_INSPECTOR_RECT)
+        pygame.draw.rect(app.window, PAPER, rect)
+        app.window.blit(app.heading_font.render("Apartments", True, INK),
+                        (rect.x + APARTMENT_INSPECTOR_TITLE_OFFSET[0], rect.y + APARTMENT_INSPECTOR_TITLE_OFFSET[1]))
+        self.apartment_close.draw(app.window, app.small_font)
+        rows, content, height = self.apartment_rows(app)
+        limit = max(0, height - content.height)
+        self.apartment_scroll = min(self.apartment_scroll, limit)
+        previous_clip = app.window.get_clip()
+        app.window.set_clip(content.clip(previous_clip))
+        if not rows:
+            app.window.blit(app.font.render("Everyone is outside.", True, MUTED), content.topleft)
+        for label, top in rows:
+            app.window.blit(app.small_font.render(label, True, INK),
+                            (content.x, content.y + top - self.apartment_scroll))
+        app.window.set_clip(previous_clip)
 
     def draw_dialogue_background(self, app, original):
         top = WINDOW_SIZE[1] - DIALOGUE_PANEL_HEIGHT

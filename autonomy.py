@@ -46,7 +46,9 @@ def lone_introduction(npc, world):
 
 
 def reconsider(npc, world, *, pressing_only=False):
-    if npc.interaction is not None or npc.resume_pending:
+    from apartments import HOME_BEHAVIORS
+    if (npc.interaction is not None or npc.resume_pending or npc.behavior in HOME_BEHAVIORS
+            or npc.home_reason == "night"):
         return
     if not target_valid(npc, world):
         npc.finish_activity(world, failed=True)
@@ -146,6 +148,9 @@ def donor_choice(donor, requester):
 
 
 def actionable_obligation(npc, world):
+    from apartments import available_outdoors
+    if not available_outdoors(npc):
+        return False
     # Preserve a free receiver for a delivery that is already physically possible,
     # even when the giver's ordinary decision timer has not elapsed yet.
     if npc.inventory_space > 0:

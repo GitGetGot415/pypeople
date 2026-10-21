@@ -5,7 +5,7 @@ from time import monotonic
 
 from pydantic import ValidationError
 
-from constants import DIALOGUE_TIMEOUT_SECONDS, MAX_LLM_REQUESTS
+from constants import CREATIVE_REQUEST_SECONDS, DIALOGUE_TIMEOUT_SECONDS, MAX_LLM_REQUESTS
 from llm import (MODEL, ConversationTurn, InvalidResponseError, RequestError, VoiceRewriteResponse,
                  VoiceRewriteValidationError, request_response,
                  request_voice_rewrite, validate_response, validate_voice_rewrite, voice_rewrite_snapshot)
@@ -30,6 +30,8 @@ class RequestWorker:
 
 def _request_description(snapshot):
     kind = snapshot.get("request_kind")
+    if kind in ("create_art", "create_music"):
+        return snapshot["author"]["Name"], "Painting" if kind == "create_art" else "Composing"
     if kind == "conversation":
         initiator, recipient = snapshot["initiator"], snapshot["recipient"]
         participants = f"{initiator['npc_name']} & {recipient['npc_name']}"
@@ -45,14 +47,16 @@ def _request_description(snapshot):
 
 def _request_worker(session_id, request_id, provider, api_key, message, snapshot, results, progress, ollama_model, log=None, control=None):
     """Queue simulation results; diagnostics have their own synchronized log."""
-    deadline = monotonic() + DIALOGUE_TIMEOUT_SECONDS
+    creative = snapshot.get("request_kind") in ("create_art", "create_music")
+    deadline = monotonic() + (CREATIVE_REQUEST_SECONDS if creative else DIALOGUE_TIMEOUT_SECONDS)
     control = control or RequestControl()
 
     def report(stage):
         nonlocal deadline
         control.check()
         # Match the interaction's progress-based inactivity deadline across calls.
-        deadline = monotonic() + DIALOGUE_TIMEOUT_SECONDS
+        if not creative:
+            deadline = monotonic() + DIALOGUE_TIMEOUT_SECONDS
         progress.put((session_id, request_id, stage, None, control))
         record_output("stage", stage)
 
@@ -64,11 +68,11 @@ def _request_worker(session_id, request_id, provider, api_key, message, snapshot
             result = request_response(provider, api_key, message, snapshot, ollama_model=ollama_model, progress=report)
             control.check()
             rewritten = []
-            if snapshot.get("_voice_rewrites", True):
+            if not creative and snapshot.get("_voice_rewrites", True):
                 rewritten = request_voice_rewrite(provider, api_key, result, snapshot, deadline=deadline,
                                                   ollama_model=ollama_model, progress=report)
             else:
-                record_output("stage", "Voice rewrites disabled; using original dialogue.")
+                record_output("stage", "Creation data ready." if creative else "Voice rewrites disabled; using original dialogue.")
             control.check()
             raw = result.model_dump_json()
             record_output("status", "completed")
@@ -84,7 +88,8 @@ def _request_worker(session_id, request_id, provider, api_key, message, snapshot
                 results.put((session_id, request_id, None, str(exc), snapshot,
                              [turn.model_dump() for turn in exc.failed_turns], [], control))
         except Exception:
-            error = "Could not get a reply from the model. Please try again."
+            error = ("Could not complete this creation." if creative else
+                     "Could not get a reply from the model. Please try again.")
             record_output("error", error)
             if not control.cancelled.is_set():
                 results.put((session_id, request_id, None, error, snapshot, [], [], control))
@@ -126,7 +131,7 @@ class RequestManager:
     def expire_queued(self, session_id, request_ids):
         for key, log in self.logs.items():
             if log.status == "queued" and key not in self.workers and (key[0] != session_id or key[1] not in request_ids):
-                self.finish(*key, error="The conversation ended before a worker became available.")
+                self.finish(*key, error="The activity ended before a worker became available.")
 
     @property
     def busy(self):
@@ -244,7 +249,7 @@ class RequestManager:
                 self.finish(session_id, request_id, "Invalid action or reply.")
                 replies.append((request_id, None, "The model returned an invalid action or reply. Try again.", [], []))
                 continue
-            for reason in result._dialogue_errors:
+            for reason in getattr(result, "_dialogue_errors", ()):
                 disposition(f"Base dialogue failed validation; retaining dialogue and effects: {reason}")
             if rewritten:
                 try:

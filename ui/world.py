@@ -4,6 +4,7 @@ from pathlib import Path
 import pygame
 
 from constants import INK, PAPER, SHADOW_COLOR, WORLD_COLORS, WORLD_HEIGHT, WORLD_WIDTH
+from constants import APARTMENT_COLOR, APARTMENT_DOOR_COLOR, APARTMENT_DOOR_RECT, APARTMENT_RECT
 
 
 
@@ -67,6 +68,13 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     # Bubbles can extend beyond the ground's rectangle into the surrounding view.
     surface.set_clip(viewport.clip(previous_clip))
     surface.blit(scene, scene_rect)
+    for geometry, color in ((APARTMENT_RECT, APARTMENT_COLOR), (APARTMENT_DOOR_RECT, APARTMENT_DOOR_COLOR)):
+        x, y, width, height = geometry
+        # Draw directly into the clipped camera view so negative coordinates survive.
+        rect = pygame.Rect(round(x * zoom + camera_offset[0]), round(y * zoom + camera_offset[1]),
+                           round(width * zoom), round(height * zoom))
+        pygame.draw.rect(surface, color, rect)
+    npcs = [npc for npc in npcs if not npc.indoors]
     _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, phase, zoom, snake)
     surface.set_clip(previous_clip)
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from character_data import DIRECTIONS, PROFILE_FIELDS, normalize_opinions
+from creations import CreativeJob
 from emotions import portrait_expression
 from purgatory import initial_attitudes
 from conversation_history import (ConversationRecord, describe_opinion_change, relevant_memories, remember,
@@ -22,7 +23,7 @@ from constants import (
     POST_DIALOGUE_SECONDS, SHAKE_SECONDS, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED, WANDER_PAUSE, WORLD_HEIGHT, WORLD_WIDTH,
     STARTING_DAY, STARTING_FACING, STARTING_NPC_FRUIT, STARTING_NPC_GENEROSITY_RANGE,
     STARTING_NPC_POSITION, STARTING_NPC_SATISFACTION_RANGE, STARTING_NPC_SOCIABILITY_RANGE,
-    STARTING_TREE_POSITION,
+    STARTING_TREE_POSITION, STARTING_FATIGUE_RANGE, EXCHANGE_FATIGUE,
 )
 from interactions import (company_point, conversation_points, dialogue_finished, face_each_other, face_toward,
                           finish_generated_dialogue, move_toward, record_failed_dialogue, record_generated_turns)
@@ -45,6 +46,11 @@ class Behavior(str, Enum):
     EAT = "EAT"
     COMPANY = "COMPANY"
     WAIT = "WAIT"
+    GO_HOME = "GO_HOME"
+    REST = "REST"
+    SLEEP = "SLEEP"
+    PAINT = "PAINT"
+    COMPOSE = "COMPOSE"
 
 
 @dataclass
@@ -151,6 +157,20 @@ class NPC:
     departure: dict | None = None
     snake_encounter: object = field(default=None, repr=False, compare=False)
 
+    room_number: int = 0
+    social_fatigue: float = field(default_factory=lambda: random.uniform(*STARTING_FATIGUE_RANGE))
+    home_remaining: float = 0.0
+    outdoor_remaining: float = 0.0
+    bedtime_remaining: float | None = None
+    wake_remaining: float | None = None
+    home_reason: str | None = None
+    last_creative_day: int = 0
+    creative_job: CreativeJob | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def indoors(self):
+        return self.behavior in (Behavior.REST, Behavior.SLEEP, Behavior.PAINT, Behavior.COMPOSE)
+
     @property
     def inventory_space(self):
         return self.inventory_capacity - sum(self.inventory.values())
@@ -201,6 +221,7 @@ class NPC:
         self.conversation_pause_remaining = (self.rng.uniform(*CONVERSATION_PAUSE_RANGE)
                                              if completed else FAILURE_COOLDOWN)
         if completed:
+            self.social_fatigue = min(100.0, self.social_fatigue + EXCHANGE_FATIGUE)
             self.conversation_return_remaining = CONVERSATION_RETURN_PAUSE
 
     def release_claims(self, world):
@@ -222,6 +243,9 @@ class NPC:
 
     def begin_activity(self, behavior, world, target=None, reason="", owner="autonomous"):
         self.release_claims(world)
+        if behavior != Behavior.GO_HOME:
+            self.home_reason = None
+            self.bedtime_remaining = None
         self.behavior, self.target_id = behavior, target
         self.owner, self.reason = owner, reason
         self.destination = None
@@ -348,9 +372,16 @@ class NPC:
             Behavior.EAT: "Eating an apple",
             Behavior.COMPANY: "Seeking company" if self.destination else "Spending time together",
             Behavior.WAIT: "Waiting",
+            Behavior.GO_HOME: "Walking home",
+            Behavior.REST: "Relaxing at home",
+            Behavior.SLEEP: "Sleeping at home",
+            Behavior.PAINT: "Painting at home",
+            Behavior.COMPOSE: "Composing at home",
         }[self.behavior]
 
     def contains(self, point):
+        if self.indoors:
+            return False
         if self.sprite_size is not None:
             width, height = self.sprite_size
             return (
@@ -463,7 +494,7 @@ class NPC:
             self._face_when_still()
 
     def apply_action(self, action, tree):
-        if self.world is None or self.world.npc_by_id(self.id) is not self:
+        if self.world is None or not self.world.is_outdoors(self):
             raise ValueError("Only living residents can act in this world.")
         # Reject before changing anything. SAY preserves even an active shake.
         if action == "SAY":
@@ -490,6 +521,9 @@ class NPC:
         if (recipient is self or self.world is None or self.world.npc_by_id(self.id) is not self
                 or not any(person is recipient for person in self.world.npcs)):
             raise ValueError("Choose another NPC in this world to receive the items.")
+        from apartments import available_outdoors
+        if not available_outdoors(self) or not available_outdoors(recipient):
+            raise ValueError("Both residents must be available outdoors to exchange items.")
         if self.busy or recipient.busy or recipient.request_pending:
             raise ValueError("That person is busy now. Please try again later.")
         if item != "fruit" or type(quantity) is not int or quantity < 1:
@@ -524,6 +558,10 @@ class NPC:
         if self.interaction is not None or self.resume_pending:
             return
         world = self.world
+        if self.indoors or self.behavior == Behavior.GO_HOME:
+            from apartments import update_home
+            update_home(self, world, max(0.0, dt))
+            return
         old_x, old_y = self.x, self.y
         left, right, top, bottom = self.movement_bounds
         dt = max(0.0, dt)
@@ -631,7 +669,9 @@ class Conversation:
 
     def __init__(self, initiator, recipient, topic, tree, spacing=0, *, origin="player", purpose="chat",
                  opening_kind=None, focus_claim_id=None, goal_id=None):
-        if initiator is recipient or initiator.busy or recipient.busy:
+        from apartments import available_outdoors
+        if (initiator is recipient or initiator.busy or recipient.busy
+                or not available_outdoors(initiator) or not available_outdoors(recipient)):
             raise ValueError("Choose another NPC who is free to talk.")
         if purpose not in ("chat", "food_request"):
             raise ValueError("Resident meetings use chat or food_request.")
@@ -781,7 +821,8 @@ class Conversation:
         world = self.initiator.world
         return (self.active and self.dialogue_state in ("waiting", "pending")
                 and world.npc_by_id(self.initiator.id) is self.initiator
-                and world.npc_by_id(self.recipient.id) is self.recipient)
+                and world.npc_by_id(self.recipient.id) is self.recipient
+                and world.is_outdoors(self.initiator) and world.is_outdoors(self.recipient))
 
     def fail_dialogue(self, reason, *, failed_turns=()):
         if not self.accepts_response:
@@ -906,7 +947,7 @@ class Conversation:
                 offer_speaker="initiator" if p.promisor_id == self.initiator.id else "recipient",
                 acceptance_speaker="initiator" if p.recipient_id == self.initiator.id else "recipient",
             ) for p in self.proposals],
-            "nearby_npcs": [participant(npc) for npc in npcs if npc is not self.initiator and npc is not self.recipient],
+            "nearby_npcs": [participant(npc) for npc in npcs if not npc.indoors and npc is not self.initiator and npc is not self.recipient],
         }
 
     def finish(self, tree):
@@ -941,7 +982,11 @@ class Conversation:
                                                 self.record.outcomes[0], self.record)
             self.outcome_event_id = event.id
         for npc, state in zip((self.initiator, self.recipient), self.saved_states):
+            if npc.conversation is not self:
+                continue
             npc.conversation = None
+            if not npc.world.is_outdoors(npc):
+                continue
             npc.restore_after_interaction(state, self.other(npc).id)
             npc.pause_after_conversation(self.social_effects_applied)
             if not self.social_effects_applied:
@@ -987,6 +1032,9 @@ class Gift:
         if not self.active:
             return
         giver, recipient = self.initiator, self.recipient
+        if not all(giver.world.is_outdoors(p) for p in (giver, recipient)):
+            self.finish("A participant is no longer outdoors.")
+            return
         if not self.arrived:
             self.arrived = giver._move(max(0.0, dt))
             if self.arrived:
@@ -1031,7 +1079,11 @@ class Gift:
             self.outcome_event_id = event.id
         for npc, state in zip((self.initiator, self.recipient), self.saved_states):
             other = self.recipient if npc is self.initiator else self.initiator
+            if npc.gift is not self:
+                continue
             npc.gift = None
+            if not npc.world.is_outdoors(npc):
+                continue
             npc.restore_after_interaction(state, other.id, preserve_facing=True)
             if self.record.purpose == "food_request":
                 npc.pause_after_conversation(True)

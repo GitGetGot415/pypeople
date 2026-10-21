@@ -467,7 +467,8 @@ def structured_schema(model):
             return value
         if "$ref" in value:
             return expand(definitions[value["$ref"].split("/")[-1]])
-        return {key: expand(item) for key, item in value.items() if key not in ("title", "default", "additionalProperties")}
+        return {key: expand(item) for key, item in value.items()
+                if key not in ("default", "additionalProperties") and (key != "title" or isinstance(item, dict))}
     return expand(schema)
 
 
@@ -879,13 +880,18 @@ def _orientation_world_context(snapshot, *, correction=False):
     return context
 
 
+def _catalog_for_prompt(catalog):
+    return {actor_id: {key: value for key, value in actor.items() if key != "_visible"}
+            for actor_id, actor in catalog.items()}
+
+
 def _speech_references(person, catalog):
     """Give writers usable references beside technical account/roster names."""
     knowledge = person.get("name_knowledge", {}).get("known_names", {})
     allowed = permitted_forms(person, catalog, knowledge)
     return {"allowed_name_forms": sorted(allowed), "unknown_people": {
         target_id: actor.get("references") or ["another resident"] for target_id, actor in catalog.items()
-        if actor["self_name"] not in allowed and not forms(actor["self_name"]) & allowed}}
+        if actor.get("_visible", True) and actor["self_name"] not in allowed and not forms(actor["self_name"]) & allowed}}
 
 
 def world_context(snapshot, *, correction=False):
@@ -899,7 +905,7 @@ def world_context(snapshot, *, correction=False):
         if correction and context.get("shared_history"):
             context["shared_history"] = {key: value for key, value in context["shared_history"].items()
                                          if key != "recent_dialogue"}
-        context["engine_identities"] = snapshot.get("_name_actors", {})
+        context["engine_identities"] = _catalog_for_prompt(snapshot.get("_name_actors", {}))
         return named_context(context)
     conversation = snapshot.get("request_kind") == "conversation"
     info = snapshot.get("_information_validation") or {}
@@ -1087,7 +1093,7 @@ def world_context(snapshot, *, correction=False):
         context["player_dialogue"] = dialogue
     catalog = snapshot.get("_name_actors", {})
     if catalog:
-        context["engine_identities"] = catalog
+        context["engine_identities"] = _catalog_for_prompt(catalog)
         context["name_boundary"] = "All names in technical fields are engine identities; only each speaker's name_knowledge permits spoken forms."
     return named_context(context)
 
@@ -1431,8 +1437,39 @@ def _resident_contract(snapshot, *, correction=False):
     return instruction, schema, model
 
 
+def creative_contract(kind):
+    from creations import response_model
+    from constants import (ART_COLOR_NAMES, ART_PALETTE, ART_SIZE, CREATION_TITLE_LIMIT, MUSIC_MAX_NOTES,
+                           MUSIC_MAX_NOTE_STEPS, MUSIC_MAX_TRACKS, MUSIC_PITCH_RANGE, MUSIC_STEPS, MUSIC_TEMPO_RANGE)
+    instruction = (f"Create a private work inspired by the supplied author's own profile and the garden. "
+                   f"Return only title (1-{CREATION_TITLE_LIMIT} characters) and payload. "
+                   "Do not include dialogue, descriptions, facts about other residents, authorship IDs or dates. ")
+    if kind == "art":
+        palette = ", ".join(f"{i}={name} #{r:02X}{g:02X}{b:02X}"
+                            for i, (name, (r, g, b)) in enumerate(zip(ART_COLOR_NAMES, ART_PALETTE)))
+        instruction += (f"Paint a recognizable tiny pixel picture. payload is {{pixels: rows}} with exactly "
+                        f"{ART_SIZE} rows of exactly {ART_SIZE} integer indices each. All pixels are opaque. "
+                        f"Use only this palette: {palette}.")
+    else:
+        instruction += (f"Compose {MUSIC_STEPS} steps: four bars, four beats per bar, four steps per beat. "
+                        f"payload has integer tempo {MUSIC_TEMPO_RANGE[0]}-{MUSIC_TEMPO_RANGE[1]} BPM and "
+                        f"1-{MUSIC_MAX_TRACKS} tracks. Each track has waveform square or triangle and notes. "
+                        f"Use 1-{MUSIC_MAX_NOTES} notes TOTAL. Each note has integer MIDI pitch "
+                        f"{MUSIC_PITCH_RANGE[0]}-{MUSIC_PITCH_RANGE[1]}, only natural notes C D E F G A B "
+                        f"(pitch modulo 12 in 0,2,4,5,7,9,11), start 0-{MUSIC_STEPS - 1}, duration "
+                        f"1-{MUSIC_MAX_NOTE_STEPS} steps. Every note ends by {MUSIC_STEPS}; no overlapping notes "
+                        "within a track. Use a short motif, repetition, and rests. A compact valid example: "
+                        '{"title":"Garden Bells","payload":{"tempo":120,"tracks":[{"waveform":"triangle",'
+                        '"notes":[{"pitch":60,"start":0,"duration":4},{"pitch":64,"start":8,"duration":4},'
+                        '{"pitch":60,"start":32,"duration":4}]}]}}')
+    model = response_model(kind)
+    return instruction, structured_schema(model), model
+
+
 def response_contract(snapshot, *, correction=False):
     kind = snapshot.get("request_kind")
+    if kind in ("create_art", "create_music"):
+        return creative_contract(kind.removeprefix("create_"))
     if kind in ("resident_turn", "resident_assessment", "handoff_thanks"):
         return _resident_contract(snapshot, correction=correction)
     if kind == "conversation":
@@ -1749,6 +1786,13 @@ def validate_dialogue_repetition(turns, recent_dialogue=(), *, factual_context=(
 
 
 def validate_response(raw, snapshot):
+    if snapshot.get("request_kind") in ("create_art", "create_music"):
+        from creations import validate_creation
+        try:
+            return validate_creation(snapshot["request_kind"].removeprefix("create_"), raw)
+        except (ValidationError, ValueError, TypeError) as exc:
+            reason = str(exc.errors(include_input=False, include_url=False)) if isinstance(exc, ValidationError) else str(exc)
+            raise InvalidResponseError("Invalid creation data: " + reason) from None
     if snapshot.get("request_kind") == "voice_rewrite":
         return _parse_voice_rewrite(raw, snapshot["turns"], speakers=snapshot["speakers"])
     model = response_contract(snapshot)[2]
@@ -2380,6 +2424,11 @@ def _tree_stock_instruction(context):
 
 def _request_payload(message, snapshot, correction):
     """Build the same instructions and world payload for both providers."""
+    if snapshot.get("request_kind") in ("create_art", "create_music"):
+        instruction, schema, _ = response_contract(snapshot)
+        content = json.dumps({"author": snapshot["author"], "theme": "A quiet garden with an apple tree",
+                              "correction": correction}, ensure_ascii=False, separators=(",", ":"))
+        return instruction, schema, content
     if snapshot.get("request_kind") in ("conversation", "snake_encounter"):
         raise ValueError("Autonomous conversations must use the worker's sequential turn loop.")
     if snapshot.get("request_kind") == "voice_rewrite":
@@ -2541,7 +2590,7 @@ def _request_payload(message, snapshot, correction):
         if snapshot["speaker"].get("name_rule"):
             context["speaker"]["name_rule"] = snapshot["speaker"]["name_rule"]
     if snapshot.get("_name_actors"):
-        context["engine_identities"] = snapshot["_name_actors"]
+        context["engine_identities"] = _catalog_for_prompt(snapshot["_name_actors"])
     if snapshot.get("request_kind") in ("resident_turn", "snake_turn", "conversation_closing"):
         focus = context["reply_context"] = _reply_context(snapshot)
         instruction += ("\nConversation messages contain actual accepted speech: assistant/model messages are your earlier "
@@ -3438,6 +3487,32 @@ def _speech_retry_snapshot(snapshot):
 
 def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAULT_OLLAMA_MODEL, progress=None):
     """One worker owns every sequential stage; drafts have no live effects."""
+    if snapshot.get("request_kind") in ("create_art", "create_music"):
+        from constants import CREATIVE_ATTEMPTS, CREATIVE_REQUEST_SECONDS
+        deadline = monotonic() + CREATIVE_REQUEST_SECONDS
+        correction = ""
+        for attempt in range(CREATIVE_ATTEMPTS):
+            check_cancelled()
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise RequestError("Creation generation timed out.")
+            if progress:
+                progress("Creating" if attempt == 0 else "Correcting creation data")
+            state = {**snapshot, "_timeout": remaining}
+            try:
+                if provider == "gemini":
+                    result = _request_gemini(api_key, message, state, correction=correction)
+                elif provider == "ollama":
+                    result = _request_ollama(message, state, ollama_model, correction=correction)
+                else:
+                    raise RequestError("Choose an AI provider in Settings.")
+                check_cancelled()
+                if monotonic() > deadline:
+                    raise RequestError("Creation generation timed out.")
+                return result
+            except InvalidResponseError as exc:
+                correction = f"The creation was invalid: {exc}. Return a complete corrected work within the fixed rules."
+        raise RequestError("The model could not produce a valid creation after one correction.")
     generated = []
 
     def report(stage):

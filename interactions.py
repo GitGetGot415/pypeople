@@ -49,6 +49,8 @@ def move_toward(actor, point, dt, speed):
 
 def company_point(npc, partner, spacing=0, *, allow_vertical=False):
     """Choose the nearest reachable meeting point with room for both sprites."""
+    if npc.indoors or partner is None or partner.indoors:
+        return None
     default_size = (NPC_RADIUS * 2, NPC_RADIUS)
     gap = sum((actor.sprite_size or default_size)[0] / 2 for actor in (npc, partner))
     gap = max(gap + INTERACTION_GAP, spacing)
@@ -70,7 +72,7 @@ def conversation_points(first, second, spacing=0):
     vertical_gap = max(max(size[1] for size in sizes) + INTERACTION_GAP, spacing)
     occupied = [((world.tree.x, world.tree.y), CONVERSATION_TREE_CLEARANCE)]
     seen = set()
-    for resident in world.npcs:
+    for resident in world.outdoor_npcs:
         interaction = resident.interaction
         if interaction is None or id(interaction) in seen:
             continue
