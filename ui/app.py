@@ -397,7 +397,7 @@ class Application:
 
     def use_door(self, target):
         from locations import start_journey, allocated_floors, hallway_location, door_point, valid_location
-        from constants import ROOM_ARRIVAL, ELEVATOR_ARRIVAL, HALLWAY_EXIT, GARDEN_BUILDING_ARRIVAL
+        from constants import ROOM_ARRIVAL, ELEVATOR_ARRIVAL, HALLWAY_EXIT, GARDEN_BUILDING_ARRIVAL, PLAYER_ROOM_NUMBER
         world, player = self.simulation, self.simulation.player
         if target["kind"] == "elevator":
             self.game.open_location_menu("Elevator", [(f"Floor {f}", hallway_location(f)) for f in allocated_floors(world)])
@@ -408,7 +408,7 @@ class Application:
             else:
                 self.game.show_save_message("This room is vacant.")
             return
-        if target["kind"] == "room" and target["room"] != 1:
+        if target["kind"] == "room" and target["room"] != PLAYER_ROOM_NUMBER:
             room = target["room"]
             host = next((n for n in world.npcs if n.room_number == room), None)
             permitted = bool(world.visit and world.visit["host_id"] == (host.id if host else None))

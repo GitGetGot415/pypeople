@@ -6,7 +6,7 @@ import pygame
 from constants import GARDEN_LOCATION, INK, PAPER, SHADOW_COLOR, WORLD_COLORS
 from constants import APARTMENT_COLOR, APARTMENT_DOOR_COLOR, APARTMENT_DOOR_RECT, APARTMENT_RECT
 from constants import DEFAULT_BUBBLE_SPRITE_SIZE, UI_SMALL_FONT_SIZE, NAME_TAG_FONT_SIZE, NAME_TAG_HEAD_GAP, PLAYER_NAME_TAG
-from constants import ROOM_BED_RECT, SLEEP_FACING, SLEEP_ROTATION
+from constants import ROOM_BED_RECT, SLEEP_FACING, SLEEP_ROTATION, PLAYER_ROOM_NUMBER
 from npc import Behavior
 from .fonts import UnicodeFont
 
@@ -111,7 +111,7 @@ def _draw_shadow(surface, rect):
 def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), phase="day", zoom=1.0, viewport=None, snake=None, *, world=None, location="garden"):
     # Use nearest-neighbor scaling throughout to keep the original pixels crisp.
     # Scale the ground separately; sprites are drawn from their original artwork.
-    from locations import map_size, targets
+    from locations import map_size, targets, player_has_room
     from constants import APARTMENT_ART, INDOOR_BACKGROUND
     size = map_size(location)
     scene = pygame.Surface(size)
@@ -131,7 +131,8 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
                     if target["kind"] == "room":
                         number = target["room"]
                         owner = next((n for n in world.npcs if n.room_number == number), None)
-                        label = f"{number}: " + ("Your room" if number == 1 else owner.name if owner else "Vacant")
+                        label = f"{number}: " + ("Your room" if number == PLAYER_ROOM_NUMBER and player_has_room(world)
+                                                  else owner.name if owner else "Vacant")
                         scene.blit(font.render(label, True, INK), (target["rect"][0], target["rect"][1]))
     if zoom != 1.0:
         scene = pygame.transform.scale(scene, (round(size[0] * zoom), round(size[1] * zoom)))

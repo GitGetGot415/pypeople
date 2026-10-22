@@ -7,7 +7,7 @@ from constants import (GARDEN_LOCATION, WORLD_WIDTH, WORLD_HEIGHT, HALLWAY_SIZE,
                        HALLWAY_ELEVATOR_ORIGIN, APARTMENT_OVERLAY_SIZE, ROOM_DOOR_ORIGIN,
                        HALLWAY_ARRIVAL_Y, ROOM_ARRIVAL, ELEVATOR_ARRIVAL, HALLWAY_EXIT,
                        GARDEN_BUILDING_POINT, GARDEN_BUILDING_ARRIVAL, MOVEMENT_SPEED,
-                       TRAVEL_STEP_TIMEOUT, PLAYER_APPROACH_MULTIPLIER)
+                       TRAVEL_STEP_TIMEOUT, PLAYER_APPROACH_MULTIPLIER, PLAYER_ROOM_NUMBER)
 from interactions import move_toward
 
 
@@ -17,6 +17,10 @@ def room_location(number):
 
 def hallway_location(floor):
     return f"hallway:{floor}"
+
+
+def player_has_room(world):
+    return world.mode == "player" or not world.player.alive
 
 
 def floor_for_room(number):
@@ -36,7 +40,8 @@ def valid_location(world, location):
     except (ValueError, AttributeError):
         return False
     return (kind == "hallway" and number in allocated_floors(world)
-            or kind == "room" and number in {1, *[n.room_number for n in world.residents]})
+            or kind == "room" and (number in {n.room_number for n in world.residents}
+                                  or number == PLAYER_ROOM_NUMBER and player_has_room(world)))
 
 
 def map_size(location):

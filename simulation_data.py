@@ -15,7 +15,7 @@ from character_data import normalize_character, normalize_opinions
 from constants import (
     APPLE_ADVANCE_SECONDS, CONCERN_LIFETIME_RANGE, CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN,
     CONVERSATION_MAX_TURNS, CONVERSATION_MAX_AGREEMENTS, DECISION_SECONDS, DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, GIFT_GIVE_SECONDS, GIFT_SECONDS,
-    MAX_SIMULATION_STEP_SECONDS, SHAKE_SECONDS, SNAKE_EAT_SECONDS,
+    MAX_SIMULATION_STEP_SECONDS, SHAKE_SECONDS, SNAKE_EAT_SECONDS, PLAYER_ROOM_NUMBER, PLAYER_ROOM_LOCATION,
     POST_DIALOGUE_SECONDS, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME, WORLD_HEIGHT, WORLD_WIDTH,
 )
 from creations import Creation, CreativeJob
@@ -564,10 +564,10 @@ class SimulationState(SaveModel):
                 raise ValueError("Invalid resident home state.")
             if n.departure and (n.creative_job or n.behavior in HOME_BEHAVIORS):
                 raise ValueError("Departed residents cannot keep active home work.")
-            if n.room_number == 1:
-                raise ValueError("Room 1 is reserved for the player.")
-            from locations import feet_bounds, valid_location
-            layout = SimpleNamespace(residents=residents)
+            from locations import feet_bounds, valid_location, player_has_room
+            if n.room_number == PLAYER_ROOM_NUMBER and player_has_room(self):
+                raise ValueError(f"Room {PLAYER_ROOM_NUMBER} is reserved for the player.")
+            layout = SimpleNamespace(residents=residents, mode=self.mode, player=self.player)
             if not valid_location(layout, n.location):
                 raise ValueError("Unknown resident location.")
             left, right, top, bottom = feet_bounds(n.location)
@@ -1195,7 +1195,7 @@ def validate_physical_state(state):
     from locations import valid_location, feet_bounds, route, floor_for_room, targets
     from constants import PLAYER_APPROACH_TIMEOUT, TRAVEL_STEP_TIMEOUT, ROOM_ARRIVAL, STARTING_PLAYER_POSITION
     residents = [*state.npcs, *state.archived]
-    layout = SimpleNamespace(residents=residents)
+    layout = SimpleNamespace(residents=residents, mode=state.mode, player=state.player)
     by_id = {n.id: n for n in state.npcs}
     by_id[state.player.id] = state.player
     records = {r.id: r for r in state.history}
@@ -1222,7 +1222,7 @@ def validate_physical_state(state):
                 raise ValueError("Invalid journey identity.")
             point(journey["destination"], journey["point"])
             if (actor is state.player and journey["destination"].startswith("room:")
-                    and journey["destination"] not in ("room:1", actor.location)
+                    and journey["destination"] not in (PLAYER_ROOM_LOCATION, actor.location)
                     and (not state.visit or state.visit["location"] != journey["destination"])):
                 raise ValueError("Travel into a resident room requires its accepted hosted visit.")
             if not 0 <= journey["elapsed"] <= TRAVEL_STEP_TIMEOUT or not journey["steps"]:

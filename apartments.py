@@ -7,7 +7,7 @@ from constants import (APARTMENT_APPROACH, APARTMENT_ID, BEDTIME_DELAY_RANGE, CR
                        CREATIVE_QUEUE_SECONDS, HOME_ARRIVAL_TOLERANCE, INDOOR_RECOVERY_PER_SECOND,
                        MINIMUM_INDOOR_SECONDS, OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE,
                        RETREAT_SOCIABILITY_WEIGHT, RETREAT_THRESHOLD_BASE, WAKE_DELAY_RANGE,
-                       ROOM_SLEEP_POSITION, SLEEP_FACING)
+                       ROOM_SLEEP_POSITION, SLEEP_FACING, PLAYER_ROOM_NUMBER)
 from creations import CreativeJob
 from npc import Behavior
 
@@ -22,9 +22,12 @@ def entrance(npc):
 
 
 def assign_rooms(world):
-    next_room = max(1, max((p.room_number for p in world.residents), default=1)) + 1
+    from locations import player_has_room
+    next_room = max((p.room_number for p in world.residents), default=0) + 1
     for npc in world.npcs:
         if npc.room_number == 0:
+            if next_room == PLAYER_ROOM_NUMBER and player_has_room(world):
+                next_room += 1
             npc.room_number = next_room
             next_room += 1
 

@@ -22,7 +22,7 @@ from constants import (INVENTORY_BUTTON_RECT, GAME_PAUSE_RECT, GAME_CLOCK_RECT, 
                        DIALOGUE_ORIGINAL_TOGGLE_RECT)
 from constants import (BORDER_RADIUS, GAME_MENU_CONFIRM_RECT, GAME_MENU_CONFIRM_TITLE_Y,
                        GAME_MENU_CONFIRM_MESSAGE_RECT, GAME_MENU_KEEP_PLAYING_RECT, GAME_MENU_LEAVE_RECT)
-from constants import (ROOM_BED_RECT, BED_POPUP_RECT, BED_POPUP_TITLE_Y, BED_POPUP_MESSAGE_RECT,
+from constants import (PLAYER_ROOM_NUMBER, PLAYER_ROOM_LOCATION, ROOM_BED_RECT, BED_POPUP_RECT, BED_POPUP_TITLE_Y, BED_POPUP_MESSAGE_RECT,
                        BED_ADVANCE_RECT, BED_CANCEL_RECT)
 
 
@@ -187,11 +187,13 @@ class GameScreen:
             return
         if self.observe_button.clicked(event) and not active_player(world):
             self.close_dialogue()
-            from locations import allocated_floors, room_location, hallway_location
+            from locations import allocated_floors, room_location, hallway_location, player_has_room
+            rooms = [(n.room_number, n.name) for n in world.residents]
+            if player_has_room(world):
+                rooms.append((PLAYER_ROOM_NUMBER, "Player (reserved)"))
             self.open_location_menu("Observe", [("Garden", "garden"),
                 *[(f"Hallway floor {n}", hallway_location(n)) for n in allocated_floors(world)],
-                ("Room 1 (reserved)", room_location(1)),
-                *[(f"Room {n.room_number}: {n.name}", room_location(n.room_number)) for n in world.residents]])
+                *[(f"Room {number}: {name}", room_location(number)) for number, name in sorted(rooms)]])
             return
         if self.leave_queue_button.clicked(event) and world.can_leave_tree(world.player.id):
             world.leave_tree(world.player.id)
@@ -366,7 +368,7 @@ class GameScreen:
 
     def can_use_bed(self, world):
         from player import active_player
-        return (active_player(world) and self.location == world.player.location == "room:1"
+        return (active_player(world) and self.location == world.player.location == PLAYER_ROOM_LOCATION
                 and not world.player_interaction and not world.player.journey
                 and not world.tree_has_actor(world.player.id)
                 and not (world.visit and world.visit["stage"] == "travel"))
