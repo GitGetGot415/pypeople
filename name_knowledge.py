@@ -3,6 +3,7 @@
 from copy import deepcopy
 import re
 
+from validation_errors import DialogueValidationError, RecoveryKind
 from constants import SNAKE_NAME
 from dialogue_rules import is_name_reference, name_pattern, unquoted_speech, validate_speaker_identity
 from dialogue_text import split_sentences
@@ -257,7 +258,7 @@ def validate_name_use(text, permitted, catalog, *, heard=()):
             continue
         # Shared first names do not establish *which* actor bears the name.
         # If the form is permitted for one actor, it was already allowed above.
-        raise ValueError(f"The speaker has not learned the name form {used!r}. Use you or an observable description; metadata does not teach names.")
+        raise DialogueValidationError(f"The speaker has not learned the name form {used!r}. Use you or an observable description; metadata does not teach names.", RecoveryKind.UNKNOWN_NAME)
 
 
 def validate_player_reply_names(text, snapshot, *, person=None):
@@ -433,7 +434,7 @@ def orientation_context(npc):
     from constants import ARRIVAL_DISCUSSION_THRESHOLD
     discussed = {record.id for record in world.history if npc.name in record.participants
                  and record.orientation_discussed and record.turns
-                 and orientation_speech(text for _, text in record.turns)}
+                 and orientation_speech(turn.text for turn in record.turns)}
     return {"days_here": world.day - npc.arrival_day,
             "orientation_discussions": len(discussed),
             "needs_orientation": len(discussed) < ARRIVAL_DISCUSSION_THRESHOLD,

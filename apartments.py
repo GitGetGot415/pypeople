@@ -218,6 +218,12 @@ def invitation_choices(world, npc):
             dict(id="home", location=room_location(npc.room_number), point=ROOM_ARRIVAL, label="my apartment")]
 
 
+def pending_invitation(world):
+    interaction = world.player_interaction
+    return next((offer for offer in reversed(world.player_invitations) if offer["status"] == "offered"
+                 and interaction and offer["interaction_id"] == interaction["id"]), None)
+
+
 def offer_invitation(world, npc, record, destination, speech):
     choices = {c["id"]: c for c in invitation_choices(world, npc)}
     if destination not in choices or not speech.strip() or not world.player_interaction:

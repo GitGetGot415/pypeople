@@ -8,7 +8,8 @@ import re
 from typing import Annotated, Literal
 from types import SimpleNamespace
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
+from records import SaveModel, saved_record
 
 from character_data import normalize_character, normalize_opinions
 from constants import (
@@ -22,8 +23,8 @@ from apartments import HOME_BEHAVIORS, INDOOR_BEHAVIORS, entrance
 from constants import (APARTMENT_ID, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_RANGE, CREATIVE_QUEUE_SECONDS,
                        HOME_ARRIVAL_TOLERANCE, OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE, WAKE_DELAY_RANGE)
 from conversation_history import ConversationRecord, Memory, WorldEvent
-from llm import (AcceptedProposal, ConversationPart, ConversationTurn, DisclosureChoice, NameIntroduction,
-                 EmotionReaction, GiftOffer, LeverageUse, ThirdPartyOpinion, ResidentGift)
+from dialogue import ConversationPart, ConversationTurn, NameIntroduction, EmotionReaction
+from llm import AcceptedProposal, DisclosureChoice, GiftOffer, LeverageUse, ThirdPartyOpinion, ResidentGift
 from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree
 from simulation import PendingAction, Simulation
 from player import Player, PlayerHandoff
@@ -32,14 +33,10 @@ from snake import Snake, SnakeEncounter
 from purgatory import Attitudes
 from player_story import (validate_starting_history, validate_starting_name,
                           valid_introduction_call, resident_arrival_days)
-from social import (Belief, Claim, ConcernKind, ConversationConcern, Disclosure, Fact, FactKind, Goal, GoalKind, OpinionEffect, Promise, Proposal,
+from social import (Belief, Claim, ConcernKind, ConversationConcern, Disclosure, Fact, FactKind, Goal, GoalKind, OpinionEffect, Promise, Proposal, ClaimOption,
                     Stance, information_from_dict, phase_index, validate_agreements, validate_information)
 
 SAVE_DIRECTORY = Path(__file__).resolve().parent / "saves"
-
-
-class SaveModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class ActivityState(SaveModel):
@@ -76,140 +73,37 @@ class PreferencesState(SaveModel):
     generosity: float = Field(ge=0, le=1)
 
 
-class MemoryState(SaveModel):
-    id: str = Field(min_length=1)
-    day: int = Field(ge=1)
-    phase: Literal["day", "night"]
-    partner_id: str
-    kind: Literal["gave_fruit", "received_fruit", "refused", "kept_fruit", "conversation",
-                  "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
-                  "claim_shared", "heard_claim", "claim_opinion", "leverage", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "gave_work", "received_work", "visit"]
-    summary: str = Field(max_length=400)
-    weight: float = Field(ge=-12, le=12)
+MemoryState = saved_record(Memory)
 
 
-class EventState(SaveModel):
-    id: str = Field(min_length=1)
-    day: int = Field(ge=1)
-    phase: Literal["day", "night"]
-    kind: Literal["phase", "food_requested", "food_refused", "fruit_shared", "conversation_completed", "interaction_failed",
-                  "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
-                  "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "promise_cancelled", "work_shared", "player_call", "player_conversation", "tree_queue", "travel_failed", "visit"]
-    participants: list[str]
-    text: str
-    history: int | None = Field(ge=0)
+EventState = saved_record(WorldEvent)
 
 
-class GoalState(SaveModel):
-    id: str = Field(min_length=1)
-    kind: GoalKind
-    target_id: str
-    objective: str = Field(min_length=1, max_length=400)
-    motive: str = Field(min_length=1, max_length=400)
-    approach: str = Field(min_length=1, max_length=400)
-    boundary: str = Field(min_length=1, max_length=400)
-    created_phase: int = Field(ge=0)
-    deadline: int = Field(ge=0)
-    baseline_opinion: int = Field(ge=-100, le=100)
-    status: Literal["active", "completed", "failed", "cancelled"]
-    resolution_event_id: str | None
-    resolved_phase: int | None = Field(ge=0)
-    outcome: str
-    last_attempt_phase: int | None = Field(ge=0)
-    third_npc_id: str | None
-    claim_id: str | None
+GoalState = saved_record(Goal)
 
 
-class ProposalState(SaveModel):
-    id: str = Field(min_length=1)
-    promisor_id: str
-    recipient_id: str
-    deadline: int = Field(ge=0)
+ProposalState = saved_record(Proposal)
 
 
-class PromiseState(ProposalState):
-    conversation_id: str = Field(min_length=1)
-    created_phase: int = Field(ge=0)
-    item: Literal["fruit"]
-    quantity: Literal[1]
-    status: Literal["pending", "fulfilled", "broken", "cancelled"]
-    resolution_event_id: str | None
-    resolved_phase: int | None = Field(ge=0)
-    outcome: str
-    consequence_event_id: str | None
+PromiseState = saved_record(Promise)
 
 
-class OpinionEffectState(SaveModel):
-    event_id: str = Field(min_length=1)
-    target_id: str
-    delta: int = Field(ge=-6, le=6)
-    reason: str = Field(min_length=1, max_length=400)
-    claim_id: str | None
-    actor_id: str | None
-    conversation_id: str | None
-    phase: int | None = Field(ge=0)
+OpinionEffectState = saved_record(OpinionEffect)
 
 
-class FactState(SaveModel):
-    id: str = Field(min_length=1)
-    kind: FactKind
-    subject_id: str
-    object_id: str
-    source_id: str = Field(min_length=1)
-    conversation_id: str | None
-    phase: int = Field(ge=0)
-    summary: str = Field(min_length=1)
-    witness_ids: list[str] = Field(min_length=1)
+FactState = saved_record(Fact)
 
 
-class ClaimState(SaveModel):
-    id: str = Field(min_length=1)
-    fact_id: str
-    subject_id: str
-    originator_id: str
-    affirmed: bool
-    parent_claim_id: str | None
-    deliberate: bool
-    phase: int = Field(ge=0)
-    conversation_id: str | None
+ClaimState = saved_record(Claim)
 
 
-class BeliefState(SaveModel):
-    npc_id: str
-    claim_id: str
-    stance: Stance
-    source_id: str
-    disclosure_id: str | None
-    direct: bool
-    phase: int = Field(ge=0)
-    assessed: bool
-    opinion_delta: int = Field(ge=-6, le=6)
+BeliefState = saved_record(Belief)
 
 
-class DisclosureState(SaveModel):
-    id: str = Field(min_length=1)
-    claim_id: str
-    conversation_id: str
-    speaker_id: str
-    listener_id: str
-    turn: int = Field(ge=0, le=CONVERSATION_MAX_TURNS - 1)
-    intent: Literal["share", "challenge", "lie"]
-    stance: Stance
-    source_disclosure_id: str | None
-    phase: int = Field(ge=0)
-    event_id: str = Field(min_length=1)
+DisclosureState = saved_record(Disclosure)
 
 
-class ClaimOptionState(SaveModel):
-    id: str = Field(min_length=1)
-    fact_id: str
-    subject_id: str
-    originator_id: str
-    affirmed: bool
-    parent_claim_id: str | None
-    creator_id: str | None
-    kind: FactKind
-    assertion: str = Field(min_length=1)
+ClaimOptionState = saved_record(ClaimOption)
 
 
 class InformationState(SaveModel):
@@ -399,6 +293,33 @@ class HistoryState(SaveModel):
     error: str
     origin: Literal["player", "autonomous"]
     purpose: Literal["chat", "orientation", "food_request", "gossip", "bargain", "judgment", "introduction", "snake_player"]
+
+    @classmethod
+    def capture(cls, record):
+        """Encode the current save layout from the single runtime turn list."""
+        data = asdict(record)
+        data.update(turns=record.transcript,
+                    dialogue_parts={i: t.parts for i, t in enumerate(record.turns)
+                                    if any("emotion" in p for p in t.parts)},
+                    rewritten_parts={i: t.rewritten for i, t in enumerate(record.turns) if t.rewritten},
+                    name_introductions={i: t.introductions for i, t in enumerate(record.turns) if t.introductions},
+                    name_witnesses={i: t.witnesses for i, t in enumerate(record.turns) if t.witnesses})
+        return cls.model_validate(data)
+
+    def restore(self, actor_ids):
+        """Decode the current save layout; no alternate format or migration."""
+        data = self.model_dump()
+        parts = data.pop("dialogue_parts")
+        rewrites = data.pop("rewritten_parts")
+        introductions = data.pop("name_introductions")
+        witnesses = data.pop("name_witnesses")
+        transcript = data.pop("turns")
+        record = ConversationRecord(**data)
+        for index, (speaker, text) in enumerate(transcript):
+            record.add_turn(speaker, text, parts.get(index), rewrites.get(index, ()),
+                            introductions=introductions.get(index, ()), witnesses=witnesses.get(index, ()),
+                            speaker_id=actor_ids[speaker])
+        return record
 
     @model_validator(mode="after")
     def validate_rewrites(self):
@@ -1329,7 +1250,6 @@ def restore_player_snake(world, saved, history):
     encounter.record = history[saved["record"]]
     encounter.world, encounter.initiator, encounter.recipient = world, world.snake, world.player
     encounter.active = True
-    encounter.turns, encounter.pending_opinions = [], []
     encounter.request_context = encounter.saved_state = None
     world.snake.encounter = encounter
 
@@ -1534,7 +1454,7 @@ def capture_resident(npc):
     from player import call_valid
     stale_call = npc.player_call and not call_valid(npc.world, npc, npc.player_call)
     return _capture_fields(
-        NPCState, npc, emotion=EmotionReaction(name=npc.emotion, intensity=npc.emotion_intensity),
+        NPCState, npc, inventory_capacity=None, emotion=EmotionReaction(name=npc.emotion, intensity=npc.emotion_intensity),
         memories=[asdict(memory) for memory in npc.memories],
         goal=asdict(npc.goal) if npc.goal else None,
         current_concern=asdict(npc.current_concern) if npc.current_concern else None,
@@ -1551,7 +1471,7 @@ def capture_simulation(app):
     """Capture main-thread state, including accepted actions awaiting a tick."""
     npc_indices = {id(npc): index for index, npc in enumerate(app.npcs)}
     records = {id(record): index for index, record in enumerate(app.conversation_history)}
-    history = [asdict(record) for record in app.conversation_history]
+    history = [HistoryState.capture(record).model_dump() for record in app.conversation_history]
     unread_records = {npc.unread_player_reply["reference"] for npc in app.npcs if npc.unread_player_reply}
     for record in history:
         for offer in record["player_promise_offers"]:
@@ -1577,7 +1497,7 @@ def capture_simulation(app):
         conversations.append(_capture_fields(ConversationState, conversation,
             initiator=npc_indices[id(npc)], recipient=npc_indices[id(conversation.recipient)],
             record=records[id(conversation.record)],
-            pending_opinions=[(npc_indices[id(person)], opinions) for person, opinions in conversation.pending_opinions],
+            pending_opinions=[],
             proposals=[asdict(p) for p in conversation.proposals],
             information_context=asdict(conversation.information_context) if conversation.information_context else None,
             concerns={role: asdict(c) if c else None for role, c in conversation.concerns.items()},
@@ -1590,7 +1510,7 @@ def capture_simulation(app):
         player_invitations=deepcopy(world.player_invitations), player_claims=deepcopy(world.player_claims),
         visit=deepcopy(world.visit), tree_queue=deepcopy(world.tree_queue), tree_current=deepcopy(world.tree_current),
         player_snake_encounter=capture_player_snake(encounter, records),
-        player=PlayerState(**asdict(world.player)), player_call_check=max(0.0, world.player_call_check),
+        player=PlayerState(**asdict(world.player), inventory_capacity=None), player_call_check=max(0.0, world.player_call_check),
         player_acknowledgments=deepcopy(world.player_acknowledgments),
         player_handoffs=[_capture_fields(PlayerHandoffState, npc.gift,
             initiator=npc.gift.initiator.id, recipient=npc.gift.recipient.id,
@@ -1633,7 +1553,7 @@ def restore_simulation(state):
             bedtime_remaining=saved.bedtime_remaining, wake_remaining=saved.wake_remaining,
             home_reason=saved.home_reason, last_creative_day=saved.last_creative_day,
             creative_job=saved.creative_job.model_copy(deep=True) if saved.creative_job else None,
-            inventory=saved.inventory.copy(), inventory_capacity=saved.inventory_capacity,
+            inventory=saved.inventory.copy(),
             rewritten_reply=saved.rewritten_reply,
             preferences=saved.preferences.model_dump(), command_revision=saved.command_revision,
             memories=[Memory(**memory.model_dump()) for memory in saved.memories],
@@ -1656,7 +1576,7 @@ def restore_simulation(state):
                 reserved_by=by_id.get(state.tree.reserved_by))
     world = Simulation(npcs, tree, assign_goals=False, npc_trait_mode=state.npc_trait_mode, mode=state.mode)
     world.archived = all_residents[len(state.npcs):]
-    world.player = Player(**state.player.model_dump())
+    world.player = Player(**state.player.model_dump(exclude={"inventory_capacity"}))
     world.player.world = world
     world.player_interaction = deepcopy(state.player_interaction)
     world.player_invitations = deepcopy(state.player_invitations)
@@ -1686,7 +1606,9 @@ def restore_simulation(state):
     world.pending_actions = [PendingAction(**action.model_dump()) for action in state.pending_actions]
     for action in world.pending_actions:
         by_id[action.npc_id].request_pending = True
-    history = [ConversationRecord(**saved.model_dump()) for saved in state.history]
+    actor_ids = {actor.name: actor.id for actor in world.actors}
+    actor_ids[PLAYER_LABEL] = world.player.id
+    history = [saved.restore(actor_ids) for saved in state.history]
     world.history = history
     world.events = [WorldEvent(**event.model_dump()) for event in state.events]
     world.promises = [Promise(**promise.model_dump()) for promise in state.promises]
@@ -1697,13 +1619,14 @@ def restore_simulation(state):
     for saved in state.conversations:
         # Loading bypasses __init__: it would interrupt the saved activities again.
         conversation = Conversation.__new__(Conversation)
-        _restore_fields(conversation, saved,
+        _restore_fields(conversation, saved, exclude=("turns", "pending_opinions"),
             initiator=npcs[saved.initiator], recipient=npcs[saved.recipient], record=history[saved.record],
             proposals=[Proposal(**proposal.model_dump()) for proposal in saved.proposals],
             information_context=information_from_dict(saved.information_context.model_dump()) if saved.information_context else None,
             concerns={role: ConversationConcern(**c.model_dump()) if c else None for role, c in saved.concerns.items()},
-            pending_opinions=[(npcs[index], opinions) for index, opinions in saved.pending_opinions],
             saved_states=[activity.model_dump() for activity in saved.saved_states])
+        for index, opinions in saved.pending_opinions:
+            npcs[index].remember_opinions(opinions)
         conversation.active = True
         conversation.name_actors = {}  # Pending generation takes a fresh reference snapshot after loading.
         for npc in (conversation.initiator, conversation.recipient):
@@ -1731,12 +1654,11 @@ def restore_simulation(state):
     saved = state.snake_encounter
     if saved:
         encounter = SnakeEncounter.__new__(SnakeEncounter)
-        _restore_fields(encounter, saved, exclude=("resident_id",),
+        _restore_fields(encounter, saved, exclude=("resident_id", "turns"),
                         record=history[saved.record], saved_state=saved.saved_state.model_dump())
         encounter.world = world
         encounter.initiator, encounter.recipient = world.snake, by_id[saved.resident_id]
         encounter.active = True
-        encounter.pending_opinions = []
         world.snake.encounter = encounter
         encounter.recipient.snake_encounter = encounter
         if encounter.dialogue_state == "pending":

@@ -246,13 +246,8 @@ class StatsScreen:
                 gap()
             add("Dialogue", app.heading_font)
             gap()
-            def identity(speaker, index=None):
-                return {"speaker": speaker, "listener": next((name for name in record.participants if name != speaker), "You"),
-                        "names": record.name_forms, "introductions": record.name_introductions.get(index, ())}
-
-            available = [usable_rewrite(record.dialogue_parts.get(index, [text]), record.rewritten_parts.get(index, ()),
-                                        **identity(speaker))
-                         for index, (speaker, text) in enumerate(record.turns) if speaker != "You"]
+            available = [usable_rewrite(turn.parts, turn.rewritten)
+                         for turn in record.turns if turn.speaker != "You"]
             if not app.original_dialogue and available and not all(available):
                 add("No voice rewrite was stored; showing original dialogue." if not any(available)
                     else "Some lines use original dialogue because no voice rewrite was stored.",
@@ -260,15 +255,9 @@ class StatsScreen:
                 gap()
             if not record.turns and not record.failed_turns:
                 add("No generated draft was retained for this failure." if record.error else "No dialogue generated yet.", color=MUTED)
-            for index, (speaker, text) in enumerate(record.turns):
-                parts = record.dialogue_parts.get(index)
-                if parts:
-                    rewritten = record.rewritten_parts.get(index, ())
-                    message(speaker, display_parts([(part["text"], part["emotion"]) for part in parts],
-                        rewritten, original=app.original_dialogue, **identity(speaker, index)),
-                        original=uses_original_dialogue(parts, rewritten, original=app.original_dialogue, **identity(speaker, index)))
-                else:
-                    message(speaker, [(text, None)])
+            for turn in record.turns:
+                message(turn.speaker, turn.display(original=app.original_dialogue),
+                        original=uses_original_dialogue(turn.parts, turn.rewritten, original=app.original_dialogue))
             if record.failed_turns:
                 add("Generated draft (not applied)", app.heading_font)
                 add("Generation failed. These words did not change the simulation.", app.small_font, MUTED)

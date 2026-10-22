@@ -1,9 +1,38 @@
 """Session records of dialogue and its outcomes."""
 
 from dataclasses import dataclass, field
+from typing import Annotated, Literal
 from uuid import uuid4
+
+from pydantic import Field
+
+from dialogue import ConversationTurn
 from dialogue_text import contains_serialized_dialogue, contains_speaker_label
 from dialogue_rules import validate_rewrite_identity
+
+
+@dataclass
+class RecordedTurn:
+    speaker: str
+    parts: list[dict]
+    rewritten: list[str] = field(default_factory=list)
+    introductions: list[dict] = field(default_factory=list)
+    witnesses: list[str] = field(default_factory=list)
+    speaker_id: str | None = None
+
+    @property
+    def text(self):
+        if len(self.parts) == 1 and "emotion" not in self.parts[0]:
+            return self.parts[0]["text"]
+        return " ".join(part["text"].strip() for part in self.parts)
+
+    @property
+    def speech(self):
+        return self.speaker, self.text
+
+    def display(self, *, original=False):
+        return display_parts([(part["text"], part.get("emotion")) for part in self.parts],
+                             self.rewritten, original=original)
 
 
 @dataclass
@@ -11,18 +40,14 @@ class ConversationRecord:
     participants: tuple[str, str]
     topic: str
     status: str
-    turns: list[tuple[str, str]] = field(default_factory=list)
+    turns: list[RecordedTurn] = field(default_factory=list)
     outcomes: list[str] = field(default_factory=list)
     error: str = ""
     origin: str = "player"
     purpose: str = "chat"
     id: str = field(default_factory=lambda: uuid4().hex)
-    dialogue_parts: dict[int, list[dict]] = field(default_factory=dict)
-    rewritten_parts: dict[int, list[str]] = field(default_factory=dict)
     failed_turns: list[dict] = field(default_factory=list)
     name_forms: list[str] = field(default_factory=list)
-    name_introductions: dict[int, list[dict]] = field(default_factory=dict)
-    name_witnesses: dict[int, list[str]] = field(default_factory=dict)
     orientation_discussed: bool = False
     dialogue_errors: list[str] = field(default_factory=list)
     intended_subjects: dict[str, str] = field(default_factory=dict)
@@ -33,11 +58,29 @@ class ConversationRecord:
     transfer_intent: dict | None = None
     player_promise_offers: list[dict] = field(default_factory=list)
 
-    def add_turn(self, speaker, text, parts, rewritten=()):
-        if rewritten:
-            self.rewritten_parts[len(self.turns)] = list(rewritten)
-        self.dialogue_parts[len(self.turns)] = parts
-        self.turns.append((speaker, text))
+    @property
+    def transcript(self):
+        return [turn.speech for turn in self.turns]
+
+    def includes(self, actor):
+        return actor.id in self.participant_ids if self.participant_ids else actor.name in self.participants
+
+    def between(self, first, second):
+        return (set(self.participant_ids) == {first.id, second.id} if self.participant_ids else
+                set(self.participants) == {first.name, second.name})
+
+    def add_turn(self, speaker, text, parts=None, rewritten=(), *, introductions=(), witnesses=(), speaker_id=None):
+        if speaker_id is None and self.participant_ids and speaker in self.participants:
+            speaker_id = self.participant_ids[self.participants.index(speaker)]
+        turn = RecordedTurn(speaker, parts if parts is not None else [{"text": text}],
+                            list(rewritten), list(introductions), list(witnesses), speaker_id)
+        self.turns.append(turn)
+        return turn
+
+    def generated_turns(self):
+        """Project stored speech into the speaker roles used by effect validators."""
+        return [ConversationTurn(speaker="initiator" if turn.speaker == self.participants[0] else "recipient",
+                                 parts=turn.parts, introductions=turn.introductions) for turn in self.turns]
 
 
 def usable_rewrite(parts, rewritten, *, speaker="", listener="", names=(), introductions=()):
@@ -84,13 +127,13 @@ def display_parts(parts, rewritten=(), *, original=False, speaker="", listener="
 def voice_rewrite_errors(record):
     """Return each affected turn, speaker and reason without changing stored words."""
     errors = []
-    for index, (speaker, text) in enumerate(record.turns):
+    for index, turn in enumerate(record.turns):
         error = rewrite_validation_error(
-            record.dialogue_parts.get(index, [text]), record.rewritten_parts.get(index, ()), speaker=speaker,
-            listener=next((name for name in record.participants if name != speaker), "You"),
-            names=record.name_forms, introductions=record.name_introductions.get(index, ()))
+            turn.parts, turn.rewritten, speaker=turn.speaker,
+            listener=next((name for name in record.participants if name != turn.speaker), "You"),
+            names=record.name_forms, introductions=turn.introductions)
         if error:
-            errors.append((index, speaker, error))
+            errors.append((index, turn.speaker, error))
     return errors
 
 
@@ -106,24 +149,28 @@ def uses_original_dialogue(parts, rewritten=(), *, original=False, speaker="", l
 
 @dataclass
 class Memory:
-    id: str
-    day: int
-    phase: str
+    id: Annotated[str, Field(min_length=1)]
+    day: Annotated[int, Field(ge=1)]
+    phase: Literal["day", "night"]
     partner_id: str
-    kind: str
-    summary: str
-    weight: float
+    kind: Literal["gave_fruit", "received_fruit", "refused", "kept_fruit", "conversation",
+                  "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
+                  "claim_shared", "heard_claim", "claim_opinion", "leverage", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "gave_work", "received_work", "visit"]
+    summary: Annotated[str, Field(max_length=400)]
+    weight: Annotated[float, Field(ge=-12, le=12)]
 
 
 @dataclass
 class WorldEvent:
-    day: int
-    phase: str
-    kind: str
+    day: Annotated[int, Field(ge=1)]
+    phase: Literal["day", "night"]
+    kind: Literal["phase", "food_requested", "food_refused", "fruit_shared", "conversation_completed", "interaction_failed",
+                  "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
+                  "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "promise_cancelled", "work_shared", "player_call", "player_conversation", "tree_queue", "travel_failed", "visit"]
     participants: list[str]
     text: str
-    history: int | None = None
-    id: str = field(default_factory=lambda: uuid4().hex)
+    history: Annotated[int | None, Field(ge=0)] = None
+    id: Annotated[str, Field(min_length=1)] = field(default_factory=lambda: uuid4().hex)
 
 
 def memory_bias(npc, partner_id):
@@ -174,9 +221,9 @@ def relevant_memories(npc, partner_id=None):
 def shared_conversation_history(conversation):
     """Describe this pair's actual earlier dialogue, excluding the current request."""
     world = conversation.initiator.world
-    pair = {conversation.initiator.name, conversation.recipient.name}
     records = {index for index, record in enumerate(world.history)
-               if record.id != conversation.id and set(record.participants) == pair and len(record.turns) >= 2}
+               if record.id != conversation.id and record.between(conversation.initiator, conversation.recipient)
+               and len(record.turns) >= 2}
     dated = {event.history for event in world.events
              if event.history in records and event.kind in ("conversation_completed", "food_requested")}
     days = sorted({event.day for event in world.events
@@ -185,7 +232,7 @@ def shared_conversation_history(conversation):
     # once so duplicate records do not reinforce the model's repeated wording.
     recent_dialogue, seen = [], set()
     for index in sorted(records, reverse=True):
-        excerpts = [(speaker, text[:400]) for speaker, text in world.history[index].turns]
+        excerpts = [(turn.speaker, turn.text[:400]) for turn in world.history[index].turns]
         signature = tuple((speaker, " ".join(text.casefold().split())) for speaker, text in excerpts)
         if signature in seen:
             continue

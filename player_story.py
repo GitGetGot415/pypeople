@@ -85,7 +85,7 @@ def scripted_player_opening(world, npc):
     if (not active_player(world) or not owns_resident(world, npc)
             or starting_encounter(world, npc.id) is None
             or any(set(record.participant_ids) == {world.player.id, npc.id}
-                   and any(speaker == npc.name for speaker, _ in record.turns) for record in world.history)):
+                   and any(turn.speaker == npc.name for turn in record.turns) for record in world.history)):
         return None
     text = JUDY_OPENING.format(name=npc.character["Name"])
     record = ConversationRecord(("You", npc.name), "First meeting with the player", "Completed",

@@ -708,8 +708,6 @@ class Simulation:
             interaction.record.status = "Cancelled"
             interaction.record.error = reason
             interaction.record.outcomes.append(reason)
-            if hasattr(interaction, "pending_opinions"):
-                interaction.pending_opinions.clear()
             for person, saved in zip((interaction.initiator, interaction.recipient), interaction.saved_states):
                 person.conversation = person.gift = None
                 other = interaction.recipient if person is interaction.initiator else interaction.initiator
@@ -805,7 +803,7 @@ class Simulation:
             f"{SNAKE_NAME} ate {target.name}. {SNAKE_NAME} claims this sends a soul to hell; that destination remains unverified.", encounter.record)
         target.departure["event_id"] = event.id
         for witness in self.listeners(self.snake, 220):
-            friend = witness.opinions.get(target.name, {}).get("opinion", 0)
+            friend = witness.opinion_score(target.id)
             adjustment = -6 if friend > 0 or witness.attitudes["authority"] == "rejected" else 2 if witness.attitudes["belief"] == "believed" else -3
             witness.attitudes["trust"] = max(-100, min(100, witness.attitudes["trust"] + adjustment))
             witness.attitudes["trust_reason"] = f"Witnessed {SNAKE_NAME} eat {target.name} on day {self.day}."

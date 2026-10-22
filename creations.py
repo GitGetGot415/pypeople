@@ -123,3 +123,20 @@ class Creation(TitledData):
         result = validate_creation(self.kind, {"title": self.title, "payload": self.payload})
         self.payload = result.payload.model_dump()
         return self
+
+
+def accept_creation_result(world, request_id, request, result, error):
+    from apartments import discard_work
+    npc = world.npc_by_id(request[0])
+    job = npc.creative_job if npc else None
+    if (not job or job.id != request_id or job.revision != request[1]
+            or not world.is_creative_job(npc, job)):
+        error = "The creative activity changed before its result arrived."
+    elif not error:
+        try:
+            job.accepted = validate_creation(job.kind, result.model_dump()).model_dump()
+        except (ValueError, TypeError, AttributeError):
+            error = "The model returned invalid creation data."
+    if error and job and job.id == request_id:
+        discard_work(npc)
+    return error

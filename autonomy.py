@@ -109,7 +109,7 @@ def reconsider(npc, world, *, pressing_only=False):
                     and other.id not in npc.cooldowns and company_point(npc, other) is not None]
         if partners:
             def company_score(other):
-                opinion = npc.opinions.get(other.name, {}).get("opinion", 0)
+                opinion = npc.opinion_score(other.id)
                 return opinion * 0.08 + memory_bias(npc, other.id) - distance((other.x, other.y))
             partner = max(partners, key=company_score)
             score = (100 - npc.social) * (0.8 + npc.preferences["sociability"] * 0.3) + company_score(partner)
@@ -136,7 +136,7 @@ def donor_choice(donor, requester):
     fruit = donor.inventory.get("fruit", 0)
     if fruit < 1:
         return "unavailable", "Sharing is no longer possible because the inventories changed."
-    opinion = donor.opinions.get(requester.name, {}).get("opinion", 0)
+    opinion = donor.opinion_score(requester.id)
     score = ((donor.social - 50) * 0.12 + (fruit - 1) * 6
              + (donor.preferences["generosity"] - 0.5) * 10
              + opinion * 0.12 + memory_bias(donor, requester.id))
@@ -187,7 +187,7 @@ def social_pair(world, *, due=None):
                 and company_point(npc, other, allow_vertical=True) is not None]
 
     def rank(npc, other):
-        return (npc.opinions.get(other.name, {}).get("opinion", 0) * 0.08
+        return (npc.opinion_score(other.id) * 0.08
                 + memory_bias(npc, other.id) - math.dist((npc.x, npc.y), (other.x, other.y)) / MOVEMENT_SPEED
                 + npc.rng.uniform(0, SOCIAL_PARTNER_RANDOMNESS))
 
@@ -226,7 +226,7 @@ def social_pair(world, *, due=None):
                         < math.dist((npc.x, npc.y), (donor.x, donor.y))):
                     return npc, donor, "food_request", "An apple", f"Asking {donor.name} for an apple", None, None, None
         partner = max(others, key=lambda other: (
-            last_conversation_partner(npc) != other.name and last_conversation_partner(other) != npc.name,
+            last_conversation_partner(npc) != other.id and last_conversation_partner(other) != npc.id,
             rank(npc, other)))
         concern = npc.current_concern
         topic = concern_topic(npc, concern)

@@ -20,7 +20,6 @@ class Player:
     sprite_size = None
     id: str = PLAYER_ID
     inventory: dict = field(default_factory=lambda: {"fruit": STARTING_PLAYER_FRUIT})
-    inventory_capacity: int | None = None
     x: float = STARTING_PLAYER_POSITION[0]
     y: float = STARTING_PLAYER_POSITION[1]
     facing: int = STARTING_FACING
@@ -32,10 +31,6 @@ class Player:
     @property
     def name(self):
         return "the player"
-
-    @property
-    def inventory_space(self):
-        return None
 
     @property
     def movement_bounds(self):
@@ -53,6 +48,12 @@ def active_player(world):
 
 def owns_resident(world, npc):
     return bool(world.player_interaction and world.player_interaction.get("npc_id") == npc.id)
+
+
+def owns_conversation(world, npc, *, stages=("conversation",)):
+    interaction = world.player_interaction if world else None
+    return bool(npc and world and active_player(world) and interaction
+                and interaction.get("npc_id") == npc.id and interaction["stage"] in stages)
 
 
 def can_claim(world):
@@ -332,18 +333,18 @@ def accept_player_evidence(world, npc, record, message, response, *, opening=Fal
     record.accepted_player_turns.append(index)
     record_claim(world, world.player, record, message, index, npc.id)
     from name_knowledge import asks_name
-    prior = record.turns[index - 1][1] if index else ""
+    prior = record.turns[index - 1].text if index else ""
     supplied = supplied_player_name(message, requested=asks_name(prior))
     if supplied:
         npc.known_names[world.player.id] = dict(name=supplied, conversation_id=record.id, turn=index)
-        record.name_introductions[index] = [dict(actor_id=world.player.id, name=supplied, reference="self")]
+        record.turns[index].introductions = [dict(actor_id=world.player.id, name=supplied, reference="self")]
     # Store the actual report as a report, never as a witnessed fact or invented summary.
     event = world.publish("player_conversation", (world.player, npc), "Accepted a player conversation turn.", record)
     remember(npc, world.player, event, "conversation", f"The player told me: {message}", 0)
     change = response.player_opinion
     if change is not None:
         # The model must point to exact evidence in the accepted message, and greetings yield no reward.
-        repeated = any(r.turns[i][1].strip().casefold() == message.strip().casefold()
+        repeated = any(r.turns[i].text.strip().casefold() == message.strip().casefold()
                        for r in world.history if npc.id in r.participant_ids
                        for i in r.accepted_player_turns if (r is not record or i != index) and i < len(r.turns))
         if not repeated and change.evidence and change.evidence.casefold() in message.casefold() and len(message.split()) > 3:
@@ -366,7 +367,7 @@ def accept_player_promises(world, npc, record, response, message, *, opening=Fal
             pending["status"] = "declined"
             continue
         try:
-            validate_apple_promise(record.turns[pending["offer_turn"]][1], message,
+            validate_apple_promise(record.turns[pending["offer_turn"]].text, message,
                                    pending["deadline"], current_phase=world.phase_index)
         except ValueError:
             continue
@@ -477,7 +478,7 @@ def call_valid(world, npc, call):
         return valid_introduction_call(world, npc, call)
     if call["kind"] == "reply":
         return any(r.id == ref and {world.player.id, npc.id} == set(r.participant_ids)
-                   and r.turns and r.turns[-1][0] == npc.name and not r.error for r in world.history)
+                   and r.turns and r.turns[-1].speaker == npc.name and not r.error for r in world.history)
     if call["kind"] == "gift":
         return (npc.inventory["fruit"] > 0 if ref == "fruit"
                 else any(w.id == ref and w.owner_id == npc.id for w in world.creations))

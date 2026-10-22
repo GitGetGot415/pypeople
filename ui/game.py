@@ -1,9 +1,9 @@
 import pygame
-from llm import ConversationTurn
+from dialogue import ConversationPart
 from constants import (DIALOGUE_PANEL_HEIGHT, FAILED_CONVERSATION_SELECTED_COLOR, INK, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER,
                        MAX_LLM_REQUESTS, PHASE_PENDING_RECT, WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH)
 from emotions import portrait_expression
-from conversation_history import display_parts, uses_original_dialogue
+from conversation_history import RecordedTurn, display_parts, uses_original_dialogue
 from name_knowledge import actor_catalog, name_forms
 from constants import (APARTMENT_INSPECTOR_CLOSE_RECT, APARTMENT_INSPECTOR_RECT, APARTMENT_INSPECTOR_ROW_HEIGHT,
                        APARTMENT_INSPECTOR_CONTENT_INSET, APARTMENT_INSPECTOR_CONTENT_TOP,
@@ -322,13 +322,9 @@ class GameScreen:
                     self.rewind_conversation()
                 elif event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE, pygame.K_RIGHT):
                     self.advance_conversation(app)
-                elif self.retry_button.clicked(event, enabled=not paused and (
-                        bool(self.viewed_conversation.pending_opinions)
-                        or bool(self.viewed_conversation.error and not self.viewed_conversation.turns))):
-                    if self.viewed_conversation.pending_opinions:
-                        self.viewed_conversation.remember_opinions()
-                    else:
-                        app.retry_conversation_dialogue(self.viewed_conversation)
+                elif self.retry_button.clicked(event, enabled=not paused and bool(
+                        self.viewed_conversation.error and not self.viewed_conversation.record.turns)):
+                    app.retry_conversation_dialogue(self.viewed_conversation)
                 return
             if self.selected_npc.end_conversation:
                 if self.done_button.clicked(event) or (
@@ -709,8 +705,8 @@ class GameScreen:
     def draw_conversation(self, app):
         conversation = self.viewed_conversation
         rect = pygame.Rect(self.reply_rect.x, 594, self.reply_rect.width, 96)
-        source = conversation.turns or conversation.record.failed_turns
-        failed = bool(source) and not conversation.turns
+        source = conversation.record.turns or conversation.record.failed_turns
+        failed = bool(source) and not conversation.record.turns
         version = (id(source), app.original_dialogue, getattr(app, "condensed_dialogue", False))
         if self._conversation_page_turns != version:
             anchor = None
@@ -720,17 +716,15 @@ class GameScreen:
                 previous_turn = self.conversation_pages[old_index][0]
                 turn_ids = list(dict.fromkeys(id(turn) for turn, _, _ in self.conversation_pages))
                 anchor = turn_ids.index(id(previous_turn))
-            turns = conversation.turns or [ConversationTurn.model_validate(turn) for turn in source]
+            turns = (source if not failed else [RecordedTurn(
+                conversation.record.participants[0 if turn["speaker"] == "initiator" else 1], turn["parts"])
+                for turn in source])
             self.conversation_pages = [
                 (turn, part, text)
                 for index, turn in enumerate(turns)
-                for part, text in paginate_parts(display_parts([(part.text, part) for part in turn.parts],
-                                                 () if failed else conversation.record.rewritten_parts.get(index, ()),
-                                                 original=app.original_dialogue,
-                                                 names=conversation.record.name_forms,
-                                                 introductions=conversation.record.name_introductions.get(index, ()),
-                                                 speaker=(conversation.initiator if turn.speaker == "initiator" else conversation.recipient).name,
-                                                 listener=(conversation.recipient if turn.speaker == "initiator" else conversation.initiator).name),
+                for part, text in paginate_parts(display_parts(
+                                                 [(part["text"], ConversationPart.model_validate(part)) for part in turn.parts],
+                                                 turn.rewritten, original=app.original_dialogue),
                                                  app.font, rect.width - 12, condensed=version[2])
             ]
             self._conversation_page_turns = version
@@ -743,16 +737,10 @@ class GameScreen:
         turn, part, text = page if page is not None else (None, None, "")
         original = app.original_dialogue or failed
         if turn is not None and not failed:
-            index = next(index for index, source_turn in enumerate(conversation.turns) if source_turn is turn)
-            original = uses_original_dialogue(turn.parts, conversation.record.rewritten_parts.get(index, ()),
-                                              original=app.original_dialogue,
-                                              names=conversation.record.name_forms,
-                                              introductions=conversation.record.name_introductions.get(index, ()),
-                                              speaker=(conversation.initiator if turn.speaker == "initiator" else conversation.recipient).name,
-                                              listener=(conversation.recipient if turn.speaker == "initiator" else conversation.initiator).name)
+            original = uses_original_dialogue(turn.parts, turn.rewritten, original=app.original_dialogue)
         self.draw_dialogue_background(app, original)
         if turn is not None:
-            speaker = conversation.initiator if turn.speaker == "initiator" else conversation.recipient
+            speaker = conversation.initiator if turn.speaker == conversation.initiator.name else conversation.recipient
             title = speaker.name + (" - failed draft" if failed else "")
         else:
             speaker = self.selected_npc
@@ -768,7 +756,7 @@ class GameScreen:
         self.next_button.label = "Done" if last_page else "Next"
         can_finish = not (last_page and conversation.active and app.simulation.paused)
         self.next_button.draw(app.window, app.small_font, enabled=bool(self.conversation_pages) and can_finish)
-        if conversation.pending_opinions or (conversation.error and not conversation.turns):
+        if conversation.error and not conversation.record.turns:
             self.retry_button.draw(app.window, app.small_font, enabled=not app.simulation.paused)
         if not conversation.arrived:
             if conversation.initiator is app.simulation.snake:
@@ -813,9 +801,8 @@ class GameScreen:
         surface.set_clip(previous_clip)
 
     def pending_invitation(self, world):
-        interaction = world.player_interaction
-        return next((o for o in reversed(world.player_invitations) if o["status"] == "offered"
-            and interaction and o["interaction_id"] == interaction["id"]), None)
+        from apartments import pending_invitation
+        return pending_invitation(world)
 
     def open_location_menu(self, purpose, choices):
         self.location_menu = dict(purpose=purpose, choices=choices)

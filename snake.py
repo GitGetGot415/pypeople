@@ -222,7 +222,8 @@ class SnakeEncounter:
         self.topic = reason or purpose.replace("_", " ")
         self.accusation = reason
         self.record = ConversationRecord((world.snake.name, resident.name), self.topic,
-                                         "Awaiting tree visitor", origin=origin, purpose=purpose, id=self.id)
+                                         "Awaiting tree visitor", origin=origin, purpose=purpose, id=self.id,
+                                         participant_ids=[world.snake.id, resident.id])
         from social import concern_description
         self.record.intended_subjects = {world.snake.name: self.topic,
                                         resident.name: concern_description(resident, resident.current_concern)}
@@ -239,8 +240,6 @@ class SnakeEncounter:
         self.dialogue_state = "waiting"
         self.wait_elapsed = 0.0
         self.talking_remaining = POST_DIALOGUE_SECONDS
-        self.turns = []
-        self.pending_opinions = []
         self.committed = False
         self.outcome = ""
         self.outcome_event_id = None
@@ -251,6 +250,10 @@ class SnakeEncounter:
         if retry and retry["resident_id"] == resident.id and retry["purpose"] == purpose:
             world.snake.retry_request = None
         world.history.append(self.record)
+
+    @property
+    def turns(self):
+        return self.record.generated_turns()
 
     @property
     def error(self):
@@ -358,7 +361,8 @@ class SnakeEncounter:
         # Speech describing a handoff is displayed only after the real transfer commits.
         world.commit_snake_response(self, response)
         record_generated_turns(self, response.turns, rewritten_parts)
-        self.record.name_witnesses = {index: [p["npc_id"] for p in people] for index, people in witnessed.items()}
+        for index, people in witnessed.items():
+            self.record.turns[index].witnesses = [p["npc_id"] for p in people]
         commit_names(self, name_changes)
         self.record.orientation_discussed = orientation_speech(turn.text for turn in response.turns)
         self.stage = "dialogue"
@@ -506,7 +510,6 @@ class PlayerSnakeEncounter(SnakeEncounter):
         self.reserved = False
         self.dialogue_state, self.stage = "waiting", "player"
         self.wait_elapsed = self.elapsed = self.talking_remaining = 0.0
-        self.turns, self.pending_opinions = [], []
         self.committed, self.outcome, self.outcome_event_id = False, "", None
         self.request_context = self.saved_state = None
         self.offer = None
@@ -563,11 +566,12 @@ class PlayerSnakeEncounter(SnakeEncounter):
             transaction=transaction,
             permitted_decisions=permitted, can_give_apple=can_give, pending_offer=self.offer,
             requested_offering=next(iter(prices)) if len(prices) == 1 else "",
-            known_offense=snake.offenses.get(player.id), audience_ids=audience, first_meeting=not self.record.dialogue_parts,
+            known_offense=snake.offenses.get(player.id), audience_ids=audience,
+            first_meeting=not any(turn.speaker == snake.name for turn in self.record.turns),
             relevant_claims=relevant_claims(world, snake.id, message),
             current_claim=dict(id=f"{self.record.id}:{turn}", text=message, conversation_id=self.record.id,
                                turn=turn, speaker_id=player.id),
-            player_dialogue=[dict(speaker=s, text=t) for s, t in self.record.turns[-12:]])
+            player_dialogue=[dict(speaker=t.speaker, text=t.text) for t in self.record.turns[-12:]])
         return self.request_context
 
     def accept_player_response(self, response, snapshot, message, *, rewritten=()):
@@ -605,11 +609,11 @@ class PlayerSnakeEncounter(SnakeEncounter):
         self.record.dialogue_errors = list(dict.fromkeys([*self.record.dialogue_errors, *response._dialogue_errors]))
         from player import supplied_player_name
         from name_knowledge import asks_name
-        prior = self.record.turns[current["turn"] - 1][1] if current["turn"] else ""
+        prior = self.record.turns[current["turn"] - 1].text if current["turn"] else ""
         name = supplied_player_name(message, requested=asks_name(prior))
         if name:
             self.initiator.known_names[self.recipient.id] = dict(name=name, conversation_id=self.record.id, turn=current["turn"])
-            self.record.name_introductions[current["turn"]] = [dict(actor_id=self.recipient.id, name=name, reference="self")]
+            self.record.turns[current["turn"]].introductions = [dict(actor_id=self.recipient.id, name=name, reference="self")]
         self.record.add_turn(self.initiator.name, response.reply,
             [{"text": response.reply, "emotion": {"name": "neutral", "intensity": 0}}], rewritten)
         if decision.startswith("advance_"):

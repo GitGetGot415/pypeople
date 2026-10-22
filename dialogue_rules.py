@@ -4,6 +4,7 @@ import re
 import unicodedata
 from collections import Counter
 
+from validation_errors import DialogueValidationError, RecoveryKind
 from constants import (DIALOGUE_CAPS_MIN_LETTERS, DIALOGUE_CAPS_MIN_WORDS,
                        DIALOGUE_CAPS_RATIO, PHASES, SNAKE_NAME)
 from dialogue_text import split_sentences
@@ -403,9 +404,9 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
         direction = ("Explain the supplied private reason and what you want, in your own words. " if kind == "private_motive" else
                      "Report who made which claims and preserve how you heard them. " if kind == "snake_claim" else
                      "Describe a concrete event or memory from its assertion in your own words. ")
-        raise ValueError("The selected account is not actually told in this turn. " + direction +
+        raise DialogueValidationError("The selected account is not actually told in this turn. " + direction +
                          "Discussing trust or promising to tell it later is insufficient. "
-                         f"Expected {kind or 'information'}: {assertion}")
+                         f"Expected {kind or 'information'}: {assertion}", RecoveryKind.UNMATCHED_ACCOUNT)
 
 
 def validate_apple_promise(offer, acceptance, deadline, *, current_phase=None):
@@ -420,7 +421,7 @@ def validate_apple_offer(offer, deadline, *, current_phase=None):
                       r"\bi(?:['’]ll|\s+(?:will|can))?\s+get you (?:an?|one) (?:apple|fruit)\b", offer, re.I)
     negative = r"\b(?:cannot|can['’]t|won['’]t|wouldn['’]t|will not|do not|don['’]t|decline|refuse|maybe|perhaps|might)\b"
     if not giving or not re.search(r"\b(?:apple|fruit)\b", offer, re.I) or re.search(negative, offer, re.I):
-        raise ValueError("A recorded apple promise needs the giver's explicit spoken commitment to give an apple, not a request or unrelated discussion.")
+        raise DialogueValidationError("A recorded apple promise needs the giver's explicit spoken commitment to give an apple, not a request or unrelated discussion.", RecoveryKind.MISSING_PROMISE)
     phase = PHASES[deadline % len(PHASES)]
     phase_words = {"day": r"day|daytime|morning", "night": r"night|tonight"}[phase]
     day = re.search(r"\bday\s+(\d+)\b", offer, re.I)
@@ -437,7 +438,7 @@ def validate_apple_acceptance(acceptance):
     negative = r"\b(?:cannot|can['’]t|won['’]t|wouldn['’]t|will not|do not|don['’]t|decline|refuse|maybe|perhaps|might)\b"
     if ("?" in acceptance or re.search(negative, acceptance, re.I)
             or not re.search(r"\b(?:yes|agreed|deal|that works|i accept|i agree|thank you|thanks|i['’]ll take)\b", acceptance, re.I)):
-        raise ValueError("The apple receiver must explicitly accept the spoken promise before it can be recorded.")
+        raise DialogueValidationError("The apple receiver must explicitly accept the spoken promise before it can be recorded.", RecoveryKind.MISSING_ACCEPTANCE)
 
 
 def validate_continuity(text, *, day, situation, knows_claims=False, listener_is_guard=False):
@@ -461,7 +462,7 @@ def validate_continuity(text, *, day, situation, knows_claims=False, listener_is
             r"(?:met|meet|encountered|encounter|(?:spoken|speak|talked|talk) (?:to|with)|dealt with|deal with|"
             r"(?:thought about|considered) (?:speaking|talking) (?:to|with))\s+"
             + guard, speech, re.I):
-        raise ValueError("The speaker has already met the named guard. Doubting authority does not erase that encounter.")
+        raise DialogueValidationError("The speaker has already met the named guard. Doubting authority does not erase that encounter.", RecoveryKind.KNOWN_ENCOUNTER)
     if knows_claims and re.search(rf"{name_pattern(SNAKE_NAME)}|\bclaims\b", speech, re.I) and re.search(
             r"\bi['’]?(?:ve| have)?\s+(?:heard nothing|haven['’]t heard anything|have not heard anything)\b", speech, re.I):
         raise ValueError("The speaker has firsthand knowledge of the claims being made; preserve that experience while allowing skepticism.")

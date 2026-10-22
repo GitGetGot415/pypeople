@@ -2,8 +2,6 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 import math
 import random
-import json
-from pathlib import Path
 from uuid import uuid4
 
 from character_data import DIRECTIONS, PROFILE_FIELDS, normalize_opinions
@@ -122,15 +120,12 @@ class NPC:
     end_conversation: bool = False
     conversation: "Conversation | None" = field(default=None, repr=False, compare=False)
     gift: "Gift | None" = field(default=None, repr=False, compare=False)
-    character_path: Path | None = field(default=None, repr=False, compare=False)
     display_name: str | None = None
     emotion: str = "neutral"
     emotion_intensity: int = 0
     id: str = field(default_factory=lambda: uuid4().hex)
     social: float = field(default_factory=lambda: random.uniform(*STARTING_NPC_SATISFACTION_RANGE))
     inventory: dict = field(default_factory=lambda: {"fruit": STARTING_NPC_FRUIT})
-    # Retained as save data; resident fruit storage is always unlimited.
-    inventory_capacity: int | None = None
     preferences: dict = field(default_factory=lambda: {
         "sociability": random.uniform(*STARTING_NPC_SOCIABILITY_RANGE),
         "generosity": random.uniform(*STARTING_NPC_GENEROSITY_RANGE),
@@ -177,10 +172,6 @@ class NPC:
     @property
     def indoors(self):
         return self.location != "garden"
-
-    @property
-    def inventory_space(self):
-        return None
 
     @property
     def interaction(self):
@@ -437,8 +428,6 @@ class NPC:
             "activity_owner": self.owner,
             "satisfaction": round(self.social, 1),
             "inventory": self.inventory.copy(),
-            "inventory_capacity": None,
-            "inventory_space": self.inventory_space,
             "tree_interaction_point": list(tree.interaction_point),
             "tree_fruit": tree.fruit,
             "tree_available_fruit": self.world.available_fruit if self.world else tree.fruit,
@@ -500,6 +489,17 @@ class NPC:
         # Copy nested entries so worker snapshots cannot modify live opinions.
         return {person: entry.copy() for person, entry in self.character.get("Opinions", {}).items()}
 
+    def opinion_score(self, actor_id, default=0):
+        """Resolve engine identity here; profile and prompt dictionaries retain labels."""
+        target = self.world.participant_by_id(actor_id)
+        return self.opinions.get(target.name, {}).get("opinion", default) if target else default
+
+    def remember_opinion(self, actor_id, opinion, reason):
+        target = self.world.participant_by_id(actor_id)
+        if target is None:
+            raise ValueError("The opinion target is no longer available.")
+        self.remember_opinions({target.name: {"opinion": opinion, "reason": reason}})
+
     def remember_opinions(self, updates):
         updates = normalize_opinions(updates)
         if self.world:
@@ -512,13 +512,6 @@ class NPC:
         opinions = normalize_opinions({**self.opinions, **updates})
         if opinions == self.opinions:
             return
-        if self.character_path is not None:
-            # Preserve profile edits made on disk while the game is running.
-            data = json.loads(self.character_path.read_text(encoding="utf-8"))
-            data["Opinions"] = opinions
-            temporary = self.character_path.with_suffix(".json.tmp")
-            temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            temporary.replace(self.character_path)
         self.character["Opinions"] = opinions
         if self.world:
             interaction = self.conversation or self.gift
@@ -767,8 +760,6 @@ class Conversation:
         self.record.intended_subjects = {
             npc.name: concern_description(npc, self.concerns[role])
             for role, npc in (("initiator", initiator), ("recipient", recipient))}
-        self.turns = []
-        self.pending_opinions = []
         self.proposals = []
         self.accepted_proposals = []
         self.social_effects_applied = False
@@ -796,6 +787,10 @@ class Conversation:
 
     def other(self, npc):
         return self.recipient if npc is self.initiator else self.initiator
+
+    @property
+    def turns(self):
+        return self.record.generated_turns()
 
     @property
     def error(self):
@@ -861,16 +856,12 @@ class Conversation:
                     (self.recipient, self.initiator, response.recipient_opinion))
         self.record.outcomes = [
             describe_opinion_change(
-                npc.name, partner.name, npc.opinions.get(partner.name, {}).get("opinion"), entry.opinion, entry.reason
+                npc.name, partner.name, npc.opinion_score(partner.id, default=None), entry.opinion, entry.reason
             )
             for npc, partner, entry in opinions
         ]
         self.record.status = "Dialogue ready"
         self.record.orientation_discussed = orientation_discussed
-        self.pending_opinions = [
-            (npc, {partner.name: {"opinion": entry.opinion, "reason": entry.reason}})
-            for npc, partner, entry in opinions
-        ]
         self.accepted_proposals = list(response.accepted_proposals)
         self.accepted_disclosures = list(response.disclosures)
         self.third_party_opinions = list(response.third_party_opinions)
@@ -884,7 +875,8 @@ class Conversation:
                 goal.last_attempt_phase = self.initiator.world.phase_index
             commit_concern_use(self)
             self.social_effects_applied = True
-        self.remember_opinions()
+        for npc, partner, entry in opinions:
+            npc.remember_opinion(partner.id, entry.opinion, entry.reason)
         self.reactions = [
             (entry.reason, max(-4.0, min(4.0, entry.opinion / 20)))
             for entry in (response.initiator_opinion, response.recipient_opinion)
@@ -934,18 +926,6 @@ class Conversation:
             remember(requester, donor, event, "refused", f"{donor.name} declined my apple request: {self.food_reason}",
                      -1 if self.food_outcome == "need" else -5)
             remember(donor, requester, event, "kept_fruit", f"I kept my apple when {requester.name} asked: {self.food_reason}", 0)
-
-    def remember_opinions(self):
-        """Retry unsaved opinions without regenerating or hiding the dialogue."""
-        while self.pending_opinions:
-            npc, updates = self.pending_opinions[0]
-            try:
-                npc.remember_opinions(updates)
-            except (OSError, ValueError):
-                self.error = f"Could not save {npc.name}'s opinion. Click Retry to save it again."
-                return
-            self.pending_opinions.pop(0)
-        self.error = ""
 
     def update(self, dt, *, reading=False):
         if not self.active:
@@ -1042,11 +1022,6 @@ class Conversation:
     def finish(self, tree):
         if not self.active:
             return
-        if self.pending_opinions:
-            self.remember_opinions()
-            if self.pending_opinions:
-                self.talking_remaining = DECISION_SECONDS
-                return
         self.active = False
         self.record.status = "Finished"
         if not self.turns:
@@ -1107,7 +1082,8 @@ class Gift:
         self.thanks = list(thanks) if thanks is not None else []
         self.rewritten_thanks = list(rewritten_thanks)
         self.elapsed = 0.0
-        self.record = record or ConversationRecord((initiator.name, recipient.name), "Give items", "Walking to give")
+        self.record = record or ConversationRecord((initiator.name, recipient.name), "Give items", "Walking to give",
+                                                  participant_ids=[initiator.id, recipient.id])
         if set(self.record.participants) != {initiator.name, recipient.name}:
             self.record = ConversationRecord((initiator.name, recipient.name), "Directed gift", "Walking to give",
                 authorization_id=record.id, participant_ids=[initiator.id, recipient.id])

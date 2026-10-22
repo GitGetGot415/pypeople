@@ -143,13 +143,11 @@ def conversation_points(first, second, spacing=0):
 
 def record_generated_turns(interaction, turns, rewritten_parts=()):
     """Keep speaker roles and recorded display parts identical across encounters."""
-    interaction.turns = list(turns)
-    for index, turn in enumerate(interaction.turns):
+    for index, turn in enumerate(turns):
         actor = interaction.initiator if turn.speaker == "initiator" else interaction.recipient
         rewritten = rewritten_parts[index] if rewritten_parts else ()
-        interaction.record.add_turn(actor.name, turn.text, [part.model_dump() for part in turn.parts], rewritten)
-        if turn.introductions:
-            interaction.record.name_introductions[index] = [intro.model_dump() for intro in turn.introductions]
+        interaction.record.add_turn(actor.name, turn.text, [part.model_dump() for part in turn.parts], rewritten,
+                                    introductions=[intro.model_dump() for intro in turn.introductions], speaker_id=actor.id)
 
 
 def record_failed_dialogue(interaction, turns):

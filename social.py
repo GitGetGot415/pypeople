@@ -2,10 +2,12 @@
 
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import uuid4
 
-from constants import (CONCERN_LIFETIME_RANGE, CONCERN_WEIGHTS, FAILURE_COOLDOWN, GOAL_IMPROVEMENT,
+from pydantic import Field
+
+from constants import (CONCERN_LIFETIME_RANGE, CONCERN_WEIGHTS, CONVERSATION_MAX_TURNS, FAILURE_COOLDOWN, GOAL_IMPROVEMENT,
                        LEVERAGE_ACCOUNT_KINDS, MAX_DIALOGUE_FAILURE_COOLDOWN, PHASES)
 from conversation_history import remember
 from dialogue_rules import named_references, validate_account_speech, validate_apple_promise
@@ -56,27 +58,26 @@ def concern_topic(npc, concern):
 
 
 def last_conversation_partner(npc):
-    return next((next(name for name in r.participants if name != npc.name)
+    return next((next(other.id for other in npc.world.actors if other is not npc and r.includes(other))
                  for r in reversed(npc.world.history)
-                 if npc.name in r.participants and "You" not in r.participants and r.turns), None)
+                 if r.includes(npc) and "You" not in r.participants and r.turns), None)
 
 
 def repeat_partner_paused(npc, other):
-    return any(person.conversation_return_remaining > 0 and last_conversation_partner(person) == partner.name
+    return any(person.conversation_return_remaining > 0 and last_conversation_partner(person) == partner.id
                for person, partner in ((npc, other), (other, npc)))
 
 
 def dialogue_failure_cooldown(npc, other):
     """Repeated failed meetings back off; any accepted exchange breaks the streak."""
     delay = FAILURE_COOLDOWN
-    pair = {npc.name, other.name}
     failures = 0
     for record in reversed(npc.world.history):
-        if npc.name not in record.participants:
+        if not record.includes(npc):
             continue
         if record.turns:
             break
-        if set(record.participants) == pair and record.error:
+        if record.between(npc, other) and record.error:
             failures += 1
             if failures > 1:
                 delay = min(MAX_DIALOGUE_FAILURE_COOLDOWN, delay * 2)
@@ -193,85 +194,85 @@ def phase_label(index):
 
 @dataclass
 class Goal:
-    id: str
+    id: Annotated[str, Field(min_length=1)]
     kind: GoalKind
     target_id: str
-    objective: str
-    motive: str
-    approach: str
-    boundary: str
-    created_phase: int
-    deadline: int
-    baseline_opinion: int = 0
+    objective: Annotated[str, Field(min_length=1, max_length=400)]
+    motive: Annotated[str, Field(min_length=1, max_length=400)]
+    approach: Annotated[str, Field(min_length=1, max_length=400)]
+    boundary: Annotated[str, Field(min_length=1, max_length=400)]
+    created_phase: Annotated[int, Field(ge=0)]
+    deadline: Annotated[int, Field(ge=0)]
+    baseline_opinion: Annotated[int, Field(ge=-100, le=100)] = 0
     status: Literal["active", "completed", "failed", "cancelled"] = "active"
     resolution_event_id: str | None = None
-    resolved_phase: int | None = None
+    resolved_phase: Annotated[int | None, Field(ge=0)] = None
     outcome: str = ""
-    last_attempt_phase: int | None = None
+    last_attempt_phase: Annotated[int | None, Field(ge=0)] = None
     third_npc_id: str | None = None
     claim_id: str | None = None
 
 
 @dataclass
 class Proposal:
-    id: str
+    id: Annotated[str, Field(min_length=1)]
     promisor_id: str
     recipient_id: str
-    deadline: int
+    deadline: Annotated[int, Field(ge=0)]
 
 
 @dataclass
 class Promise:
-    id: str
+    id: Annotated[str, Field(min_length=1)]
     promisor_id: str
     recipient_id: str
-    conversation_id: str
-    created_phase: int
-    deadline: int
+    conversation_id: Annotated[str, Field(min_length=1)]
+    created_phase: Annotated[int, Field(ge=0)]
+    deadline: Annotated[int, Field(ge=0)]
     item: Literal["fruit"] = "fruit"
     quantity: Literal[1] = 1
     status: Literal["pending", "fulfilled", "broken", "cancelled"] = "pending"
     resolution_event_id: str | None = None
-    resolved_phase: int | None = None
+    resolved_phase: Annotated[int | None, Field(ge=0)] = None
     outcome: str = ""
     consequence_event_id: str | None = None
 
 
 @dataclass
 class OpinionEffect:
-    event_id: str
+    event_id: Annotated[str, Field(min_length=1)]
     target_id: str
-    delta: int
-    reason: str
+    delta: Annotated[int, Field(ge=-6, le=6)]
+    reason: Annotated[str, Field(min_length=1, max_length=400)]
     claim_id: str | None = None
     actor_id: str | None = None
     conversation_id: str | None = None
-    phase: int | None = None
+    phase: Annotated[int | None, Field(ge=0)] = None
 
 
 @dataclass
 class Fact:
-    id: str
+    id: Annotated[str, Field(min_length=1)]
     kind: FactKind
     subject_id: str
     object_id: str
-    source_id: str
+    source_id: Annotated[str, Field(min_length=1)]
     conversation_id: str | None
-    phase: int
-    summary: str
-    witness_ids: list[str]
+    phase: Annotated[int, Field(ge=0)]
+    summary: Annotated[str, Field(min_length=1)]
+    witness_ids: Annotated[list[str], Field(min_length=1)]
 
 
 @dataclass
 class Claim:
-    id: str
+    id: Annotated[str, Field(min_length=1)]
     fact_id: str
     subject_id: str
     originator_id: str
     affirmed: bool
     parent_claim_id: str | None
     deliberate: bool
-    phase: int
+    phase: Annotated[int, Field(ge=0)]
     conversation_id: str | None
 
 
@@ -283,29 +284,29 @@ class Belief:
     source_id: str
     disclosure_id: str | None
     direct: bool
-    phase: int
+    phase: Annotated[int, Field(ge=0)]
     assessed: bool = False
-    opinion_delta: int = 0
+    opinion_delta: Annotated[int, Field(ge=-6, le=6)] = 0
 
 
 @dataclass
 class Disclosure:
-    id: str
+    id: Annotated[str, Field(min_length=1)]
     claim_id: str
     conversation_id: str
     speaker_id: str
     listener_id: str
-    turn: int
+    turn: Annotated[int, Field(ge=0, le=CONVERSATION_MAX_TURNS - 1)]
     intent: Literal["share", "challenge", "lie"]
     stance: Stance
     source_disclosure_id: str | None
-    phase: int
-    event_id: str
+    phase: Annotated[int, Field(ge=0)]
+    event_id: Annotated[str, Field(min_length=1)]
 
 
 @dataclass
 class ClaimOption:
-    id: str
+    id: Annotated[str, Field(min_length=1)]
     fact_id: str
     subject_id: str
     originator_id: str
@@ -313,7 +314,7 @@ class ClaimOption:
     parent_claim_id: str | None
     creator_id: str | None
     kind: FactKind
-    assertion: str
+    assertion: Annotated[str, Field(min_length=1)]
 
 
 @dataclass
@@ -507,7 +508,7 @@ def prepare_information(conversation):
         {role: npc.id for role, npc in pair.items()},
         {role: deepcopy(npc.beliefs) for role, npc in pair.items()}, list(options.values()),
         {role: can_deceive(npc) for role, npc in pair.items()},
-        {role: {other.id: npc.opinions.get(other.name, {}).get("opinion", 0) for other in world.actors if other is not npc}
+        {role: {other.id: npc.opinion_score(other.id) for other in world.actors if other is not npc}
          for role, npc in pair.items()}, allowed, conversation.focus_claim_id)
 
 
@@ -775,7 +776,7 @@ def check_sabotage_goal(world, effect, listener, actual_delta, record):
             and goal.target_id == listener.id and goal.third_npc_id == effect.target_id and actual_delta < 0
             and effect.phase is not None and goal.created_phase <= effect.phase <= world.phase_index <= goal.deadline
             and claim_by_id(world, goal.claim_id).fact_id == claim_by_id(world, effect.claim_id).fact_id
-            and listener.opinions.get(world.participant_by_id(effect.target_id).name, {}).get("opinion", 0) <= goal.baseline_opinion - 4):
+            and listener.opinion_score(effect.target_id) <= goal.baseline_opinion - 4):
         resolve_goal(owner, world, "completed", "A committed opinion change from this exchange weakened the relationship.", record)
 
 
@@ -866,7 +867,7 @@ def assign_goal(npc, world):
     choices = []
     generous = npc.preferences["generosity"] >= 0.55
     for target in candidates:
-        opinion = target.opinions.get(npc.name, {}).get("opinion", 0)
+        opinion = target.opinion_score(npc.id)
         if target.inventory.get("fruit", 0) or target.can_reach(world.tree.interaction_point):
             choices.append((1 if generous else 3, "obtain_apple", target, opinion))
         if npc.inventory.get("fruit", 0) or npc.can_reach(world.tree.interaction_point):
@@ -884,7 +885,7 @@ def assign_goal(npc, world):
                 continue
             for target in candidates:
                 if target is not subject:
-                    baseline = target.opinions.get(subject.name, {}).get("opinion", 0)
+                    baseline = target.opinion_score(subject.id)
                     polarity = fact.kind not in ("apple_given", "work_given", "promise_kept")
                     related = [(b, claim_by_id(world, b.claim_id)) for b in target.beliefs
                                if claim_by_id(world, b.claim_id).fact_id == fact.id]
@@ -949,7 +950,7 @@ def check_relationship_goals(world, opinion_owner, record=None):
         goal = npc.goal
         if (goal and goal.status == "active" and goal.kind == "repair_relationship"
                 and goal.target_id == opinion_owner.id and world.phase_index <= goal.deadline
-                and opinion_owner.opinions.get(npc.name, {}).get("opinion", 0)
+                and opinion_owner.opinion_score(npc.id)
                 >= goal.baseline_opinion + GOAL_IMPROVEMENT):
             resolve_goal(npc, world, "completed", "Their opinion improved through a real interaction.", record)
 
@@ -1022,7 +1023,7 @@ def validate_live_agreements(conversation, response, *, dialogue_validation=True
             changed = any(current.get(claim_id) != belief for claim_id, belief in before.items())
             related = any(b.claim_id not in before and claim_by_id(world, b.claim_id).fact_id in relevant_facts
                           for b in npc.beliefs)
-            opinions = {other.id: npc.opinions.get(other.name, {}).get("opinion", 0)
+            opinions = {other.id: npc.opinion_score(other.id)
                         for other in world.actors if other is not npc}
             if changed or related or opinions != context.opinions[role] or can_deceive(npc) != context.can_lie[role]:
                 raise ValueError("A speaker's knowledge or opinion changed during generation. Please try again.")
@@ -1086,7 +1087,7 @@ def apply_opinion_effects(npc):
         try:
             npc.remember_opinions({target.name: {
                 "opinion": max(-100, min(100, previous["opinion"] + effect.delta)), "reason": reason[:400]}})
-        except (OSError, ValueError):
+        except ValueError:
             return False
         npc.pending_social_opinions.pop(0)
         if target is npc.world.snake and npc.attitudes:
