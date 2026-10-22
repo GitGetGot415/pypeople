@@ -6,7 +6,7 @@ from typing import Literal
 from uuid import uuid4
 
 from constants import (CONCERN_LIFETIME_RANGE, CONCERN_WEIGHTS, FAILURE_COOLDOWN, GOAL_IMPROVEMENT,
-                       LEVERAGE_ACCOUNT_KINDS, MAX_DIALOGUE_FAILURE_COOLDOWN)
+                       LEVERAGE_ACCOUNT_KINDS, MAX_DIALOGUE_FAILURE_COOLDOWN, PHASES)
 from conversation_history import remember
 from dialogue_rules import named_references, validate_account_speech, validate_apple_promise
 
@@ -184,11 +184,11 @@ def commit_concern_use(conversation):
 
 
 def phase_index(day, phase):
-    return 3 * (day - 1) + ("day", "evening", "night").index(phase)
+    return len(PHASES) * (day - 1) + PHASES.index(phase)
 
 
 def phase_label(index):
-    return f"Day {index // 3 + 1} / {('Day', 'Evening', 'Night')[index % 3]}"
+    return f"Day {index // len(PHASES) + 1} / {PHASES[index % len(PHASES)].title()}"
 
 
 @dataclass
@@ -372,7 +372,7 @@ def account_content(world, fact, affirmed=True):
 
 
 def fact_context(world, fact, affirmed=True):
-    date = {"day": fact.phase // 3 + 1, "phase": ("day", "evening", "night")[fact.phase % 3]}
+    date = {"day": fact.phase // len(PHASES) + 1, "phase": PHASES[fact.phase % len(PHASES)]}
     return {"assertion": account_content(world, fact, affirmed), "kind": fact.kind,
             "recorded_at": date, "event_time": None if fact.kind == "former_life" else date,
             "time_scope": "remembered former life; event date unknown" if fact.kind == "former_life" else "garden"}
@@ -389,7 +389,7 @@ def account_view(world, claim, belief):
             "original_speaker_name": world.participant_by_id(claim.originator_id).name,
             "immediate_source_name": world.participant_by_id(belief.source_id).name,
             "source_disclosure_id": belief.disclosure_id, "stance": belief.stance,
-            "learned_at": {"day": belief.phase // 3 + 1, "phase": ("day", "evening", "night")[belief.phase % 3]},
+            "learned_at": {"day": belief.phase // len(PHASES) + 1, "phase": PHASES[belief.phase % len(PHASES)]},
             "basis": "firsthand" if belief.direct else "hearsay" if belief.source_id != belief.npc_id else "own assertion"}
 
 
@@ -537,7 +537,7 @@ def information_views(context, world):
             if belief:
                 view.update(stance=belief.stance, immediate_source_id=belief.source_id,
                             immediate_source_name=world.participant_by_id(belief.source_id).name,
-                            learned_at={"day": belief.phase // 3 + 1, "phase": ("day", "evening", "night")[belief.phase % 3]},
+                            learned_at={"day": belief.phase // len(PHASES) + 1, "phase": PHASES[belief.phase % len(PHASES)]},
                             source_disclosure_id=belief.disclosure_id,
                             basis="firsthand" if belief.direct else "hearsay" if belief.source_id != npc_id else "own assertion",
                             already_assessed=any(b.assessed and options[b.claim_id].fact_id == option.fact_id
@@ -924,7 +924,7 @@ def assign_goal(npc, world):
     objective, motive, approach = descriptions[kind]
     npc.goal = Goal(uuid4().hex, kind, target.id, objective, motive, approach,
                     "Respect refusal; use only supported accounts or permitted denials, without inventing other events.",
-                    world.phase_index, world.phase_index + 3, baseline,
+                    world.phase_index, world.phase_index + len(PHASES), baseline,
                     third_npc_id=third.id if third else None, claim_id=claim.id if claim else None)
     record_intention(npc, world)
 

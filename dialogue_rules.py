@@ -5,7 +5,7 @@ import unicodedata
 from collections import Counter
 
 from constants import (DIALOGUE_CAPS_MIN_LETTERS, DIALOGUE_CAPS_MIN_WORDS,
-                       DIALOGUE_CAPS_RATIO, SNAKE_NAME)
+                       DIALOGUE_CAPS_RATIO, PHASES, SNAKE_NAME)
 from dialogue_text import split_sentences
 
 
@@ -421,14 +421,14 @@ def validate_apple_offer(offer, deadline, *, current_phase=None):
     negative = r"\b(?:cannot|can['’]t|won['’]t|wouldn['’]t|will not|do not|don['’]t|decline|refuse|maybe|perhaps|might)\b"
     if not giving or not re.search(r"\b(?:apple|fruit)\b", offer, re.I) or re.search(negative, offer, re.I):
         raise ValueError("A recorded apple promise needs the giver's explicit spoken commitment to give an apple, not a request or unrelated discussion.")
-    phase = ("day", "evening", "night")[deadline % 3]
-    phase_words = {"day": r"day|daytime|morning", "evening": r"evening", "night": r"night|tonight"}[phase]
+    phase = PHASES[deadline % len(PHASES)]
+    phase_words = {"day": r"day|daytime|morning", "night": r"night|tonight"}[phase]
     day = re.search(r"\bday\s+(\d+)\b", offer, re.I)
     phase_text = re.sub(r"\bday\s+\d+\b", "", offer, flags=re.I)
     if (not re.search(rf"\b(?:{phase_words})\b", phase_text, re.I)
-            or day and int(day[1]) != deadline // 3 + 1
+            or day and int(day[1]) != deadline // len(PHASES) + 1
             or current_phase is not None and re.search(r"\btomorrow\b", offer, re.I)
-            and deadline // 3 != current_phase // 3 + 1):
+            and deadline // len(PHASES) != current_phase // len(PHASES) + 1):
         raise ValueError("State the apple promise's actual deadline in the offer; do not invent a different day or phase.")
 
 

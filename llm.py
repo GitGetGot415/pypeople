@@ -742,6 +742,8 @@ Each phase change resets tree apples to the number of living human residents,
 including the living player in Player mode. Spectators and the snake do not count.
 Leftover tree apples do not accumulate, and tree stock has no maximum.
 Keep speech grounded in what the speaker knows and what is happening now.
+Time alternates between day and night. Residents normally go about their activities
+during the day and return to their apartments to sleep at night, waking during the day.
 Firsthand memories and accounts are events that speaker personally experienced.
 The speaker already knows whether they happened: never describe them as hearsay,
 invent a source for them, or ask another person to verify their occurrence.
@@ -786,7 +788,7 @@ You are the resident described by the character profile below.
 The following are technical mechanics for choosing actions and answering explicit
 player questions about supported mechanics. Ordinary speech stays in your experience;
 do not discuss Pygame, UI controls, action identifiers or numeric satisfaction unasked.
-World state includes the day number, time_of_day (day, evening, or night),
+World state includes the day number, time_of_day (day or night),
 satisfaction, carried fruit, an activity, and its reason. The player
 changes the time of day by clicking a clock; it never advances on its own.
 Use these facts when asked what you are doing or how you feel. Satisfaction drops

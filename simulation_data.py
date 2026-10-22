@@ -79,7 +79,7 @@ class PreferencesState(SaveModel):
 class MemoryState(SaveModel):
     id: str = Field(min_length=1)
     day: int = Field(ge=1)
-    phase: Literal["day", "evening", "night"]
+    phase: Literal["day", "night"]
     partner_id: str
     kind: Literal["gave_fruit", "received_fruit", "refused", "kept_fruit", "conversation",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
@@ -91,7 +91,7 @@ class MemoryState(SaveModel):
 class EventState(SaveModel):
     id: str = Field(min_length=1)
     day: int = Field(ge=1)
-    phase: Literal["day", "evening", "night"]
+    phase: Literal["day", "night"]
     kind: Literal["phase", "food_requested", "food_refused", "fruit_shared", "conversation_completed", "interaction_failed",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
                   "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "promise_cancelled", "work_shared", "player_call", "player_conversation", "tree_queue", "travel_failed", "visit"]
@@ -224,7 +224,7 @@ class InformationState(SaveModel):
 
 class DepartureState(SaveModel):
     day: int = Field(ge=1)
-    phase: Literal["day", "evening", "night"]
+    phase: Literal["day", "night"]
     cause: Literal["eaten by the snake"]
     event_id: str = Field(min_length=1)
 
@@ -265,7 +265,7 @@ class TransferIntentState(SaveModel):
 class TransferState(TransferIntentState):
     id: str = Field(min_length=1)
     day: int = Field(strict=True, ge=1)
-    phase: Literal["day", "evening", "night"]
+    phase: Literal["day", "night"]
     sequence: int = Field(strict=True, ge=0)
 
 
@@ -604,7 +604,7 @@ class SimulationState(SaveModel):
     player_call_check: float = Field(ge=0, le=PLAYER_CALL_CHECK_SECONDS)
     player_acknowledgments: list[dict]
     npc_trait_mode: Literal["normal", "extreme", "both"] = "normal"
-    phase: Literal["day", "evening", "night"]
+    phase: Literal["day", "night"]
     events: list[EventState] = Field(max_length=200)
     promises: list[PromiseState]
     facts: list[FactState]

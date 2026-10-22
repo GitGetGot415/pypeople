@@ -93,7 +93,7 @@ class CreativeJob(CreationData):
     creator_id: str = Field(min_length=1)
     kind: Literal["art", "music"]
     started_day: int = Field(strict=True, ge=1)
-    started_phase: Literal["day", "evening"]
+    started_phase: Literal["day"]
     revision: int = Field(strict=True, ge=0)
     remaining: float = Field(ge=0)
     queue_remaining: float = Field(ge=0)
@@ -113,7 +113,7 @@ class Creation(TitledData):
     kind: Literal["art", "music"]
     day: int = Field(strict=True, ge=1)
     owner_id: str = Field(min_length=1)
-    phase: Literal["day", "evening", "night"]
+    phase: Literal["day", "night"]
     payload: dict
 
     @model_validator(mode="after")

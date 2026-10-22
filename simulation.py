@@ -101,7 +101,7 @@ class Simulation:
 
     @property
     def next_phase_label(self):
-        return {"day": "Evening", "evening": "Night", "night": f"Day {self.day + 1}"}[self.phase]
+        return "Night" if self.phase == "day" else f"Day {self.day + 1}"
 
     @property
     def player_attention_pending(self):
@@ -123,8 +123,6 @@ class Simulation:
             return
         self.phase_pending = False
         if self.phase == "day":
-            self.phase = "evening"
-        elif self.phase == "evening":
             self.phase = "night"
         else:
             self.phase = "day"
