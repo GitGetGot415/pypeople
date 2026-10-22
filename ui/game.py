@@ -24,6 +24,15 @@ from constants import (INVENTORY_BUTTON_RECT, GAME_PAUSE_RECT, GAME_CLOCK_RECT, 
 
 class GameScreen:
     def __init__(self, max_requests=MAX_LLM_REQUESTS):
+        from constants import END_CONVERSATION_RECT, LEAVE_QUEUE_RECT, OBSERVE_LOCATION_RECT, INVITATION_ACCEPT_RECT
+        self.app = None
+        self.location = "garden"
+        self.location_menu = None
+        self.location_page = 0
+        self.end_button = Button(END_CONVERSATION_RECT, "End conversation")
+        self.leave_queue_button = Button(LEAVE_QUEUE_RECT, "Leave queue")
+        self.observe_button = Button(OBSERVE_LOCATION_RECT, "Observe location")
+        self.invitation_button = Button(INVITATION_ACCEPT_RECT, "Accept invitation")
         self.menu_button = Button((1144, 16, 112, 38), "Menu")
         self.stats_button = Button((1024, 16, 112, 38), "Stats")
         self.save_button = Button((904, 16, 108, 38), "Save")
@@ -35,7 +44,7 @@ class GameScreen:
         self.call_choice = None
         self.call_status = ""
         self.call_buttons = {label: Button(rect, label)
-                             for label, rect in zip(("Talk", "Not now", "Dismiss"), CALL_CHOICE_BUTTON_RECTS)}
+                             for label, rect in zip(("Talk", "Decline"), CALL_CHOICE_BUTTON_RECTS)}
         self.pause_button = Button(GAME_PAUSE_RECT, "Pause")
         self.arrival_retry = Button((476, 72, 120, 32), "Retry arrival")
         self.clock_button = Button(GAME_CLOCK_RECT, "")
@@ -80,6 +89,7 @@ class GameScreen:
         self.inventory.close()
         self.call_choice = None
         self.apartment_open = False
+        self.location_menu = None
         self.apartment_scroll = 0
         self.close_dialogue()
         self.prompt_input.set_value("")
@@ -97,7 +107,9 @@ class GameScreen:
         self.save_message = message
         self.save_message_remaining = 8
 
-    def close_dialogue(self):
+    def close_dialogue(self, *, terminate=True):
+        if terminate and self.app and self.app.simulation:
+            self.app.end_player_conversation()
         self.pending_offer = None
         if self.player_record:
             for offer in self.player_record.player_promise_offers:
@@ -143,6 +155,30 @@ class GameScreen:
                 self.camera_offset[1] + (WINDOW_SIZE[1] - WORLD_HEIGHT) / 2)
 
     def handle_event(self, app, event):
+        from player import active_player
+        world = app.simulation
+        if self.location_menu:
+            self.handle_location_event(app, event)
+            return
+        if self.observe_button.clicked(event) and not active_player(world):
+            self.close_dialogue()
+            from locations import allocated_floors, room_location, hallway_location
+            self.open_location_menu("Observe", [("Garden", "garden"),
+                *[(f"Hallway floor {n}", hallway_location(n)) for n in allocated_floors(world)],
+                ("Room 1 (reserved)", room_location(1)),
+                *[(f"Room {n.room_number}: {n.name}", room_location(n.room_number)) for n in world.residents]])
+            return
+        if self.leave_queue_button.clicked(event) and world.can_leave_tree(world.player.id):
+            world.leave_tree(world.player.id)
+            return
+        if self.dialogue_open and world.player_interaction and self.end_button.clicked(event):
+            self.close_dialogue()
+            return
+        if self.dialogue_open and self.invitation_button.clicked(event):
+            offer = self.pending_invitation(world)
+            if offer:
+                app.accept_player_invitation(offer["id"])
+                return
         if self.call_choice:
             from player import clear_call
             npc = app.simulation.npc_by_id(self.call_choice)
@@ -156,8 +192,7 @@ class GameScreen:
                         if not self.call_status:
                             self.call_choice = None
                     else:
-                        if label == "Dismiss":
-                            clear_call(npc)
+                        app.end_player_conversation()
                         self.call_choice = None
             return
         if self.inventory_button.clicked(event):
@@ -209,7 +244,7 @@ class GameScreen:
                 self.pan_start = None
                 self.pan_last = None
                 self.panning = False
-        elif event.type == pygame.MOUSEMOTION and self.pan_start is not None:
+        elif event.type == pygame.MOUSEMOTION and self.pan_start is not None and not active_player(world):
             dx = event.pos[0] - self.pan_start[0]
             dy = event.pos[1] - self.pan_start[1]
             if self.panning or dx * dx + dy * dy >= 16:
@@ -374,58 +409,61 @@ class GameScreen:
         self.camera_offset[1] += world_pos[1] * (old_zoom - self.camera_zoom)
 
     def select_at(self, app, screen_pos):
-        from .world import player_bubble_rect, player_bubble_visible
-        npc = None
-        for resident in app.simulation.outdoor_npcs:
-            if player_bubble_visible(resident, self.view_offset, self.camera_zoom) and player_bubble_rect(resident, self.view_offset, self.camera_zoom).clip(self.world_viewport).collidepoint(screen_pos):
-                if resident.player_call:
-                    self.open_call(app, resident)
+        from player import active_player, start_approach
+        from locations import targets
+        world = app.simulation
+        if world.player_interaction or world.player.journey or world.visit and world.visit["stage"] == "travel":
+            return
+        point = self.screen_to_world(screen_pos)
+        actors = [n for n in world.npcs if n.location == self.location]
+        if self.location == "garden":
+            actors.append(world.snake)
+        hit_actor = next((n for n in sorted(actors, key=lambda n: n.y, reverse=True) if n.contains(point)), None)
+        if active_player(world):
+            for target in targets(world, self.location):
+                if hit_actor is None and pygame.Rect(target["rect"]).collidepoint(point):
+                    if world.tree_has_actor(world.player.id):
+                        return
+                    from locations import start_journey
+                    self.close_dialogue()
+                    start_journey(world.player, self.location, target["point"], purpose="door", fast=True)
+                    world.player_interaction = dict(id="door", kind="door", stage="travel", target=target,
+                        location=self.location, npc_id=None, record_id=None)
                     return
-                npc = resident
-                break
-        world_pos = self.screen_to_world(screen_pos)
-        if npc is None and pygame.Rect(APARTMENT_RECT).collidepoint(world_pos):
-            self.close_dialogue()
-            self.pan_start = self.pan_last = None
-            self.panning = False
-            self.apartment_open = True
-            self.apartment_scroll = 0
-            return
-        npc = npc or next((npc for npc in sorted([*app.npcs, app.simulation.snake], key=lambda npc: npc.y, reverse=True) if npc.contains(world_pos)), None)
-        if npc is not None and npc is not app.simulation.snake and npc.player_call:
-            self.open_call(app, npc)
-            return
-        if self.viewed_conversation is not None and npc is not None and (npc.conversation or getattr(npc, "snake_encounter", None)) is self.viewed_conversation:
-            # Clicking the other participant keeps the same conversation open.
-            if npc is not self.selected_npc:
-                self.selected_npc.set_selected(False)
-                self.selected_npc = npc
-                npc.set_selected(True)
-            return
-        if npc is None or npc is self.selected_npc:
-            self.close_dialogue()
-        else:
-            self.close_dialogue()
-            self.dialogue_open = True
-            self.selected_npc = npc
-            npc.set_selected(True)
-            self.prompt_input.set_value("")
-            interaction = npc.conversation or getattr(npc, "snake_encounter", None)
-            if interaction is not None:
-                self.viewed_conversation = interaction
-                self.conversation_tree = app.tree
-                self.dialogue_scroll = 0
+            if self.location == "garden" and hit_actor in (None, world.snake) and (world.snake.contains(point) or abs(point[0] - world.tree.x) < 70 and abs(point[1] - world.tree.y) < 100):
+                self.close_dialogue()
+                if not world.join_tree(world.player, "introduction" if world.snake.contains(point) else "bargain"):
+                    self.show_save_message("Tree service is unavailable.")
                 return
-            self.set_reply(npc.reply)
-            request = app.player_request(npc)
-            if request and (request["pending"] or request["record"].error):
-                self.player_record = request["record"]
-            self.prompt_input.focus()
+        npc = hit_actor
+        if npc is None:
+            self.close_dialogue()
+            return
+        interaction = npc.conversation or getattr(npc, "snake_encounter", None)
+        if interaction:
+            self.close_dialogue()
+            self.dialogue_open, self.selected_npc, self.viewed_conversation = True, npc, interaction
+            self.conversation_tree = world.tree
+            return
+        if not active_player(world):
+            self.show_save_message(f"{npc.name}: {npc.status}")
+            return
+        try:
+            self.close_dialogue()
+            start_approach(world, npc)
+        except ValueError as exc:
+            self.show_save_message(str(exc))
 
     def draw(self, app):
         draw_world(app.window, app.npcs, app.tree, app.small_font, app.character.renderer,
                    self.view_offset, phase=app.simulation.phase, zoom=self.camera_zoom,
-                   viewport=self.world_viewport, snake=app.simulation.snake)
+                   viewport=self.world_viewport, snake=app.simulation.snake, world=app.simulation, location=self.location)
+        if app.simulation.mode == "spectator":
+            self.observe_button.draw(app.window, app.small_font)
+        if app.simulation.can_leave_tree(app.simulation.player.id):
+            self.leave_queue_button.draw(app.window, app.small_font)
+        if self.location_menu:
+            self.draw_location_menu(app)
         self.menu_button.draw(app.window, app.small_font)
         self.stats_button.draw(app.window, app.small_font)
         self.save_button.draw(app.window, app.small_font)
@@ -448,9 +486,13 @@ class GameScreen:
             color = PAPER if app.simulation.phase == "night" else INK
             draw_wrapped_text(app.window, self.save_message, app.small_font, color, (24, 480, 1232, 44))
 
+        if self.dialogue_open and app.simulation.player_interaction:
+            self.end_button.draw(app.window, app.small_font)
         if not self.dialogue_open:
             if self.apartment_open:
                 self.draw_apartments(app)
+            from constants import LOCATION_STATUS_POSITION
+            app.window.blit(app.small_font.render(f"{app.simulation.mode.title()} / {self.location}", True, PAPER if self.location != "garden" else INK), LOCATION_STATUS_POSITION)
             return
         if self.viewed_conversation is not None:
             self.draw_conversation(app)
@@ -491,6 +533,8 @@ class GameScreen:
                                                      self.reply_rect.width - 12), app.font, self.reply_rect,
                                  color=INK if self.reply else MUTED)
         closing = self.selected_npc.end_conversation
+        if self.pending_invitation(app.simulation):
+            self.invitation_button.draw(app.window, app.small_font)
         if self.pending_offer:
             self.accept_offer_button.draw(app.window, app.small_font, enabled=not app.simulation.paused)
             self.decline_offer_button.draw(app.window, app.small_font, enabled=not app.simulation.paused)
@@ -557,7 +601,7 @@ class GameScreen:
         app.window.blit(overlay, (0, 0))
         pygame.draw.rect(app.window, PAPER, CALL_CHOICE_RECT)
         draw_wrapped_text(app.window, f"{npc.name} would like to talk to you.", app.heading_font, INK, CALL_CHOICE_TITLE_RECT)
-        draw_wrapped_text(app.window, self.call_status or "Talk or dismiss this invitation to continue. Not now keeps the resident waiting and time changes blocked.",
+        draw_wrapped_text(app.window, self.call_status or "Accept starts a conversation. Decline releases both of you.",
                           app.font, MUTED, CALL_CHOICE_STATUS_RECT)
         for label, button in self.call_buttons.items():
             button.draw(app.window, app.small_font, enabled=label != "Talk" or not app.simulation.paused)
@@ -722,6 +766,100 @@ class GameScreen:
             pygame.draw.rect(surface, (181, 191, 174), track)
             pygame.draw.rect(surface, MUTED, (track.x, top, track.width, height))
         surface.set_clip(previous_clip)
+
+    def pending_invitation(self, world):
+        interaction = world.player_interaction
+        return next((o for o in reversed(world.player_invitations) if o["status"] == "offered"
+            and interaction and o["interaction_id"] == interaction["id"]), None)
+
+    def open_location_menu(self, purpose, choices):
+        self.location_menu = dict(purpose=purpose, choices=choices)
+        self.location_page = 0
+
+    def location_buttons(self):
+        from constants import (LOCATION_MENU_RECT, LOCATION_BUTTON_HEIGHT, LOCATION_BUTTON_GAP,
+            LOCATION_BUTTON_WIDTH, LOCATION_BUTTON_INSET, LOCATION_BUTTONS_PER_PAGE)
+        x, y = LOCATION_MENU_RECT[:2]
+        start = self.location_page * LOCATION_BUTTONS_PER_PAGE
+        return [(Button((x + LOCATION_BUTTON_INSET[0], y + LOCATION_BUTTON_INSET[1] + row * LOCATION_BUTTON_GAP,
+            LOCATION_BUTTON_WIDTH, LOCATION_BUTTON_HEIGHT), label), value)
+            for row, (label, value) in enumerate(self.location_menu["choices"][start:start + LOCATION_BUTTONS_PER_PAGE])]
+
+    def handle_location_event(self, app, event):
+        from constants import LOCATION_BUTTONS_RECT, LOCATION_NEXT_RECT, LOCATION_CANCEL_RECT, LOCATION_BUTTONS_PER_PAGE
+        if Button(LOCATION_CANCEL_RECT, "Cancel").clicked(event) or event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            self.location_menu = None
+            return
+        if Button(LOCATION_BUTTONS_RECT, "Previous").clicked(event):
+            self.location_page = max(0, self.location_page - 1)
+        if Button(LOCATION_NEXT_RECT, "Next").clicked(event):
+            self.location_page = min((len(self.location_menu["choices"]) - 1) // LOCATION_BUTTONS_PER_PAGE, self.location_page + 1)
+        for button, value in self.location_buttons():
+            if button.clicked(event):
+                if self.location_menu["purpose"] == "Observe":
+                    self.close_dialogue()
+                    self.location = value
+                    from locations import map_size
+                    width, height = map_size(value)
+                    self.camera_offset[:] = ((WORLD_WIDTH - width * self.camera_zoom) / 2,
+                                             (WORLD_HEIGHT - height * self.camera_zoom) / 2)
+                elif value != app.simulation.player.location:
+                    from locations import start_journey
+                    from constants import ELEVATOR_ARRIVAL
+                    start_journey(app.simulation.player, value, ELEVATOR_ARRIVAL, purpose="elevator", fast=True)
+                self.location_menu = None
+                return
+
+    def draw_location_menu(self, app):
+        from constants import LOCATION_MENU_RECT, LOCATION_BUTTONS_RECT, LOCATION_NEXT_RECT, LOCATION_CANCEL_RECT, LOCATION_TITLE_INSET
+        overlay = pygame.Surface(WINDOW_SIZE, pygame.SRCALPHA)
+        overlay.fill(MODAL_OVERLAY_COLOR)
+        app.window.blit(overlay, (0, 0))
+        pygame.draw.rect(app.window, PAPER, LOCATION_MENU_RECT)
+        app.window.blit(app.heading_font.render(self.location_menu["purpose"], True, INK),
+                        (LOCATION_MENU_RECT[0] + LOCATION_TITLE_INSET[0], LOCATION_MENU_RECT[1] + LOCATION_TITLE_INSET[1]))
+        for button, _ in self.location_buttons():
+            button.draw(app.window, app.small_font)
+        for rect, label in ((LOCATION_BUTTONS_RECT, "Previous"), (LOCATION_NEXT_RECT, "Next"), (LOCATION_CANCEL_RECT, "Cancel")):
+            Button(rect, label).draw(app.window, app.small_font)
+
+    def update_physical(self, app, dt):
+        from player import active_player, move_player
+        from locations import map_size
+        world = app.simulation
+        self.app = app
+        world.player_menu_blocked = bool(self.location_menu or self.inventory.visible or self.apartment_open
+            or self.call_choice or app.screen != "game")
+        if active_player(world):
+            self.location = world.player.location
+            interaction = world.player_interaction
+            if interaction and interaction["kind"] == "resident":
+                if interaction["stage"] == "prompt" and not self.call_choice:
+                    self.open_call(app, world.npc_by_id(interaction["npc_id"]))
+                elif interaction["stage"] == "conversation" and not self.dialogue_open:
+                    app.open_player_dialogue(world.npc_by_id(interaction["npc_id"]))
+            elif interaction and interaction["kind"] == "snake" and not self.dialogue_open:
+                app.open_player_dialogue(world.snake)
+            elif interaction and interaction["kind"] == "door" and not world.player.journey:
+                target = interaction["target"]
+                world.player_interaction = None
+                app.use_door(target)
+            blocking = (world.player_menu_blocked or self.dialogue_open or self.prompt_input.active
+                        or pygame.display.get_init() and pygame.key.get_mods() & (pygame.KMOD_CTRL | pygame.KMOD_ALT))
+            if not blocking and app.screen == "game" and dt > 0 and pygame.display.get_init():
+                keys = pygame.key.get_pressed()
+                move_player(world, keys[pygame.K_d] - keys[pygame.K_a], keys[pygame.K_s] - keys[pygame.K_w], dt)
+            width, height = map_size(self.location)
+            viewport = self.world_viewport
+            # Keep the established view_offset API while following each map's bounds.
+            base = ((WINDOW_SIZE[0] - WORLD_WIDTH) / 2, (WINDOW_SIZE[1] - WORLD_HEIGHT) / 2)
+            desired = []
+            for extent, view, position in ((width, viewport.width, world.player.x), (height, viewport.height, world.player.y)):
+                scaled = extent * self.camera_zoom
+                desired.append((view - scaled) / 2 if scaled <= view else min(0, max(view - scaled, view / 2 - position * self.camera_zoom)))
+            self.camera_offset[:] = [desired[i] - base[i] for i in (0, 1)]
+        elif self.selected_npc and not self.viewed_conversation:
+            self.close_dialogue()
 
     def request_is_current(self, app):
         return (self.viewed_conversation is not None

@@ -42,14 +42,36 @@ def move_toward(actor, point, dt, speed):
     if distance <= step:
         actor.x, actor.y = point
         return True
-    actor.x += dx / distance * step
-    actor.y += dy / distance * step
+    ux, uy = dx / distance, dy / distance
+    world = getattr(actor, "world", None)
+    if world is not None and hasattr(actor, "location") and actor is not world.snake:
+        from constants import SOFT_AVOIDANCE_DISTANCE
+        from locations import clamp_point
+        neighbors = list(world.npcs)
+        if world.mode == "player" and world.player.alive:
+            neighbors.append(world.player)
+        for other in neighbors:
+            if other is actor or other.location != actor.location:
+                continue
+            ox, oy = other.x - actor.x, other.y - actor.y
+            separation = math.hypot(ox, oy)
+            if separation < SOFT_AVOIDANCE_DISTANCE and ox * ux + oy * uy >= 0:
+                bias = (1 if actor.id < other.id else -1) * (1 - separation / SOFT_AVOIDANCE_DISTANCE)
+                if abs(dx) >= abs(dy):
+                    uy += bias
+                else:
+                    ux += bias
+        length = math.hypot(ux, uy)
+        actor.x, actor.y = clamp_point(actor.location, (actor.x + ux / length * step, actor.y + uy / length * step))
+    else:
+        actor.x += ux * step
+        actor.y += uy * step
     return False
 
 
 def company_point(npc, partner, spacing=0, *, allow_vertical=False):
     """Choose the nearest reachable meeting point with room for both sprites."""
-    if npc.indoors or partner is None or partner.indoors:
+    if partner is None or npc.location != partner.location:
         return None
     default_size = (NPC_RADIUS * 2, NPC_RADIUS)
     gap = sum((actor.sprite_size or default_size)[0] / 2 for actor in (npc, partner))
@@ -70,9 +92,12 @@ def conversation_points(first, second, spacing=0):
     sizes = [actor.sprite_size or (NPC_RADIUS * 2, NPC_RADIUS) for actor in (first, second)]
     horizontal_gap = max(sum(size[0] / 2 for size in sizes) + INTERACTION_GAP, spacing)
     vertical_gap = max(max(size[1] for size in sizes) + INTERACTION_GAP, spacing)
-    occupied = [((world.tree.x, world.tree.y), CONVERSATION_TREE_CLEARANCE)]
+    if first.location != second.location:
+        return None
+    occupied = ([((world.tree.x, world.tree.y), CONVERSATION_TREE_CLEARANCE)]
+                if first.location == "garden" else [])
     seen = set()
-    for resident in world.outdoor_npcs:
+    for resident in (n for n in world.npcs if n.location == first.location):
         interaction = resident.interaction
         if interaction is None or id(interaction) in seen:
             continue

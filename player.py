@@ -1,4 +1,4 @@
-"""Nonphysical player state and the small shared rules for real possessions."""
+"""Physical player and exclusive social ownership; possessions remain engine owned."""
 
 from dataclasses import dataclass, field
 import re
@@ -10,13 +10,24 @@ from constants import (INVENTORY_CAPACITY, PLAYER_ID, STARTING_PLAYER_FRUIT, PLA
                        PLAYER_CALL_GIFT_GENEROSITY, PLAYER_CALL_SOCIABILITY)
 from conversation_history import ConversationRecord, remember
 from dialogue_text import contains_question
+from constants import (GARDEN_LOCATION, STARTING_PLAYER_POSITION, STARTING_FACING,
+                       PLAYER_DEFAULT_APPEARANCE, MOVEMENT_SPEED, PLAYER_APPROACH_MULTIPLIER,
+                       PLAYER_APPROACH_TIMEOUT, PLAYER_TALK_DISTANCE, PLAYER_EVIDENCE_LIMIT)
 
 
 @dataclass
 class Player:
+    sprite_size = None
     id: str = PLAYER_ID
     inventory: dict = field(default_factory=lambda: {"fruit": STARTING_PLAYER_FRUIT})
     inventory_capacity: int = INVENTORY_CAPACITY
+    x: float = STARTING_PLAYER_POSITION[0]
+    y: float = STARTING_PLAYER_POSITION[1]
+    facing: int = STARTING_FACING
+    location: str = GARDEN_LOCATION
+    alive: bool = True
+    appearance: dict = field(default_factory=lambda: PLAYER_DEFAULT_APPEARANCE.copy())
+    journey: dict | None = None
 
     @property
     def name(self):
@@ -25,6 +36,139 @@ class Player:
     @property
     def inventory_space(self):
         return self.inventory_capacity - self.inventory["fruit"]
+
+    @property
+    def movement_bounds(self):
+        from locations import feet_bounds
+        return feet_bounds(self.location)
+
+    def can_reach(self, point):
+        from locations import clamp_point
+        return tuple(point) == clamp_point(self.location, point)
+
+
+def active_player(world):
+    return world.mode == "player" and world.player.alive
+
+
+def owns_resident(world, npc):
+    return bool(world.player_interaction and world.player_interaction.get("npc_id") == npc.id)
+
+
+def can_claim(world):
+    return active_player(world) and not (world.player_interaction or world.player.journey
+        or world.tree_has_actor(world.player.id) or world.player_menu_blocked
+        or world.visit and world.visit["stage"] == "travel")
+
+
+def start_approach(world, npc, *, incoming=False, gift=None, knock_room=None):
+    from locations import available, colocated
+    from interactions import company_point
+    if not can_claim(world) or world.npc_by_id(npc.id) is not npc or not available(npc):
+        raise ValueError("The player or resident is unavailable.")
+    if npc.busy or npc.request_pending or world.tree_has_actor(npc.id) or npc.journey:
+        raise ValueError("The resident is occupied.")
+    if not colocated(world.player, npc) and knock_room is None:
+        raise ValueError("You must be in the same location.")
+    mover, waiting = (npc, world.player) if incoming else (world.player, npc)
+    point = company_point(mover, waiting, allow_vertical=True) if knock_room is None else (world.player.x, world.player.y)
+    if point is None:
+        raise ValueError("There is no reachable place to meet.")
+    state = npc.suspend_activity("Meeting the player")
+    world.player_interaction = dict(id=uuid4().hex, kind="resident", npc_id=npc.id,
+        location=world.player.location, stage="approach", incoming=incoming, mover_id=mover.id,
+        point=list(point), elapsed=0.0, saved_state=state, record_id=None,
+        gift=gift, knock_room=knock_room)
+    if knock_room is not None:
+        # Talking through a closed door does not admit either actor or an audience.
+        world.player_interaction["stage"] = "conversation"
+    return world.player_interaction
+
+
+def end_interaction(world, reason="Conversation ended."):
+    """Release once; callers cancel requests using the returned ownership ID."""
+    interaction, world.player_interaction = world.player_interaction, None
+    if not interaction:
+        return
+    world.player.journey = None
+    npc = world.npc_by_id(interaction.get("npc_id"))
+    record = next((r for r in world.history if r.id == interaction.get("record_id")), None)
+    if record:
+        for offer in record.player_promise_offers:
+            if offer["status"] == "offered":
+                offer["status"] = "closed"
+        if record.status in ("Waiting for reply", "Reply pending when saved"):
+            record.status, record.error = "Cancelled", reason
+    if npc:
+        if npc.gift:
+            npc.gift.finish(reason)
+        npc.request_pending = False
+        npc.selected = False
+        npc.end_conversation = False
+        npc.journey = None
+        clear_call(npc)
+        if interaction.get("saved_state"):
+            npc.restore_after_interaction(interaction["saved_state"], world.player.id, preserve_facing=True)
+    for invitation in world.player_invitations:
+        if invitation["status"] == "offered" and invitation["interaction_id"] == interaction["id"]:
+            invitation["status"] = "withdrawn"
+
+
+def update_interaction(world, dt):
+    from interactions import face_each_other, move_toward
+    from locations import colocated
+    interaction = world.player_interaction
+    if not interaction or interaction["kind"] != "resident":
+        return
+    npc = world.npc_by_id(interaction["npc_id"])
+    if (not active_player(world) or npc is None or npc.departure
+            or not interaction.get("knock_room") and not colocated(world.player, npc)):
+        end_interaction(world, "The participants are no longer available together.")
+        return
+    if interaction["stage"] != "approach":
+        return
+    interaction["elapsed"] += dt
+    if interaction["elapsed"] > PLAYER_APPROACH_TIMEOUT:
+        world.publish("interaction_failed", (world.player, npc), "The approach could not reach a meeting point.")
+        end_interaction(world, "The approach timed out.")
+        return
+    mover = npc if interaction["incoming"] else world.player
+    if move_toward(mover, interaction["point"], dt, MOVEMENT_SPEED * PLAYER_APPROACH_MULTIPLIER):
+        face_each_other(world.player, npc)
+        interaction["stage"] = "prompt" if interaction["incoming"] else "conversation"
+
+
+def move_player(world, dx, dy, dt):
+    if not can_claim(world) or world.paused:
+        return
+    from interactions import move_toward
+    from locations import clamp_point
+    distance = (dx * dx + dy * dy) ** 0.5
+    if distance:
+        p = world.player
+        point = clamp_point(p.location, (p.x + dx / distance * MOVEMENT_SPEED * dt,
+                                        p.y + dy / distance * MOVEMENT_SPEED * dt))
+        move_toward(p, point, dt, MOVEMENT_SPEED)
+
+
+def record_claim(world, speaker, record, text, turn, listener_id):
+    """Durable original reports, independently retrievable from trimmed chat context."""
+    prior = next((c for c in world.player_claims if c["conversation_id"] == record.id and c["turn"] == turn), None)
+    if prior:
+        if listener_id not in prior["listener_ids"]:
+            prior["listener_ids"].append(listener_id)
+        return prior
+    claim = dict(id=uuid4().hex, speaker_id=speaker.id, conversation_id=record.id, turn=turn,
+                 day=world.day, phase=world.phase, text=text, kind="report", listener_ids=[listener_id])
+    world.player_claims.append(claim)
+    return claim
+
+
+def relevant_claims(world, listener_id, message=""):
+    words = set(message.casefold().split())
+    claims = [c for c in world.player_claims if listener_id in c["listener_ids"]]
+    ordered = sorted(enumerate(claims), key=lambda row: (len(words & set(row[1]["text"].casefold().split())), row[0]), reverse=True)
+    return [c.copy() for _, c in ordered[:PLAYER_EVIDENCE_LIMIT]]
 
 
 def owned_works(world, owner_id):
@@ -58,19 +202,36 @@ def requested_work_id(world, owner_id, message):
     return matches[0].id if len(matches) == 1 else ""
 
 
-def validate_transfer(world, giver, recipient, item, quantity, *, interaction=None):
+def validate_transfer(world, giver, recipient, item, quantity, *, interaction=None, player_authorization=None):
     """Always enforce authority, including with speech diagnostics disabled."""
-    from apartments import available_outdoors
+    from locations import available, colocated
     if giver is None or recipient is None or giver is recipient:
         raise ValueError("Choose a giver and a different recipient.")
+    if not colocated(giver, recipient):
+        raise ValueError("Gifts require both people in the same location.")
+    if world.player in (giver, recipient):
+        resident = recipient if giver is world.player else giver
+        if not active_player(world) or not owns_resident(world, resident):
+            raise ValueError("Meet the resident before exchanging a gift.")
+        import math
+        if math.dist((giver.x, giver.y), (recipient.x, recipient.y)) > PLAYER_TALK_DISTANCE and not world.player_interaction.get("knock_room"):
+            raise ValueError("Move within talking distance before giving.")
+        if world.player_interaction.get("knock_room"):
+            raise ValueError("Enter the room before exchanging possessions.")
     for person in (giver, recipient):
         if person is world.player:
             continue
+        authorized = bool(player_authorization and world.player_interaction
+            and player_authorization == world.player_interaction["id"] and owns_resident(world, giver))
+        if world.player not in (giver, recipient) and owns_resident(world, person) and not authorized:
+            raise ValueError("The resident is meeting the player.")
+        if world.player not in (giver, recipient) and world.visit and world.visit["host_id"] == person.id:
+            raise ValueError("The resident is hosting the player.")
         if (interaction is None and giver is not world.player and recipient is not world.player
                 and (person.player_call or person is recipient and person.selected)):
             raise ValueError("The resident is waiting to talk to the player.")
-        if not world.is_outdoors(person) or not available_outdoors(person):
-            raise ValueError("The resident is no longer available outdoors.")
+        if world.npc_by_id(person.id) is not person or not available(person):
+            raise ValueError("The resident is no longer available.")
         if person.interaction is not None and person.interaction is not interaction:
             raise ValueError("The resident is occupied in another interaction.")
     if type(quantity) is not int or quantity < 1:
@@ -170,6 +331,7 @@ def accept_player_evidence(world, npc, record, message, response, *, opening=Fal
     if index in record.accepted_player_turns:
         return
     record.accepted_player_turns.append(index)
+    record_claim(world, world.player, record, message, index, npc.id)
     from name_knowledge import asks_name
     prior = record.turns[index - 1][1] if index else ""
     supplied = supplied_player_name(message, requested=asks_name(prior))
@@ -232,7 +394,7 @@ def accept_player_promises(world, npc, record, response, message, *, opening=Fal
 
 
 class PlayerHandoff:
-    """The same timed handoff, with one resident and no fictitious player position."""
+    """A timed, co-located handoff owned by the physical player interaction."""
     def __init__(self, world, giver, recipient, item, quantity, record):
         validate_transfer(world, giver, recipient, item, quantity)
         self.world, self.initiator, self.recipient = world, giver, recipient
@@ -248,7 +410,8 @@ class PlayerHandoff:
     def update(self, dt):
         if not self.active:
             return
-        if not self.world.is_outdoors(self.resident):
+        from locations import colocated
+        if not active_player(self.world) or not colocated(self.world.player, self.resident):
             self.finish("The resident is no longer available.")
             return
         self.elapsed += max(0.0, dt)
@@ -270,8 +433,10 @@ class PlayerHandoff:
             self.record.outcomes.append(f"The transfer remains committed. {error}")
         if self.resident.gift is self:
             self.resident.gift = None
-            if self.world.is_outdoors(self.resident):
+            if self.world.npc_by_id(self.resident.id) is self.resident:
                 self.resident.restore_after_interaction(self.saved_state, self.world.player.id, preserve_facing=True)
+        if owns_resident(self.world, self.resident) and self.world.player_interaction["stage"] == "handoff":
+            end_interaction(self.world, error or "The accepted handoff finished.")
 
 
 def call_reason(world, npc):
@@ -304,7 +469,8 @@ def call_reason(world, npc):
 
 
 def call_valid(world, npc, call):
-    if not world.is_outdoors(npc):
+    from locations import available, colocated
+    if not active_player(world) or not available(npc) or not colocated(world.player, npc):
         return False
     ref = call["reference"]
     if call["kind"] == "reply":
@@ -332,19 +498,23 @@ def update_calls(world, dt):
         npc.player_call_cooldown = max(0.0, npc.player_call_cooldown - dt)
         if npc.player_call and not call_valid(world, npc, npc.player_call):
             clear_call(npc)
+            if owns_resident(world, npc):
+                end_interaction(world, "The reason for this call is no longer available.")
     world.player_call_check -= dt
-    if world.player_call_check > 0 or world.phase_pending:
+    if world.player_call_check > 0 or world.phase_pending or not can_claim(world):
         return
     world.player_call_check = PLAYER_CALL_CHECK_SECONDS
-    count = sum(n.player_call is not None and not n.unread_player_reply for n in world.npcs)
+    from locations import colocated
     for npc in sorted(world.npcs, key=lambda n: n.player_opinion["opinion"] + n.preferences["sociability"], reverse=True):
-        if count >= PLAYER_CALL_LIMIT:
-            break
-        if npc.player_call or npc.player_call_cooldown or not world.company_available(npc):
+        if npc.player_call or npc.player_call_cooldown or not world.company_available(npc) or not colocated(world.player, npc):
             continue
         reason = call_reason(world, npc)
         if reason and reason["key"] not in npc.resolved_player_calls:
+            try:
+                start_approach(world, npc, incoming=True)
+            except ValueError:
+                continue
             npc.player_call = reason.copy()
             event = world.publish("player_call", (npc,), f"{npc.name} would like to talk to you.")
             npc.player_call["event_id"] = event.id
-            count += 1
+            break

@@ -16,6 +16,9 @@ class SetupScreen:
 
     def __init__(self):
         # None means random; a Path means a character loaded from JSON.
+        from constants import SETUP_MODE_RECTS, STARTING_MODE
+        self.mode = STARTING_MODE
+        self.mode_buttons = {mode: Button(rect, mode.title()) for mode, rect in zip(("player", "spectator"), SETUP_MODE_RECTS)}
         self.sources = [None] * STARTING_ADDITIONAL_NPCS
         self.page = 0
         self.message = ""
@@ -87,6 +90,10 @@ class SetupScreen:
             self.message = f"Could not load NPCs: {error}"
 
     def handle_event(self, app, event):
+        for mode, button in self.mode_buttons.items():
+            if button.clicked(event):
+                self.mode = mode
+                return
         if self.back_button.clicked(event) or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
             self.count_input.active = False
             app.screen = "menu"
@@ -158,5 +165,9 @@ class SetupScreen:
         self.next_button.draw(app.window, app.small_font, enabled=self.page < self.last_page)
         draw_centered_text(app.window, f"Page {self.page + 1} of {self.last_page + 1}", app.small_font, 532, MUTED)
         draw_wrapped_text(app.window, self.message, app.small_font, MUTED, (260, 564, 760, 38))
+        for mode, button in self.mode_buttons.items():
+            button.draw(app.window, app.small_font)
+            if self.mode == mode:
+                pygame.draw.rect(app.window, ACCENT, button.rect.inflate(4, 4), width=2)
         self.back_button.draw(app.window, app.font)
         self.start_button.draw(app.window, app.font)

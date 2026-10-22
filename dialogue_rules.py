@@ -13,8 +13,8 @@ def unquoted_speech(text):
     return re.sub(r'''"[^"]*"|“[^”]*”|‘[^’]*’|(?<!\w)'[^'\n]+'(?!\w)''', " ", text)
 
 
-def validate_environment_speech(text):
-    """Catch concrete contradictions of the fixed garden, not wishes or past lives."""
+def validate_environment_speech(text, *, location="garden"):
+    """Check local setting facts while preserving wishes, quotations and past lives."""
     speech = unquoted_speech(text)
     venue = r"(?:jazz club|nightclub|caf[eé]|restaurant)"
     mentions_venue = bool(re.search(rf"\b{venue}\b", speech, re.I))
@@ -26,7 +26,7 @@ def validate_environment_speech(text):
         if sentence.rstrip().endswith(("?", "\uFF1F", "\u061F")):
             continue
         missing = re.search(missing_tree, sentence, re.I)
-        if missing and not re.search(r"\b(?:if|imagine|thought|mistaken|wrong|not|no|never|does not mean|doesn't mean)\b", sentence[:missing.start()], re.I):
+        if location == "garden" and missing and not re.search(r"\b(?:if|imagine|thought|mistaken|wrong|not|no|never|does not mean|doesn't mean)\b", sentence[:missing.start()], re.I):
             raise ValueError("The living apple tree is still present, even with zero apples. Describe missing fruit, not a vanished tree; do not invent its disappearance or destruction.")
         if not mentions_venue:
             continue

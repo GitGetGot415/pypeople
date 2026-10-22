@@ -44,6 +44,7 @@ SNAKE_BEHAVIOR = (
 
 @dataclass
 class Snake:
+    location = "garden"
     id: str = "garden-python"
     x: float = STARTING_SNAKE_POSITION[0]
     y: float = STARTING_SNAKE_POSITION[1]
@@ -71,6 +72,7 @@ class Snake:
     request_pending: bool = False
     command_revision: int = 0
     retry_request: dict | None = None
+    known_names: dict = field(default_factory=dict)
     rng: random.Random = field(default_factory=random.Random, repr=False, compare=False)
 
     @property
@@ -136,7 +138,7 @@ class Snake:
             known.append(account_view(self.world, claim, belief))
         return {"actor_id": self.id, "name": self.name, "activity": self.status,
                 "name_rule": "knows_resident_names", "_name_actors": actor_catalog(self.world),
-                "name_knowledge": {"own_name": SNAKE_NAME, "known_names": {}},
+                "name_knowledge": {"own_name": SNAKE_NAME, "known_names": self.known_names.copy()},
                 "known_accounts": known, "doctrine": SNAKE_DOCTRINE,
                 "tree_fruit": self.world.tree.fruit, "tree_available_fruit": self.world.available_fruit,
                 "day": self.world.day, "phase": self.world.phase,
@@ -183,11 +185,8 @@ class Snake:
                     purpose, reason = "bargain", "Collecting the offering for an apple already given upfront"
                 else:
                     continue
-                try:
-                    SnakeEncounter(self.world, npc, purpose, reason)
-                except ValueError:
-                    continue  # Finish an existing activity before following up.
-                return
+                if self.world.join_tree(npc, purpose, reason):
+                    return
         self.activity = "guarding"
         if self.destination is None or math.dist(self.destination, (tree.x, tree.y)) > 150:
             self.destination = (tree.x + self.rng.uniform(40, 100), tree.y + self.rng.uniform(50, 100))
@@ -201,6 +200,11 @@ class SnakeEncounter:
     def __init__(self, world, resident, purpose, reason="", *, origin="autonomous"):
         if world.phase_pending and origin == "autonomous":
             raise ValueError("Waiting for the pending time change before starting another automatic encounter.")
+        from player import owns_resident
+        if (not world.tree_current or world.tree_current["actor_id"] != resident.id
+                or math.dist((resident.x, resident.y), world.tree.interaction_point) > 8
+                or owns_resident(world, resident)):
+            raise ValueError("Tree service requires the present front customer in the shared line.")
         if (world.snake.encounter or world.snake.request_pending or resident.snake_encounter
                 or resident.player_call or (origin == "autonomous" and resident.selected)
                 or not world.is_outdoors(resident) or resident.behavior.value == "GO_HOME"
@@ -389,6 +393,7 @@ class SnakeEncounter:
             self.initiator.target_id = None
             self.initiator.destination = None
             self.initiator.activity = "recovering" if self.initiator.recovery_remaining else "guarding"
+        self.world.leave_tree(npc.id, error or "Finished tree service.")
 
     def update(self, dt, *, reading=False):
         if not self.active:
@@ -435,3 +440,173 @@ class SnakeEncounter:
             if self.elapsed >= SNAKE_EAT_SECONDS:
                 if not self.world.depart_resident(npc, self):
                     self.finish(error="Eating permission changed; the resident was spared.")
+
+
+def validate_player_snake_decision(response, snapshot):
+    """Structured authority and source ownership always apply, including diagnostic mode."""
+    decision = response.decision
+    if decision not in snapshot.get("permitted_decisions", ["talk"]):
+        raise ValueError("That player bargain decision is unavailable.")
+    message = snapshot.get("_player_message", "")
+    if decision.startswith("advance_"):
+        offer = snapshot.get("pending_offer")
+        if (not offer or decision != "advance_" + offer["offering"] or not response.acceptance_evidence
+                or response.acceptance_evidence not in message):
+            raise ValueError("An upfront apple needs acceptance of the actual prior offer.")
+    if decision in ("secret", "endorsement"):
+        if not response.disclosure_evidence or response.disclosure_evidence not in message:
+            raise ValueError("Settlement requires an actual current player statement.")
+    contradiction = response.contradiction
+    valid_comparison = False
+    if contradiction:
+        known = {c["id"]: c for c in snapshot.get("relevant_claims", [])}
+        current = snapshot.get("current_claim")
+        if current:
+            known[current["id"]] = current
+        if len({c.claim_id for c in contradiction.evidence}) != 2:
+            raise ValueError("A comparison needs two different sourced statements.")
+        for citation in contradiction.evidence:
+            claim = known.get(citation.claim_id)
+            if not claim or citation.quote not in claim["text"]:
+                raise ValueError("The snake cannot cite an unavailable or invented statement.")
+        valid_comparison = (contradiction.comparable_assertions and not contradiction.explicit_correction
+                            and not contradiction.quotation_hypothetical_or_report)
+    if decision == "eat" and not (snapshot.get("known_offense") or valid_comparison):
+        raise ValueError("Condemnation requires a known offense or a supported comparable contradiction.")
+    if response.offer and (snapshot.get("advance") or not snapshot.get("can_give_apple")):
+        raise ValueError("There is no new apple available to offer.")
+
+
+class PlayerSnakeEncounter(SnakeEncounter):
+    """Human-authored turns share the guard's transfer, judgment and eating commits."""
+    def __init__(self, world, resident, purpose, reason="", *, origin="player"):
+        from player import active_player
+        if (not active_player(world) or resident is not world.player or not world.tree_current
+                or world.tree_current["actor_id"] != resident.id or world.snake.encounter
+                or world.snake.request_pending or world.snake.recovery_remaining):
+            raise ValueError("Player tree service is unavailable.")
+        self.world, self.initiator, self.recipient = world, world.snake, resident
+        self.id, self.purpose, self.origin = uuid4().hex, purpose, origin
+        self.topic, self.accusation = reason or "Player tree service", reason
+        self.record = ConversationRecord(("You", world.snake.name), self.topic, "Player tree service",
+            origin="player", purpose="snake_player", id=self.id, participant_ids=[resident.id, world.snake.id])
+        self.active = self.arrived = True
+        self.reserved = False
+        self.dialogue_state, self.stage = "waiting", "player"
+        self.wait_elapsed = self.elapsed = self.talking_remaining = 0.0
+        self.turns, self.pending_opinions = [], []
+        self.committed, self.outcome, self.outcome_event_id = False, "", None
+        self.request_context = self.saved_state = None
+        self.offer = None
+        world.snake.encounter = self
+        world.snake.target_id, world.snake.activity = resident.id, "bargaining"
+        world.player_interaction = dict(id=self.id, kind="snake", stage="conversation", npc_id=world.snake.id,
+            record_id=self.record.id, location="garden")
+        world.history.append(self.record)
+
+    @property
+    def accepts_response(self):
+        return (self.active and not self.committed and self.world.is_outdoors(self.recipient)
+                and self.initiator.encounter is self)
+
+    def player_snapshot(self, message, turn):
+        from player import relevant_claims
+        from name_knowledge import actor_catalog
+        world, player, snake = self.world, self.recipient, self.initiator
+        advance = snake.advances.get(player.id)
+        can_give = bool(not advance and world.tree.fruit > 0 and player.inventory_space > 0)
+        permitted = ["talk", "refuse", "negotiate", "challenge", "spare"]
+        if can_give and self.offer:
+            permitted.append("advance_" + self.offer["offering"])
+        audience = [p.id for p in world.listeners(player)]
+        if advance:
+            if advance["offering"] == "secret" or audience:
+                permitted.append(advance["offering"])
+        if world.eating_permitted(player) and player.id not in snake.pardons:
+            permitted.append("eat")
+        self.reserved = can_give
+        self.committed = False
+        self.request_context = dict(request_kind="snake_player", player_id=player.id, _player_priority=True,
+            _player_message=message, snake=snake.snapshot(), _name_actors=actor_catalog(world),
+            interaction_id=self.id, location="garden", advance=advance.copy() if advance else None,
+            permitted_decisions=permitted, can_give_apple=can_give, pending_offer=self.offer,
+            known_offense=snake.offenses.get(player.id), audience_ids=audience, first_meeting=not self.record.dialogue_parts,
+            relevant_claims=relevant_claims(world, snake.id, message),
+            current_claim=dict(id=f"{self.record.id}:{turn}", text=message, conversation_id=self.record.id,
+                               turn=turn, speaker_id=player.id),
+            player_dialogue=[dict(speaker=s, text=t) for s, t in self.record.turns[-12:]])
+        return self.request_context
+
+    def accept_player_response(self, response, snapshot, message, *, rewritten=()):
+        from types import SimpleNamespace
+        from player import record_claim
+        if not self.accepts_response or snapshot is not self.request_context:
+            raise ValueError("This tree exchange has ended.")
+        validate_player_snake_decision(response, snapshot)
+        # Recheck all cited durable sources against actual known originals.
+        known = {c["id"]: c for c in self.world.player_claims if self.initiator.id in c["listener_ids"]}
+        current = snapshot["current_claim"]
+        if current["turn"] in self.record.accepted_player_turns:
+            raise ValueError("This player turn was already accepted.")
+        if response.contradiction:
+            for citation in response.contradiction.evidence:
+                claim = current if citation.claim_id == current["id"] else known.get(citation.claim_id)
+                if not claim or citation.quote not in claim["text"]:
+                    raise ValueError("The cited player evidence is no longer available.")
+        claim = record_claim(self.world, self.recipient, self.record, message, current["turn"], self.initiator.id)
+        claim["id"] = current["id"]
+        if current["turn"] not in self.record.accepted_player_turns:
+            self.record.accepted_player_turns.append(current["turn"])
+        decision = response.decision
+        if decision == "eat" or decision == "spare" and snapshot.get("known_offense"):
+            self.purpose = "judgment"
+            self.accusation = response.contradiction.explanation if response.contradiction else "A known unresolved offense."
+        adapter = SimpleNamespace(decision=decision, account_id=claim["id"] if decision == "secret" else "",
+            snake_account_id="", account_stance="uncertain", attitudes=None)
+        try:
+            self.world.commit_snake_response(self, adapter)
+        except ValueError:
+            self.world.player_claims.remove(claim)
+            self.record.accepted_player_turns.remove(current["turn"])
+            raise
+        self.record.dialogue_errors = list(dict.fromkeys([*self.record.dialogue_errors, *response._dialogue_errors]))
+        from player import supplied_player_name
+        from name_knowledge import asks_name
+        prior = self.record.turns[current["turn"] - 1][1] if current["turn"] else ""
+        name = supplied_player_name(message, requested=asks_name(prior))
+        if name:
+            self.initiator.known_names[self.recipient.id] = dict(name=name, conversation_id=self.record.id, turn=current["turn"])
+            self.record.name_introductions[current["turn"]] = [dict(actor_id=self.recipient.id, name=name, reference="self")]
+        self.record.add_turn(self.initiator.name, response.reply,
+            [{"text": response.reply, "emotion": {"name": "neutral", "intensity": 0}}], rewritten)
+        if response.offer:
+            self.offer = dict(offering=response.offer, turn=len(self.record.turns) - 1,
+                              conversation_id=self.record.id, speech=response.reply)
+        elif decision.startswith("advance_"):
+            self.offer = None
+        self.dialogue_state = "ready"
+        if decision == "eat":
+            self.stage = "dialogue"
+            finish_generated_dialogue(self, reading=True)
+        else:
+            self.committed = False
+            self.record.status = "Player tree service"
+
+    def update(self, dt, *, reading=False):
+        if not self.active:
+            return
+        if self.stage in ("dialogue", "condemned_approach", "eating"):
+            # A condemnation remains visible until the player ends this dialogue.
+            super().update(dt, reading=reading or self.stage == "dialogue" and bool(self.world.player_interaction))
+
+    def finish(self, tree=None, *, error=""):
+        if not self.active:
+            return
+        self.active, self.reserved = False, False
+        self.record.status, self.record.error = ("Failed", error) if error else ("Finished", "")
+        self.initiator.encounter = None
+        self.initiator.target_id = None
+        self.initiator.request_pending = False
+        self.initiator.activity = "recovering" if self.initiator.recovery_remaining else "guarding"
+        self.world.player_interaction = None
+        self.world.leave_tree(self.recipient.id, error or "Finished tree service.")

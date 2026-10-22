@@ -10,7 +10,7 @@ from llm import (MODEL, ConversationTurn, InvalidResponseError, RequestError, Vo
                  VoiceRewriteValidationError, request_response,
                  request_voice_rewrite, validate_response, validate_voice_rewrite, voice_rewrite_snapshot)
 from ollama_manager import DEFAULT_OLLAMA_MODEL
-from model_debug import DebugLogs, RequestLog, RequestCancelled, RequestControl, capture_output, record_output
+from model_debug import DebugLogs, ProviderAdmission, RequestLog, RequestCancelled, RequestControl, capture_output, record_output
 
 
 @dataclass
@@ -50,13 +50,15 @@ def _request_worker(session_id, request_id, provider, api_key, message, snapshot
     creative = snapshot.get("request_kind") in ("create_art", "create_music")
     deadline = monotonic() + (CREATIVE_REQUEST_SECONDS if creative else DIALOGUE_TIMEOUT_SECONDS)
     control = control or RequestControl()
+    wait_at_progress = control.wait_seconds
 
     def report(stage):
-        nonlocal deadline
+        nonlocal deadline, wait_at_progress
         control.check()
         # Match the interaction's progress-based inactivity deadline across calls.
         if not creative:
             deadline = monotonic() + DIALOGUE_TIMEOUT_SECONDS
+            wait_at_progress = control.wait_seconds
         progress.put((session_id, request_id, stage, None, control))
         record_output("stage", stage)
 
@@ -69,7 +71,8 @@ def _request_worker(session_id, request_id, provider, api_key, message, snapshot
             control.check()
             rewritten = []
             if not creative and snapshot.get("_voice_rewrites", True):
-                rewritten = request_voice_rewrite(provider, api_key, result, snapshot, deadline=deadline,
+                rewritten = request_voice_rewrite(provider, api_key, result, snapshot,
+                                                  deadline=deadline + control.wait_seconds - wait_at_progress,
                                                   ollama_model=ollama_model, progress=report)
             else:
                 record_output("stage", "Creation data ready." if creative else "Voice rewrites disabled; using original dialogue.")
@@ -104,13 +107,21 @@ def _request_worker(session_id, request_id, provider, api_key, message, snapshot
 
 class RequestManager:
     def __init__(self, max_requests=MAX_LLM_REQUESTS):
-        self.max_requests = max_requests
+        self.admission = ProviderAdmission(max_requests)
         self.workers = {}
         self.pending = {}
         self.results = queue.Queue()
         self.progress = queue.Queue()
         self.debug_logs = DebugLogs()
         self.logs = {}
+
+    @property
+    def max_requests(self):
+        return self.admission.capacity
+
+    @max_requests.setter
+    def max_requests(self, value):
+        self.admission.resize(value)
 
     def prepare(self, session_id, provider, snapshot, *, request_id=None, ollama_model=DEFAULT_OLLAMA_MODEL):
         key = (session_id, request_id)
@@ -142,8 +153,7 @@ class RequestManager:
 
     @property
     def available_slots(self):
-        # Keep slots reserved until replies are polled and their workers exit.
-        return max(0, self.max_requests - len(self.workers))
+        return max(0, self.max_requests - self.admission.active - len(self.admission.waiting))
 
     def statuses(self):
         # Read progress even while paused, without applying any completed replies.
@@ -156,6 +166,9 @@ class RequestManager:
             if worker is not None and worker.control is control:
                 worker.stage = stage
                 worker.finished_at = finished_at
+        for worker in self.workers.values():
+            if getattr(worker, "control", None) and worker.control.stage == "Waiting for provider admission":
+                worker.stage = worker.control.stage
         return tuple(self.workers.values())
 
     def submit(self, session_id, provider, api_key, message, snapshot, *, request_id=None,
@@ -167,18 +180,15 @@ class RequestManager:
         snapshot = snapshot.copy()
         snapshot["_voice_rewrites"] = voice_rewrites
         snapshot["_dialogue_validation"] = dialogue_validation
-        if self.busy:
-            self.prepare(session_id, provider, snapshot, request_id=request_id, ollama_model=ollama_model)
-            self.pending[key] = dict(provider=provider, api_key=api_key, message=message, snapshot=snapshot,
-                                     request_id=request_id, ollama_model=ollama_model,
-                                     voice_rewrites=voice_rewrites, dialogue_validation=dialogue_validation)
-            return True
+        # A logical job can wait without owning remote execution capacity. In
+        # particular, a player job starts even when all background jobs yielded.
         participants, topic = _request_description(snapshot)
         occupied = {worker.slot for worker in self.workers.values()}
-        slot = next(slot for slot in range(1, self.max_requests + 1) if slot not in occupied)
+        slot = next(slot for slot in range(1, len(occupied) + 2) if slot not in occupied)
         log = self.prepare(session_id, provider, snapshot, request_id=request_id, ollama_model=ollama_model)
         log.record("slot", str(slot))
-        control = RequestControl()
+        control = RequestControl(self.admission, priority=0 if snapshot.get("player_id") or snapshot.get("_player_priority") else 1)
+        self.admission.register(control)
         worker = threading.Thread(
             target=_request_worker,
             args=(session_id, request_id, provider, api_key, message, snapshot, self.results, self.progress, ollama_model, log, control),
@@ -190,6 +200,7 @@ class RequestManager:
         try:
             worker.start()
         except RuntimeError:
+            self.admission.unregister(control)
             self.workers.pop(key)
             log.record("error", "Could not start the model worker.")
             log.record("status", "failed")

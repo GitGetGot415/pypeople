@@ -90,7 +90,7 @@ class Tree:
         return round(5 * math.sin(self.shake_elapsed * math.tau * 8))
 
     def start_shake(self, npc):
-        if not self.reserve(npc):
+        if self.shaker is not None and self.shaker is not npc:
             return False
         self.shake_elapsed = 0.0
         self.shaker = npc
@@ -171,10 +171,12 @@ class NPC:
     home_reason: str | None = None
     last_creative_day: int = 0
     creative_job: CreativeJob | None = field(default=None, repr=False, compare=False)
+    location: str = "garden"
+    journey: dict | None = None
 
     @property
     def indoors(self):
-        return self.behavior in (Behavior.REST, Behavior.SLEEP, Behavior.PAINT, Behavior.COMPOSE)
+        return self.location != "garden"
 
     @property
     def inventory_space(self):
@@ -215,7 +217,8 @@ class NPC:
         """Save progress and release physical claims before an interaction."""
         state = self.activity_state()
         self.release_claims(self.world)
-        self.command_revision += 1
+        if not self.creative_job:
+            self.command_revision += 1
         self.behavior, self.owner = Behavior.WAIT, "autonomous"
         self.destination = self.target_id = None
         self.activity_elapsed = 0.0
@@ -231,6 +234,8 @@ class NPC:
         self.cooldowns.update(dict.fromkeys(cooldown_ids, PARTNER_COOLDOWN))
         # Reacquire physical claims on the next simulation tick.
         self.resume_pending = True
+        if self.creative_job:
+            self.creative_job.revision = self.command_revision
 
     def pause_after_conversation(self, completed):
         self.conversation_pause_remaining = (self.rng.uniform(*CONVERSATION_PAUSE_RANGE)
@@ -270,10 +275,15 @@ class NPC:
         if behavior == Behavior.EAT:
             self.facing = 4
         elif behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE, Behavior.SHAKE_TREE):
-            if target != world.tree.id or not self.can_reach(world.tree.interaction_point):
-                self.finish_activity(world, failed=True)
+            if self.location != "garden":
+                from locations import start_journey
+                start_journey(self, "garden", world.tree.interaction_point, purpose="tree", fast=False)
                 return
-            if not world.tree.reserve(self) and behavior == Behavior.HARVEST:
+            if behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE):
+                if not world.join_tree(self, "bargain" if behavior == Behavior.HARVEST else "introduction"):
+                    self.finish_activity(world, failed=True)
+                return
+            if target != world.tree.id or not self.can_reach(world.tree.interaction_point):
                 self.finish_activity(world, failed=True)
                 return
             self.destination = world.tree.interaction_point
@@ -286,9 +296,11 @@ class NPC:
     def resume_activity(self, world):
         """Reacquire suspended claims on a simulation tick, preserving committed progress."""
         self.resume_pending = False
-        if self.behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING):
+        if self.behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE):
+            self.begin_activity(self.behavior, world, world.tree.id, self.reason, self.owner)
+        elif self.behavior in (Behavior.SHAKE_TREE, Behavior.SHAKING):
             if (self.target_id != world.tree.id or not self.can_reach(world.tree.interaction_point)
-                    or not world.tree.reserve(self)):
+                    or self.location != "garden"):
                 self.finish_activity(world, failed=True)
                 return
             if self.behavior == Behavior.SHAKING:
@@ -331,12 +343,8 @@ class NPC:
 
     @property
     def movement_bounds(self):
-        width, height = self.sprite_size or (NPC_RADIUS * 2, NPC_RADIUS)
-        horizontal_margin = max(NPC_RADIUS, width / 2)
-        return (
-            horizontal_margin, WORLD_WIDTH - horizontal_margin,
-            max(NPC_RADIUS, height), WORLD_HEIGHT - NPC_RADIUS,
-        )
+        from locations import feet_bounds
+        return feet_bounds(self.location)
 
     @property
     def wandering_paused(self):
@@ -356,6 +364,13 @@ class NPC:
         if self.departure:
             from dialogue_rules import named_references
             return f"Departed on day {self.departure['day']} ({named_references(self.departure['cause'])})"
+        if self.journey:
+            return f"Travelling to {self.journey['destination']}"
+        if self.world and self.world.tree_has_actor(self.id) and self.snake_encounter is None:
+            if self.world.tree_current and self.world.tree_current["actor_id"] == self.id:
+                return "Approaching the front of the tree line"
+            position = next(i for i, e in enumerate(self.world.tree_queue, 1) if e["actor_id"] == self.id)
+            return f"Waiting in the tree line ({position})"
         if self.snake_encounter is not None:
             return f"With {SNAKE_NAME}: {self.snake_encounter.record.status}"
         if self.gift is not None:
@@ -395,8 +410,6 @@ class NPC:
         }[self.behavior]
 
     def contains(self, point):
-        if self.indoors:
-            return False
         if self.sprite_size is not None:
             width, height = self.sprite_size
             return (
@@ -406,12 +419,15 @@ class NPC:
         return math.hypot(point[0] - self.x, point[1] - self.y) <= NPC_RADIUS
 
     def snapshot(self, tree, partner_id=None, *, private=True):
+        from locations import environment
         state = {
+            "location": self.location,
+            "environment": environment(self.location),
             "npc_id": self.id,
             "npc_name": self.name,
             "character": {key: value for key, value in self.character.items() if key != "Opinions"},
             "name_knowledge": name_context(self),
-            "_name_actors": actor_catalog(self.world) if self.world else {},
+            "_name_actors": actor_catalog(self.world, self.location) if self.world else {},
             "facing": DIRECTIONS[self.facing],
             "selected": self.selected,
             "position": [round(self.x, 1), round(self.y, 1)],
@@ -468,6 +484,9 @@ class NPC:
                 state.pop(key, None)
         state["arrival_day"] = self.arrival_day
         state["tree_guarded"] = True
+        if self.indoors:
+            for key in [key for key in state if key.startswith("tree_")]:
+                state.pop(key)
         return state
 
     @property
@@ -513,7 +532,8 @@ class NPC:
             self._face_when_still()
 
     def apply_action(self, action, tree):
-        if self.world is None or not self.world.is_outdoors(self):
+        from locations import available
+        if self.world is None or self.world.npc_by_id(self.id) is not self or not available(self):
             raise ValueError("Only living residents can act in this world.")
         # Reject before changing anything. SAY preserves even an active shake.
         if action == "SAY":
@@ -524,6 +544,13 @@ class NPC:
             raise ValueError("This NPC is already in an interaction.")
         if action == "EAT" and self.inventory.get("fruit", 0) < 1:
             raise ValueError("I don't have an apple to eat.")
+        if self.world.visit and self.world.visit["host_id"] == self.id:
+            from apartments import finish_visit
+            finish_visit(self.world)
+        self.journey = None
+        if self.creative_job:
+            from apartments import cancel_work
+            cancel_work(self)
         self.command_revision += 1
         if action == "WANDER":
             self.begin_activity(Behavior.WANDER, self.world, reason="Player released control; choosing activities")
@@ -536,9 +563,9 @@ class NPC:
         else:
             self.begin_activity(Behavior(action), self.world, tree.id, "Player asked me to visit the tree" if action == "GO_TO_TREE" else "Player asked for a cosmetic tree shake", owner="player_task")
 
-    def check_gift(self, recipient, item, quantity):
+    def check_gift(self, recipient, item, quantity, *, player_authorization=None):
         from player import validate_transfer
-        validate_transfer(self.world, self, recipient, item, quantity)
+        validate_transfer(self.world, self, recipient, item, quantity, player_authorization=player_authorization)
         if recipient is self.world.player:
             return
         if (recipient is self or self.world is None or self.world.npc_by_id(self.id) is not self
@@ -581,10 +608,18 @@ class NPC:
         return move_toward(self, self.destination, dt, MOVEMENT_SPEED)
 
     def update(self, dt, tree):
+        from player import owns_resident
+        if owns_resident(self.world, self) or self.world.tree_has_actor(self.id):
+            return
+        if self.journey:
+            from locations import update_journey
+            if update_journey(self, dt) and self.behavior in (Behavior.GO_TO_TREE, Behavior.HARVEST, Behavior.SHAKE_TREE):
+                self.begin_activity(self.behavior, self.world, self.world.tree.id, self.reason, self.owner)
+            return
         if self.interaction is not None or self.resume_pending or self.player_call:
             return
         world = self.world
-        if self.indoors or self.behavior == Behavior.GO_HOME:
+        if self.behavior in (Behavior.REST, Behavior.SLEEP, Behavior.PAINT, Behavior.COMPOSE, Behavior.GO_HOME):
             from apartments import update_home
             update_home(self, world, max(0.0, dt))
             return
@@ -609,28 +644,16 @@ class NPC:
                 if self._move(movement_dt):
                     self.destination = None
                     self.pause_remaining = WANDER_PAUSE
-        elif behavior in (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.HARVEST, Behavior.SHAKING):
-            # Player visits wait briefly for an occupied tree; autonomous harvests fail fast.
-            if not tree.reserve(self):
-                self.pause_remaining += dt
-                if self.pause_remaining >= DECISION_SECONDS:
-                    self.finish_activity(world, failed=True)
-                return
+        elif behavior in (Behavior.GO_TO_TREE, Behavior.HARVEST):
+            self.begin_activity(behavior, world, tree.id, self.reason, self.owner)
+        elif behavior in (Behavior.SHAKE_TREE, Behavior.SHAKING):
             if self.destination is not None:
                 if self._move(dt):
                     self.destination = None
-                    if behavior in (Behavior.GO_TO_TREE, Behavior.HARVEST):
-                        self.finish_activity(world)
-                        if behavior == Behavior.HARVEST:
-                            world.seek_bargain(self)
-                    else:
-                        tree.start_shake(self)
-                        tree.shake_elapsed = self.activity_elapsed
-                        if behavior == Behavior.SHAKE_TREE:
-                            self.behavior = Behavior.SHAKING
-            elif behavior == Behavior.HARVEST:
-                # A harvest intent is a visit to the guard, never a free transfer.
-                self.destination = tree.interaction_point
+                    tree.start_shake(self)
+                    tree.shake_elapsed = self.activity_elapsed
+                    if behavior == Behavior.SHAKE_TREE:
+                        self.behavior = Behavior.SHAKING
             elif behavior == Behavior.SHAKING:
                 if tree.shaker is not self:
                     tree.start_shake(self)
@@ -698,10 +721,14 @@ class Conversation:
 
     def __init__(self, initiator, recipient, topic, tree, spacing=0, *, origin="player", purpose="chat",
                  opening_kind=None, focus_claim_id=None, goal_id=None):
-        from apartments import available_outdoors
+        from locations import available as available_outdoors, colocated
+        from player import owns_resident
         if (initiator is recipient or initiator.busy or recipient.busy
+                or owns_resident(initiator.world, initiator) or owns_resident(initiator.world, recipient)
+                or initiator.world.visit and initiator.world.visit["host_id"] in (initiator.id, recipient.id)
                 or initiator.player_call or recipient.player_call or recipient.selected or recipient.request_pending
-                or not available_outdoors(initiator) or not available_outdoors(recipient)):
+                or not available_outdoors(initiator) or not available_outdoors(recipient)
+                or not colocated(initiator, recipient)):
             raise ValueError("Choose another NPC who is free to talk.")
         if purpose not in ("chat", "food_request"):
             raise ValueError("Resident meetings use chat or food_request.")
@@ -866,7 +893,7 @@ class Conversation:
         return (self.active and self.dialogue_state in ("waiting", "pending")
                 and world.npc_by_id(self.initiator.id) is self.initiator
                 and world.npc_by_id(self.recipient.id) is self.recipient
-                and world.is_outdoors(self.initiator) and world.is_outdoors(self.recipient))
+                and self.initiator.location == self.recipient.location)
 
     def fail_dialogue(self, reason, *, failed_turns=()):
         if not self.accepts_response:
@@ -917,6 +944,9 @@ class Conversation:
     def update(self, dt, *, reading=False):
         if not self.active:
             return
+        if self.initiator.location != self.recipient.location:
+            self.fail_dialogue("The participants are no longer in the same location.")
+            return
         if self.arrived:
             face_each_other(self.initiator, self.recipient)
             if self.dialogue_state in ("waiting", "pending"):
@@ -965,7 +995,7 @@ class Conversation:
             self.proposals = permitted_proposals(self)
             self.context_references = conversation_references(self)
             self.information_context = prepare_information(self)
-            self.name_actors = actor_catalog(self.initiator.world)
+            self.name_actors = actor_catalog(self.initiator.world, self.initiator.location)
         views = information_views(self.information_context, self.initiator.world)
         initiator, recipient = participant(self.initiator), participant(self.recipient)
         for role, state in (("initiator", initiator), ("recipient", recipient)):
@@ -1000,7 +1030,7 @@ class Conversation:
                 offer_speaker="initiator" if p.promisor_id == self.initiator.id else "recipient",
                 acceptance_speaker="initiator" if p.recipient_id == self.initiator.id else "recipient",
             ) for p in self.proposals],
-            "nearby_npcs": [participant(npc) for npc in npcs if not npc.indoors and npc is not self.initiator and npc is not self.recipient],
+            "nearby_npcs": [participant(npc) for npc in self.initiator.world.listeners(self.initiator) if npc is not self.initiator and npc is not self.recipient],
         }
 
     def finish(self, tree):
@@ -1038,7 +1068,7 @@ class Conversation:
             if npc.conversation is not self:
                 continue
             npc.conversation = None
-            if not npc.world.is_outdoors(npc):
+            if npc.world.npc_by_id(npc.id) is not npc:
                 continue
             npc.restore_after_interaction(state, self.other(npc).id)
             npc.pause_after_conversation(self.social_effects_applied)
@@ -1090,7 +1120,7 @@ class Gift:
         if not self.active:
             return
         giver, recipient = self.initiator, self.recipient
-        if not all(giver.world.is_outdoors(p) for p in (giver, recipient)):
+        if giver.location != recipient.location or any(giver.world.npc_by_id(p.id) is not p for p in (giver, recipient)):
             self.finish("A participant is no longer outdoors.")
             return
         if not self.arrived:
@@ -1135,7 +1165,7 @@ class Gift:
             if npc.gift is not self:
                 continue
             npc.gift = None
-            if not npc.world.is_outdoors(npc):
+            if npc.world.npc_by_id(npc.id) is not npc:
                 continue
             npc.restore_after_interaction(state, other.id, preserve_facing=True)
             if self.record.purpose == "food_request":

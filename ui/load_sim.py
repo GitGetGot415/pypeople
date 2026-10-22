@@ -143,7 +143,7 @@ class LoadSimScreen:
                 label = label[:-4] + "..."
             surface.blit(app.font.render(label, True, color), (rect.x + 12, rect.y + 8))
             timestamp = entry.updated_at.astimezone().strftime("%Y-%m-%d %H:%M") if entry.updated_at else "Unreadable file"
-            detail = f"{entry.npc_count} NPCs / {timestamp}" if not entry.error else timestamp
+            detail = f"{entry.npc_count} NPCs / {entry.mode.title()} / {timestamp}" if not entry.error else timestamp
             surface.blit(app.small_font.render(detail, True, color), (rect.x + 12, rect.y + 34))
         entry = self.selected
         surface.blit(app.font.render("Save name", True, INK), (780, 230))

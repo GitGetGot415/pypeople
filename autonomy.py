@@ -19,8 +19,8 @@ ORIENTATION_TOPIC = (
 def target_valid(npc, world):
     if npc.behavior == Behavior.EAT:
         return npc.inventory.get("fruit", 0) > 0
-    if npc.behavior == Behavior.HARVEST:
-        return (npc.target_id == world.tree.id and world.tree.reserved_by is npc
+    if npc.behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE):
+        return (npc.target_id == world.tree.id and world.tree_has_actor(npc.id)
                 and world.available_fruit > 0
                 and npc.can_reach(world.tree.interaction_point))
     if npc.behavior in (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING):
@@ -41,12 +41,14 @@ def lone_introduction(npc, world):
     if (snake.encounter or snake.selected or snake.request_pending or snake.recovery_remaining
             or snake.id in npc.cooldowns or not npc.can_reach(world.tree.interaction_point)):
         return
-    from snake import SnakeEncounter
-    SnakeEncounter(world, npc, "introduction", ORIENTATION_TOPIC)
+    world.join_tree(npc, "introduction", ORIENTATION_TOPIC)
 
 
 def reconsider(npc, world, *, pressing_only=False):
     from apartments import HOME_BEHAVIORS
+    from player import owns_resident
+    if owns_resident(world, npc) or world.tree_has_actor(npc.id) or npc.journey or world.visit and world.visit["host_id"] == npc.id:
+        return
     if (world.phase_pending or npc.interaction is not None or npc.resume_pending or npc.player_call or npc.behavior in HOME_BEHAVIORS
             or npc.home_reason == "night"):
         return
@@ -80,7 +82,7 @@ def reconsider(npc, world, *, pressing_only=False):
     apples_needed = len({target_id for target_id, _ in delivery_targets})
     needs_apple = npc.inventory.get("fruit", 0) < apples_needed
     tree = world.tree
-    tree_available = (world.available_fruit > 0 and tree.reserved_by in (None, npc)
+    tree_available = (world.is_outdoors(npc) and world.available_fruit > 0 and world.tree_can_admit(npc)
                       and tree.id not in npc.cooldowns and npc.can_reach(tree.interaction_point))
     if pressing_only:
         if obligations and needs_apple and tree_available:

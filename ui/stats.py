@@ -318,7 +318,7 @@ class StatsScreen:
                 gap()
             add(f"Arrival: day {npc.arrival_day}")
             add(f"Activity: {npc.status}")
-            add(f"Room {npc.room_number} / {'Indoors' if npc.indoors else 'Outdoors'} / fatigue {npc.social_fatigue:.0f}/100")
+            add(f"Room {npc.room_number} / {npc.location} / fatigue {npc.social_fatigue:.0f}/100")
             add(f"Creations: {sum(work.creator_id == npc.id for work in app.simulation.creations)}")
             if npc.departure:
                 source = next(f for f in app.simulation.facts if f.source_id == npc.departure["event_id"] and f.kind == "eating")

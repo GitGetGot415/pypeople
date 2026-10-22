@@ -65,12 +65,13 @@ class RequestStatus:
     def draw(self, app):
         manager = app.requests
         workers = {worker.slot: worker for worker in manager.statuses()}
+        self.set_capacity(max(manager.max_requests, max(workers, default=0)))
         surface, font = app.window, app.small_font
         now = monotonic()
         pygame.draw.rect(surface, PAPER, self.rect)
         pygame.draw.rect(surface, INK, self.rect, width=1)
         pygame.draw.rect(surface, ACCENT, self.header)
-        title = f"{'+' if self.collapsed else '-'} LLM threads: {manager.available_slots}/{manager.max_requests} available"
+        title = f"{'+' if self.collapsed else '-'} LLM calls: {manager.admission.active}/{manager.max_requests}; exchanges: {len(workers)}"
         surface.blit(font.render(title, True, PAPER), (self.rect.x + 10, self.rect.y + 6))
         if self.collapsed:
             return
@@ -103,7 +104,7 @@ class RequestStatus:
                 pygame.draw.arc(surface, ACCENT, (x, y + 2, 10, 10), angle, angle + math.pi * 1.5, 2)
             else:
                 pygame.draw.circle(surface, ACCENT, center, 4)
-            state = "Running" if running else "Waiting to apply"
+            state = ("Generating" if worker.control and worker.control.provider_active else "Suspended / preparing") if running else "Waiting to apply"
             if worker.session_id != app.session_id:
                 state = "Previous session" if running else "Waiting to discard"
             elapsed = max(0, int((now if running else worker.finished_at) - worker.started_at))

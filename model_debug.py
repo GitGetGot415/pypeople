@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 from socket import SHUT_RDWR
-from threading import Event, Lock, Thread
+from threading import Condition, Event, Lock, Thread
 from time import monotonic
 from uuid import uuid4
 
@@ -22,11 +22,105 @@ class RequestCancelled(BaseException):
     """Leave provider/recovery loops immediately without retrying cancellation."""
 
 
+class ProviderAdmission:
+    """Bound remote calls, allowing logical exchanges to yield between calls."""
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.condition = Condition()
+        self.waiting = []
+        self.active = 0
+        self.sequence = 0
+        self.players = set()
+
+    def register(self, control):
+        if control.priority == 0:
+            with self.condition:
+                self.players.add(control)
+                self.condition.notify_all()
+
+    def unregister(self, control):
+        with self.condition:
+            self.players.discard(control)
+            self.condition.notify_all()
+
+    def resize(self, capacity):
+        with self.condition:
+            self.capacity = capacity
+            self.condition.notify_all()
+
+    def wake(self):
+        with self.condition:
+            self.condition.notify_all()
+
+    @contextmanager
+    def call(self, control):
+        queued_at = monotonic()
+        control.waiting_since = queued_at
+        with self.condition:
+            ticket = (control.priority, self.sequence, control)
+            self.sequence += 1
+            self.waiting.append(ticket)
+            self.condition.notify_all()
+            control.stage = "Waiting for provider admission"
+            record_output("stage", control.stage)
+            record_output("status", "queued")
+            try:
+                while (self.active >= self.capacity or ticket != min(self.waiting, key=lambda t: t[:2])
+                       or control.priority > 0 and any(not p.cancelled.is_set() for p in self.players)):
+                    control.check()
+                    self.condition.wait()
+                control.check()
+                self.active += 1
+                control.wait_seconds += monotonic() - queued_at
+                control.waiting_since = None
+                control.provider_active = True
+                control.stage = "Generating"
+                record_output("stage", control.stage)
+                record_output("status", "running")
+            finally:
+                if control.waiting_since is not None:
+                    control.wait_seconds += monotonic() - queued_at
+                    control.waiting_since = None
+                self.waiting.remove(ticket)
+                self.condition.notify_all()
+        try:
+            yield
+        finally:
+            with self.condition:
+                self.active -= 1
+                control.provider_active = False
+                control.stage = "Between provider calls"
+                self.condition.notify_all()
+
+
+def admitted_provider(function):
+    """Provider boundary; prompts and repair functions inherit request context."""
+    from functools import wraps
+    @wraps(function)
+    def admitted(*args, **kwargs):
+        control = _current_control.get()
+        if control is None or control.admission is None:
+            return function(*args, **kwargs)
+        with control.admission.call(control):
+            return function(*args, **kwargs)
+    return admitted
+
+
 class RequestControl:
-    def __init__(self):
+    def __init__(self, admission=None, priority=1):
         self.cancelled = Event()
         self._lock = Lock()
         self._close = None
+        self.admission = admission
+        self.priority = priority
+        self.provider_active = False
+        self.stage = "Starting request"
+        self.wait_seconds = 0.0
+        self.waiting_since = None
+
+    @property
+    def queued_seconds(self):
+        return self.wait_seconds + (monotonic() - self.waiting_since if self.waiting_since is not None else 0.0)
 
     def check(self):
         if self.cancelled.is_set():
@@ -34,6 +128,8 @@ class RequestControl:
 
     def cancel(self):
         self.cancelled.set()
+        if self.admission is not None:
+            self.admission.wake()
         with self._lock:
             close = self._close
         if close is not None:
@@ -94,6 +190,11 @@ def check_cancelled():
         control.check()
 
 
+def provider_wait_seconds():
+    control = _current_control.get()
+    return control.wait_seconds if control is not None else 0.0
+
+
 def record_output(kind, text):
     control = _current_control.get()
     if control is not None and kind in ("call", "output", "reasoning"):
@@ -107,9 +208,13 @@ def record_output(kind, text):
 def capture_output(log, control=None):
     token = _current_log.set(log)
     control_token = _current_control.set(control)
+    if control is not None and control.admission is not None:
+        control.admission.register(control)
     try:
         yield
     finally:
+        if control is not None and control.admission is not None:
+            control.admission.unregister(control)
         _current_log.reset(token)
         _current_control.reset(control_token)
         if log is not None:

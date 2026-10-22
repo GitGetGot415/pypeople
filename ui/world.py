@@ -57,7 +57,7 @@ def _active_bubble(npc):
 
 def player_bubble_visible(npc, offset=None, zoom=1.0):
     name = player_bubble_name(npc)
-    if not (name and not npc.indoors and not npc.departure and not npc.busy):
+    if not (name and not npc.departure and not npc.busy):
         return False
     if name in ("Thinking", "Calling Player"):
         return True
@@ -65,7 +65,7 @@ def player_bubble_visible(npc, offset=None, zoom=1.0):
         return False
     if offset is not None:
         rect = player_bubble_rect(npc, offset, zoom)
-        for other in npc.world.outdoor_npcs:
+        for other in (n for n in npc.world.npcs if n.location == npc.location):
             if other is npc:
                 continue
             active = _active_bubble(other)
@@ -106,28 +106,48 @@ def _draw_shadow(surface, rect):
     surface.blit(shadow, rect, special_flags=pygame.BLEND_RGB_MULT)
 
 
-def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), phase="day", zoom=1.0, viewport=None, snake=None):
+def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), phase="day", zoom=1.0, viewport=None, snake=None, *, world=None, location="garden"):
     # Use nearest-neighbor scaling throughout to keep the original pixels crisp.
     # Scale the ground separately; sprites are drawn from their original artwork.
-    scene = pygame.Surface((WORLD_WIDTH, WORLD_HEIGHT))
-    _draw_scene(scene, npcs, tree, font, phase)
-    surface.fill(WORLD_COLORS[phase][0])
+    from locations import map_size, targets
+    from constants import APARTMENT_ART, INDOOR_BACKGROUND
+    size = map_size(location)
+    scene = pygame.Surface(size)
+    if location == "garden":
+        _draw_scene(scene, [n for n in npcs if n.location == location], tree, font, phase)
+        surface.fill(WORLD_COLORS[phase][0])
+    else:
+        surface.fill(INDOOR_BACKGROUND)
+        kind = location.split(":")[0]
+        scene.blit(apartment_art(kind), (0, 0))
+        if world:
+            for target in targets(world, location):
+                if target["kind"] in ("room", "elevator"):
+                    scene.blit(apartment_art("door" if target["kind"] == "room" else "elevator"), target["rect"][:2])
+                    if target["kind"] == "room":
+                        number = target["room"]
+                        owner = next((n for n in world.npcs if n.room_number == number), None)
+                        label = f"{number}: " + ("Your room" if number == 1 else owner.name if owner else "Vacant")
+                        scene.blit(font.render(label, True, INK), (target["rect"][0], target["rect"][1]))
     if zoom != 1.0:
-        scene = pygame.transform.scale(scene, (round(WORLD_WIDTH * zoom), round(WORLD_HEIGHT * zoom)))
+        scene = pygame.transform.scale(scene, (round(size[0] * zoom), round(size[1] * zoom)))
     previous_clip = surface.get_clip()
     scene_rect = scene.get_rect(topleft=(round(camera_offset[0]), round(camera_offset[1])))
     viewport = surface.get_rect() if viewport is None else viewport
     # Bubbles can extend beyond the ground's rectangle into the surrounding view.
     surface.set_clip(viewport.clip(previous_clip))
     surface.blit(scene, scene_rect)
-    for geometry, color in ((APARTMENT_RECT, APARTMENT_COLOR), (APARTMENT_DOOR_RECT, APARTMENT_DOOR_COLOR)):
+    for geometry, color in (((APARTMENT_RECT, APARTMENT_COLOR), (APARTMENT_DOOR_RECT, APARTMENT_DOOR_COLOR)) if location == "garden" else ()):
         x, y, width, height = geometry
         # Draw directly into the clipped camera view so negative coordinates survive.
         rect = pygame.Rect(round(x * zoom + camera_offset[0]), round(y * zoom + camera_offset[1]),
                            round(width * zoom), round(height * zoom))
         pygame.draw.rect(surface, color, rect)
-    npcs = [npc for npc in npcs if not npc.indoors]
-    _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, phase, zoom, snake)
+    npcs = [npc for npc in npcs if npc.location == location]
+    if world and world.mode == "player" and world.player.alive and world.player.location == location:
+        npcs.append(world.player)
+    _draw_objects(surface, npcs, tree if location == "garden" else None, font, character_renderer,
+                  camera_offset, phase, zoom, snake if location == "garden" else None)
     surface.set_clip(previous_clip)
 
 
@@ -164,7 +184,7 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
     map_rect = pygame.Rect(screen_point((0, 0)), (round(WORLD_WIDTH * zoom), round(WORLD_HEIGHT * zoom)))
     tree_image, apple_image = tree_artwork()
     # NPC y is at their feet; use the bottom of the tree's trunk for the same comparison.
-    objects = [tree, *npcs]
+    objects = ([tree] if tree is not None else []) + list(npcs)
     if snake is not None:
         objects.append(snake)
     objects.sort(key=lambda obj: tree.y + TREE_BASE_OFFSET if obj is tree else obj.y)
@@ -196,7 +216,7 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
         npc = obj
         position = screen_point((npc.x, npc.y))
         # Always resize from the original composed artwork, including when zooming out.
-        original = character_renderer.render(npc.character, npc.facing, giving=npc.giving, eating=npc.eating)
+        original = character_renderer.render(npc.appearance if hasattr(npc, "appearance") else npc.character, npc.facing, giving=getattr(npc, "giving", False), eating=getattr(npc, "eating", False))
         sprite = resized(original, CHARACTER_SCALE * zoom)
         sprite_rect = sprite.get_rect(midbottom=position)
         shadow = pygame.Rect(screen_point((npc.x - 16, npc.y - 4)), (round(32 * zoom), round(8 * zoom)))
@@ -207,7 +227,7 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
         name_rect.clamp_ip(map_rect)
         surface.blit(name, name_rect)
     # Thinking draws above ordinary speech; ready replies have the final priority.
-    for npc in sorted(npcs, key=lambda person: (bool(person.unread_player_reply), person.player_thinking)):
+    for npc in sorted((n for n in npcs if hasattr(n, "player_thinking")), key=lambda person: (bool(person.unread_player_reply), person.player_thinking)):
         bubble_name = (player_bubble_name(npc) if player_bubble_visible(npc, camera_offset, zoom)
                        else _active_bubble(npc))
         if bubble_name is not None:
@@ -218,3 +238,9 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
             bubble = resized(interaction_bubble(bubble_name), zoom)
             rect = bubble.get_rect(bottomleft=screen_point((npc.x + width / 2 - 6, npc.y - height + 8)))
             surface.blit(bubble, rect)
+
+
+@lru_cache(maxsize=None)
+def apartment_art(kind):
+    from constants import APARTMENT_ART
+    return pygame.image.load(str(Path(__file__).resolve().parent.parent / APARTMENT_ART[kind])).convert_alpha()

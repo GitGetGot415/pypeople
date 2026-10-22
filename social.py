@@ -11,7 +11,7 @@ from conversation_history import remember
 from dialogue_rules import named_references, validate_account_speech, validate_apple_promise
 
 GoalKind = Literal["obtain_apple", "help_with_apple", "repair_relationship", "sabotage_relationship"]
-FactKind = Literal["apple_given", "work_given", "apple_refused", "promise_kept", "promise_broken", "private_motive", "former_life", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating"]
+FactKind = Literal["apple_given", "work_given", "apple_refused", "promise_kept", "promise_broken", "private_motive", "former_life", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "visit"]
 Stance = Literal["uncertain", "believed", "disbelieved"]
 ConcernKind = Literal["orientation", "recollection", "news", "surroundings", "plans"]
 
@@ -398,7 +398,7 @@ def add_fact(world, kind, subject, target, source_id, record, summary, witnesses
     if existing is not None:
         return existing
     if kind not in ("private_motive", "former_life"):
-        witnesses = [p for p in witnesses if not getattr(p, "indoors", False)]
+        witnesses = [p for p in witnesses if p is not world.player and p.location == subject.location]
     fact = Fact(uuid4().hex, kind, subject.id, target.id, source_id,
                 record.id if record else None, world.phase_index, summary, [npc.id for npc in witnesses])
     world.facts.append(fact)
@@ -434,7 +434,7 @@ def record_event_fact(world, event, record):
                  [p for p in (subject, target) if p is not world.player])
         return
     observers = [subject, target, *world.listeners(subject)]
-    if not getattr(subject, "indoors", False) and ((world.snake.x - subject.x) ** 2 + (world.snake.y - subject.y) ** 2) ** 0.5 <= 150:
+    if subject.location == "garden" and ((world.snake.x - subject.x) ** 2 + (world.snake.y - subject.y) ** 2) ** 0.5 <= 150:
         observers.append(world.snake)
     add_fact(world, kind, subject, target, event.id, record, event.text, list({p.id: p for p in observers}.values()))
 
@@ -1006,7 +1006,7 @@ def validate_agreements(agreements, proposals, turns, initiator_id, recipient_id
 def validate_live_agreements(conversation, response, *, dialogue_validation=True):
     world = conversation.initiator.world
     pair = (conversation.initiator, conversation.recipient)
-    if any(npc.conversation is not conversation or not world.is_outdoors(npc) for npc in pair):
+    if any(npc.conversation is not conversation or world.npc_by_id(npc.id) is not npc or npc.location != pair[0].location for npc in pair):
         raise ValueError("The conversation participants are no longer available.")
     if conversation.context_references != conversation_references(conversation):
         raise ValueError("An objective or promise changed while the reply was being generated. Please try again.")

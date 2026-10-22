@@ -51,26 +51,27 @@ def forms(name):
     return {name, *name.split()} if name else set()
 
 
-def actor_catalog(world):
+def actor_catalog(world, location="garden"):
     people = [*world.npcs, *world.archived]
-    visible_ids = {p.id for p in world.outdoor_npcs}
+    visible = [p for p in world.npcs if p.location == location]
+    visible_ids = {p.id for p in visible}
     catalog = {p.id: {"name": p.name, "self_name": p.character["Name"], "_visible": p.id in visible_ids} for p in people}
-    catalog[world.snake.id] = {"name": SNAKE_NAME, "self_name": SNAKE_NAME}
+    catalog[world.snake.id] = {"name": SNAKE_NAME, "self_name": SNAKE_NAME, "_visible": location == "garden"}
     # Only unique, observable descriptions can bind a third-party introduction.
     # Ties deliberately provide no reference; position alone never teaches a name.
     selectors = (("the person furthest to the left", lambda p: p.x),
                  ("the person furthest to the right", lambda p: -p.x),
                  ("the person closest to the apple tree",
                   lambda p: (p.x - world.tree.x) ** 2 + (p.y - world.tree.y) ** 2))
-    for label, distance in selectors:
-        ordered = sorted(world.outdoor_npcs, key=distance)
+    for label, distance in (selectors if location == "garden" else selectors[:2]):
+        ordered = sorted(visible, key=distance)
         if ordered and (len(ordered) == 1 or distance(ordered[0]) < distance(ordered[1])):
             catalog[ordered[0].id].setdefault("references", []).append(label)
     # A larger roster has many people who are neither an extreme nor nearest
     # the tree. Give those actors a unique visible reference too; their names
     # cannot be spoken merely because an account or goal mentions them.
     for coordinate, direction in (("x", "left"), ("y", "top")):
-        ordered = sorted(world.outdoor_npcs, key=lambda p: getattr(p, coordinate))
+        ordered = sorted(visible, key=lambda p: getattr(p, coordinate))
         for rank, person in enumerate(ordered, 1):
             if catalog[person.id].get("references") or sum(
                     getattr(p, coordinate) == getattr(person, coordinate) for p in ordered) != 1:
@@ -78,9 +79,10 @@ def actor_catalog(world):
             suffix = "th" if 10 <= rank % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(rank % 10, "th")
             catalog[person.id]["references"] = [f"the {rank}{suffix} person from the {direction}"]
     catalog[world.snake.id]["references"] = ["the python guarding the apple tree"]
-    catalog[world.player.id] = {"name": "Player", "self_name": "Player", "kind": "player",
-                               "references": ["the player"],
-                               "_aliases": list({p.known_names[world.player.id]["name"] for p in people if world.player.id in p.known_names})}
+    player_visible = world.mode == "player" and world.player.alive and world.player.location == location
+    catalog[world.player.id] = {"_visible": player_visible, "name": "Player", "self_name": "Player", "kind": "player",
+                               "references": ["the player"] if player_visible else [],
+                               "_aliases": list({p.known_names[world.player.id]["name"] for p in [*people, world.snake] if world.player.id in p.known_names})}
     return catalog
 
 

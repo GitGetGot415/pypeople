@@ -81,7 +81,7 @@ class MemoryState(SaveModel):
     partner_id: str
     kind: Literal["gave_fruit", "received_fruit", "refused", "kept_fruit", "conversation",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
-                  "claim_shared", "heard_claim", "claim_opinion", "leverage", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "gave_work", "received_work"]
+                  "claim_shared", "heard_claim", "claim_opinion", "leverage", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "gave_work", "received_work", "visit"]
     summary: str = Field(max_length=400)
     weight: float = Field(ge=-12, le=12)
 
@@ -92,7 +92,7 @@ class EventState(SaveModel):
     phase: Literal["day", "evening", "night"]
     kind: Literal["phase", "food_requested", "food_refused", "fruit_shared", "conversation_completed", "interaction_failed",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
-                  "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "promise_cancelled", "work_shared", "player_call", "player_conversation"]
+                  "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "promise_cancelled", "work_shared", "player_call", "player_conversation", "tree_queue", "travel_failed", "visit"]
     participants: list[str]
     text: str
     history: int | None = Field(ge=0)
@@ -297,6 +297,8 @@ class ConcernState(SaveModel):
 
 
 class NPCState(ActivityState):
+    location: str
+    journey: dict | None
     id: str = Field(min_length=1)
     character: dict
     display_name: str | None
@@ -488,6 +490,7 @@ class AppleAdvanceState(SaveModel):
 
 
 class SnakeState(SaveModel):
+    known_names: dict[str, LearnedNameState]
     id: str = Field(min_length=1)
     x: float = Field(ge=0, le=WORLD_WIDTH)
     y: float = Field(ge=0, le=WORLD_HEIGHT)
@@ -557,6 +560,13 @@ class PlayerState(SaveModel):
     id: Literal[PLAYER_ID]
     inventory: dict[Literal["fruit"], Annotated[int, Field(strict=True, ge=0)]]
     inventory_capacity: int = Field(strict=True, ge=1)
+    x: float
+    y: float
+    facing: int = Field(ge=0, le=7)
+    location: str
+    alive: bool
+    appearance: dict
+    journey: dict | None
 
     @model_validator(mode="after")
     def valid_apples(self):
@@ -578,6 +588,14 @@ class PlayerHandoffState(SaveModel):
 
 
 class SimulationState(SaveModel):
+    mode: Literal["player", "spectator"]
+    player_interaction: dict | None
+    player_invitations: list[dict]
+    player_claims: list[dict]
+    visit: dict | None
+    tree_queue: list[dict]
+    tree_current: dict | None
+    player_snake_encounter: dict | None
     day: int = Field(ge=1)
     player: PlayerState
     player_handoffs: list[PlayerHandoffState]
@@ -616,9 +634,13 @@ class SimulationState(SaveModel):
 
     @model_validator(mode="after")
     def validate_references(self):
+        try:
+            validate_physical_state(self)
+        except (KeyError, TypeError, AttributeError, IndexError) as exc:
+            raise ValueError("Invalid physical state: required ownership, location or source data is missing.") from exc
         residents = [*self.npcs, *self.archived]
         live_ids = {n.id for n in self.npcs}
-        indoor_ids = {n.id for n in self.npcs if n.behavior in INDOOR_BEHAVIORS}
+        indoor_ids = {n.id for n in self.npcs if n.location != "garden"}
         if len({n.room_number for n in residents}) != len(residents):
             raise ValueError("Apartment rooms must be unique, including departed assignments.")
         creation_ids, job_ids = set(), set()
@@ -634,41 +656,40 @@ class SimulationState(SaveModel):
                 raise ValueError("Invalid resident home state.")
             if n.departure and (n.creative_job or n.behavior in HOME_BEHAVIORS):
                 raise ValueError("Departed residents cannot keep active home work.")
-            if n.behavior in HOME_BEHAVIORS:
-                resident = NPC(character=n.character, sprite_size=n.sprite_size)
-                approach = entrance(resident)
-                import math
-                if n.owner != "autonomous" or n.home_reason is None or n.resume_pending:
-                    raise ValueError("Home activities must be autonomous and cannot be suspended.")
-                if n.behavior == Behavior.GO_HOME:
-                    if n.target_id != APARTMENT_ID or n.destination != approach:
-                        raise ValueError("A home trip needs its reachable apartment entrance.")
-                    if n.home_reason == "night" and self.phase != "night":
-                        raise ValueError("A night-only trip cannot continue after dawn.")
-                elif (n.destination is not None or n.target_id is not None
-                      or math.dist((n.x, n.y), approach) > HOME_ARRIVAL_TOLERANCE):
-                    raise ValueError("Indoor activities must commit at the entrance.")
-            if n.behavior == Behavior.SLEEP and n.home_reason != "night":
-                raise ValueError("Sleep must retain its night intent.")
-            if self.phase == "night" and n.behavior in INDOOR_BEHAVIORS and n.behavior != Behavior.SLEEP:
-                raise ValueError("Indoor residents must sleep during night.")
-            if n.behavior not in HOME_BEHAVIORS and n.home_reason is not None and (
-                    n.home_reason != "night" or self.phase != "night"):
-                raise ValueError("Only pending bedtime can retain outdoor home intent.")
-            if n.wake_remaining is not None and (n.behavior != Behavior.SLEEP or self.phase != "day"):
-                raise ValueError("Only daytime sleepers can be waking.")
-            if n.bedtime_remaining is not None and n.home_reason != "night":
-                raise ValueError("A bedtime delay needs night intent.")
+            if n.room_number == 1:
+                raise ValueError("Room 1 is reserved for the player.")
+            from locations import feet_bounds, valid_location
+            layout = SimpleNamespace(residents=residents)
+            if not valid_location(layout, n.location):
+                raise ValueError("Unknown resident location.")
+            left, right, top, bottom = feet_bounds(n.location)
+            if not left <= n.x <= right or not top <= n.y <= bottom:
+                raise ValueError("Resident feet are outside the current map.")
+            if n.behavior == Behavior.GO_HOME and not n.journey and n.location != f"room:{n.room_number}":
+                raise ValueError("A home trip needs a journey to the owned room.")
+            if n.behavior in INDOOR_BEHAVIORS and n.location != f"room:{n.room_number}" and not n.journey:
+                raise ValueError("Home routines require the resident's real room.")
             job = n.creative_job
-            if (job is None) != (n.behavior not in (Behavior.PAINT, Behavior.COMPOSE)):
+            effective_behavior = n.behavior
+            frozen = (self.visit["saved_state"] if self.visit and self.visit["host_id"] == n.id else
+                      self.player_interaction.get("saved_state") if self.player_interaction and self.player_interaction.get("npc_id") == n.id else None)
+            for conversation in self.conversations:
+                for index, activity in zip((conversation.initiator, conversation.recipient), conversation.saved_states):
+                    if index < len(self.npcs) and self.npcs[index].id == n.id:
+                        frozen = activity.model_dump()
+            if frozen:
+                effective_behavior = frozen["behavior"]
+            if (effective_behavior in INDOOR_BEHAVIORS and n.location != f"room:{n.room_number}"
+                    and not n.journey and not (self.visit and self.visit["host_id"] == n.id)):
+                raise ValueError("Suspended home work must retain its actual room or accepted visit.")
+            if (job is None) != (effective_behavior not in (Behavior.PAINT, Behavior.COMPOSE)):
                 raise ValueError("An active hobby needs exactly one creative job.")
             if job:
                 if (job.id in job_ids or job.creator_id != n.id or n.id not in live_ids
                         or n.command_revision != job.revision or job.started_day != n.last_creative_day
                         or phase_index(job.started_day, job.started_phase) > phase_index(self.day, self.phase)
                         or job.remaining > CREATION_WORK_SECONDS_RANGE[1] or job.queue_remaining > CREATIVE_QUEUE_SECONDS
-                        or n.behavior != (Behavior.PAINT if job.kind == "art" else Behavior.COMPOSE)
-                        or self.phase == "night"):
+                        or effective_behavior != (Behavior.PAINT if job.kind == "art" else Behavior.COMPOSE)):
                     raise ValueError("Invalid active creative job or completed job reuse.")
                 job_ids.add(job.id)
         actors = {n.id: (n.display_name or n.character["Name"]) for n in residents}
@@ -956,8 +977,8 @@ class SimulationState(SaveModel):
             pair = {handoff.initiator, handoff.recipient}
             resident_id = next(iter(pair - {self.player.id}), None)
             if (len(pair) != 2 or self.player.id not in pair or resident_id not in live_ids
-                    or resident_id in indoor_ids or handoff.record >= len(self.history)
-                    or handoff.saved_state.behavior in HOME_BEHAVIORS):
+                    or handoff.record >= len(self.history)
+                    or next(n for n in self.npcs if n.id == resident_id).location != self.player.location):
                 raise ValueError("Invalid player handoff participants.")
             index = next(i for i, n in enumerate(self.npcs) if n.id == resident_id)
             if index in reserved or set(self.history[handoff.record].participants) != {"You", actors[resident_id]}:
@@ -976,8 +997,8 @@ class SimulationState(SaveModel):
             if pair[0] == pair[1] or any(i >= len(self.npcs) or i in reserved for i in pair) or interaction.record >= len(self.history):
                 raise ValueError("Invalid live interaction participants.")
             for index, activity in zip(pair, interaction.saved_states):
-                if self.npcs[index].id in indoor_ids or activity.behavior in HOME_BEHAVIORS:
-                    raise ValueError("Home residents cannot occupy outdoor interactions, including suspended work.")
+                if self.npcs[pair[0]].location != self.npcs[pair[1]].location:
+                    raise ValueError("Conversation participants must share a location.")
                 activity_target(activity, self.npcs[index])
             record = self.history[interaction.record]
             if set(record.participants) != {actors[self.npcs[i].id] for i in pair}:
@@ -1047,20 +1068,20 @@ class SimulationState(SaveModel):
             if encounter.stage in ("condemned_approach", "eating") and encounter.outcome != "eat":
                 raise ValueError("Eating requires a resolved condemnation.")
             activity_target(encounter.saved_state, self.npcs[resident_index])
-        elif self.snake.target_id is not None:
+        elif self.snake.target_id is not None and not self.player_snake_encounter:
             raise ValueError("A snake target requires an encounter.")
         if (not set(self.snake.standing) <= ids or any(not -100 <= score <= 100 for score in self.snake.standing.values())
-                or not set(self.snake.pardons) <= live_ids or not set(self.snake.offenses) <= live_ids
+                or not set(self.snake.pardons) <= live_ids | ({self.player.id} if self.player.alive else set()) or not set(self.snake.offenses) <= live_ids | ({self.player.id} if self.player.alive else set())
                 or any(f not in facts for f in self.snake.offenses.values())):
             raise ValueError("Invalid snake standing, offenses or pardons.")
         for resident_id, advance in self.snake.advances.items():
             record = record_for(advance.conversation_id)
-            if (resident_id not in live_ids or not participant(resident_id, record)
+            if (resident_id not in live_ids | ({self.player.id} if self.player.alive else set()) or not participant(resident_id, record)
                     or not participant(self.snake.id, record)
                     or not any(f.kind == "bargain" and f.conversation_id == record.id
                                and f.subject_id == self.snake.id and f.object_id == resident_id for f in self.facts)):
                 raise ValueError("An apple advance needs its living recipient and actual handoff record.")
-            if advance.offering == "secret":
+            if advance.offering == "secret" and resident_id != self.player.id:
                 resident = next(n for n in self.npcs if n.id == resident_id)
                 if advance.account_id not in claims or not any(b.claim_id == advance.account_id for b in resident.beliefs):
                     raise ValueError("A promised private account must belong to the recipient.")
@@ -1074,9 +1095,9 @@ class SimulationState(SaveModel):
             if index in reserved and npc.behavior != Behavior.WAIT:
                 raise ValueError("Encounter participants must wait.")
         for reference in (self.tree.reserved_by, self.tree.shaker):
-            if reference is not None and (reference not in live_ids or reference in indoor_ids):
+            if reference is not None and (reference not in live_ids | ({self.player.id} if self.player.alive and self.mode == "player" else set()) or reference in indoor_ids):
                 raise ValueError("A tree reservation requires a living owner.")
-        if self.tree.shaker is not None and self.tree.shaker != self.tree.reserved_by or bool(self.tree.shaker) != (self.tree.shake_elapsed is not None):
+        if bool(self.tree.shaker) != (self.tree.shake_elapsed is not None):
             raise ValueError("Invalid tree shake owner.")
         pending_owners = set()
         for action in self.pending_actions:
@@ -1084,8 +1105,11 @@ class SimulationState(SaveModel):
                 raise ValueError("Only a gift can use the player as a queued action recipient.")
             if action.npc_id not in live_ids or action.npc_id in pending_owners or action.target_id is not None and action.target_id not in live_ids | {self.player.id}:
                 raise ValueError("Queued actions need living actors.")
-            if action.npc_id in indoor_ids or action.target_id in indoor_ids:
-                raise ValueError("Queued outdoor actions cannot reach indoor residents.")
+            if action.target_id and action.action in ("TALK_TO_NPC", "GIVE_ITEM"):
+                positions = {n.id: n.location for n in self.npcs}
+                positions[self.player.id] = self.player.location
+                if positions[action.npc_id] != positions[action.target_id]:
+                    raise ValueError("A queued interaction must share a location.")
             pending_owners.add(action.npc_id)
             if action.record is not None and action.record >= len(self.history):
                 raise ValueError("Invalid queued history record.")
@@ -1113,7 +1137,7 @@ class SimulationState(SaveModel):
             if call and call["kind"] == "reply":
                 record = record_for(call["reference"])
                 actions = [a for a in self.pending_actions if a.npc_id == npc.id]
-                if (npc.id not in live_ids or npc.id in indoor_ids or npc.id in reserved_ids
+                if (npc.id not in live_ids or npc.id in reserved_ids
                         or set(record.participant_ids) != {npc.id, self.player.id} or record.error
                         or not record.turns or record.turns[-1] != (actors[npc.id], npc.reply)
                         or (actions and (not call["closing"] or any(a.record is None or self.history[a.record].id != record.id for a in actions)))):
@@ -1123,7 +1147,7 @@ class SimulationState(SaveModel):
                               or offer["item"] != "fruit" and offer["item"] not in creation_ids):
                     raise ValueError("A waiting reply's gift offer needs the player and a real item.")
                 continue
-            if call and (npc.id not in live_ids or npc.id in indoor_ids
+            if call and (npc.id not in live_ids
                     or npc.behavior not in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY)
                     or npc.owner != "autonomous"
                     or npc.id in reserved_ids
@@ -1161,6 +1185,7 @@ class SaveEntry:
     updated_at: datetime | None = None
     npc_count: int = 0
     error: str = ""
+    mode: str = ""
 
 
 class InvalidSaveName(ValueError):
@@ -1193,7 +1218,7 @@ class SaveStore:
         for path in self.directory.glob("*.json"):
             try:
                 save = self.load(path.stem)
-                entries.append(SaveEntry(path.stem, save.name, save.updated_at, len(save.state.npcs)))
+                entries.append(SaveEntry(path.stem, save.name, save.updated_at, len(save.state.npcs), mode=save.state.mode))
             except (OSError, ValueError):
                 entries.append(SaveEntry(path.stem, path.stem, error="This save cannot be loaded. You can delete it."))
         return sorted(entries, key=lambda entry: entry.updated_at.timestamp() if entry.updated_at else 0, reverse=True)
@@ -1269,6 +1294,217 @@ class SaveStore:
         self._path(save_id).unlink()
 
 
+PLAYER_SNAKE_FIELDS = ("id", "purpose", "origin", "topic", "accusation", "reserved", "arrived",
+    "dialogue_state", "stage", "wait_elapsed", "elapsed", "talking_remaining", "committed", "outcome", "outcome_event_id", "offer")
+
+
+def capture_player_snake(encounter, records):
+    from snake import PlayerSnakeEncounter
+    if not isinstance(encounter, PlayerSnakeEncounter):
+        return None
+    return {**{name: deepcopy(getattr(encounter, name)) for name in PLAYER_SNAKE_FIELDS},
+            "record": records[id(encounter.record)]}
+
+
+def restore_player_snake(world, saved, history):
+    if saved is None:
+        return
+    from snake import PlayerSnakeEncounter
+    encounter = PlayerSnakeEncounter.__new__(PlayerSnakeEncounter)
+    for name in PLAYER_SNAKE_FIELDS:
+        setattr(encounter, name, deepcopy(saved[name]))
+    encounter.record = history[saved["record"]]
+    encounter.world, encounter.initiator, encounter.recipient = world, world.snake, world.player
+    encounter.active = True
+    encounter.turns, encounter.pending_opinions = [], []
+    encounter.request_context = encounter.saved_state = None
+    world.snake.encounter = encounter
+
+
+def validate_physical_state(state):
+    """Canonical map/ownership checks supplement the existing effect provenance checks."""
+    import math
+    import json
+    from locations import valid_location, feet_bounds, route, floor_for_room, targets
+    from constants import PLAYER_APPROACH_TIMEOUT, TRAVEL_STEP_TIMEOUT, ROOM_ARRIVAL, STARTING_PLAYER_POSITION
+    residents = [*state.npcs, *state.archived]
+    layout = SimpleNamespace(residents=residents)
+    by_id = {n.id: n for n in state.npcs}
+    by_id[state.player.id] = state.player
+    records = {r.id: r for r in state.history}
+    live_player = state.mode == "player" and state.player.alive
+    if not state.player.alive and state.mode != "spectator":
+        raise ValueError("A dead player must remain in spectator mode.")
+    if not live_player and (state.player_interaction or state.player.journey or state.visit or state.player_snake_encounter
+            or any(n.player_call for n in state.npcs) or any(e["actor_id"] == state.player.id for e in state.tree_queue)
+            or state.tree_current and state.tree_current["actor_id"] == state.player.id):
+        raise ValueError("Spectator mode cannot own physical player interactions.")
+    def point(location, value):
+        if not isinstance(value, (list, tuple)) or len(value) != 2 or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in value):
+            raise ValueError("Invalid feet position.")
+        left, right, top, bottom = feet_bounds(location)
+        if not left <= value[0] <= right or not top <= value[1] <= bottom:
+            raise ValueError("Feet position is outside its map.")
+    for actor in [state.player, *residents]:
+        if not valid_location(layout, actor.location):
+            raise ValueError("Unknown actor location.")
+        point(actor.location, (actor.x, actor.y))
+        journey = actor.journey
+        if journey:
+            if set(journey) != {"destination", "point", "purpose", "fast", "elapsed", "steps"} or not valid_location(layout, journey["destination"]):
+                raise ValueError("Invalid journey identity.")
+            point(journey["destination"], journey["point"])
+            if (actor is state.player and journey["destination"].startswith("room:")
+                    and journey["destination"] not in ("room:1", actor.location)
+                    and (not state.visit or state.visit["location"] != journey["destination"])):
+                raise ValueError("Travel into a resident room requires its accepted hosted visit.")
+            if not 0 <= journey["elapsed"] <= TRAVEL_STEP_TIMEOUT or not journey["steps"]:
+                raise ValueError("Invalid journey progress.")
+            expected = route(actor.location, journey["destination"], journey["point"])
+            if journey["steps"] != [{**e, "point": list(e["point"]), "arrival": list(e["arrival"]) if e["arrival"] is not None else None} for e in expected] and journey["steps"] != expected:
+                raise ValueError("A journey must follow the actual doors and elevator connections.")
+    interaction = state.player_interaction
+    exclusive = set()
+    if interaction:
+        if interaction.get("kind") not in ("resident", "door", "snake") or not interaction.get("id"):
+            raise ValueError("Invalid player interaction owner.")
+        if interaction["location"] != state.player.location:
+            raise ValueError("Player ownership must follow its current location.")
+        if interaction["kind"] == "resident":
+            if state.player.journey:
+                raise ValueError("A player cannot travel during a resident interaction.")
+            npc = by_id.get(interaction.get("npc_id"))
+            if not npc or npc is state.player or npc.journey:
+                raise ValueError("The player needs one present resident.")
+            room = interaction.get("knock_room")
+            if room:
+                if npc.room_number != room or npc.location != f"room:{room}" or state.player.location != f"hallway:{floor_for_room(room)}":
+                    raise ValueError("A knock must address the present owner of that door.")
+            elif npc.location != state.player.location:
+                raise ValueError("Player conversation participants must be together.")
+            if interaction["stage"] not in ("approach", "prompt", "conversation", "handoff") or not 0 <= interaction["elapsed"] <= PLAYER_APPROACH_TIMEOUT:
+                raise ValueError("Invalid player approach progress.")
+            ActivityState.model_validate(interaction["saved_state"])
+            point(npc.location if interaction["incoming"] else state.player.location, interaction["point"])
+            if interaction["stage"] == "prompt" and (not interaction["incoming"] or not npc.player_call):
+                raise ValueError("An incoming prompt needs its physical call.")
+            if interaction.get("record_id") and (interaction["record_id"] not in records
+                    or set(records[interaction["record_id"]].participant_ids) != {state.player.id, npc.id}):
+                raise ValueError("Player conversation ownership needs its actual source record.")
+            exclusive.add(npc.id)
+        elif interaction["kind"] == "snake" and not state.player_snake_encounter:
+            raise ValueError("Player snake ownership needs a service encounter.")
+        elif interaction["kind"] == "door":
+            normalize = lambda value: json.loads(json.dumps(value))
+            if normalize(interaction["target"]) not in [normalize(t) for t in targets(layout, state.player.location)]:
+                raise ValueError("Door travel must retain an actual target in its map.")
+    entries = [*state.tree_queue, *([state.tree_current] if state.tree_current else [])]
+    if len({e["actor_id"] for e in entries}) != len(entries):
+        raise ValueError("Tree customers must be unique and ordered.")
+    for entry in entries:
+        if set(entry) != {"actor_id", "purpose", "reason", "saved_state", "elapsed"}:
+            raise ValueError("Invalid tree queue entry.")
+        actor = by_id.get(entry["actor_id"])
+        if not actor or actor.location != "garden" or actor.journey or actor.id in exclusive or entry["purpose"] not in ("bargain", "judgment", "introduction"):
+            raise ValueError("A tree customer must be available in the garden.")
+        if not isinstance(entry["elapsed"], (int, float)) or not math.isfinite(entry["elapsed"]) or not 0 <= entry["elapsed"] <= PLAYER_APPROACH_TIMEOUT:
+            raise ValueError("Invalid front-customer approach progress.")
+        if actor is state.player and interaction and interaction["kind"] != "snake":
+            raise ValueError("A queued player cannot own another interaction.")
+        if any(a.npc_id == actor.id for a in state.pending_actions):
+            raise ValueError("A queued customer cannot have another pending action.")
+        if actor is not state.player:
+            ActivityState.model_validate(entry["saved_state"])
+        exclusive.add(actor.id)
+    reserved_ids = {state.npcs[i].id for c in [*state.conversations, *state.gifts] for i in (c.initiator, c.recipient) if i < len(state.npcs)}
+    if exclusive & reserved_ids:
+        raise ValueError("An actor cannot belong to two exclusive interactions.")
+    if state.visit:
+        visit = state.visit
+        host = by_id.get(visit.get("host_id"))
+        if host is None or host is state.player or not valid_location(layout, visit["location"]):
+            raise ValueError("A visit needs its actual living host and destination.")
+        ActivityState.model_validate(visit["saved_state"])
+        offer = next((o for o in state.player_invitations if o["id"] == visit["offer_id"]), None)
+        if (not offer or offer["status"] != "accepted" or offer["speaker_id"] != host.id
+                or offer["location"] != visit["location"] or offer["destination"] != visit["destination"]
+                or visit["stage"] not in ("travel", "hosting")):
+            raise ValueError("A hosted visit requires its actual accepted invitation.")
+        if visit["stage"] == "travel" and (interaction or state.player.id in {e["actor_id"] for e in entries}):
+            raise ValueError("An accepted visit's travel cannot own another player interaction.")
+        if visit["stage"] == "travel":
+            for actor, purpose in ((host, "host_visit"), (state.player, "invitation")):
+                if actor.journey:
+                    if actor.journey["destination"] != visit["location"] or actor.journey["purpose"] != purpose:
+                        raise ValueError("Host and visitor must travel to their accepted destination.")
+                elif actor.location != visit["location"]:
+                    raise ValueError("An unfinished visit needs its actual remaining journey.")
+        if visit["stage"] == "hosting" and (host.location != visit["location"] or state.player.location != visit["location"]):
+            raise ValueError("A host and visitor must be present together.")
+        if not valid_location(layout, visit["return_location"]):
+            raise ValueError("A host's return destination must remain valid.")
+        point(visit["return_location"], visit["return_point"])
+        if host.id in {e["actor_id"] for e in entries} or host.id in reserved_ids:
+            raise ValueError("A host must stay available for the player.")
+    claim_ids = set()
+    for claim in state.player_claims:
+        record = records.get(claim.get("conversation_id"))
+        turn = claim.get("turn")
+        if (set(claim) != {"id", "speaker_id", "conversation_id", "turn", "day", "phase", "text", "kind", "listener_ids"}
+                or claim["id"] in claim_ids or claim["speaker_id"] != state.player.id or claim["kind"] != "report"
+                or not record or type(turn) is not int or turn not in record.accepted_player_turns
+                or record.turns[turn] != ("You", claim["text"])
+                or set(claim["listener_ids"]) != set(record.participant_ids) - {state.player.id}
+                or phase_index(claim["day"], claim["phase"]) > phase_index(state.day, state.phase)):
+            raise ValueError("Player claims require their actual accepted original speech and listener.")
+        claim_ids.add(claim["id"])
+    invitation_ids = set()
+    for offer in state.player_invitations:
+        record = records.get(offer.get("conversation_id"))
+        speaker = next((n for n in residents if n.id == offer.get("speaker_id")), None)
+        if (offer["id"] in invitation_ids or not record or not speaker or offer["status"] not in ("offered", "accepted", "withdrawn", "declined")
+                or offer["destination"] not in ("garden", "tree", "home")
+                or not 0 <= offer["turn"] < len(record.turns)
+                or record.turns[offer["turn"]] != (speaker.display_name or speaker.character["Name"], offer["speech"])
+                or offer["location"] != (f"room:{speaker.room_number}" if offer["destination"] == "home" else "garden")):
+            raise ValueError("Invitations must retain their real speaker, speech and destination.")
+        expected_point = {"garden": STARTING_PLAYER_POSITION, "home": ROOM_ARRIVAL,
+                          "tree": Tree(x=state.tree.x, y=state.tree.y).interaction_point}[offer["destination"]]
+        if (tuple(offer["point"]) != tuple(expected_point)
+                or set(record.participant_ids) != {speaker.id, state.player.id}):
+            raise ValueError("An invitation needs its actual meeting point and conversation participants.")
+        invitation_ids.add(offer["id"])
+        if offer["status"] == "offered" and (not interaction or interaction["kind"] != "resident"
+                or offer["interaction_id"] != interaction["id"] or offer["speaker_id"] != interaction["npc_id"]):
+            raise ValueError("A live invitation must belong to the current physical conversation.")
+    if sum(o["status"] == "offered" for o in state.player_invitations) > 1:
+        raise ValueError("Only the current speaker can keep a live invitation.")
+    if state.snake_encounter and (not state.tree_current or state.tree_current["actor_id"] != state.snake_encounter.resident_id):
+        raise ValueError("A resident tree encounter must own the current FIFO turn.")
+    if state.tree.reserved_by is not None and (not state.tree_current or state.tree.reserved_by != state.tree_current["actor_id"]):
+        raise ValueError("Physical tree ownership must match the current customer.")
+    for actor_id, learned in state.snake.known_names.items():
+        record = records.get(learned.conversation_id)
+        if actor_id != state.player.id or not record or learned.turn not in record.accepted_player_turns or state.snake.id not in record.participant_ids:
+            raise ValueError("The snake's learned player name requires accepted original speech.")
+    saved = state.player_snake_encounter
+    if saved:
+        if set(saved) != {*PLAYER_SNAKE_FIELDS, "record"} or not state.tree_current or state.tree_current["actor_id"] != state.player.id:
+            raise ValueError("Player tree service needs its current FIFO association.")
+        if not 0 <= saved["record"] < len(state.history) or state.history[saved["record"]].id != saved["id"] or state.snake.target_id != state.player.id:
+            raise ValueError("Player tree service must match its original encounter.")
+        if saved["stage"] not in ("player", "dialogue", "condemned_approach", "eating") or saved["stage"] != "player" and (not saved["committed"] or saved["outcome"] != "eat"):
+            raise ValueError("Invalid player eating progress.")
+        offer = saved["offer"]
+        if offer:
+            record = state.history[saved["record"]]
+            if (set(offer) != {"offering", "turn", "conversation_id", "speech"}
+                    or offer["offering"] not in ("secret", "endorsement") or offer["conversation_id"] != record.id
+                    or type(offer["turn"]) is not int or not 0 <= offer["turn"] < len(record.turns)
+                    or record.turns[offer["turn"]] != (SNAKE_NAME, offer["speech"])):
+                raise ValueError("A player apple offer must retain its actual original speaker and turn.")
+
+
 def _capture_fields(model, source, **overrides):
     """Use the save model's fields; spell out only reference/type conversions."""
     return model(**{name: overrides[name] if name in overrides else getattr(source, name)
@@ -1337,6 +1573,10 @@ def capture_simulation(app):
     encounter = world.snake.encounter
     return SimulationState(
         day=world.day, npc_trait_mode=world.npc_trait_mode, phase=world.phase,
+        mode=world.mode, player_interaction=deepcopy(world.player_interaction),
+        player_invitations=deepcopy(world.player_invitations), player_claims=deepcopy(world.player_claims),
+        visit=deepcopy(world.visit), tree_queue=deepcopy(world.tree_queue), tree_current=deepcopy(world.tree_current),
+        player_snake_encounter=capture_player_snake(encounter, records),
         player=PlayerState(**asdict(world.player)), player_call_check=max(0.0, world.player_call_check),
         player_acknowledgments=deepcopy(world.player_acknowledgments),
         player_handoffs=[_capture_fields(PlayerHandoffState, npc.gift,
@@ -1355,7 +1595,7 @@ def capture_simulation(app):
         introductions=world.introductions.copy(), roster_revision=world.roster_revision,
         snake_encounter=(_capture_fields(SnakeEncounterState, encounter,
                          resident_id=encounter.recipient.id, record=records[id(encounter.record)])
-                         if encounter is not None else None),
+                         if encounter is not None and encounter.recipient is not world.player else None),
         npcs=npcs, history=history, conversations=conversations, gifts=gifts,
         tree=_capture_fields(TreeState, app.tree,
                        shaker=app.tree.shaker.id if app.tree.shaker is not None else None,
@@ -1375,7 +1615,7 @@ def restore_simulation(state):
             id=saved.id, character=saved.character, display_name=saved.display_name, x=saved.x, y=saved.y,
             reply=saved.reply, emotion=saved.emotion.name, emotion_intensity=saved.emotion.intensity,
             social=saved.social,
-            sprite_size=saved.sprite_size, room_number=saved.room_number, social_fatigue=saved.social_fatigue,
+            sprite_size=saved.sprite_size, room_number=saved.room_number, location=saved.location, journey=deepcopy(saved.journey), social_fatigue=saved.social_fatigue,
             home_remaining=saved.home_remaining, outdoor_remaining=saved.outdoor_remaining,
             bedtime_remaining=saved.bedtime_remaining, wake_remaining=saved.wake_remaining,
             home_reason=saved.home_reason, last_creative_day=saved.last_creative_day,
@@ -1401,9 +1641,15 @@ def restore_simulation(state):
     tree = Tree(id=state.tree.id, x=state.tree.x, y=state.tree.y, fruit=state.tree.fruit,
                 shake_elapsed=state.tree.shake_elapsed, shaker=by_id.get(state.tree.shaker),
                 reserved_by=by_id.get(state.tree.reserved_by))
-    world = Simulation(npcs, tree, assign_goals=False, npc_trait_mode=state.npc_trait_mode)
+    world = Simulation(npcs, tree, assign_goals=False, npc_trait_mode=state.npc_trait_mode, mode=state.mode)
     world.archived = all_residents[len(state.npcs):]
     world.player = Player(**state.player.model_dump())
+    world.player.world = world
+    world.player_interaction = deepcopy(state.player_interaction)
+    world.player_invitations = deepcopy(state.player_invitations)
+    world.player_claims = deepcopy(state.player_claims)
+    world.visit = deepcopy(state.visit)
+    world.tree_queue, world.tree_current = deepcopy(state.tree_queue), deepcopy(state.tree_current)
     world.player_call_check = state.player_call_check
     world.player_acknowledgments = deepcopy(state.player_acknowledgments)
     for npc, saved in zip(all_residents, [*state.npcs, *state.archived]):
@@ -1484,11 +1730,12 @@ def restore_simulation(state):
             encounter.dialogue_state = "waiting"
             encounter.wait_elapsed = 0.0
             encounter.request_context = None
+    restore_player_snake(world, state.player_snake_encounter, history)
     # Claims are reacquired through the same safe path as interrupted activities.
     tree.reserved_by = None
     tree.cancel_shake()
     for npc in npcs:
-        if npc.conversation is None and npc.gift is None and npc.target_id == tree.id:
+        if npc.conversation is None and npc.gift is None and npc.target_id == tree.id and not world.tree_has_actor(npc.id):
             npc.resume_pending = True
     from player import call_valid, clear_call
     for npc in npcs:

@@ -31,7 +31,7 @@ from dialogue_rules import (_asserts, is_name_reference, mentions_account, menti
                            validate_base_prose, validate_claim_source, validate_english, validate_opinion_reason, validate_environment_speech,
                            validate_speaker_identity)
 from ollama_manager import DEFAULT_OLLAMA_MODEL, mark_ollama_ready
-from model_debug import check_cancelled, cancellable_stream, disconnect_response, record_output, streaming_output, watch_response
+from model_debug import admitted_provider, provider_wait_seconds, check_cancelled, cancellable_stream, disconnect_response, record_output, streaming_output, watch_response
 from conversation_history import rewrite_validation_error, usable_rewrite
 from social import (information_from_dict, listener_stances, phase_index, validate_agreements, validate_information)
 from purgatory import Attitudes
@@ -109,6 +109,11 @@ class PlayerApplePromise(StrictResponse):
     deadline: int = Field(ge=0)
 
 
+class PlayerInvitation(StrictResponse):
+    destination: Literal["garden", "tree", "home"]
+    evidence: str = Field(min_length=1)
+
+
 class ActionResponse(ActionIntent):
     reply: str = Field(description="Your words to the player. If end_conversation is true, give only a brief closing without a question or invitation to continue.")
     end_conversation: bool = Field(default=False, description="True when you finish talking without asking a question. If your SAY reply asks the player a question, this must be false so they can answer. End when the player is done or declines further conversation.")
@@ -118,6 +123,10 @@ class ActionResponse(ActionIntent):
     gift_acceptance: bool = False
     player_opinion: PlayerOpinionChange | None = None
     apple_promise: PlayerApplePromise | None = None
+    invitation: PlayerInvitation | None = None
+    invitation_acceptance: str = ""
+    invitation_resolution: Literal["", "declined", "withdrawn"] = ""
+    invitation_resolution_evidence: str = ""
 
     @model_validator(mode="after")
     def close_for_action(self):
@@ -252,8 +261,28 @@ class SnakeResponse(SnakeDecision):
     turns: list[ConversationTurn] = Field(min_length=SNAKE_TURN_COUNT, max_length=CONVERSATION_MAX_TURNS)
 
 
+class PlayerEvidenceCitation(StrictResponse):
+    claim_id: str
+    quote: str = Field(min_length=1)
+
+
+class PlayerContradiction(StrictResponse):
+    subject: str = Field(min_length=1)
+    time_scope: str = Field(min_length=1)
+    explanation: str = Field(min_length=1)
+    comparable_assertions: bool
+    explicit_correction: bool
+    quotation_hypothetical_or_report: bool
+    evidence: list[PlayerEvidenceCitation] = Field(min_length=2, max_length=2)
+
+
 class SnakePlayerResponse(StrictResponse):
     reply: str = Field(min_length=1)
+    decision: Literal["talk", "advance_secret", "advance_endorsement", "secret", "endorsement", "refuse", "negotiate", "challenge", "spare", "eat"] = "talk"
+    offer: Literal["", "secret", "endorsement"] = ""
+    acceptance_evidence: str = ""
+    disclosure_evidence: str = ""
+    contradiction: PlayerContradiction | None = None
 
 
 class ConversationResponse(StrictResponse):
@@ -452,6 +481,7 @@ def request_voice_rewrite(provider, api_key, response, snapshot, *, deadline,
                           ollama_model=DEFAULT_OLLAMA_MODEL, progress=None):
     """Interpret every full voice brief through the same bounded optional model pass."""
     rewritten = []
+    wait_before = provider_wait_seconds()
 
     def available_rewrites():
         if not any(parts is not None for parts in rewritten):
@@ -465,7 +495,7 @@ def request_voice_rewrite(provider, api_key, response, snapshot, *, deadline,
             return []
         rewritten = [None] * len(state["turns"])
         for indices, batch in voice_rewrite_batches(state):
-            remaining = deadline - monotonic()
+            remaining = deadline + provider_wait_seconds() - wait_before - monotonic()
             if remaining <= 0:
                 logger.warning("Voice rewrite deadline expired; using originals for unavailable voices.")
                 return available_rewrites()
@@ -485,7 +515,7 @@ def request_voice_rewrite(provider, api_key, response, snapshot, *, deadline,
                 except StreamRepetitionError as exc:
                     # Only an interrupted generation gets a retry. Completed rewrite
                     # content/identity diagnostics remain nonblocking and never retry.
-                    remaining = deadline - monotonic()
+                    remaining = deadline + provider_wait_seconds() - wait_before - monotonic()
                     if remaining <= 0:
                         raise
                     batch["_timeout"] = remaining
@@ -496,7 +526,7 @@ def request_voice_rewrite(provider, api_key, response, snapshot, *, deadline,
                 logger.warning("Voice rewrite unavailable for %s; using that speaker's originals: %s", name, exc)
                 record_output("validation", f"Voice rewrite unavailable for {name}; using that speaker's originals: {exc}")
                 continue
-            if monotonic() > deadline:
+            if monotonic() > deadline + provider_wait_seconds() - wait_before:
                 logger.warning("Voice rewrite arrived after its deadline; using originals for unavailable voices.")
                 return available_rewrites()
             checked = retain_voice_rewrite(result.model_dump_json(), batch["turns"], speakers=batch["speakers"])
@@ -561,7 +591,7 @@ RESPONSE_SCHEMA = structured_schema(ActionResponse)
 # Keep the generation order: choose the action/closing state before writing speech.
 RESPONSE_SCHEMA["properties"] = {
     name: RESPONSE_SCHEMA["properties"][name]
-    for name in ("action", "end_conversation", "gift_offer", "gift_acceptance", "player_opinion", "apple_promise", "reply", "target", "item", "quantity", "emotion", "opinion_updates")
+    for name in ("action", "end_conversation", "gift_offer", "gift_acceptance", "player_opinion", "apple_promise", "invitation", "invitation_acceptance", "invitation_resolution", "invitation_resolution_evidence", "reply", "target", "item", "quantity", "emotion", "opinion_updates")
 }
 RESPONSE_SCHEMA["required"] = ["action", "reply", "end_conversation", "target", "item", "quantity", "opinion_updates", "emotion"]
 RESPONSE_SCHEMA["properties"]["emotion"] = EMOTION_SCHEMA
@@ -1107,7 +1137,8 @@ def world_context(snapshot, *, correction=False):
     if conversation:
         current = snapshot["initiator"]
         context["day"], context["time_of_day"] = current["day"], current["time_of_day"]
-        context["environment"]["tree"]["shaking"] = current["tree_is_shaking"]
+        if "tree" in context["environment"]:
+            context["environment"]["tree"]["shaking"] = current.get("tree_is_shaking", False)
         if focus:
             context["discussion_focus"] = {key: focus[key] for key in ("assertion", "kind")}
             context["discussion_focus"]["subject_name"] = actor_names.get(focus["subject_id"])
@@ -1710,7 +1741,19 @@ def response_contract(snapshot, *, correction=False):
         instruction = WORLD_INSTRUCTION + "\nSnake role directions (only the snake speaks from this perspective):\n" + SNAKE_DOCTRINE
         if kind == "snake_player":
             instruction += f"\nYou are {snapshot['snake']['name']}, the actor described by world_state.snake. Speak in first person to the player."
-            return instruction + " Reply directly to the player. Generate speech only in reply. No physical or social action is authorized by this request.", structured_schema(SnakePlayerResponse), SnakePlayerResponse
+            instruction += (" Reply directly without inventing player speech, decisions or biography. Choose only a permitted_decision. "
+                "Offer secret or endorsement with decision talk: one apple upfront for that later obligation. An offer is not acceptance. "
+                "Advances require acceptance of pending_offer; quote exact current acceptance_evidence. "
+                "secret settles an existing debt only when the current message discloses an actual recollection, not a promise to tell one. "
+                "endorsement needs actual current public support and audience_ids. Quote disclosure_evidence exactly. No apple accompanies settlement. "
+                "Recollections are attributed reports, never verified memories. Assess relevant_claims, corrections and known_accounts before judgment. "
+                "Contradictions compare the same subject and time. Distinguish quotations, hypotheticals, reports of others, changed circumstances "
+                "and explicit corrections/retractions. Provide two supplied claim IDs with exact quotes, subject, time_scope and incompatibility. "
+                "Never condemn a correction, quotation or unavailable claim. Eating requires a real known offense or valid contradiction and engine permission. "
+                "If uncertain ask for clarification. Speech does not transfer possessions or relocate anyone.")
+            schema = structured_schema(SnakePlayerResponse)
+            schema["properties"]["decision"] = {"type": "string", "enum": snapshot.get("permitted_decisions", ["talk"])}
+            return instruction, schema, SnakePlayerResponse
         instruction += (
             "\nChoose only the structured outcome of this encounter; do not write dialogue. "
             "Choose a permitted_decision using the resident's personality, own knowledge and attitudes. "
@@ -1797,6 +1840,12 @@ def response_contract(snapshot, *, correction=False):
         }},
     }}
     instruction = build_system_instruction(snapshot["character"])
+    instruction += ("\nPhysical invitations: invitation selects only a supplied invitation_choices destination, with exact evidence from your reply. "
+        "This creates an offer, not travel. invitation_acceptance identifies an existing pending_invitation only when the current player "
+        "message accepts that actual offer in context, including short answers. Questions, refusals and quotations are not acceptance. "
+        "Use invitation_resolution declined for the player's actual refusal, or withdrawn when your original reply withdraws the offer; "
+        "quote exact invitation_resolution_evidence from that player message or your withdrawal respectively. Never resolve an absent offer. "
+        "A closed-door knock requests entry: offer home only when physically present and available. Otherwise use null and empty acceptance ID.")
     if unidentified_player_names(snapshot):
         instruction += ("\nThe current player message mentions a name you have not learned. "
                         "For a SAY reply, clarify who they mean or acknowledge your uncertainty. "
@@ -2329,7 +2378,7 @@ def _validate_base_presentation(result, snapshot):
         texts.extend(value for key, value in result.attitudes.model_dump().items() if key.endswith("_reason"))
     for text in texts:
         validate_base_prose(text, names)
-        validate_environment_speech(text)
+        validate_environment_speech(text, location=snapshot.get("location", snapshot.get("initiator", {}).get("location", "garden")))
 
 
 def _validate_response(raw, snapshot, model):
@@ -2398,6 +2447,8 @@ def _validate_response(raw, snapshot, model):
         validate_snake_decision(result, snapshot)
         return result
     if isinstance(result, SnakePlayerResponse):
+        from snake import validate_player_snake_decision
+        validate_player_snake_decision(result, snapshot)
         if not result.reply.strip():
             raise ValueError("The snake must supply generated speech.")
         if check_dialogue and "snake" in snapshot:
@@ -2617,6 +2668,21 @@ def validate_gift_offer_speech(text, item, quantity, stock):
 
 def validate_player_transfer(result, snapshot):
     """Effect authorization is independent of optional dialogue coherence checks."""
+    if result.invitation:
+        if (result.action != "SAY" or result.gift_offer or result.gift_acceptance or result.apple_promise
+                or result.invitation.evidence not in result.reply
+                or result.invitation.destination not in {c["id"] for c in snapshot.get("invitation_choices", [])}):
+            raise ValueError("An invitation needs original speech and a supplied physical destination.")
+    if result.invitation_acceptance:
+        offer = snapshot.get("pending_invitation")
+        if (result.action != "SAY" or not offer or offer["id"] != result.invitation_acceptance
+                or not snapshot.get("_player_message")):
+            raise ValueError("Travel acceptance must identify the actual preceding invitation.")
+    if result.invitation_resolution:
+        source = snapshot.get("_player_message", "") if result.invitation_resolution == "declined" else result.reply
+        if (not snapshot.get("pending_invitation") or result.invitation or result.invitation_acceptance
+                or not result.invitation_resolution_evidence or result.invitation_resolution_evidence not in source):
+            raise ValueError("Invitation resolution requires the actual offer and original refusal or withdrawal.")
     if snapshot.get("request_kind") in ("player_opening", "player_gift", "player_acknowledgment") and result.action != "SAY":
         raise ValueError("An engine-initiated player turn cannot authorize a player command.")
     from dialogue_rules import unquoted_speech
@@ -2849,6 +2915,10 @@ def _request_payload(message, snapshot, correction):
                            ensure_ascii=False, separators=(",", ":")))
     instruction, schema, _ = response_contract(snapshot, correction=bool(correction))
     context = world_context(snapshot, correction=bool(correction))
+    local_location = snapshot.get("location", snapshot.get("initiator", {}).get("location", "garden"))
+    if local_location != "garden":
+        from locations import environment
+        context["environment"] = {"location": local_location, "description": environment(local_location)}
     if snapshot.get("_compact_rewrite") and snapshot.get("request_kind") != "resident_turn":
         instruction = (
             f"You are {_actor_name(snapshot['speaker'])}, speaking only to {_actor_name(snapshot['listener'])}. "
@@ -3059,8 +3129,14 @@ def _request_payload(message, snapshot, correction):
             }
             instruction += (" The CURRENT question asks for the HUMAN PLAYER'S name, which may be unknown. "
                             "Answer about question_to_answer, not your own name.")
-    context.setdefault("environment", garden_environment())
-    instruction += "\n" + GARDEN_INSTRUCTION
+    location = snapshot.get("location", snapshot.get("initiator", {}).get("location", "garden"))
+    if location == "garden":
+        context.setdefault("environment", garden_environment())
+        instruction += "\n" + GARDEN_INSTRUCTION
+    else:
+        from locations import environment
+        context["environment"] = {"location": location, "description": environment(location)}
+        instruction += "\nThe current map is indoors. Use environment.description; outdoor actors and the tree are elsewhere."
     payload = {"world_state": context, "player_message": message}
     if correction:
         if snapshot.get("request_kind") in ("resident_turn", "snake_turn", "conversation_closing", "handoff_thanks"):
@@ -3150,6 +3226,7 @@ def _request_timeout(snapshot):
     return min(DIALOGUE_TIMEOUT_SECONDS, snapshot.get("_timeout", DIALOGUE_TIMEOUT_SECONDS))
 
 
+@admitted_provider
 def _request_gemini(api_key, message, snapshot, *, correction=""):
     instruction, schema, content = _request_payload(message, snapshot, correction)
     contents = _gemini_contents(_provider_messages(content, snapshot))
@@ -3228,6 +3305,7 @@ def _request_gemini(api_key, message, snapshot, *, correction=""):
         raise RequestError("Could not get a reply from Gemini. Check your connection or try again.") from None
 
 
+@admitted_provider
 def _request_ollama(message, snapshot, model=DEFAULT_OLLAMA_MODEL, *, correction=""):
     instruction, schema, content = _request_payload(message, snapshot, correction)
     record_output("call", snapshot.get("request_kind", "reply"))
@@ -3624,7 +3702,7 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
                  self_introduction_name=own_name(person), listener_address=listener["name"],
                  opinion_target=partner["npc_name"], pending_reactions=pending, choices=choices,
                  day=person.get("day", 1), time_of_day=person.get("time_of_day", "day"),
-                 environment=garden_environment(),
+                 environment=garden_environment(), location=person.get("location", "garden"),
                  preceding_turns=preceding, shared_history=deepcopy(owned_context.get("shared_history", {})),
                  _preceding_turns=preceding, _name_actors=catalog, _dialogue_validation=snapshot.get("_dialogue_validation", True),
                  _baseline=snapshot, _draft=draft, _closing=closing,

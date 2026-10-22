@@ -58,7 +58,10 @@ class InventoryPanel:
 
     def recipients(self, app):
         from apartments import available_outdoors
-        return [n for n in app.npcs if app.simulation.is_outdoors(n) and available_outdoors(n)
+        from player import active_player
+        if not active_player(app.simulation):
+            return []
+        return [n for n in app.npcs if n.location == app.simulation.player.location and available_outdoors(n)
                 and not n.busy and not n.request_pending and not n.selected and not n.unread_player_reply]
 
     def handle_event(self, app, event):
@@ -101,7 +104,7 @@ class InventoryPanel:
                 self.media.play(work)
             elif self.stop.clicked(event):
                 self.media.stop()
-        if self.owner is not app.simulation.player or app.simulation.paused:
+        if self.owner is not app.simulation.player or app.simulation.paused or app.simulation.mode != "player" or not app.simulation.player.alive:
             return
         if self.minus.clicked(event):
             self.quantity = max(1, self.quantity - 1)
@@ -207,7 +210,7 @@ class InventoryPanel:
                     surface.blit(app.small_font.render(f'{npc.name} / unlimited apple storage', True,
                                  PAPER if npc.id == self.recipient_id else INK), (rect.x + 4, rect.y + 6))
                 if not people:
-                    surface.blit(app.small_font.render("No available recipients outdoors.", True, MUTED), self.recipient_rect.topleft)
+                    surface.blit(app.small_font.render("No available recipients here.", True, MUTED), self.recipient_rect.topleft)
                 surface.set_clip(clip)
                 self.draw_scrollbar(surface, self.recipient_rect, self.recipient_scroll, len(people))
                 self.confirm.draw(surface, app.small_font, enabled=can_give and bool(self.recipient_id))
