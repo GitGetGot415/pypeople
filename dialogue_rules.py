@@ -470,6 +470,18 @@ def validate_continuity(text, *, day, situation, knows_claims=False, listener_is
             raise ValueError("No earlier encounter or firsthand hearing is supplied for this speaker. Describe the present uncertainty without inventing a meeting.")
 
 
+def apple_price_mentions(text):
+    """Recognize explicit bargain terms without deciding whether anyone accepts."""
+    speech = unquoted_speech(text)
+    prices = set()
+    if re.search(r"\b(?:memor(?:y|ies)|recollection|private (?:story|account|information))\b", speech, re.I):
+        prices.add("secret")
+    if re.search(r"\bendorse(?:ment|ments|s|d)?\b|\bpublic(?:ly)?\s+support\b|"
+                 r"\bsupport\b[^.!?]{0,45}\b(?:keeper|tree)\b", speech, re.I):
+        prices.add("endorsement")
+    return prices
+
+
 def validate_apple_roles(text, *, giver, receiver, speaker, owed_offering=False,
                          apple_received=False, offering_pending=False):
     speech = unquoted_speech(text)
@@ -490,6 +502,8 @@ def validate_apple_roles(text, *, giver, receiver, speaker, owed_offering=False,
         raise ValueError(f"{giver} gives the apple to {receiver}; do not ask the resident to supply it.")
     if speaker == giver and re.search(r"\bi\s+(?:accept|receive|take)\s+(?:the|an?|your|this)\s+apple\b", speech, re.I):
         raise ValueError(f"{giver} gives the apple; only {receiver} accepts it. Preserve the settled handoff.")
+    if speaker == giver and re.search(r"\b(?:can|could|may)\s+i\s+(?:have|get|receive)\s+(?:an?|one|the|your)\s+apple\b", speech, re.I):
+        raise ValueError(f"{giver} gives the apple to {receiver}. Do not ask the resident to give you the apple.")
     account = r"(?:private\s+)?(?:recollection|memory|secret|information|endorsement|support|story|offering|account)"
     for sentence in split_sentences(speech):
         if re.search(r"\bnot\s+(?:owed|due)\s+to\s+(?:me|you)\b", sentence, re.I):
@@ -502,8 +516,8 @@ def validate_apple_roles(text, *, giver, receiver, speaker, owed_offering=False,
                 rf"\b{account}\b[^.!?]{{0,45}}\b(?:owed|due)\s+to\s+you\b|"
                 rf"\byou(?:['’]re| are)\s+owed\s+(?:an?\s+|the\s+)?{account}\b|"
                 rf"\bi have (?:an?|my) {account} to share with you\b|"
-                rf"\bi\s+(?:will|shall|promise to)\s+(?:offer|share|provide|tell)\s+"
-                rf"(?:with\s+)?you\s+(?:an?|my|the)\s+{account}\b", sentence, re.I)
+                rf"\bi(?:['\u2019]ll|\s+(?:will|shall|promise to))\s+(?:offer|share|provide|tell)\s+"
+                rf"(?:with\s+)?you\s+(?:an?|my|the|one)\s+(?:personal\s+)?{account}\b", sentence, re.I)
             or speaker == receiver and re.search(
                 r"\byour promise to share your (?:secrets|recollection)\b|"
                 r"\b(?:look forward to|expect) hearing your private recollection\b|"
@@ -515,6 +529,9 @@ def validate_apple_roles(text, *, giver, receiver, speaker, owed_offering=False,
             raise ValueError(f"{receiver} owes the recollection or endorsement to {giver}. This is not a mutual debt or information owed to the resident.")
     if apple_received:
         debtor = "i" if speaker == receiver else "you"
+        if speaker == giver and re.search(r"\byou(?:['\u2019]ll| will)\s+(?:get|receive|have|be given)\b"
+                                          r"[^.!?]{0,55}\b(?:when|after|once|if)\b", speech, re.I):
+            raise ValueError("The apple is given now, before the later offering. Do not withhold it until the offering is supplied.")
         if re.search(rf"\b{debtor}\s+(?:(?:simply|actually|really)\s+)?"
                      r"(?:have yet to|have not(?: yet)?|haven['’]t(?: yet)?|did not|didn['’]t|never)\s+"
                      r"(?:been\s+)?(?:receive[d]?|get|got|taken?|given|offered)\s+(?:(?:an?|the|one|any|your|this)\s+)?(?:apple|fruit)\b", speech, re.I):
@@ -523,6 +540,11 @@ def validate_apple_roles(text, *, giver, receiver, speaker, owed_offering=False,
             raise ValueError("The resident received the apple. Any later refusal concerns the offering, not the original apple.")
     if offering_pending:
         debtor = "i" if speaker == receiver else "you"
+        if any(re.search(r"\bthat settles\s+(?:(?:the|your|my|our|this|current)\s+){0,2}(?:debt|offering|obligation)\b|"
+                         r"\b(?:debt|offering|obligation)\s+(?:is|has been)\s+(?:already\s+)?(?:settled|fulfilled|paid)\b", sentence, re.I)
+               for sentence in split_sentences(speech)
+               if not re.search(r"\b(?:if|when|once|after|would)\b", sentence, re.I)):
+            raise ValueError("The offering is still owed later. Giving the apple does not settle the information or public-support debt.")
         if re.search(rf"\b{debtor}\s+(?:(?:have|had)\s+)?(?:already\s+)?(?:provided|shared|told|fulfilled)\s+"
                      rf"(?:you\s+)?(?:the|my|your|that|a)\s+(?:agreed\s+)?{account}\b|"
                      rf"\b{account}\s+(?:that\s+)?{debtor}\s+(?:have\s+)?(?:already\s+)?(?:provided|shared|told)\b", speech, re.I):

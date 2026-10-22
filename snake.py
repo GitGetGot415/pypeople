@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 import math
 import random
+import re
 from uuid import uuid4
 
 from constants import (
@@ -11,6 +12,8 @@ from constants import (
     TREE_QUEUE_FACING, TREE_GUARD_FACING, STARTING_FACING, STARTING_SNAKE_ACTIVITY, STARTING_SNAKE_DECISION_SECONDS, STARTING_SNAKE_POSITION,
 )
 from conversation_history import ConversationRecord
+from dialogue_text import contains_question
+from dialogue_rules import apple_price_mentions
 from interactions import (dialogue_finished, face_each_other, face_toward,
                           finish_generated_dialogue, move_toward, record_failed_dialogue, record_generated_turns)
 
@@ -474,8 +477,16 @@ def validate_player_snake_decision(response, snapshot):
                             and not contradiction.quotation_hypothetical_or_report)
     if decision == "eat" and not (snapshot.get("known_offense") or valid_comparison):
         raise ValueError("Condemnation requires a known offense or a supported comparable contradiction.")
-    if response.offer and (snapshot.get("advance") or not snapshot.get("can_give_apple")):
-        raise ValueError("There is no new apple available to offer.")
+    if response.offer:
+        if decision.startswith("advance_"):
+            if response.offer != snapshot["pending_offer"]["offering"]:
+                raise ValueError("The accepted price must match the prior offer.")
+        elif decision not in ("talk", "negotiate") or snapshot.get("advance") or not snapshot.get("can_give_apple"):
+            raise ValueError("A new offer needs talk or negotiate and an available apple.")
+        else:
+            price = snapshot.get("requested_offering") or (snapshot.get("pending_offer") or {}).get("offering")
+            if price and response.offer != price:
+                raise ValueError("Keep the specific price under discussion. Offer that price or decline; do not silently substitute the other obligation.")
 
 
 class PlayerSnakeEncounter(SnakeEncounter):
@@ -522,7 +533,15 @@ class PlayerSnakeEncounter(SnakeEncounter):
         advance = snake.advances.get(player.id)
         can_give = bool(not advance and world.tree.fruit > 0)
         permitted = ["talk", "refuse", "negotiate", "challenge", "spare"]
-        if can_give and self.offer:
+        # Asking about a price does not accept it. A clear assent may also ask
+        # a follow-up question ("Yes, I agree. When is it due?").
+        assent = re.match(r"\s*(?:yes|sure|agreed|deal|i accept|i agree)\b", message, re.I)
+        question = contains_question(message) or re.match(r"\s*(?:what|why|how|when|where|who)\b", message, re.I)
+        decline = re.match(r"\s*(?:no\b|nope\b|nah\b|i (?:refuse|decline)\b|"
+                           r"i (?:do not|don't|will not|won't) (?:accept|agree|endorse|support|tell|share)\b)", message, re.I)
+        prices = apple_price_mentions(message)
+        matches_price = not self.offer or not prices or self.offer["offering"] in prices
+        if can_give and self.offer and matches_price and not decline and (not question or assent):
             permitted.append("advance_" + self.offer["offering"])
         audience = [p.id for p in world.endorsement_audience(player)]
         if advance:
@@ -532,10 +551,18 @@ class PlayerSnakeEncounter(SnakeEncounter):
             permitted.append("eat")
         self.reserved = can_give
         self.committed = False
+        received = any(f.kind == "bargain" and f.subject_id == snake.id and f.object_id == player.id
+                       for f in world.facts)
+        transaction = dict(apple_giver=snake.name, apple_receiver="You", player_apples=player.inventory.get("fruit", 0),
+            receiver_storage="unlimited", can_give_apple=can_give, apple_reserved_for_player=int(can_give),
+            apple_already_received=received, offering_still_owed=bool(advance),
+            offering=advance["offering"] if advance else "", pending_offer=self.offer)
         self.request_context = dict(request_kind="snake_player", player_id=player.id, _player_priority=True,
             _player_message=message, snake=snake.snapshot(), _name_actors=actor_catalog(world),
             interaction_id=self.id, location="garden", advance=advance.copy() if advance else None,
+            transaction=transaction,
             permitted_decisions=permitted, can_give_apple=can_give, pending_offer=self.offer,
+            requested_offering=next(iter(prices)) if len(prices) == 1 else "",
             known_offense=snake.offenses.get(player.id), audience_ids=audience, first_meeting=not self.record.dialogue_parts,
             relevant_claims=relevant_claims(world, snake.id, message),
             current_claim=dict(id=f"{self.record.id}:{turn}", text=message, conversation_id=self.record.id,
@@ -585,11 +612,11 @@ class PlayerSnakeEncounter(SnakeEncounter):
             self.record.name_introductions[current["turn"]] = [dict(actor_id=self.recipient.id, name=name, reference="self")]
         self.record.add_turn(self.initiator.name, response.reply,
             [{"text": response.reply, "emotion": {"name": "neutral", "intensity": 0}}], rewritten)
-        if response.offer:
+        if decision.startswith("advance_"):
+            self.offer = None
+        elif response.offer:
             self.offer = dict(offering=response.offer, turn=len(self.record.turns) - 1,
                               conversation_id=self.record.id, speech=response.reply)
-        elif decision.startswith("advance_"):
-            self.offer = None
         self.dialogue_state = "ready"
         if decision == "eat":
             self.stage = "dialogue"

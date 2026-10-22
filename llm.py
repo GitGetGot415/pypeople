@@ -27,7 +27,7 @@ from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_C
 from dialogue_text import contains_question, contains_serialized_dialogue, contains_speaker_label, speech_is_complete, split_sentences
 from dialogue_code import DELIVERY_INSTRUCTION
 from dialogue_rules import (_asserts, is_name_reference, mentions_account, mentions_private_recollection, named_context, named_references, name_pattern, unquoted_speech,
-                           validate_account_speech, validate_apple_roles, validate_continuity,
+                           apple_price_mentions, validate_account_speech, validate_apple_roles, validate_continuity,
                            validate_base_prose, validate_claim_source, validate_english, validate_opinion_reason, validate_environment_speech,
                            validate_speaker_identity)
 from ollama_manager import DEFAULT_OLLAMA_MODEL, mark_ollama_ready
@@ -277,10 +277,10 @@ class PlayerContradiction(StrictResponse):
 
 
 class SnakePlayerResponse(StrictResponse):
-    reply: str = Field(min_length=1)
     decision: Literal["talk", "advance_secret", "advance_endorsement", "secret", "endorsement", "refuse", "negotiate", "challenge", "spare", "eat"] = "talk"
     offer: Literal["", "secret", "endorsement"] = ""
     acceptance_evidence: str = ""
+    reply: str = Field(min_length=1)
     disclosure_evidence: str = ""
     contradiction: PlayerContradiction | None = None
 
@@ -1212,6 +1212,10 @@ def world_context(snapshot, *, correction=False):
                                    for advance in snapshot["snake"].get("apple_advances", [])]
         if snapshot.get("request_kind") == "snake_decision":
             snake["known_accounts"] = snake_disclosure_accounts(snapshot)
+        elif snapshot.get("request_kind") == "snake_player":
+            # Other residents' debts are not this player's receipt or obligation.
+            snake["apple_advances"] = [a for a in snake["apple_advances"] if a["resident_id"] == snapshot["player_id"]]
+            context["advance"] = offering_view(snapshot.get("advance"))
     for key in ("other_npcs", "nearby_npcs"):
         if key in context:
             context[key] = [person_context(person) for person in context[key]]
@@ -1224,6 +1228,11 @@ def world_context(snapshot, *, correction=False):
         dialogue = []
         for turn in context["player_dialogue"]:
             speaker, text = (turn["speaker"], turn["text"]) if isinstance(turn, dict) else turn
+            if snapshot.get("request_kind") == "snake_player" and speaker != "You" and (
+                    apple_price_mentions(text) or re.search(r"\b(?:apples?|fruit|obligation|debt)\b", text, re.I)):
+                # The current sourced offer/advance replaces old transaction
+                # prose, which may contain a promised but uncommitted handoff.
+                continue
             if speaker == "You" or _ordinary_context_prose(text, (*actor_names.values(), SNAKE_NAME)):
                 dialogue.append(turn)
         context["player_dialogue"] = dialogue
@@ -1748,10 +1757,32 @@ def response_contract(snapshot, *, correction=False):
         from snake import SNAKE_DOCTRINE
         instruction = WORLD_INSTRUCTION + "\nSnake role directions (only the snake speaks from this perspective):\n" + SNAKE_DOCTRINE
         if kind == "snake_player":
+            # Human tree service has its own action contract. Resident work,
+            # biography and autonomous exchange directions obscure this task.
+            instruction = ("Return JSON for one generated reply to the player. Use world_state and the current transaction as facts; "
+                "earlier_dialogue records speech, including possible mistakes, and never proves a handoff or agreement. "
+                "Write natural English without narrator labels or internal field names. "
+                "Preserve who experienced each event and how you know it.\n" + SNAKE_DOCTRINE)
             instruction += f"\nYou are {snapshot['snake']['name']}, the actor described by world_state.snake. Speak in first person to the player."
-            instruction += (" Reply directly without inventing player speech, decisions or biography. Choose only a permitted_decision. "
-                "Offer secret or endorsement with decision talk: one apple upfront for that later obligation. An offer is not acceptance. "
-                "Advances require acceptance of pending_offer; quote exact current acceptance_evidence. "
+            instruction += (" Reply briefly and calmly to the latest point without inventing player speech, decisions or biography. Choose only a permitted_decision. "
+                "Use transaction as the authoritative record of THIS player's carried apples, received apples and debt. "
+                "Tree stock is separate from carried apples; an apple reserved for this player IS available to give them. "
+                "Other residents' bargains and earlier mistaken replies never establish this player's receipt or debt. "
+                "Choose decision, offer and acceptance_evidence BEFORE writing reply, and return all four fields together. "
+                "When proposing a bargain, set decision talk or negotiate and offer to ONE concrete price, secret or endorsement. "
+                "Explain it plainly: secret means telling you one personal memory from their life later; endorsement means "
+                "the PLAYER telling another resident later that the PLAYER supports your claimed role as the tree's keeper. "
+                "You want the player's own support spoken to someone else, never another resident's support or a report about their opinions. "
+                "Offer ONE apple NOW on agreement, with that chosen obligation due LATER, and ask whether they agree. "
+                "Answer questions about the price directly; do not list internal decision names or switch between the two prices. "
+                "Use offer empty only when not proposing or restating a bargain. An offer is not acceptance and creates no debt. "
+                "When the player agrees to pending_offer, choose its permitted advance_secret or advance_endorsement decision, "
+                "set offer empty, and quote exact current acceptance_evidence. A willing promise to provide the offered price "
+                "counts as agreement; a question about it does not. That advance transfers one apple now and creates the later obligation. "
+                "Leave acceptance_evidence empty for all other decisions; never fill it with placeholder instructions. "
+                "Only an advance decision permits speech handing over a new apple or increasing the player's apple count by one. "
+                "With talk, no apple changes hands. Never claim a past handoff unless transaction.apple_already_received is true. "
+                "If a player asks for a different price, propose it explicitly with talk and the corresponding offer before accepting it. "
                 "secret settles an existing debt only when the current message discloses an actual recollection, not a promise to tell one. "
                 "endorsement needs actual current public support and audience_ids. Quote disclosure_evidence exactly. No apple accompanies settlement. "
                 "Recollections are attributed reports, never verified memories. Assess relevant_claims, corrections and known_accounts before judgment. "
@@ -1760,7 +1791,16 @@ def response_contract(snapshot, *, correction=False):
                 "Never condemn a correction, quotation or unavailable claim. Eating requires a real known offense or valid contradiction and engine permission. "
                 "If uncertain ask for clarification. Speech does not transfer possessions or relocate anyone.")
             schema = structured_schema(SnakePlayerResponse)
+            schema["required"] = ["decision", "offer", "acceptance_evidence", "reply"]
             schema["properties"]["decision"] = {"type": "string", "enum": snapshot.get("permitted_decisions", ["talk"])}
+            offered_prices = [""]
+            if snapshot.get("can_give_apple") and not snapshot.get("advance"):
+                price = snapshot.get("requested_offering") or (snapshot.get("pending_offer") or {}).get("offering")
+                offered_prices += [price] if price else ["secret", "endorsement"]
+            schema["properties"]["offer"] = {"type": "string", "enum": offered_prices}
+            # Copy human evidence verbatim; the provider must not rewrite I as you.
+            for field in ("acceptance_evidence", "disclosure_evidence"):
+                schema["properties"][field] = {"type": "string", "enum": list(dict.fromkeys(["", snapshot.get("_player_message", "")]))}
             return instruction, schema, SnakePlayerResponse
         instruction += (
             "\nChoose only the structured outcome of this encounter; do not write dialogue. "
@@ -2411,6 +2451,11 @@ def _validate_response(raw, snapshot, model):
     if isinstance(result, ConversationResponse):
         record_self_introductions(result.turns, snapshot)
     check_dialogue = snapshot.get("_dialogue_validation", True)
+    if (isinstance(result, SnakePlayerResponse) and result.decision.startswith("advance_")
+            and snapshot.get("_player_bargain_plan")):
+        # Only the sourced decision is selected here. Its provisional words are
+        # discarded; a focused, fully checked handoff is generated next.
+        check_dialogue = False
     if check_dialogue:
         _validate_base_presentation(result, snapshot)
     if isinstance(result, ResidentAssessment):
@@ -2473,7 +2518,13 @@ def _validate_response(raw, snapshot, model):
         return result
     if isinstance(result, SnakePlayerResponse):
         from snake import validate_player_snake_decision
+        if not {"decision", "offer", "acceptance_evidence", "reply"} <= result.model_fields_set:
+            raise ValueError("Return decision, offer, acceptance_evidence and reply together. Proposing an apple bargain needs "
+                             "talk plus offer secret or endorsement; accepting pending_offer needs its advance decision and the player's exact acceptance quote.")
         validate_player_snake_decision(result, snapshot)
+        handoff = snapshot.get("_player_handoff")
+        if handoff and (result.decision != handoff["decision"] or result.acceptance_evidence != handoff["acceptance_evidence"]):
+            raise ValueError("The apple handoff must retain the already selected decision and exact player acceptance.")
         if not result.reply.strip():
             raise ValueError("The snake must supply generated speech.")
         if check_dialogue and "snake" in snapshot:
@@ -2483,6 +2534,38 @@ def _validate_response(raw, snapshot, model):
             validate_english(result.reply, (SNAKE_NAME,))
             validate_dialogue_format([ConversationTurn(speaker="initiator", parts=[ConversationPart(text=result.reply)])])
             validate_snake_perspective(result.reply, snake_role="speaker")
+            _validate_speaker(result.reply, SNAKE_NAME, PLAYER_LABEL)
+            transaction = snapshot.get("transaction")
+            if transaction:
+                handing_over = result.decision.startswith("advance_")
+                received = transaction["apple_already_received"] or handing_over
+                validate_apple_roles(result.reply, giver=SNAKE_NAME, receiver=PLAYER_LABEL, speaker=SNAKE_NAME,
+                    apple_received=received, owed_offering=received,
+                    offering_pending=bool(handing_over or snapshot.get("advance"))
+                        and result.decision not in ("secret", "endorsement", "spare", "eat", "refuse", "challenge"))
+                speech = unquoted_speech(result.reply).replace("\u2019", "'")
+                if result.offer:
+                    prices = apple_price_mentions(result.reply)
+                    if len(prices) == 2 and re.search(
+                            r"\b(?:memory|recollection)\b[^.!?]{0,65}\bor\b[^.!?]{0,65}\b(?:endorsement|public support)\b|"
+                            r"\b(?:endorsement|public support)\b[^.!?]{0,65}\bor\b[^.!?]{0,65}\b(?:memory|recollection)\b", speech, re.I):
+                        raise ValueError("Choose one concrete offered price and explain it plainly. Do not offer a memory OR endorsement "
+                                         "while recording only one of them. Use offer secret for a memory or endorsement for public support.")
+                    if result.offer == "secret" and prices == {"endorsement"}:
+                        raise ValueError("The spoken price is public support, but offer says secret. Use offer endorsement for public support, "
+                                         "or explain a personal memory as the price of offer secret.")
+                    if result.offer == "endorsement" and prices == {"secret"}:
+                        raise ValueError("The spoken price is a personal memory, but offer says endorsement. Use offer secret for a memory, "
+                                         "or explain the player's own public support as the price of offer endorsement.")
+                for sentence in split_sentences(speech):
+                    if contains_question(sentence) or re.search(r"\b(?:if|suppose|imagine|would|might|could)\b", sentence, re.I):
+                        continue
+                    if (not handing_over and _asserts(r"\bhere(?: is|'s)\s+(?:your|the|an?|one|this)\s+apple\b(?!\s+tree)", sentence)
+                            or not received and _asserts(
+                                r"\bi(?:'ve|\s+(?:have|had))?\s+(?:already\s+)?(?:gave|given|handed|did\s+(?:give|hand)|remember\s+(?:giving|handing))\s+you\s+"
+                                r"(?:an?|one|the|another)\s+apple\b", sentence)):
+                        raise ValueError("No apple handoff is recorded for that reply. Agreeing to pending_offer needs its advance decision; "
+                                         "otherwise explain the offer without claiming to have given the apple.")
         return result
     if isinstance(result, PlayerIntent):
         # Observations and questions cannot issue commands, even if the model
@@ -2898,11 +2981,31 @@ def _tree_stock_instruction(context):
         )
     elif tree["available_fruit"] == 0 and not context.get("transaction", {}).get("can_give_apple", False):
         instruction += "All remaining apples are already allocated; no unreserved tree apple is available for a new bargain."
+    if context.get("transaction", {}).get("apple_reserved_for_player"):
+        instruction += "One of these tree apples is reserved for THIS player and can be given on acceptance. This is not the player's carried inventory."
     return instruction
 
 
 def _request_payload(message, snapshot, correction):
     """Build the same instructions and world payload for both providers."""
+    if snapshot.get("_player_handoff"):
+        handoff = snapshot["_player_handoff"]
+        price = "a personal memory from their life" if handoff["decision"] == "advance_secret" else "their own public endorsement to another resident"
+        instruction = (f"You are {SNAKE_NAME}, speaking directly to the player. Write a short apple handoff in natural English. "
+            "The bargain decision is already made. Give ONE apple NOW; the player receives it immediately. "
+            f"The PLAYER owes YOU {price} LATER. It is not fulfilled yet. You owe them no apple or information later. "
+            "Use I/my for the apple giver, you/your for the player. Do not ask for payment first or reserve the apple for later. "
+            "Write ONLY the guard's words. Do not append the player's thanks or acceptance, or address yourself by name. "
+            "State the handoff and the exact remaining obligation. Return the fixed decision and evidence with your generated reply. "
+            "Do not invent biography, extra gifts or another agreement.\n" + NAME_INSTRUCTION)
+        schema = response_contract(snapshot)[1]
+        for field, value in (("decision", handoff["decision"]), ("offer", ""), ("acceptance_evidence", handoff["acceptance_evidence"])):
+            schema["properties"][field] = {"type": "string", "enum": [value]}
+        context = {"apple_giver": SNAKE_NAME, "apple_receiver": "you", "apples_given_now": 1,
+            "player_apples_after_handoff": snapshot["transaction"]["player_apples"] + 1,
+            "offering_owed_by": "you", "offering_owed_to": SNAKE_NAME, "offering_due_later": price,
+            "offering_fulfilled": False, "selected_outcome": handoff}
+        return instruction, schema, json.dumps({"handoff": context, "correction_request": correction}, ensure_ascii=False)
     if snapshot.get("request_kind") in ("create_art", "create_music"):
         instruction, schema, _ = response_contract(snapshot)
         content = json.dumps({"author": snapshot["author"], "theme": "A quiet garden with an apple tree",
@@ -3185,16 +3288,23 @@ def _request_payload(message, snapshot, correction):
 
 def _provider_messages(content, snapshot):
     """Keep private context separate from chronological, speaker-relative speech."""
+    if snapshot.get("_player_handoff"):
+        return [{"role": "user", "content": content}]
     if snapshot.get("player_id") and snapshot.get("request_kind") != "intent":
         payload = json.loads(content)
         context = payload["world_state"]
-        context.pop("player_dialogue", None)
+        dialogue = context.pop("player_dialogue", [])
         context.pop("last_reply", None)
         message = payload.pop("player_message", "")
         starting_experience = snapshot.get("private_context", {}).get("starting_experience")
-        correction = payload.pop("correction_request", None) if starting_experience else None
+        transaction = context.get("transaction") if snapshot.get("request_kind") == "snake_player" else None
+        correction = payload.pop("correction_request", None) if starting_experience or transaction else None
+        if transaction:
+            # Historical replies contain words, not structured receipts. Present
+            # them as a transcript, rather than assistant examples to imitate.
+            context["earlier_dialogue"] = dialogue
         messages = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}]
-        for turn in snapshot.get("player_dialogue", []):
+        for turn in (() if transaction else snapshot.get("player_dialogue", [])):
             speaker, text = (turn["speaker"], turn["text"]) if isinstance(turn, dict) else turn
             if speaker == "You":
                 messages.append({"role": "user", "content": text})
@@ -3203,6 +3313,32 @@ def _provider_messages(content, snapshot):
         if starting_experience:
             reminder = {"context": "Engine context, not player speech. Recorded experience overrides mistaken earlier replies.",
                         "recorded_personal_experience": starting_experience}
+            if correction:
+                reminder["correction_request"] = correction
+            messages.append({"role": "user", "content": json.dumps(reminder, ensure_ascii=False)})
+        if transaction:
+            reminder = {"context": "Engine context, not player speech. Actual transaction overrides mistaken earlier replies. "
+                                   "Return decision, offer, acceptance_evidence and reply; a reply alone performs no action.",
+                        "transaction": transaction, "permitted_decisions": snapshot["permitted_decisions"],
+                        "evidence_source": message}
+            if not transaction["apple_already_received"]:
+                reminder["recorded_experience"] = (f"You have NOT given this player any apple. They carry {transaction['player_apples']} apples "
+                    "from other sources and owe you NOTHING. Any earlier reply claiming a handoff was mistaken. "
+                    "Correct that mistake if relevant; do not repeat it as a memory or debt. "
+                    "Only an accepted advance decision will hand over a new apple now.")
+            if snapshot.get("requested_offering") and not snapshot.get("advance"):
+                price = "a personal memory" if snapshot["requested_offering"] == "secret" else "the player's own public endorsement"
+                reminder["requested_price"] = (f"The player is discussing {price}. If offering a new apple, use that price "
+                    "or explicitly decline it. Do not silently substitute the other price or claim they agreed to it.")
+            if snapshot.get("pending_offer") and "advance_" + snapshot["pending_offer"]["offering"] in snapshot["permitted_decisions"]:
+                price = "one personal memory from their life" if snapshot["pending_offer"]["offering"] == "secret" else "their own public endorsement to another resident"
+                reminder["on_agreement"] = {"decision": "advance_" + snapshot["pending_offer"]["offering"],
+                    "offer": "", "acceptance_evidence": message,
+                    "effect": f"Give the player one apple NOW. Speak as you hand it over now. They owe you {price} LATER, "
+                              "which has NOT been fulfilled. No apple repayment is owed. Do not reserve or withhold this apple until payment.",
+                    "player_apples_after_handoff": transaction["player_apples"] + 1}
+            elif snapshot.get("pending_offer") and snapshot.get("can_give_apple"):
+                reminder["task"] = "Answer the player about the offered price. They have not accepted it; no apple or debt changes hands."
             if correction:
                 reminder["correction_request"] = correction
             messages.append({"role": "user", "content": json.dumps(reminder, ensure_ascii=False)})
@@ -3361,7 +3497,7 @@ def _request_ollama(message, snapshot, model=DEFAULT_OLLAMA_MODEL, *, correction
         options["temperature"] = VOICE_REWRITE_TEMPERATURE
     elif snapshot.get("transaction", {}).get("apple_handoff_now"):
         options["temperature"] = 0
-    elif snapshot.get("request_kind") in ("resident_turn", "resident_assessment", "handoff_thanks", "snake_decision", "snake_turn", "conversation_closing"):
+    elif snapshot.get("request_kind") in ("resident_turn", "resident_assessment", "handoff_thanks", "snake_decision", "snake_turn", "snake_player", "conversation_closing"):
         # Greedy decoding encouraged small models to replay the supplied history.
         # Corrections need fresh wording too; intent routing stays deterministic.
         options["temperature"] = 0.7
@@ -4318,6 +4454,12 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
             snapshot["request_intent"] = intent.model_dump()
             if intent._clarification:
                 snapshot["intent_clarification"] = intent._clarification
+        if kind == "snake_player":
+            response = validated_request({**snapshot, "_player_bargain_plan": True})
+            if response.decision.startswith("advance_"):
+                return validated_request({**snapshot, "_player_handoff": {
+                    "decision": response.decision, "acceptance_evidence": response.acceptance_evidence}})
+            return response
         return validated_request(snapshot)
     except (RequestError, ValueError) as exc:
         if not isinstance(exc, RequestError):
