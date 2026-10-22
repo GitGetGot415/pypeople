@@ -141,11 +141,11 @@ class Application:
 
     def start_game(self):
         try:
-            sources = [STARTING_CHARACTER_PATH] if self.setup.mode == "player" else self.setup.sources
-            if not sources:
-                raise ValueError("Choose at least one starting NPC.")
+            sources = [STARTING_CHARACTER_PATH]
+            if self.setup.mode == "spectator":
+                sources.extend(self.setup.sources[1:])
             characters = []
-            # Every spectator slot is a resident; Player mode starts only Judy.
+            # Both modes require Judy first; Spectator can add other residents.
             for index, source in enumerate(sources, start=1):
                 try:
                     characters.append(random_character(trait_mode=self.npc_trait_mode)

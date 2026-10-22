@@ -8,18 +8,19 @@ from .button import Button
 from .file_dialog import character_file_dialog
 from .text import draw_centered_text, draw_wrapped_text
 from .text_input import TextInput
-from constants import ACCENT, BORDER_RADIUS, GRASS, INK, MUTED, PAPER, STARTING_SPECTATOR_NPCS, STARTING_SPECTATOR_MIN_NPCS, SETUP_LOAD_NPCS_RECT, SETUP_PLAYER_NOTE_RECT, SETUP_TITLE_POSITION
+from constants import ACCENT, BORDER_RADIUS, GRASS, INK, MUTED, PAPER, STARTING_CHARACTER_FILE, STARTING_SPECTATOR_NPCS, STARTING_SPECTATOR_MIN_NPCS, SETUP_LOAD_NPCS_RECT, SETUP_PLAYER_NOTE_RECT, SETUP_TITLE_POSITION
 
 
 class SetupScreen:
     ROWS_PER_PAGE = 4
 
     def __init__(self):
-        # None means random; a Path means a character loaded from JSON.
+        # Judy occupies the fixed first slot; other slots are random or JSON paths.
         from constants import SETUP_MODE_RECTS, STARTING_MODE
         self.mode = STARTING_MODE
         self.mode_buttons = {mode: Button(rect, mode.title()) for mode, rect in zip(("player", "spectator"), SETUP_MODE_RECTS)}
-        self.sources = [None] * STARTING_SPECTATOR_NPCS
+        self.sources = [Path(__file__).resolve().parent.parent / STARTING_CHARACTER_FILE,
+                        *[None] * (STARTING_SPECTATOR_NPCS - 1)]
         self.page = 0
         self.message = ""
         self.count_input = TextInput((590, 138, 100, 40), max_length=None)
@@ -64,6 +65,8 @@ class SetupScreen:
         return True
 
     def load_characters(self, paths, index=None):
+        if index == 0:
+            raise ValueError("Judy Judge is required and cannot be replaced.")
         paths = [Path(path).resolve() for path in paths]
         if not paths:
             return
@@ -73,7 +76,7 @@ class SetupScreen:
             except (OSError, ValueError) as error:
                 raise ValueError(f"{path.name}: {error}") from error
         slots = ([index] if index is not None else []) + [
-            slot for slot, source in enumerate(self.sources) if source is None and slot != index]
+            slot for slot, source in enumerate(self.sources) if slot > 0 and source is None and slot != index]
         first = slots[0] if slots else len(self.sources)
         replaced = min(len(slots), len(paths))
         for offset, path in enumerate(paths):
@@ -131,6 +134,8 @@ class SetupScreen:
             index = self.page * self.ROWS_PER_PAGE + row
             if index >= len(self.sources):
                 break
+            if index == 0:
+                continue
             if random_button.clicked(event):
                 self.sources[index] = None
                 self.message = ""
@@ -165,9 +170,9 @@ class SetupScreen:
         self.add_button.draw(app.window, app.font)
         self.apply_button.draw(app.window, app.font)
         self.load_npcs_button.draw(app.window, app.small_font)
-        app.window.blit(app.small_font.render(f"Total: {len(self.sources)} starting NPCs", True, MUTED), (260, 188))
+        app.window.blit(app.small_font.render(f"Total: {len(self.sources)} starting NPCs (includes Judy Judge)", True, MUTED), (260, 188))
         pygame.draw.rect(app.window, (225, 232, 210), (260, 215, 760, 32))
-        app.window.blit(app.font.render("Choose every starting character below", True, INK), (272, 220))
+        app.window.blit(app.font.render("Judy Judge is required; choose additional NPCs below", True, INK), (272, 220))
 
         for row in range(self.ROWS_PER_PAGE):
             index = self.page * self.ROWS_PER_PAGE + row
@@ -176,6 +181,9 @@ class SetupScreen:
             path = self.sources[index]
             y = 258 + row * 65
             app.window.blit(app.font.render(f"NPC {index + 1}", True, INK), (272, y))
+            if index == 0:
+                app.window.blit(app.small_font.render("Judy Judge (required)", True, MUTED), (272, y + 24))
+                continue
             label = path.name if path is not None else "Randomized when the game starts"
             draw_wrapped_text(app.window, label, app.small_font, MUTED, (272, y + 24, 360, 38))
             self.random_buttons[row].draw(app.window, app.font)
