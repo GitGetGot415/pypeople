@@ -12,7 +12,7 @@ from constants import (APARTMENT_INSPECTOR_CLOSE_RECT, APARTMENT_INSPECTOR_RECT,
 from .button import Button
 from .event_feed import EventFeed
 from .request_status import RequestStatus
-from .text import draw_wrapped_text, paginate_parts, wrap_text
+from .text import draw_centered_text, draw_wrapped_text, paginate_parts, wrap_text
 from .text_input import TextInput
 from .world import draw_world, snake_artwork
 from .inventory import InventoryPanel
@@ -20,6 +20,8 @@ from constants import (INVENTORY_BUTTON_RECT, GAME_PAUSE_RECT, GAME_CLOCK_RECT, 
                        GAME_PAUSED_LABEL_RIGHT, GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT, CALL_CHOICE_RECT,
                        CALL_CHOICE_TITLE_RECT, CALL_CHOICE_STATUS_RECT, CALL_CHOICE_BUTTON_RECTS,
                        DIALOGUE_ORIGINAL_TOGGLE_RECT)
+from constants import (BORDER_RADIUS, GAME_MENU_CONFIRM_RECT, GAME_MENU_CONFIRM_TITLE_Y,
+                       GAME_MENU_CONFIRM_MESSAGE_RECT, GAME_MENU_KEEP_PLAYING_RECT, GAME_MENU_LEAVE_RECT)
 
 
 class GameScreen:
@@ -34,6 +36,10 @@ class GameScreen:
         self.observe_button = Button(OBSERVE_LOCATION_RECT, "Observe location")
         self.invitation_button = Button(INVITATION_ACCEPT_RECT, "Accept invitation")
         self.menu_button = Button((1144, 16, 112, 38), "Menu")
+        self.confirm_menu = False
+        self.menu_restore_focus = False
+        self.keep_playing_button = Button(GAME_MENU_KEEP_PLAYING_RECT, "Keep playing")
+        self.leave_game_button = Button(GAME_MENU_LEAVE_RECT, "Return to menu")
         self.stats_button = Button((1024, 16, 112, 38), "Stats")
         self.save_button = Button((904, 16, 108, 38), "Save")
         self.inventory_button = Button(INVENTORY_BUTTON_RECT, "Inventory")
@@ -86,6 +92,8 @@ class GameScreen:
         self.apartment_close = Button(APARTMENT_INSPECTOR_CLOSE_RECT, "Close")
 
     def reset(self):
+        self.confirm_menu = False
+        self.menu_restore_focus = False
         self.inventory.close()
         self.call_choice = None
         self.apartment_open = False
@@ -157,6 +165,14 @@ class GameScreen:
     def handle_event(self, app, event):
         from player import active_player
         world = app.simulation
+        if self.confirm_menu:
+            if self.keep_playing_button.clicked(event) or event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                self.confirm_menu = False
+                self.prompt_input.active = self.menu_restore_focus
+            elif self.leave_game_button.clicked(event):
+                self.confirm_menu = False
+                app.leave_game()
+            return
         if self.location_menu:
             self.handle_location_event(app, event)
             return
@@ -272,13 +288,13 @@ class GameScreen:
             app.open_stats()
             return
         if self.menu_button.clicked(event):
-            app.leave_game()
+            self.open_menu_confirmation()
             return
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             if self.dialogue_open:
                 self.close_dialogue()
             else:
-                app.leave_game()
+                self.open_menu_confirmation()
             return
         if self.dialogue_open:
             if self.original_toggle.clicked(event):
@@ -339,6 +355,26 @@ class GameScreen:
                 app.simulation.next_phase()
             return True
         return False
+
+    def open_menu_confirmation(self):
+        self.confirm_menu = True
+        self.menu_restore_focus = self.prompt_input.active
+        self.prompt_input.active = self.prompt_input.backspace_held = False
+        self.pan_start = self.pan_last = None
+        self.panning = False
+
+    def draw_menu_confirmation(self, app):
+        if not self.confirm_menu:
+            return
+        overlay = pygame.Surface(app.window.get_size(), pygame.SRCALPHA)
+        overlay.fill(MODAL_OVERLAY_COLOR)
+        app.window.blit(overlay, (0, 0))
+        pygame.draw.rect(app.window, PAPER, GAME_MENU_CONFIRM_RECT, border_radius=BORDER_RADIUS)
+        draw_centered_text(app.window, "Return to main menu?", app.heading_font, GAME_MENU_CONFIRM_TITLE_Y)
+        draw_wrapped_text(app.window, "Progress since your last save will be lost.", app.font, INK,
+                          GAME_MENU_CONFIRM_MESSAGE_RECT)
+        self.keep_playing_button.draw(app.window, app.small_font)
+        self.leave_game_button.draw(app.window, app.small_font)
 
     def draw_clock(self, app):
         paused = app.simulation.paused
@@ -837,7 +873,9 @@ class GameScreen:
         if not active_player(world) and self.inventory.visible and self.inventory.owner is world.player:
             self.inventory.close()
         world.player_menu_blocked = bool(self.location_menu or self.inventory.visible or self.apartment_open
-            or self.call_choice or app.screen != "game")
+            or self.call_choice or self.confirm_menu or app.screen != "game")
+        if self.confirm_menu:
+            return
         if active_player(world):
             self.location = world.player.location
             interaction = world.player_interaction

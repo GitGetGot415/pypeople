@@ -810,6 +810,9 @@ class Application:
         if event.type == pygame.QUIT:
             self.running = False
             return
+        if self.screen == "game" and self.game.confirm_menu:
+            self.game.handle_event(self, event)
+            return
         if self.game.inventory.visible and self.screen in ("game", "stats"):
             if active_player(self.simulation) or self.game.inventory.owner is not self.simulation.player:
                 self.game.inventory.handle_event(self, event)
@@ -877,7 +880,7 @@ class Application:
                     self.requests.cancel(self.session_id, request_id)
                     request["pending"] = False
         paused = self.simulation is not None and self.simulation.paused
-        simulation_active = self.screen in ("game", "stats") and not paused
+        simulation_active = self.screen in ("game", "stats") and not paused and not self.game.confirm_menu
         session_active = self.screen in ("game", "stats", "save_sim")
         active_session = self.session_id if session_active else None
         # Live dialogue and Stats share the version toggle and reading hold.
@@ -1196,6 +1199,8 @@ class Application:
         if (self.screen in ("game", "stats") and self.game.inventory.visible
                 and (active_player(self.simulation) or self.game.inventory.owner is not self.simulation.player)):
             self.game.inventory.draw(self)
+        if self.screen == "game":
+            self.game.draw_menu_confirmation(self)
         pygame.display.flip()
 
     def run(self):
