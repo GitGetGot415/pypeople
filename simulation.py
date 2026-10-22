@@ -408,7 +408,7 @@ class Simulation:
         self.publish("tree_queue", (actor,), reason)
 
     def update_tree_queue(self, dt):
-        from constants import TREE_QUEUE_SPACING, MOVEMENT_SPEED, PLAYER_APPROACH_MULTIPLIER, PLAYER_APPROACH_TIMEOUT
+        from constants import TREE_QUEUE_SPACING, TREE_QUEUE_FACING, MOVEMENT_SPEED, PLAYER_APPROACH_MULTIPLIER, PLAYER_APPROACH_TIMEOUT
         from interactions import move_toward
         from locations import clamp_point
         for entry in [*self.tree_queue, *([self.tree_current] if self.tree_current else [])]:
@@ -428,6 +428,8 @@ class Simulation:
             point = clamp_point("garden", (self.tree.interaction_point[0] - index * TREE_QUEUE_SPACING,
                                            self.tree.interaction_point[1]))
             arrived = move_toward(actor, point, dt, MOVEMENT_SPEED * (PLAYER_APPROACH_MULTIPLIER if actor is self.player else 1))
+            if arrived and actor is not self.player:
+                actor.facing = TREE_QUEUE_FACING
             if index != 0 or self.tree_current is not entry:
                 continue
             entry["elapsed"] += dt
