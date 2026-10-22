@@ -45,6 +45,7 @@ TRAVEL_STEP_TIMEOUT = 30.0
 TREE_NPC_ADMISSION_LIMIT = 2
 TREE_QUEUE_SPACING = 42.0
 TREE_QUEUE_FACING = 2  # East (strictly right).
+TREE_GUARD_FACING = 6  # West (strictly left) while serving the player.
 PLAYER_EVIDENCE_LIMIT = 12
 PLAYER_DEFAULT_APPEARANCE = {"Name": "You", "Sex": "F", "Hair": "two", "Eyes": "one",
     "Shirt Color": "#FFD34D", "Skin Color": "#FFD2B4", "Hair Color": "#203050", "Eye Color": "#205080"}

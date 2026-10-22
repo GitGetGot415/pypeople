@@ -8,7 +8,7 @@ from uuid import uuid4
 from constants import (
     DIALOGUE_TIMEOUT_SECONDS, HEARING_RADIUS, POST_DIALOGUE_SECONDS,
     SNAKE_EAT_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME, SNAKE_SPEED,
-    STARTING_FACING, STARTING_SNAKE_ACTIVITY, STARTING_SNAKE_DECISION_SECONDS, STARTING_SNAKE_POSITION,
+    TREE_QUEUE_FACING, TREE_GUARD_FACING, STARTING_FACING, STARTING_SNAKE_ACTIVITY, STARTING_SNAKE_DECISION_SECONDS, STARTING_SNAKE_POSITION,
 )
 from conversation_history import ConversationRecord
 from interactions import (dialogue_finished, face_each_other, face_toward,
@@ -503,6 +503,11 @@ class PlayerSnakeEncounter(SnakeEncounter):
         world.player_interaction = dict(id=self.id, kind="snake", stage="conversation", npc_id=world.snake.id,
             record_id=self.record.id, location="garden")
         world.history.append(self.record)
+        self.face_participants()
+
+    def face_participants(self):
+        self.recipient.facing = TREE_QUEUE_FACING
+        self.initiator.facing = TREE_GUARD_FACING
 
     @property
     def accepts_response(self):
@@ -598,6 +603,8 @@ class PlayerSnakeEncounter(SnakeEncounter):
         if self.stage in ("dialogue", "condemned_approach", "eating"):
             # A condemnation remains visible until the player ends this dialogue.
             super().update(dt, reading=reading or self.stage == "dialogue" and bool(self.world.player_interaction))
+        if self.active and self.stage in ("player", "dialogue"):
+            self.face_participants()
 
     def finish(self, tree=None, *, error=""):
         if not self.active:
