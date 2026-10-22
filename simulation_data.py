@@ -561,7 +561,7 @@ class PendingActionState(SaveModel):
 class PlayerState(SaveModel):
     id: Literal[PLAYER_ID]
     inventory: dict[Literal["fruit"], Annotated[int, Field(strict=True, ge=0)]]
-    inventory_capacity: int = Field(strict=True, ge=1)
+    inventory_capacity: int | None = Field(strict=True, ge=1)
     x: float
     y: float
     facing: int = Field(ge=0, le=7)
@@ -572,7 +572,7 @@ class PlayerState(SaveModel):
 
     @model_validator(mode="after")
     def valid_apples(self):
-        if set(self.inventory) != {"fruit"} or not 0 <= self.inventory["fruit"] <= self.inventory_capacity:
+        if set(self.inventory) != {"fruit"}:
             raise ValueError("Invalid player apple inventory.")
         return self
 
@@ -1167,7 +1167,7 @@ class SimulationState(SaveModel):
                 ref = call["reference"]
                 valid = (valid_introduction_call(self, npc, call)
                          if call["kind"] == "introduction" else
-                         npc.inventory["fruit"] > 0 and self.player.inventory_capacity > self.player.inventory["fruit"]
+                         npc.inventory["fruit"] > 0
                          if call["kind"] == "gift" and ref == "fruit" else
                          any(w.id == ref and w.owner_id == npc.id for w in self.creations) if call["kind"] == "gift" else
                          any(b.claim_id == ref for b in npc.beliefs) if call["kind"] == "news" else
@@ -1195,6 +1195,10 @@ class SaveEntry:
     npc_count: int = 0
     error: str = ""
     mode: str = ""
+
+    @property
+    def population(self):
+        return self.npc_count + int(self.mode == "player")
 
 
 class InvalidSaveName(ValueError):

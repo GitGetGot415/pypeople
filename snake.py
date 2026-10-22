@@ -142,7 +142,7 @@ class Snake:
                 "known_accounts": known, "doctrine": SNAKE_DOCTRINE,
                 "tree_fruit": self.world.tree.fruit, "tree_available_fruit": self.world.available_fruit,
                 "day": self.world.day, "phase": self.world.phase,
-                "living_count": len(self.world.npcs), "eaten_today": self.eaten_today,
+                "living_count": self.world.population, "eaten_today": self.eaten_today,
                 "recovery_remaining": self.recovery_remaining,
                 "apple_advances": [{"resident_id": actor_id, "offering": advance["offering"],
                                     "follow_up_in": advance["remaining"]}
@@ -280,7 +280,7 @@ class SnakeEncounter:
                     (advance and claim.id == advance["account_id"]
                      or not advance and (claim.fact_id, claim.affirmed) not in known)):
                 accounts.append(account_view(world, claim, belief))
-        audience = [p.id for p in world.listeners(npc) if p is not npc]
+        audience = [p.id for p in world.endorsement_audience(npc)]
         permitted = ["refuse", "challenge"] if self.purpose == "bargain" else ["spare"] if self.purpose == "judgment" else ["talk"]
         if self.purpose == "judgment" and world.eating_permitted(npc):
             permitted.append("eat")
@@ -294,7 +294,7 @@ class SnakeEncounter:
         elif can_give_apple:
             if accounts:
                 permitted.append("advance_secret")
-            if len(world.npcs) > 1:
+            if world.population > 1:
                 permitted.append("advance_endorsement")
         if self.purpose == "bargain" and not advance and not can_give_apple:
             permitted = ["talk"]
@@ -520,11 +520,11 @@ class PlayerSnakeEncounter(SnakeEncounter):
         from name_knowledge import actor_catalog
         world, player, snake = self.world, self.recipient, self.initiator
         advance = snake.advances.get(player.id)
-        can_give = bool(not advance and world.tree.fruit > 0 and player.inventory_space > 0)
+        can_give = bool(not advance and world.tree.fruit > 0)
         permitted = ["talk", "refuse", "negotiate", "challenge", "spare"]
         if can_give and self.offer:
             permitted.append("advance_" + self.offer["offering"])
-        audience = [p.id for p in world.listeners(player)]
+        audience = [p.id for p in world.endorsement_audience(player)]
         if advance:
             if advance["offering"] == "secret" or audience:
                 permitted.append(advance["offering"])

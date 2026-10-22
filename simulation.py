@@ -31,7 +31,6 @@ class Simulation:
 
         self.npcs = npcs
         self.npc_trait_mode = npc_trait_mode
-        self.tree = tree if tree is not None else Tree(fruit=len(npcs))
         self.snake = Snake()
         self.snake.world = self
         self.archived = []
@@ -40,6 +39,7 @@ class Simulation:
         self.player = Player()
         self.player.world = self
         self.mode = mode
+        self.tree = tree if tree is not None else Tree(fruit=self.population)
         self.player_interaction = None
         self.player_invitations = []
         self.player_claims = []
@@ -134,7 +134,7 @@ class Simulation:
         self.snake.pardons.clear()
         for npc in self.npcs:
             npc.social = max(0.0, npc.social - SATISFACTION_PHASE_LOSS)
-        self.tree.fruit = len(self.npcs)
+        self.tree.fruit = self.population
         from apartments import phase_changed
         phase_changed(self)
         advance_social_phase(self)
@@ -349,6 +349,16 @@ class Simulation:
         update_calls(self, dt)
 
     @property
+    def population(self):
+        """Living human residents, including the active player and excluding the guard."""
+        from player import active_player
+        return len(self.npcs) + int(active_player(self))
+
+    @property
+    def departed_count(self):
+        return len(self.archived) + int(not self.player.alive)
+
+    @property
     def residents(self):
         return [*self.npcs, *self.archived]
 
@@ -457,6 +467,14 @@ class Simulation:
         radius = HEARING_RADIUS if radius is None else radius
         return [p for p in self.npcs if p.location == actor.location and math.dist((p.x, p.y), (actor.x, actor.y)) <= radius]
 
+    def endorsement_audience(self, actor):
+        from player import active_player
+        audience = [p for p in self.listeners(actor) if p is not actor]
+        if (active_player(self) and actor is not self.player and self.player.location == actor.location
+                and math.dist((self.player.x, self.player.y), (actor.x, actor.y)) <= HEARING_RADIUS):
+            audience.append(self.player)
+        return audience
+
     def observed_event(self, kind, subject, target, text, record=None, *, witnesses=None):
         from social import add_fact
         from conversation_history import remember
@@ -488,7 +506,7 @@ class Simulation:
         try:
             contested = npc.id in self.snake.offenses or self.snake.standing.get(npc.id, 0) < -8
             if (npc.id not in self.snake.pardons and self.eating_permitted(npc)
-                    and (contested or len(self.npcs) > CROWD_LIMIT)):
+                    and (contested or self.population > CROWD_LIMIT)):
                 reason = f"{SNAKE_NAME} disputes this visitor's right to take an apple under its own standards."
                 encounter = SnakeEncounter(self, npc, "judgment", reason)
                 self.snake.judged_phase = self.phase_index
@@ -509,9 +527,9 @@ class Simulation:
         return self.seek_bargain(npc)
 
     def eating_permitted(self, target=None, *, encounter=None, reachable=False):
-        if len(self.npcs) <= PROTECTED_POPULATION or self.snake.recovery_remaining > 0:
+        if self.population <= PROTECTED_POPULATION or self.snake.recovery_remaining > 0:
             return False
-        if self.snake.eaten_today >= 1 and len(self.npcs) <= CROWD_LIMIT:
+        if self.snake.eaten_today >= 1 and self.population <= CROWD_LIMIT:
             return False
         if target is not None:
             if not self.is_outdoors(target):
@@ -539,10 +557,8 @@ class Simulation:
         giving_apple = decision in ("advance_secret", "advance_endorsement")
         player_encounter = npc is self.player
         trust_before = 0 if player_encounter else npc.attitudes["trust"]
-        audience = [p for p in self.listeners(npc) if p is not npc]
+        audience = self.endorsement_audience(npc)
         if giving_apple:
-            if player_encounter and npc.inventory_space < 1:
-                raise ValueError("The player's apple storage is full.")
             if advance:
                 raise ValueError("This resident already owes an offering for an upfront apple.")
             if not encounter.reserved or self.tree.fruit < 1:
@@ -550,7 +566,7 @@ class Simulation:
             if (math.dist((npc.x, npc.y), self.tree.interaction_point) > 8
                     or math.dist((npc.x, npc.y), (snake.x, snake.y)) > HEARING_RADIUS):
                 raise ValueError("The resident must be at the guarded tree to receive the apple.")
-            if decision == "advance_endorsement" and len(self.npcs) < (1 if player_encounter else 2):
+            if decision == "advance_endorsement" and self.population < 2:
                 raise ValueError("There is no other resident to hear a later endorsement.")
         elif decision in ("secret", "endorsement"):
             if (not advance or advance["offering"] != decision

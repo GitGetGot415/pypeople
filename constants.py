@@ -127,7 +127,6 @@ CONVERSATION_PAUSE_RANGE = (12.0, 20.0)
 CONCERN_WEIGHTS = {"orientation": 0.25, "recollection": 1.0, "news": 1.0, "surroundings": 1.0, "plans": 1.0}
 SOCIAL_PARTNER_RANDOMNESS = 3.0
 SOCIAL_RECOVERED = 82
-INVENTORY_CAPACITY = 3
 PLAYER_ID = "player"
 PLAYER_LABEL = "You"
 SETUP_LOAD_NPCS_RECT = (770, 182, 230, 30)

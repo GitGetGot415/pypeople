@@ -576,7 +576,7 @@ class StatsScreen:
         pygame.draw.rect(surface, PAPER, (496, 134, 600, 506))
         list_title = ("Model requests" if self.tab == "Model logs" else
                       f"Conversations ({len(app.conversation_history)})" if self.tab == "Conversations" else
-                      f"Living {len(app.npcs)} / Departed {len(app.simulation.archived)}")
+                      f"Living {app.simulation.population} / Departed {app.simulation.departed_count}")
         if self.tab != "Creations":
             surface.blit(app.font.render(list_title, True, INK), (200, 150))
         for name, button in self.tabs.items():

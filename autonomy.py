@@ -33,7 +33,7 @@ def target_valid(npc, world):
 
 
 def lone_introduction(npc, world):
-    if (world.phase_pending or len(world.npcs) != 1 or not world.company_available(npc) or npc.conversation_pause_remaining
+    if (world.phase_pending or world.population != 1 or not world.company_available(npc) or npc.conversation_pause_remaining
             or orientation_context(npc)["orientation_discussions"]
             or any(r.purpose == "introduction" and r.turns and npc.name in r.participants for r in world.history)):
         return

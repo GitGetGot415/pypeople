@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 import re
 from uuid import uuid4
 
-from constants import (INVENTORY_CAPACITY, PLAYER_ID, STARTING_PLAYER_FRUIT, PLAYER_CALL_LIMIT,
+from constants import (PLAYER_ID, STARTING_PLAYER_FRUIT, PLAYER_CALL_LIMIT,
                        PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, PLAYER_CONTEXT_WORK_LIMIT,
                        PLAYER_OPINION_STEP, GIFT_GIVE_SECONDS, GIFT_SECONDS,
                        PLAYER_CALL_GIFT_GENEROSITY, PLAYER_CALL_SOCIABILITY)
@@ -20,7 +20,7 @@ class Player:
     sprite_size = None
     id: str = PLAYER_ID
     inventory: dict = field(default_factory=lambda: {"fruit": STARTING_PLAYER_FRUIT})
-    inventory_capacity: int = INVENTORY_CAPACITY
+    inventory_capacity: int | None = None
     x: float = STARTING_PLAYER_POSITION[0]
     y: float = STARTING_PLAYER_POSITION[1]
     facing: int = STARTING_FACING
@@ -35,7 +35,7 @@ class Player:
 
     @property
     def inventory_space(self):
-        return self.inventory_capacity - self.inventory["fruit"]
+        return None
 
     @property
     def movement_bounds(self):
@@ -240,8 +240,6 @@ def validate_transfer(world, giver, recipient, item, quantity, *, interaction=No
     if item == "fruit":
         if giver.inventory["fruit"] < quantity:
             raise ValueError("The giver no longer has enough apples.")
-        if recipient is world.player and recipient.inventory_space < quantity:
-            raise ValueError("The recipient's apple storage is full.")
     else:
         work = next((w for w in world.creations if w.id == item), None)
         if quantity != 1 or work is None or work.owner_id != giver.id:
@@ -454,7 +452,7 @@ def call_reason(world, npc):
             work = works[-1]
             return dict(key=f"gift:{work.id}", kind="gift", reference=work.id,
                         reason=f'Consider offering my {work.kind} "{work.title}" to the player. I may also keep it.')
-        if npc.inventory["fruit"] > 1 and world.player.inventory_space:
+        if npc.inventory["fruit"] > 1:
             return dict(key=f"apples:{world.day}:{world.phase}", kind="gift", reference="fruit",
                         reason="Consider offering one of my actual apples to the player.")
     concern = npc.current_concern
@@ -481,7 +479,7 @@ def call_valid(world, npc, call):
         return any(r.id == ref and {world.player.id, npc.id} == set(r.participant_ids)
                    and r.turns and r.turns[-1][0] == npc.name and not r.error for r in world.history)
     if call["kind"] == "gift":
-        return (npc.inventory["fruit"] > 0 and world.player.inventory_space > 0 if ref == "fruit"
+        return (npc.inventory["fruit"] > 0 if ref == "fruit"
                 else any(w.id == ref and w.owner_id == npc.id for w in world.creations))
     if call["kind"] == "news":
         return any(b.claim_id == ref for b in npc.beliefs)

@@ -509,7 +509,7 @@ class GameScreen:
         self.draw_dialogue_background(app, original)
         if self.dialogue_open:
             self.draw_portrait(app, self.selected_npc, self.selected_npc.portrait_emotion)
-        status = self.selected_npc.status if self.selected_npc is not None else f"{len(app.npcs)} NPCs"
+        status = self.selected_npc.status if self.selected_npc is not None else f"{app.simulation.population} residents"
         request = app.pending_player_request(self.selected_npc)
         if request:
             state = "Queued" if (app.session_id, request["id"]) in app.requests.pending else "Thinking"

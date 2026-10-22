@@ -51,10 +51,7 @@ class InventoryPanel:
                 if self.filter in ("All", "Food") else []) + works
 
     def apple_label(self):
-        count = str(self.owner.inventory["fruit"])
-        if self.owner.inventory_space is not None:
-            count += f"/{self.owner.inventory_capacity}"
-        return f"Apples: {count}"
+        return f"Apples: {self.owner.inventory['fruit']}"
 
     def recipients(self, app):
         from apartments import available_outdoors
@@ -164,10 +161,7 @@ class InventoryPanel:
         work = next((w for w in app.simulation.creations if w.id == self.selected_id and w.owner_id == self.owner.id), None)
         if self.selected_id == "fruit":
             text = self.apple_label() + ". Creative works use no apple space."
-            if self.owner.inventory_space is None:
-                text += " Apple storage is unlimited."
-            if self.owner.inventory_space == 0:
-                text += " Apple storage is full."
+            text += " Apple storage is unlimited."
             if self.owner.inventory["fruit"] == 0:
                 text += " No apples to give."
             draw_wrapped_text(surface, text, app.font, INK, (x, y, INVENTORY_DETAIL_WIDTH, 110))

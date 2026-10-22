@@ -444,6 +444,7 @@ class NPC:
             "tree_available_fruit": self.world.available_fruit if self.world else tree.fruit,
             "tree_occupied": tree.reserved_by is not None,
             "day": self.world.day if self.world else 1,
+            "living_count": self.world.population if self.world else 1,
             "time_of_day": self.world.phase if self.world else "day",
             "tree_is_shaking": tree.shaking,
             "last_reply": self.reply,
