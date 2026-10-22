@@ -451,16 +451,17 @@ class GameScreen:
         from player import active_player, start_approach
         from locations import targets
         world = app.simulation
-        if world.player_interaction or world.player.journey or world.visit and world.visit["stage"] == "travel":
+        if active_player(world) and (world.player_interaction or world.player.journey
+                                     or world.visit and world.visit["stage"] == "travel"):
             return
         point = self.screen_to_world(screen_pos)
         actors = [n for n in world.npcs if n.location == self.location]
         if self.location == "garden":
             actors.append(world.snake)
         hit_actor = next((n for n in sorted(actors, key=lambda n: n.y, reverse=True) if n.contains(point)), None)
-        if active_player(world):
-            for target in targets(world, self.location):
-                if hit_actor is None and pygame.Rect(target["rect"]).collidepoint(point):
+        for target in targets(world, self.location):
+            if hit_actor is None and pygame.Rect(target["rect"]).collidepoint(point):
+                if active_player(world):
                     if world.tree_has_actor(world.player.id):
                         return
                     from locations import start_journey
@@ -468,7 +469,10 @@ class GameScreen:
                     start_journey(world.player, self.location, target["point"], purpose="door", fast=True)
                     world.player_interaction = dict(id="door", kind="door", stage="travel", target=target,
                         location=self.location, npc_id=None, record_id=None)
-                    return
+                else:
+                    app.use_door(target)
+                return
+        if active_player(world):
             if self.location == "garden" and hit_actor in (None, world.snake) and (world.snake.contains(point) or abs(point[0] - world.tree.x) < 70 and abs(point[1] - world.tree.y) < 100):
                 self.close_dialogue()
                 if not world.join_tree(world.player, "introduction" if world.snake.contains(point) else "bargain"):
@@ -817,6 +821,14 @@ class GameScreen:
         self.location_menu = dict(purpose=purpose, choices=choices)
         self.location_page = 0
 
+    def observe_location(self, location):
+        from locations import map_size
+        self.close_dialogue()
+        self.location = location
+        width, height = map_size(location)
+        self.camera_offset[:] = ((WORLD_WIDTH - width * self.camera_zoom) / 2,
+                                 (WORLD_HEIGHT - height * self.camera_zoom) / 2)
+
     def location_buttons(self):
         from constants import (LOCATION_MENU_RECT, LOCATION_BUTTON_HEIGHT, LOCATION_BUTTON_GAP,
             LOCATION_BUTTON_WIDTH, LOCATION_BUTTON_INSET, LOCATION_BUTTONS_PER_PAGE)
@@ -827,6 +839,7 @@ class GameScreen:
             for row, (label, value) in enumerate(self.location_menu["choices"][start:start + LOCATION_BUTTONS_PER_PAGE])]
 
     def handle_location_event(self, app, event):
+        from player import active_player
         from constants import LOCATION_BUTTONS_RECT, LOCATION_NEXT_RECT, LOCATION_CANCEL_RECT, LOCATION_BUTTONS_PER_PAGE
         if Button(LOCATION_CANCEL_RECT, "Cancel").clicked(event) or event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             self.location_menu = None
@@ -837,13 +850,8 @@ class GameScreen:
             self.location_page = min((len(self.location_menu["choices"]) - 1) // LOCATION_BUTTONS_PER_PAGE, self.location_page + 1)
         for button, value in self.location_buttons():
             if button.clicked(event):
-                if self.location_menu["purpose"] == "Observe":
-                    self.close_dialogue()
-                    self.location = value
-                    from locations import map_size
-                    width, height = map_size(value)
-                    self.camera_offset[:] = ((WORLD_WIDTH - width * self.camera_zoom) / 2,
-                                             (WORLD_HEIGHT - height * self.camera_zoom) / 2)
+                if self.location_menu["purpose"] == "Observe" or not active_player(app.simulation):
+                    self.observe_location(value)
                 elif value != app.simulation.player.location:
                     from locations import start_journey
                     from constants import ELEVATOR_ARRIVAL

@@ -395,11 +395,17 @@ class Application:
             self.game.show_save_message(str(exc))
 
     def use_door(self, target):
-        from locations import start_journey, allocated_floors, hallway_location, door_point
+        from locations import start_journey, allocated_floors, hallway_location, door_point, valid_location
         from constants import ROOM_ARRIVAL, ELEVATOR_ARRIVAL, HALLWAY_EXIT, GARDEN_BUILDING_ARRIVAL
         world, player = self.simulation, self.simulation.player
         if target["kind"] == "elevator":
             self.game.open_location_menu("Elevator", [(f"Floor {f}", hallway_location(f)) for f in allocated_floors(world)])
+            return
+        if not active_player(world):
+            if valid_location(world, target["destination"]):
+                self.game.observe_location(target["destination"])
+            else:
+                self.game.show_save_message("This room is vacant.")
             return
         if target["kind"] == "room" and target["room"] != 1:
             room = target["room"]
