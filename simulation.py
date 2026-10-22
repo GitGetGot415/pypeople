@@ -355,7 +355,7 @@ class Simulation:
         if not self.is_outdoors(npc) or math.dist((npc.x, npc.y), self.tree.interaction_point) > 8:
             return None
         collecting = npc.id in self.snake.advances
-        if ((not collecting and (npc.inventory_space < 1 or self.available_fruit < 1)) or self.snake.encounter
+        if ((not collecting and self.available_fruit < 1) or self.snake.encounter
                 or self.snake.selected or self.snake.request_pending
                 or self.snake.recovery_remaining or self.snake.id in npc.cooldowns):
             npc.cooldowns[self.tree.id] = FAILURE_COOLDOWN
@@ -418,8 +418,8 @@ class Simulation:
         if giving_apple:
             if advance:
                 raise ValueError("This resident already owes an offering for an upfront apple.")
-            if not encounter.reserved or self.tree.fruit < 1 or npc.inventory_space < 1:
-                raise ValueError("The reserved apple or inventory space is no longer available. Retry the bargain.")
+            if not encounter.reserved or self.tree.fruit < 1:
+                raise ValueError("The reserved apple is no longer available. Retry the bargain.")
             if (math.dist((npc.x, npc.y), self.tree.interaction_point) > 8
                     or math.dist((npc.x, npc.y), (snake.x, snake.y)) > HEARING_RADIUS):
                 raise ValueError("The resident must be at the guarded tree to receive the apple.")

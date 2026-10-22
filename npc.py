@@ -18,7 +18,7 @@ from social import (ConversationConcern, Goal, check_relationship_goals, commit_
                     private_context, validate_live_agreements)
 from constants import (
     APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DEFAULT_CHARACTER_NAME, DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS,
-    CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, GIFT_SECONDS, INVENTORY_CAPACITY,
+    CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, GIFT_SECONDS,
     MOVEMENT_SPEED, NPC_RADIUS, PARTNER_COOLDOWN,
     POST_DIALOGUE_SECONDS, SHAKE_SECONDS, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED, WANDER_PAUSE, WORLD_HEIGHT, WORLD_WIDTH,
     STARTING_DAY, STARTING_FACING, STARTING_NPC_FRUIT, STARTING_NPC_GENEROSITY_RANGE,
@@ -129,7 +129,8 @@ class NPC:
     id: str = field(default_factory=lambda: uuid4().hex)
     social: float = field(default_factory=lambda: random.uniform(*STARTING_NPC_SATISFACTION_RANGE))
     inventory: dict = field(default_factory=lambda: {"fruit": STARTING_NPC_FRUIT})
-    inventory_capacity: int = INVENTORY_CAPACITY
+    # Retained as save data; resident fruit storage is always unlimited.
+    inventory_capacity: int | None = None
     preferences: dict = field(default_factory=lambda: {
         "sociability": random.uniform(*STARTING_NPC_SOCIABILITY_RANGE),
         "generosity": random.uniform(*STARTING_NPC_GENEROSITY_RANGE),
@@ -177,7 +178,7 @@ class NPC:
 
     @property
     def inventory_space(self):
-        return self.inventory_capacity - self.inventory.get("fruit", 0)
+        return None
 
     @property
     def interaction(self):
@@ -420,7 +421,7 @@ class NPC:
             "activity_owner": self.owner,
             "satisfaction": round(self.social, 1),
             "inventory": self.inventory.copy(),
-            "inventory_capacity": self.inventory_capacity,
+            "inventory_capacity": None,
             "inventory_space": self.inventory_space,
             "tree_interaction_point": list(tree.interaction_point),
             "tree_fruit": tree.fruit,
@@ -554,8 +555,6 @@ class NPC:
             raise ValueError("Give a positive number of fruit.")
         if self.inventory.get(item, 0) < quantity:
             raise ValueError(f"{self.name} only has {self.inventory.get(item, 0)} fruit to give.")
-        if recipient.inventory_space < quantity:
-            raise ValueError(f"{recipient.name} only has room for {recipient.inventory_space} more items.")
 
     @property
     def eating(self):

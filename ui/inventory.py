@@ -47,8 +47,14 @@ class InventoryPanel:
     def entries(self, world):
         works = [(w.id, f'[{w.id[:8]}] {w.kind.title()}: {w.title}') for w in reversed(world.owned_works(self.owner.id))
                  if self.filter == "All" or w.kind == self.filter.lower()]
-        return ([("fruit", f'Apples: {self.owner.inventory["fruit"]}/{self.owner.inventory_capacity}')]
+        return ([("fruit", self.apple_label())]
                 if self.filter in ("All", "Food") else []) + works
+
+    def apple_label(self):
+        count = str(self.owner.inventory["fruit"])
+        if self.owner.inventory_space is not None:
+            count += f"/{self.owner.inventory_capacity}"
+        return f"Apples: {count}"
 
     def recipients(self, app):
         from apartments import available_outdoors
@@ -131,7 +137,7 @@ class InventoryPanel:
                 name = name[:-1]
             title = name + suffix
         surface.blit(app.heading_font.render(title, True, INK), INVENTORY_TITLE_POSITION)
-        surface.blit(app.font.render(f'Apples: {self.owner.inventory["fruit"]}/{self.owner.inventory_capacity}', True, INK),
+        surface.blit(app.font.render(self.apple_label(), True, INK),
                      INVENTORY_APPLES_POSITION)
         self.close_button.draw(surface, app.small_font)
         for name, button in self.filters.items():
@@ -154,7 +160,9 @@ class InventoryPanel:
         x, y = INVENTORY_DETAIL_POSITION
         work = next((w for w in app.simulation.creations if w.id == self.selected_id and w.owner_id == self.owner.id), None)
         if self.selected_id == "fruit":
-            text = f'Apples: {self.owner.inventory["fruit"]}/{self.owner.inventory_capacity}. Creative works use no apple space.'
+            text = self.apple_label() + ". Creative works use no apple space."
+            if self.owner.inventory_space is None:
+                text += " Apple storage is unlimited."
             if self.owner.inventory_space == 0:
                 text += " Apple storage is full."
             if self.owner.inventory["fruit"] == 0:
@@ -196,7 +204,7 @@ class InventoryPanel:
                     rect = pygame.Rect(self.recipient_rect.x, self.recipient_rect.y + i * INVENTORY_ROW_HEIGHT - self.recipient_scroll,
                                        self.recipient_rect.width, INVENTORY_ROW_HEIGHT)
                     pygame.draw.rect(surface, ACCENT if npc.id == self.recipient_id else PAPER, rect)
-                    surface.blit(app.small_font.render(f'{npc.name} / apple room: {npc.inventory_space}', True,
+                    surface.blit(app.small_font.render(f'{npc.name} / unlimited apple storage', True,
                                  PAPER if npc.id == self.recipient_id else INK), (rect.x + 4, rect.y + 6))
                 if not people:
                     surface.blit(app.small_font.render("No available recipients outdoors.", True, MUTED), self.recipient_rect.topleft)

@@ -226,7 +226,7 @@ class SnakeEncounter:
         world.snake.activity = ("judging" if purpose == "judgment" else
                                 "introducing" if purpose == "introduction" else "bargaining")
         self.reserved = (purpose == "bargain" and resident.id not in world.snake.advances
-                         and world.tree.fruit > 0 and resident.inventory_space > 0)
+                         and world.tree.fruit > 0)
         self.active = True
         self.arrived = False
         self.dialogue_state = "waiting"
@@ -267,7 +267,7 @@ class SnakeEncounter:
         from name_knowledge import actor_catalog
         npc, snake, world = self.recipient, self.initiator, self.world
         advance = snake.advances.get(npc.id)
-        can_give_apple = self.reserved and world.tree.fruit > 0 and npc.inventory_space > 0 and not advance
+        can_give_apple = self.reserved and world.tree.fruit > 0 and not advance
         accounts = []
         known = {(claim_by_id(world, b.claim_id).fact_id, claim_by_id(world, b.claim_id).affirmed) for b in snake.beliefs}
         for belief in npc.beliefs:

@@ -130,7 +130,7 @@ def home_priority(npc, world, dt):
             if npc.id not in (promise.promisor_id, promise.recipient_id):
                 continue
             giver, receiver = world.npc_by_id(promise.promisor_id), world.npc_by_id(promise.recipient_id)
-            if (giver and receiver and giver.inventory.get("fruit", 0) and receiver.inventory_space > 0
+            if (giver and receiver and giver.inventory.get("fruit", 0)
                     and world.company_available(giver) and world.company_available(receiver)
                     and receiver.id not in giver.cooldowns and giver.id not in receiver.cooldowns):
                 from interactions import company_point

@@ -332,7 +332,7 @@ class StatsScreen:
             gap()
             add(f"Satisfaction: {npc.social:.0f}/100")
             inventory_label = "Inventory at departure" if npc.departure else "Carrying"
-            add(f"{inventory_label}: {npc.inventory.get('fruit', 0)} / {npc.inventory_capacity} apples")
+            add(f"{inventory_label}: {npc.inventory.get('fruit', 0)} apples (unlimited storage)")
             add(f"Owned works: {len(app.simulation.owned_works(npc.id))} (unlimited storage)")
             add(f"Opinion of player: {npc.player_opinion['opinion']:+d}. {npc.player_opinion['reason']}")
             advance = app.simulation.snake.advances.get(npc.id)

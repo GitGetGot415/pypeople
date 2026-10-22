@@ -78,7 +78,7 @@ def validate_transfer(world, giver, recipient, item, quantity, *, interaction=No
     if item == "fruit":
         if giver.inventory["fruit"] < quantity:
             raise ValueError("The giver no longer has enough apples.")
-        if recipient.inventory_space < quantity:
+        if recipient is world.player and recipient.inventory_space < quantity:
             raise ValueError("The recipient's apple storage is full.")
     else:
         work = next((w for w in world.creations if w.id == item), None)

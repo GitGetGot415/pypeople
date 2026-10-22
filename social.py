@@ -867,11 +867,9 @@ def assign_goal(npc, world):
     generous = npc.preferences["generosity"] >= 0.55
     for target in candidates:
         opinion = target.opinions.get(npc.name, {}).get("opinion", 0)
-        if npc.inventory_space and (target.inventory.get("fruit", 0)
-                                   or target.can_reach(world.tree.interaction_point)):
+        if target.inventory.get("fruit", 0) or target.can_reach(world.tree.interaction_point):
             choices.append((1 if generous else 3, "obtain_apple", target, opinion))
-        if target.inventory_space and (npc.inventory.get("fruit", 0)
-                                      or npc.can_reach(world.tree.interaction_point)):
+        if npc.inventory.get("fruit", 0) or npc.can_reach(world.tree.interaction_point):
             choices.append((3 if generous else 1, "help_with_apple", target, opinion))
         if opinion < 0:
             choices.append((2 + npc.preferences["sociability"], "repair_relationship", target, opinion))

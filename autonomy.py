@@ -21,7 +21,7 @@ def target_valid(npc, world):
         return npc.inventory.get("fruit", 0) > 0
     if npc.behavior == Behavior.HARVEST:
         return (npc.target_id == world.tree.id and world.tree.reserved_by is npc
-                and world.available_fruit > 0 and npc.inventory_space > 0
+                and world.available_fruit > 0
                 and npc.can_reach(world.tree.interaction_point))
     if npc.behavior in (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING):
         return npc.target_id == world.tree.id and npc.can_reach(world.tree.interaction_point)
@@ -69,7 +69,7 @@ def reconsider(npc, world, *, pressing_only=False):
     if npc.inventory.get("fruit", 0) > 0 and world.company_available(npc):
         for target_id, reason in delivery_targets:
             target = world.npc_by_id(target_id)
-            if (target is not None and world.company_available(target) and target.inventory_space > 0
+            if (target is not None and world.company_available(target)
                     and target.id not in npc.cooldowns and npc.id not in target.cooldowns
                     and company_point(npc, target) is not None):
                 gift = npc.give_items(target, "fruit", 1)
@@ -78,9 +78,9 @@ def reconsider(npc, world, *, pressing_only=False):
                 npc.reason = f"{reason} to {target.name}"
                 return
     apples_needed = len({target_id for target_id, _ in delivery_targets})
-    needs_apple = npc.inventory.get("fruit", 0) < min(apples_needed, npc.inventory_capacity)
+    needs_apple = npc.inventory.get("fruit", 0) < apples_needed
     tree = world.tree
-    tree_available = (world.available_fruit > 0 and tree.reserved_by in (None, npc) and npc.inventory_space > 0
+    tree_available = (world.available_fruit > 0 and tree.reserved_by in (None, npc)
                       and tree.id not in npc.cooldowns and npc.can_reach(tree.interaction_point))
     if pressing_only:
         if obligations and needs_apple and tree_available:
@@ -132,7 +132,7 @@ def memory_reason(npc, partner):
 
 def donor_choice(donor, requester):
     fruit = donor.inventory.get("fruit", 0)
-    if fruit < 1 or requester.inventory_space < 1:
+    if fruit < 1:
         return "unavailable", "Sharing is no longer possible because the inventories changed."
     opinion = donor.opinions.get(requester.name, {}).get("opinion", 0)
     score = ((donor.social - 50) * 0.12 + (fruit - 1) * 6
@@ -153,22 +153,21 @@ def actionable_obligation(npc, world):
         return False
     # Preserve a free receiver for a delivery that is already physically possible,
     # even when the giver's ordinary decision timer has not elapsed yet.
-    if npc.inventory_space > 0:
-        for promise in pending_promises(world):
-            giver = world.npc_by_id(promise.promisor_id)
-            if (promise.recipient_id == npc.id and giver is not None and world.company_available(giver)
-                    and giver.inventory.get("fruit", 0) and giver.id not in npc.cooldowns and npc.id not in giver.cooldowns
-                    and company_point(giver, npc) is not None):
-                return True
+    for promise in pending_promises(world):
+        giver = world.npc_by_id(promise.promisor_id)
+        if (promise.recipient_id == npc.id and giver is not None and world.company_available(giver)
+                and giver.inventory.get("fruit", 0) and giver.id not in npc.cooldowns and npc.id not in giver.cooldowns
+                and company_point(giver, npc) is not None):
+            return True
     obligations = pending_promises(world, npc.id)
     if not obligations:
         return False
     if npc.inventory.get("fruit", 0):
         return any((target := world.npc_by_id(p.recipient_id)) is not None and world.company_available(target)
-                   and target.inventory_space > 0 and target.id not in npc.cooldowns and npc.id not in target.cooldowns
+                   and target.id not in npc.cooldowns and npc.id not in target.cooldowns
                    and company_point(npc, target) is not None for p in obligations)
     tree = world.tree
-    return (world.available_fruit > 0 and tree.reserved_by in (None, npc) and npc.inventory_space > 0
+    return (world.available_fruit > 0 and tree.reserved_by in (None, npc)
             and tree.id not in npc.cooldowns and npc.can_reach(tree.interaction_point))
 
 
@@ -215,7 +214,7 @@ def social_pair(world, *, due=None):
             continue
         # Keep the existing fixed food-request eligibility and donor decision.
         if (npc.current_concern.kind != "orientation" and npc.social <= SOCIAL_START
-                and not npc.inventory.get("fruit", 0) and npc.inventory_space):
+                and not npc.inventory.get("fruit", 0)):
             donors = [other for other in others if other.inventory.get("fruit", 0) > 0]
             if donors:
                 donor = max(donors, key=lambda other: rank(npc, other))

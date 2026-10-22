@@ -307,7 +307,7 @@ class NPCState(ActivityState):
     emotion: EmotionReaction
     social: float = Field(ge=0, le=100)
     inventory: dict[Literal["fruit"], Annotated[int, Field(strict=True, ge=0)]]
-    inventory_capacity: int = Field(strict=True, ge=1)
+    inventory_capacity: int | None = Field(strict=True, ge=1)
     preferences: PreferencesState
     memories: list[MemoryState] = Field(max_length=20)
     goal: GoalState | None
@@ -340,12 +340,6 @@ class NPCState(ActivityState):
     @classmethod
     def validate_character(cls, value):
         return normalize_character(value)
-
-    @model_validator(mode="after")
-    def validate_inventory(self):
-        if any(value < 0 for value in self.inventory.values()) or sum(self.inventory.values()) > self.inventory_capacity:
-            raise ValueError("Invalid inventory.")
-        return self
 
     @field_validator("player_opinion")
     @classmethod
