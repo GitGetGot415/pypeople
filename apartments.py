@@ -112,6 +112,9 @@ def home_priority(npc, world, dt):
     """Run after existing interactions finish and before anyone reserves partners."""
     npc.outdoor_remaining = max(0.0, npc.outdoor_remaining - dt)
     from player import owns_resident
+    from autonomy import awaiting_arrival_greeting
+    if awaiting_arrival_greeting(npc, world):
+        return
     if (owns_resident(world, npc) or world.tree_has_actor(npc.id) or npc.journey
             or world.visit and world.visit["host_id"] == npc.id or npc.interaction):
         return
@@ -218,8 +221,8 @@ def phase_changed(world):
 
 def invitation_choices(world, npc):
     from locations import room_location
-    from constants import ROOM_ARRIVAL, STARTING_PLAYER_POSITION
-    return [dict(id="garden", location="garden", point=STARTING_PLAYER_POSITION, label="the garden"),
+    from constants import ROOM_ARRIVAL, GARDEN_VISIT_POINT
+    return [dict(id="garden", location="garden", point=GARDEN_VISIT_POINT, label="the garden"),
             dict(id="tree", location="garden", point=world.tree.interaction_point, label="the tree"),
             dict(id="home", location=room_location(npc.room_number), point=ROOM_ARRIVAL, label="my apartment")]
 

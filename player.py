@@ -10,7 +10,7 @@ from constants import (PLAYER_ID, STARTING_PLAYER_FRUIT, PLAYER_CALL_LIMIT,
                        PLAYER_CALL_GIFT_GENEROSITY, PLAYER_CALL_SOCIABILITY)
 from conversation_history import ConversationRecord, remember
 from dialogue_text import contains_question
-from constants import (GARDEN_LOCATION, STARTING_PLAYER_POSITION, STARTING_FACING,
+from constants import (GARDEN_LOCATION, ARRIVAL_LOCATION, STARTING_PLAYER_POSITION, STARTING_FACING,
                        PLAYER_DEFAULT_APPEARANCE, MOVEMENT_SPEED, PLAYER_APPROACH_MULTIPLIER, PLAYER_RUN_MULTIPLIER,
                        PLAYER_APPROACH_TIMEOUT, PLAYER_TALK_DISTANCE, PLAYER_EVIDENCE_LIMIT)
 
@@ -23,7 +23,7 @@ class Player:
     x: float = STARTING_PLAYER_POSITION[0]
     y: float = STARTING_PLAYER_POSITION[1]
     facing: int = STARTING_FACING
-    location: str = GARDEN_LOCATION
+    location: str = ARRIVAL_LOCATION
     alive: bool = True
     appearance: dict = field(default_factory=lambda: PLAYER_DEFAULT_APPEARANCE.copy())
     journey: dict | None = None

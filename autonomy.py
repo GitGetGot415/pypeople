@@ -6,6 +6,7 @@ from dialogue_context import orientation_context
 from npc import Behavior
 from conversation_history import memory_bias
 from constants import APPLE_SATISFACTION, DECISION_SECONDS, MOVEMENT_SPEED, SOCIAL_PARTNER_RANDOMNESS, SOCIAL_START, SNAKE_NAME
+from constants import STARTING_DAY, JUDY_ROOM_NUMBER
 from interactions import company_point
 from social import (concern_topic, goal_attempt_cooling_down, last_conversation_partner, pair_objective,
                     pending_promises, repeat_partner_paused)
@@ -14,6 +15,44 @@ from social import (concern_topic, goal_attempt_cooling_down, last_conversation_
 ORIENTATION_TOPIC = (
     "Find my bearings: understand these surroundings, the missing transition, or where to find help and safety"
 )
+
+
+def arrival_greeter(world):
+    return next((person for person in world.npcs if person.room_number == JUDY_ROOM_NUMBER), None)
+
+
+def awaiting_arrival_greeting(npc, world):
+    greeter = arrival_greeter(world)
+    return (greeter is not None and npc is not greeter and npc.arrival_day > STARTING_DAY
+            and not any(greeter.id in record.participant_ids and npc.id in record.participant_ids
+                        for record in world.history))
+
+
+def greet_arrivals(world):
+    """Give the first resident the first automatic attempt to welcome each arrival."""
+    if world.phase_pending:
+        return
+    greeter = arrival_greeter(world)
+    if greeter is None or not world.company_available(greeter):
+        return
+    newcomer = next((person for person in sorted(world.npcs, key=lambda person: person.arrival_day)
+                     if awaiting_arrival_greeting(person, world)), None)
+    if newcomer is None or not world.company_available(newcomer, allow_arrival=True):
+        return
+    if greeter.location != newcomer.location:
+        from locations import start_journey, door_point, clamp_point
+        greeter.begin_activity(Behavior.WAIT, world, reason=f"Going to welcome {newcomer.name}")
+        start_journey(greeter, newcomer.location, clamp_point(newcomer.location, door_point(greeter.room_number)),
+                      purpose="arrival_greeting")
+        return
+    try:
+        world.start_conversation(greeter, newcomer,
+            f"Welcome {newcomer.name}, who has just arrived, and help them find their bearings here.",
+            origin="autonomous", opening_kind="orientation")
+    except ValueError:
+        return  # A selected actor or occupied meeting space can wait for the next tick.
+    greeter.reason = f"Welcoming {newcomer.name}"
+    newcomer.reason = f"Meeting {greeter.name} after arriving"
 
 
 def target_valid(npc, world):
@@ -47,6 +86,8 @@ def lone_introduction(npc, world):
 def reconsider(npc, world, *, pressing_only=False):
     from apartments import HOME_BEHAVIORS
     from player import owns_resident
+    if awaiting_arrival_greeting(npc, world):
+        return
     if owns_resident(world, npc) or world.tree_has_actor(npc.id) or npc.journey or world.visit and world.visit["host_id"] == npc.id:
         return
     if (world.phase_pending or npc.interaction is not None or npc.resume_pending or npc.player_call or npc.behavior in HOME_BEHAVIORS
@@ -57,6 +98,11 @@ def reconsider(npc, world, *, pressing_only=False):
     if npc.owner != "autonomous" or npc.selected or npc.request_pending:
         return
     if any(npc.id in (action.npc_id, action.target_id) for action in world.pending_actions):
+        return
+    if not pressing_only and npc.location.startswith("hallway:") and npc.behavior in (Behavior.WANDER, Behavior.WAIT):
+        from constants import GARDEN_BUILDING_ARRIVAL
+        from locations import start_journey
+        start_journey(npc, "garden", GARDEN_BUILDING_ARRIVAL, purpose="leave_hallway")
         return
     if npc.decision_remaining > 0:
         return

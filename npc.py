@@ -607,6 +607,10 @@ class NPC:
 
     def update(self, dt, tree):
         from player import owns_resident
+        from autonomy import awaiting_arrival_greeting
+        if (self.owner == "autonomous" and self.behavior in (Behavior.WANDER, Behavior.WAIT)
+                and not self.journey and awaiting_arrival_greeting(self, self.world) and self.interaction is None):
+            return
         if owns_resident(self.world, self) or self.world.tree_has_actor(self.id):
             return
         if self.journey:

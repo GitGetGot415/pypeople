@@ -57,6 +57,10 @@ def prepare_player_start(world):
         trust_reason=f"Has met {SNAKE_NAME} and heard its apple terms, but has not made a bargain.",
         authority_reason=f"Knows {SNAKE_NAME} guards the apples, but is unsure of its claimed divine authority.")
     world.day = STARTING_PLAYER_DAY
+    from constants import ARRIVAL_LOCATION
+    from locations import door_point
+    resident.location = ARRIVAL_LOCATION
+    resident.x, resident.y = door_point(resident.room_number)
 
 
 def start_player_introduction(world):

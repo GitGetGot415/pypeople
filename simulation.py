@@ -247,12 +247,14 @@ class Simulation:
         # Ignore long window stalls; there is no elapsed world time to catch up.
         self.step(min(MAX_SIMULATION_STEP_SECONDS, max(0.0, dt)), viewed_conversation=viewed_conversation)
 
-    def company_available(self, npc, *, allow_player_call=False):
+    def company_available(self, npc, *, allow_player_call=False, allow_arrival=False):
         from npc import Behavior
 
         from locations import available as available_outdoors
         from player import owns_resident
+        from autonomy import awaiting_arrival_greeting
         return (self.npc_by_id(npc.id) is npc and available_outdoors(npc)
+                and (allow_arrival or not awaiting_arrival_greeting(npc, self))
                 and not owns_resident(self, npc) and not self.tree_has_actor(npc.id)
                 and not (self.visit and self.visit["host_id"] == npc.id)
                 and npc.interaction is None and not npc.selected and not npc.request_pending
@@ -262,7 +264,7 @@ class Simulation:
                 and npc.behavior in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY))
 
     def step(self, dt, *, viewed_conversation=None):
-        from autonomy import lone_introduction, reconsider, social_pair
+        from autonomy import greet_arrivals, lone_introduction, reconsider, social_pair
         from social import refresh_concern
         from npc import Behavior
 
@@ -294,6 +296,7 @@ class Simulation:
                 interaction.update(dt, reading=True)
             else:
                 interaction.update(dt)
+        greet_arrivals(self)
         from apartments import home_priority
         for npc in self.npcs:
             if npc.id not in clearing_tree:
@@ -874,14 +877,12 @@ class Simulation:
         except (OSError, ValueError) as exc:
             self.arrival_error = f"Could not create the next arrival: {exc}"
             return None
-        npc = NPC(character=character, arrival_day=day)
+        from constants import ARRIVAL_LOCATION, ELEVATOR_ARRIVAL
+        from npc import Behavior
+        npc = NPC(character=character, arrival_day=day, location=ARRIVAL_LOCATION,
+                  x=ELEVATOR_ARRIVAL[0], y=ELEVATOR_ARRIVAL[1], behavior=Behavior.WANDER)
         npc.sprite_size = self.npcs[0].sprite_size if self.npcs else (40, 70)
         assign_npc_names([npc], used_names=(actor.name for actor in self.actors))
-        left, right, top, bottom = npc.movement_bounds
-        positions = [(x, y) for y in range(math.ceil(top), math.floor(bottom) + 1, 36)
-                     for x in range(math.ceil(left), math.floor(right) + 1, 48)
-                     if math.dist((x, y), (self.tree.x, self.tree.y)) > 160]
-        npc.x, npc.y = max(positions, key=lambda point: min((math.dist(point, (p.x, p.y)) for p in self.npcs), default=400))
         npc.world = self
         remember_description(npc)
         self.npcs.append(npc)
@@ -895,7 +896,7 @@ class Simulation:
         refresh_concern(npc)
         npc.decision_remaining = 0.0
         observers = [npc, *self.listeners(npc, 220)]
-        if math.dist((npc.x, npc.y), (self.snake.x, self.snake.y)) <= 220:
+        if npc.location == self.snake.location and math.dist((npc.x, npc.y), (self.snake.x, self.snake.y)) <= 220:
             observers.append(self.snake)
         self.observed_event("arrival", npc, self.snake, f"{npc.name} arrived for dawn on day {day}, remembering a former life.", witnesses=observers)
         return npc

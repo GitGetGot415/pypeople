@@ -1193,7 +1193,7 @@ def validate_physical_state(state):
     import math
     import json
     from locations import valid_location, feet_bounds, route, floor_for_room, targets
-    from constants import PLAYER_APPROACH_TIMEOUT, TRAVEL_STEP_TIMEOUT, ROOM_ARRIVAL, STARTING_PLAYER_POSITION
+    from constants import PLAYER_APPROACH_TIMEOUT, TRAVEL_STEP_TIMEOUT, ROOM_ARRIVAL, GARDEN_VISIT_POINT
     residents = [*state.npcs, *state.archived]
     layout = SimpleNamespace(residents=residents, mode=state.mode, player=state.player)
     by_id = {n.id: n for n in state.npcs}
@@ -1335,7 +1335,7 @@ def validate_physical_state(state):
                 or record.turns[offer["turn"]] != (speaker.display_name or speaker.character["Name"], offer["speech"])
                 or offer["location"] != (f"room:{speaker.room_number}" if offer["destination"] == "home" else "garden")):
             raise ValueError("Invitations must retain their real speaker, speech and destination.")
-        expected_point = {"garden": STARTING_PLAYER_POSITION, "home": ROOM_ARRIVAL,
+        expected_point = {"garden": GARDEN_VISIT_POINT, "home": ROOM_ARRIVAL,
                           "tree": Tree(x=state.tree.x, y=state.tree.y).interaction_point}[offer["destination"]]
         if (tuple(offer["point"]) != tuple(expected_point)
                 or set(record.participant_ids) != {speaker.id, state.player.id}):
