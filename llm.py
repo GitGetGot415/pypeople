@@ -612,6 +612,8 @@ player's intended action and recipient from the meaning of the message, includin
 paraphrases, indirect requests, unambiguous first names, and descriptions.
 The player is speaking TO this NPC. Comments and observations about the NPC,
 such as "you seem to have a lot of apples", are SAY. Questions are also SAY.
+Greetings, introducing yourself, and asking how the NPC is doing are ordinary
+conversation, including when the same message also comments on someone else.
 Do not turn a remark into an instruction to approach someone else. Another NPC's
 presence or profile is never a reason to choose TALK_TO_NPC or GIVE_ITEM.
 Short conversational answers such as yes please, no thanks and sure are SAY;
@@ -1243,6 +1245,7 @@ def intent_snapshot(snapshot):
     def identity(person):
         return {
             "npc_name": person["npc_name"],
+            "kind": person.get("kind", "resident"),
             "character": {"Name": person["character"]["Name"]},
             "inventory": person.get("inventory", {}).copy(),
             "inventory_space": person.get("inventory_space", 0),
@@ -2489,6 +2492,9 @@ def _validate_response(raw, snapshot, model):
         # pronoun before the reply is generated or any gift is authorized.
         if result.action == "GIVE_ITEM" and _personal_apple_request(snapshot.get("_player_message", "")):
             result.target = PLAYER_LABEL
+        if result.action == "TALK_TO_NPC" and result.target.strip().casefold() == PLAYER_LABEL.casefold():
+            # The player is already here talking. No new trip or task is needed.
+            result = ActionIntent(action="SAY")
         if result.action not in ("TALK_TO_NPC", "GIVE_ITEM"):
             result.target = ""
         if result.action != "GIVE_ITEM":
