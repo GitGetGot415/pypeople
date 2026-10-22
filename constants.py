@@ -35,7 +35,7 @@ GARDEN_BUILDING_ARRIVAL = (80.0, 112.0)
 APARTMENT_ART = {"hallway": "assets/Apartment Building Hallway.png",
                  "room": "assets/Apartment Room.png", "door": "assets/Door.png",
                  "elevator": "assets/Elevator.png"}
-STARTING_MODE = "player"
+STARTING_MODE = "spectator"
 STARTING_PLAYER_POSITION = (100.0, 280.0)
 PLAYER_APPROACH_MULTIPLIER = 2.0
 PLAYER_RUN_MULTIPLIER = 2.0
@@ -51,6 +51,8 @@ PLAYER_DEFAULT_APPEARANCE = {"Name": "You", "Sex": "F", "Hair": "two", "Eyes": "
 HOST_MEETING_OFFSET = (0, 64)
 LOCATION_TITLE_INSET = (30, 14)
 SETUP_MODE_RECTS = ((740, 90, 126, 36), (878, 90, 142, 36))
+SETUP_PLAYER_NOTE_RECT = (272, 280, 736, 104)
+SETUP_TITLE_POSITION = (260, 88)
 END_CONVERSATION_RECT = (1040, 510, 216, 32)
 LEAVE_QUEUE_RECT = (24, 420, 150, 34)
 LOCATION_MENU_RECT = (380, 150, 520, 440)
@@ -75,7 +77,8 @@ FURIOUS_THRESHOLD = 95
 
 # New simulation defaults.
 DEFAULT_CHARACTER_NAME = "Resident"
-STARTING_ADDITIONAL_NPCS = 4
+STARTING_SPECTATOR_NPCS = 4
+STARTING_SPECTATOR_MIN_NPCS = 1
 STARTING_CHARACTER_FILE = "characters/judy.json"
 STARTING_DAY = 1
 STARTING_PHASE = "day"

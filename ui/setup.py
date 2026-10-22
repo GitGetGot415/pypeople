@@ -8,7 +8,7 @@ from .button import Button
 from .file_dialog import character_file_dialog
 from .text import draw_centered_text, draw_wrapped_text
 from .text_input import TextInput
-from constants import ACCENT, BORDER_RADIUS, GRASS, INK, MUTED, PAPER, STARTING_ADDITIONAL_NPCS, SETUP_LOAD_NPCS_RECT
+from constants import ACCENT, BORDER_RADIUS, GRASS, INK, MUTED, PAPER, STARTING_SPECTATOR_NPCS, STARTING_SPECTATOR_MIN_NPCS, SETUP_LOAD_NPCS_RECT, SETUP_PLAYER_NOTE_RECT, SETUP_TITLE_POSITION
 
 
 class SetupScreen:
@@ -19,7 +19,7 @@ class SetupScreen:
         from constants import SETUP_MODE_RECTS, STARTING_MODE
         self.mode = STARTING_MODE
         self.mode_buttons = {mode: Button(rect, mode.title()) for mode, rect in zip(("player", "spectator"), SETUP_MODE_RECTS)}
-        self.sources = [None] * STARTING_ADDITIONAL_NPCS
+        self.sources = [None] * STARTING_SPECTATOR_NPCS
         self.page = 0
         self.message = ""
         self.count_input = TextInput((590, 138, 100, 40), max_length=None)
@@ -40,6 +40,7 @@ class SetupScreen:
         return max(0, (len(self.sources) - 1) // self.ROWS_PER_PAGE)
 
     def set_count(self, count):
+        count = max(STARTING_SPECTATOR_MIN_NPCS, count)
         if count < len(self.sources):
             del self.sources[count:]
         else:
@@ -54,8 +55,10 @@ class SetupScreen:
             if not value.isdecimal():
                 raise ValueError
             count = int(value)
+            if count < STARTING_SPECTATOR_MIN_NPCS:
+                raise ValueError
         except ValueError:
-            self.message = "Enter a whole number of additional NPCs (0 or more)."
+            self.message = f"Enter a whole number of starting NPCs ({STARTING_SPECTATOR_MIN_NPCS} or more)."
             return False
         self.set_count(count)
         return True
@@ -93,15 +96,24 @@ class SetupScreen:
         for mode, button in self.mode_buttons.items():
             if button.clicked(event):
                 self.mode = mode
+                self.count_input.active = False
+                self.count_input.backspace_held = False
+                self.message = ""
                 return
         if self.back_button.clicked(event) or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
             self.count_input.active = False
             app.screen = "menu"
             return
+        if self.start_button.clicked(event):
+            if self.mode == "player" or self.apply_count():
+                app.start_game()
+            return
+        if self.mode == "player":
+            return
         if self.count_input.handle_event(event) or self.apply_button.clicked(event):
             self.apply_count()
             return
-        if self.remove_button.clicked(event, enabled=bool(self.sources)):
+        if self.remove_button.clicked(event, enabled=len(self.sources) > STARTING_SPECTATOR_MIN_NPCS):
             self.set_count(len(self.sources) - 1)
         elif self.add_button.clicked(event):
             self.set_count(len(self.sources) + 1)
@@ -112,10 +124,6 @@ class SetupScreen:
             self.page -= 1
         elif self.next_button.clicked(event, enabled=self.page < self.last_page):
             self.page += 1
-        elif self.start_button.clicked(event):
-            if self.apply_count():
-                app.start_game()
-            return
         elif event.type == pygame.MOUSEWHEEL:
             self.page = max(0, min(self.last_page, self.page - event.y))
 
@@ -130,21 +138,36 @@ class SetupScreen:
                 self.choose_characters(index)
 
     def update(self, dt):
-        self.count_input.update(dt)
+        if self.mode == "spectator":
+            self.count_input.update(dt)
 
     def draw(self, app):
         app.window.fill(GRASS)
         pygame.draw.rect(app.window, PAPER, (230, 65, 820, 600), border_radius=BORDER_RADIUS)
-        draw_centered_text(app.window, "Set up your game", app.heading_font, 88)
-        app.window.blit(app.font.render("Additional NPCs", True, INK), (260, 148))
+        app.window.blit(app.heading_font.render("Set up your game", True, INK), SETUP_TITLE_POSITION)
+        for mode, button in self.mode_buttons.items():
+            button.draw(app.window, app.small_font)
+            if self.mode == mode:
+                pygame.draw.rect(app.window, ACCENT, button.rect.inflate(4, 4), width=2)
+        self.back_button.draw(app.window, app.font)
+        self.start_button.draw(app.window, app.font)
+        if self.mode == "player":
+            app.window.blit(app.font.render("Starting NPCs: 1", True, INK), (260, 148))
+            pygame.draw.rect(app.window, (225, 232, 210), (260, 215, 760, 32))
+            app.window.blit(app.font.render("NPC 1: judy.json (fixed)", True, INK), (272, 220))
+            draw_wrapped_text(app.window, "Play as your own character, with Judy Judge as the only starting NPC.",
+                              app.font, MUTED, SETUP_PLAYER_NOTE_RECT)
+            draw_wrapped_text(app.window, self.message, app.small_font, MUTED, (260, 564, 760, 38))
+            return
+        app.window.blit(app.font.render("Starting NPCs", True, INK), (260, 148))
         self.count_input.draw(app.window, app.font)
-        self.remove_button.draw(app.window, app.font, enabled=bool(self.sources))
+        self.remove_button.draw(app.window, app.font, enabled=len(self.sources) > STARTING_SPECTATOR_MIN_NPCS)
         self.add_button.draw(app.window, app.font)
         self.apply_button.draw(app.window, app.font)
         self.load_npcs_button.draw(app.window, app.small_font)
-        app.window.blit(app.small_font.render(f"Total: {len(self.sources) + 1} NPCs, including Judy", True, MUTED), (260, 188))
+        app.window.blit(app.small_font.render(f"Total: {len(self.sources)} starting NPCs", True, MUTED), (260, 188))
         pygame.draw.rect(app.window, (225, 232, 210), (260, 215, 760, 32))
-        app.window.blit(app.font.render("NPC 1: judy.json (fixed)", True, INK), (272, 220))
+        app.window.blit(app.font.render("Choose every starting character below", True, INK), (272, 220))
 
         for row in range(self.ROWS_PER_PAGE):
             index = self.page * self.ROWS_PER_PAGE + row
@@ -152,22 +175,14 @@ class SetupScreen:
                 break
             path = self.sources[index]
             y = 258 + row * 65
-            app.window.blit(app.font.render(f"NPC {index + 2}", True, INK), (272, y))
+            app.window.blit(app.font.render(f"NPC {index + 1}", True, INK), (272, y))
             label = path.name if path is not None else "Randomized when the game starts"
             draw_wrapped_text(app.window, label, app.small_font, MUTED, (272, y + 24, 360, 38))
             self.random_buttons[row].draw(app.window, app.font)
             self.json_buttons[row].draw(app.window, app.font)
             selected = self.random_buttons[row] if path is None else self.json_buttons[row]
             pygame.draw.rect(app.window, ACCENT, selected.rect.inflate(6, 6), width=2)
-        if not self.sources:
-            draw_centered_text(app.window, "Only Judy will be in this game.", app.font, 340, MUTED)
         self.previous_button.draw(app.window, app.small_font, enabled=self.page > 0)
         self.next_button.draw(app.window, app.small_font, enabled=self.page < self.last_page)
         draw_centered_text(app.window, f"Page {self.page + 1} of {self.last_page + 1}", app.small_font, 532, MUTED)
         draw_wrapped_text(app.window, self.message, app.small_font, MUTED, (260, 564, 760, 38))
-        for mode, button in self.mode_buttons.items():
-            button.draw(app.window, app.small_font)
-            if self.mode == mode:
-                pygame.draw.rect(app.window, ACCENT, button.rect.inflate(4, 4), width=2)
-        self.back_button.draw(app.window, app.font)
-        self.start_button.draw(app.window, app.font)

@@ -138,15 +138,17 @@ class Application:
 
     def start_game(self):
         try:
-            characters = [load_character(STARTING_CHARACTER_PATH)]
-            characters[0]["Opinions"] = {}
-            # Each simulation owns its profiles and opinions inside its save file.
-            for index, source in enumerate(self.setup.sources, start=1):
+            sources = [STARTING_CHARACTER_PATH] if self.setup.mode == "player" else self.setup.sources
+            if not sources:
+                raise ValueError("Choose at least one starting NPC.")
+            characters = []
+            # Every spectator slot is a resident; Player mode starts only Judy.
+            for index, source in enumerate(sources, start=1):
                 try:
                     characters.append(random_character(trait_mode=self.npc_trait_mode)
                                       if source is None else load_character(source))
                 except (OSError, ValueError) as error:
-                    raise ValueError(f"NPC {index + 1}: {error}") from error
+                    raise ValueError(f"NPC {index}: {error}") from error
                 if source is not None and Path(source).resolve() == STARTING_CHARACTER_PATH.resolve():
                     characters[-1]["Opinions"] = {}
         except (OSError, ValueError) as error:
@@ -155,8 +157,9 @@ class Application:
         self.setup.message = ""
         self.setup.count_input.active = False
         npcs = []
-        columns = max(1, math.ceil(math.sqrt((len(characters) - 1) / 2)))
-        rows = max(1, math.ceil((len(characters) - 1) / (columns * 2)))
+        other_count = max(0, len(characters) - 1)
+        columns = max(1, math.ceil(math.sqrt(other_count / 2)))
+        rows = max(1, math.ceil(other_count / (columns * 2)))
         for index, character in enumerate(characters):
             if index == 0:
                 position = STARTING_NPC_POSITION
