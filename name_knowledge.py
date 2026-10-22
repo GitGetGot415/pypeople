@@ -293,6 +293,7 @@ def introduction_supported(text, name, reference, *, name_requested=False):
         pattern = (r"\b(?:my name is|my name['’]s|name['’]s|i am|i['’]m|call me|you can call me|i go by|i['’]m called)\s+"
                    + escaped + r"|\bi,\s*" + escaped + r"\s*,|(?:^|[.!?]\s*|,\s*)"
                    + escaped + r"\s+here(?=\s*[,!.]|$)|\bmy (?:own )?name\b[^.!?;]{0,45}\b(?:it is|it['’]s)\s+" + escaped)
+        pattern += r"|(?:^|[.!?]\s*)as\s+" + escaped + r",\s*i\b"
         pattern += (r"|\bi(?:['’]d| would)? (?:prefer|like) to be called\s+" + escaped
                     + r"|\byou (?:can|may) call me\s+" + escaped)
         if name_requested or asks_name(speech):

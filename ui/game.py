@@ -195,7 +195,7 @@ class GameScreen:
                         app.end_player_conversation()
                         self.call_choice = None
             return
-        if self.inventory_button.clicked(event):
+        if active_player(world) and self.inventory_button.clicked(event):
             self.pan_start = self.pan_last = None
             self.prompt_input.active = self.prompt_input.backspace_held = False
             self.inventory.open(app.simulation.player)
@@ -223,11 +223,14 @@ class GameScreen:
             return
         if self.request_status.handle_event(app, event):
             return
+        world_buttons = (self.menu_button, self.stats_button, self.save_button, self.pause_button, self.clock_button)
+        if active_player(world):
+            world_buttons += (self.inventory_button,)
         if event.type == pygame.MOUSEWHEEL:
             pos = getattr(event, "pos", pygame.mouse.get_pos())
             if self.world_viewport.collidepoint(pos) and not any(
                 button.rect.collidepoint(pos)
-                for button in (self.menu_button, self.stats_button, self.save_button, self.inventory_button, self.pause_button, self.clock_button)
+                for button in world_buttons
             ):
                 self.zoom_at(pos, event.y)
                 return
@@ -235,7 +238,7 @@ class GameScreen:
             return
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if self.world_viewport.collidepoint(event.pos) and not any(
-                button.rect.collidepoint(event.pos) for button in (self.menu_button, self.stats_button, self.save_button, self.inventory_button, self.pause_button)
+                button.rect.collidepoint(event.pos) for button in world_buttons
             ):
                 self.pan_start = event.pos
                 self.pan_last = event.pos
@@ -455,6 +458,7 @@ class GameScreen:
             self.show_save_message(str(exc))
 
     def draw(self, app):
+        from player import active_player
         draw_world(app.window, app.npcs, app.tree, app.small_font, app.character.renderer,
                    self.view_offset, phase=app.simulation.phase, zoom=self.camera_zoom,
                    viewport=self.world_viewport, snake=app.simulation.snake, world=app.simulation, location=self.location)
@@ -467,7 +471,8 @@ class GameScreen:
         self.menu_button.draw(app.window, app.small_font)
         self.stats_button.draw(app.window, app.small_font)
         self.save_button.draw(app.window, app.small_font)
-        self.inventory_button.draw(app.window, app.small_font)
+        if active_player(app.simulation):
+            self.inventory_button.draw(app.window, app.small_font)
         self.draw_clock(app)
         self.feed.draw(app)
         self.request_status.draw(app)
@@ -829,6 +834,8 @@ class GameScreen:
         from constants import GARDEN_LOCATION
         world = app.simulation
         self.app = app
+        if not active_player(world) and self.inventory.visible and self.inventory.owner is world.player:
+            self.inventory.close()
         world.player_menu_blocked = bool(self.location_menu or self.inventory.visible or self.apartment_open
             or self.call_choice or app.screen != "game")
         if active_player(world):

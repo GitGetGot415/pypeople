@@ -12,6 +12,7 @@ from app_settings import load_settings
 from character_data import load_character, random_character
 from conversation_history import ConversationRecord, describe_opinion_change
 from npc import Behavior, NPC, assign_npc_names
+from player import active_player
 from ollama_manager import load_model
 from simulation_data import InvalidSaveName, SaveStore, capture_simulation, restore_simulation
 from simulation import PendingAction, Simulation
@@ -795,8 +796,10 @@ class Application:
             self.running = False
             return
         if self.game.inventory.visible and self.screen in ("game", "stats"):
-            self.game.inventory.handle_event(self, event)
-            return
+            if active_player(self.simulation) or self.game.inventory.owner is not self.simulation.player:
+                self.game.inventory.handle_event(self, event)
+                return
+            self.game.inventory.close()
         self.screens[self.screen].handle_event(self, event)
 
     def schedule_creations(self, dt, *, composing=False):
@@ -1168,7 +1171,8 @@ class Application:
         self.screens[self.screen].draw(self)
         if self.screen == "game":
             self.game.draw_call_choice(self)
-        if self.screen in ("game", "stats") and self.game.inventory.visible:
+        if (self.screen in ("game", "stats") and self.game.inventory.visible
+                and (active_player(self.simulation) or self.game.inventory.owner is not self.simulation.player)):
             self.game.inventory.draw(self)
         pygame.display.flip()
 
