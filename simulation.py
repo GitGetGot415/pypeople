@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from constants import (
     APPLE_ADVANCE_SECONDS, COMPANY_SOCIAL_RECOVERY, CROWD_LIMIT, DECISION_SECONDS,
-    FAILURE_COOLDOWN, HEARING_RADIUS, MAX_SIMULATION_STEP_SECONDS, PROTECTED_POPULATION,
+    HEARING_RADIUS, MAX_SIMULATION_STEP_SECONDS, PROTECTED_POPULATION,
     RECOVERY_SECONDS, SATISFACTION_PHASE_LOSS, SOCIAL_RADIUS, SNAKE_NAME,
     STARTING_DAY, STARTING_PAUSED, STARTING_PHASE, WITNESS_RADIUS, COMPANY_FATIGUE_PER_SECOND,
 )
@@ -542,40 +542,6 @@ class Simulation:
             partner = target if actor is subject else subject
             remember(actor, partner, event, kind, text, -4 if kind == "eating" else 0)
         return event, fact
-
-    def seek_bargain(self, npc):
-        from snake import SnakeEncounter
-        if not self.tree_current or self.tree_current["actor_id"] != npc.id or not self.is_outdoors(npc) or math.dist((npc.x, npc.y), self.tree.interaction_point) > 8:
-            return None
-        collecting = npc.id in self.snake.advances
-        if ((not collecting and self.available_fruit < 1) or self.snake.encounter
-                or self.snake.selected or self.snake.request_pending
-                or self.snake.recovery_remaining or self.snake.id in npc.cooldowns):
-            npc.cooldowns[self.tree.id] = FAILURE_COOLDOWN
-            npc.reason = "Waiting for an available apple bargain"
-            return None
-        try:
-            contested = npc.id in self.snake.offenses or self.snake.standing.get(npc.id, 0) < -8
-            if (npc.id not in self.snake.pardons and self.eating_permitted(npc)
-                    and (contested or self.population > CROWD_LIMIT)):
-                reason = f"{SNAKE_NAME} disputes this visitor's right to take an apple under its own standards."
-                encounter = SnakeEncounter(self, npc, "judgment", reason)
-                self.snake.judged_phase = self.phase_index
-                return encounter
-            reason = ("Collecting the offering for an apple already given upfront" if collecting else
-                      "An apple upfront, with information or public support owed later")
-            return SnakeEncounter(self, npc, "bargain", reason)
-        except ValueError:
-            return None
-
-    def intercept_harvest(self, npc):
-        if not self.is_outdoors(npc) or math.dist((npc.x, npc.y), self.tree.interaction_point) > 8:
-            return None
-        event, fact = self.observed_event("defiance", npc, self.snake,
-            f"{npc.name} attempted to take guarded fruit without an offering; no apple was taken.")
-        self.snake.offenses[npc.id] = fact.id
-        self.snake.standing[npc.id] = max(-100, self.snake.standing.get(npc.id, 0) - 6)
-        return self.seek_bargain(npc)
 
     def eating_permitted(self, target=None, *, encounter=None, reachable=False):
         if self.population <= PROTECTED_POPULATION or self.snake.recovery_remaining > 0:
