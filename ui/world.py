@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pygame
 
-from constants import INK, PAPER, SHADOW_COLOR, WORLD_COLORS, WORLD_HEIGHT, WORLD_WIDTH
+from constants import GARDEN_LOCATION, INK, PAPER, SHADOW_COLOR, WORLD_COLORS, WORLD_HEIGHT, WORLD_WIDTH
 from constants import APARTMENT_COLOR, APARTMENT_DOOR_COLOR, APARTMENT_DOOR_RECT, APARTMENT_RECT
 from constants import DEFAULT_BUBBLE_SPRITE_SIZE, UI_SMALL_FONT_SIZE
 from .fonts import UnicodeFont
@@ -114,7 +114,7 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     size = map_size(location)
     scene = pygame.Surface(size)
     if location == "garden":
-        _draw_scene(scene, [n for n in npcs if n.location == location], tree, font, phase)
+        _draw_scene(scene, tree, phase)
         surface.fill(WORLD_COLORS[phase][0])
     else:
         surface.fill(INDOOR_BACKGROUND)
@@ -151,19 +151,19 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     surface.set_clip(previous_clip)
 
 
-def _draw_scene(surface, npcs, tree, font, phase):
+def _draw_scene(surface, tree, phase):
+    from locations import feet_bounds
     grass, walkable = WORLD_COLORS[phase]
     # Darken only the band between the walking area and the map's outer edge.
     surface.fill(tuple(channel - 10 for channel in grass))
-    if npcs:
-        left, right, top, bottom = npcs[0].movement_bounds
-        walkable_rect = pygame.Rect(
-            round(left),
-            round(top),
-            round(right - left),
-            round(bottom - top),
-        )
-        pygame.draw.rect(surface, walkable, walkable_rect)
+    left, right, top, bottom = feet_bounds(GARDEN_LOCATION)
+    walkable_rect = pygame.Rect(
+        round(left),
+        round(top),
+        round(right - left),
+        round(bottom - top),
+    )
+    pygame.draw.rect(surface, walkable, walkable_rect)
 
     tree_x = round(tree.x) + tree.offset
     # Shadows lie on the ground beneath every sprite.
