@@ -494,7 +494,7 @@ class Simulation:
                     for other in neighbors):
                 continue  # Keep FIFO positions while a previous occupant clears them.
             arrived = move_toward(actor, point, dt, MOVEMENT_SPEED * (PLAYER_APPROACH_MULTIPLIER if actor is self.player else 1))
-            if arrived and actor is not self.player:
+            if arrived:
                 actor.facing = TREE_QUEUE_FACING
             if index != 0 or self.tree_current is not entry:
                 continue
