@@ -11,7 +11,7 @@ from constants import (INVENTORY_CAPACITY, PLAYER_ID, STARTING_PLAYER_FRUIT, PLA
 from conversation_history import ConversationRecord, remember
 from dialogue_text import contains_question
 from constants import (GARDEN_LOCATION, STARTING_PLAYER_POSITION, STARTING_FACING,
-                       PLAYER_DEFAULT_APPEARANCE, MOVEMENT_SPEED, PLAYER_APPROACH_MULTIPLIER,
+                       PLAYER_DEFAULT_APPEARANCE, MOVEMENT_SPEED, PLAYER_APPROACH_MULTIPLIER, PLAYER_RUN_MULTIPLIER,
                        PLAYER_APPROACH_TIMEOUT, PLAYER_TALK_DISTANCE, PLAYER_EVIDENCE_LIMIT)
 
 
@@ -138,7 +138,7 @@ def update_interaction(world, dt):
         interaction["stage"] = "prompt" if interaction["incoming"] else "conversation"
 
 
-def move_player(world, dx, dy, dt):
+def move_player(world, dx, dy, dt, *, running=False):
     if not can_claim(world) or world.paused:
         return
     from interactions import move_toward
@@ -146,9 +146,10 @@ def move_player(world, dx, dy, dt):
     distance = (dx * dx + dy * dy) ** 0.5
     if distance:
         p = world.player
-        point = clamp_point(p.location, (p.x + dx / distance * MOVEMENT_SPEED * dt,
-                                        p.y + dy / distance * MOVEMENT_SPEED * dt))
-        move_toward(p, point, dt, MOVEMENT_SPEED)
+        speed = MOVEMENT_SPEED * (PLAYER_RUN_MULTIPLIER if running else 1)
+        point = clamp_point(p.location, (p.x + dx / distance * speed * dt,
+                                        p.y + dy / distance * speed * dt))
+        move_toward(p, point, dt, speed)
 
 
 def record_claim(world, speaker, record, text, turn, listener_id):

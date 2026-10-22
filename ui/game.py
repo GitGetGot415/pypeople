@@ -826,6 +826,7 @@ class GameScreen:
     def update_physical(self, app, dt):
         from player import active_player, move_player
         from locations import map_size
+        from constants import GARDEN_LOCATION
         world = app.simulation
         self.app = app
         world.player_menu_blocked = bool(self.location_menu or self.inventory.visible or self.apartment_open
@@ -848,15 +849,19 @@ class GameScreen:
                         or pygame.display.get_init() and pygame.key.get_mods() & (pygame.KMOD_CTRL | pygame.KMOD_ALT))
             if not blocking and app.screen == "game" and dt > 0 and pygame.display.get_init():
                 keys = pygame.key.get_pressed()
-                move_player(world, keys[pygame.K_d] - keys[pygame.K_a], keys[pygame.K_s] - keys[pygame.K_w], dt)
+                move_player(world, keys[pygame.K_d] - keys[pygame.K_a], keys[pygame.K_s] - keys[pygame.K_w], dt,
+                            running=bool(keys[pygame.K_SPACE]))
             width, height = map_size(self.location)
-            viewport = self.world_viewport
-            # Keep the established view_offset API while following each map's bounds.
+            # Dialogue clips the world view but must not move the camera anchor.
+            # Follow freely in the garden, even when it fits inside the window.
             base = ((WINDOW_SIZE[0] - WORLD_WIDTH) / 2, (WINDOW_SIZE[1] - WORLD_HEIGHT) / 2)
             desired = []
-            for extent, view, position in ((width, viewport.width, world.player.x), (height, viewport.height, world.player.y)):
+            for extent, view, position in ((width, WINDOW_SIZE[0], world.player.x), (height, WINDOW_SIZE[1], world.player.y)):
                 scaled = extent * self.camera_zoom
-                desired.append((view - scaled) / 2 if scaled <= view else min(0, max(view - scaled, view / 2 - position * self.camera_zoom)))
+                if self.location == GARDEN_LOCATION:
+                    desired.append(view / 2 - position * self.camera_zoom)
+                else:
+                    desired.append((view - scaled) / 2 if scaled <= view else min(0, max(view - scaled, view / 2 - position * self.camera_zoom)))
             self.camera_offset[:] = [desired[i] - base[i] for i in (0, 1)]
         elif self.selected_npc and not self.viewed_conversation:
             self.close_dialogue()
