@@ -175,7 +175,15 @@ class Application:
             npc.sprite_size = sprite.get_size()
             npcs.append(npc)
         assign_npc_names(npcs)
-        self._activate_simulation(Simulation(npcs, npc_trait_mode=self.npc_trait_mode, mode=self.setup.mode))
+        simulation = Simulation(npcs, npc_trait_mode=self.npc_trait_mode, mode=self.setup.mode)
+        if self.setup.mode == "player":
+            from player import start_call
+            judy = npcs[0]
+            start_call(simulation, judy, dict(key=f"introduction:{judy.id}", kind="introduction",
+                reference=simulation.player.id,
+                reason="Start our first conversation: introduce myself and ask what to call the player. "
+                       "We have not met before; I do not yet know the player's name."))
+        self._activate_simulation(simulation)
         self.menu.message = ""
 
     def sync_save_name(self):

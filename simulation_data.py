@@ -240,7 +240,7 @@ class PlayerOpinionState(SaveModel):
 
 class PlayerCallState(SaveModel):
     key: str = Field(min_length=1)
-    kind: Literal["gift", "news", "followup"]
+    kind: Literal["gift", "news", "followup", "introduction"]
     reference: str = Field(min_length=1)
     reason: str = Field(min_length=1)
     event_id: str = Field(min_length=1)
@@ -1153,12 +1153,16 @@ class SimulationState(SaveModel):
                     or npc.id in reserved_ids
                     or any(npc.id in (a.npc_id, a.target_id) for a in self.pending_actions)
                     or set(call) != {"key", "kind", "reference", "reason", "event_id"}
-                    or call["kind"] not in ("gift", "news", "followup")
+                    or call["kind"] not in ("gift", "news", "followup", "introduction")
                     or call["key"] in npc.resolved_player_calls):
                 raise ValueError("Invalid waiting player call.")
             if call:
                 ref = call["reference"]
-                valid = (npc.inventory["fruit"] > 0 and self.player.inventory_capacity > self.player.inventory["fruit"]
+                valid = (ref == self.player.id and call["key"] == f"introduction:{npc.id}"
+                         and bool(self.player_interaction and self.player_interaction.get("kind") == "resident"
+                                  and self.player_interaction.get("npc_id") == npc.id and self.player_interaction.get("incoming"))
+                         if call["kind"] == "introduction" else
+                         npc.inventory["fruit"] > 0 and self.player.inventory_capacity > self.player.inventory["fruit"]
                          if call["kind"] == "gift" and ref == "fruit" else
                          any(w.id == ref and w.owner_id == npc.id for w in self.creations) if call["kind"] == "gift" else
                          any(b.claim_id == ref for b in npc.beliefs) if call["kind"] == "news" else

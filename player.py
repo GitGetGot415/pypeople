@@ -474,6 +474,9 @@ def call_valid(world, npc, call):
     if not active_player(world) or not available(npc) or not colocated(world.player, npc):
         return False
     ref = call["reference"]
+    if call["kind"] == "introduction":
+        return (ref == world.player.id and call["key"] == f"introduction:{npc.id}"
+                and owns_resident(world, npc) and world.player_interaction.get("incoming"))
     if call["kind"] == "reply":
         return any(r.id == ref and {world.player.id, npc.id} == set(r.participant_ids)
                    and r.turns and r.turns[-1][0] == npc.name and not r.error for r in world.history)
@@ -494,6 +497,14 @@ def clear_call(npc):
     npc.player_call_cooldown = PLAYER_CALL_COOLDOWN
 
 
+def start_call(world, npc, reason):
+    """Claim an incoming meeting before normal activities can reserve its actors."""
+    start_approach(world, npc, incoming=True)
+    npc.player_call = reason.copy()
+    event = world.publish("player_call", (npc,), f"{npc.name} would like to talk to you.")
+    npc.player_call["event_id"] = event.id
+
+
 def update_calls(world, dt):
     for npc in world.npcs:
         npc.player_call_cooldown = max(0.0, npc.player_call_cooldown - dt)
@@ -512,10 +523,7 @@ def update_calls(world, dt):
         reason = call_reason(world, npc)
         if reason and reason["key"] not in npc.resolved_player_calls:
             try:
-                start_approach(world, npc, incoming=True)
+                start_call(world, npc, reason)
             except ValueError:
                 continue
-            npc.player_call = reason.copy()
-            event = world.publish("player_call", (npc,), f"{npc.name} would like to talk to you.")
-            npc.player_call["event_id"] = event.id
             break
