@@ -46,6 +46,7 @@ class Simulation:
         self.visit = None
         self.tree_queue = []
         self.tree_current = None
+        self._tree_exit_targets = {}
         self.player_menu_blocked = False
         self.player_call_check = 0.0
         self.player_acknowledgments = []
@@ -275,7 +276,7 @@ class Simulation:
         if self.player.journey:
             update_journey(self.player, dt)
         update_visit(self, dt)
-        self.update_tree_queue(dt)
+        clearing_tree = self.update_tree_queue(dt)
         self.deliver_arrivals()
         encounter = self.snake.encounter
         if encounter is not None:
@@ -297,12 +298,15 @@ class Simulation:
                 interaction.update(dt)
         from apartments import home_priority
         for npc in self.npcs:
-            home_priority(npc, self, dt)
+            if npc.id not in clearing_tree:
+                home_priority(npc, self, dt)
         if encounter is None:
             # Free residents establish bedtime intent before a new snake follow-up.
             self.snake.update(dt)
         # Check necessary work for every actor before an idle initiator can reserve them.
         for npc in self.npcs:
+            if npc.id in clearing_tree:
+                continue
             if npc.resume_pending and npc.interaction is None and not npc.player_call:
                 npc.resume_activity(self)
             reconsider(npc, self, pressing_only=True)
@@ -323,6 +327,8 @@ class Simulation:
             due.difference_update((initiator.id, recipient.id))
             self.social_rotation = (self.npcs.index(initiator) + 1) % len(self.npcs)
         for npc in self.npcs:
+            if npc.id in clearing_tree:
+                continue
             if npc.id in due:
                 lone_introduction(npc, self)
             reconsider(npc, self)
@@ -427,6 +433,7 @@ class Simulation:
         from constants import TREE_QUEUE_SPACING, TREE_QUEUE_FACING, MOVEMENT_SPEED, PLAYER_APPROACH_MULTIPLIER, PLAYER_APPROACH_TIMEOUT
         from interactions import move_toward
         from locations import clamp_point
+        from player import owns_resident
         for entry in [*self.tree_queue, *([self.tree_current] if self.tree_current else [])]:
             actor = self.participant_by_id(entry["actor_id"])
             unavailable = (actor is None or not self.is_outdoors(actor)
@@ -437,12 +444,57 @@ class Simulation:
         if self.tree_current is None and self.tree_queue and self.snake.encounter is None and not self.snake.recovery_remaining:
             self.tree_current = self.tree_queue.pop(0)
         ordered = ([self.tree_current] if self.tree_current else []) + self.tree_queue
-        for index, entry in enumerate(ordered):
-            actor = self.participant_by_id(entry["actor_id"])
-            if self.snake.encounter and self.snake.encounter.recipient is actor:
+        if not ordered:
+            self._tree_exit_targets.clear()
+            return set()
+        points = [clamp_point("garden", (self.tree.interaction_point[0] - index * TREE_QUEUE_SPACING,
+                                         self.tree.interaction_point[1])) for index in range(len(ordered))]
+        customers = [self.participant_by_id(entry["actor_id"]) for entry in ordered]
+        neighbors = self.outdoor_npcs
+        if self.is_outdoors(self.player):
+            neighbors.append(self.player)
+        queue_positions = {entry["actor_id"]: index for index, entry in enumerate(ordered)}
+        clearing_ids = set()
+        self._tree_exit_targets = {key: point for key, point in self._tree_exit_targets.items()
+                                   if any(actor.id == key for actor in neighbors)}
+        # Finish a departing customer's sidestep before resuming their saved
+        # activity. Passersby keep their normal movement instead of being pushed.
+        for actor in neighbors:
+            position = queue_positions.get(actor.id)
+            eligible = (position is not None if actor is self.player else
+                not (actor.busy or actor.journey or owns_resident(self, actor) or actor.player_call
+                     or actor.request_pending or actor.owner == "player_hold")
+                and (position is not None or actor.resume_pending))
+            if not eligible or position == 0:
+                self._tree_exit_targets.pop(actor.id, None)
                 continue
-            point = clamp_point("garden", (self.tree.interaction_point[0] - index * TREE_QUEUE_SPACING,
-                                           self.tree.interaction_point[1]))
+            obstructed = points if position is None else [p for ahead, p in zip(customers[:position], points[:position])
+                if math.dist((ahead.x, ahead.y), p) > 1e-6]
+            point = next((p for p in obstructed if math.dist((actor.x, actor.y), p) < TREE_QUEUE_SPACING - 1e-6), None)
+            if point is None:
+                self._tree_exit_targets.pop(actor.id, None)
+                continue
+            def clear(p):
+                return (all(math.dist(p, slot) >= TREE_QUEUE_SPACING - 1e-6 for slot in points)
+                    and all(other is actor or math.dist(p, (other.x, other.y)) >= TREE_QUEUE_SPACING - 1e-6
+                            for other in neighbors))
+            exit_point = self._tree_exit_targets.get(actor.id)
+            if exit_point is None or not clear(exit_point):
+                exits = [clamp_point("garden", (point[0] + dx, point[1] + dy))
+                         for dx, dy in ((0, TREE_QUEUE_SPACING), (0, -TREE_QUEUE_SPACING), (TREE_QUEUE_SPACING, 0))]
+                exit_point = next((p for p in exits if clear(p)), None)
+            if exit_point is not None:
+                self._tree_exit_targets[actor.id] = exit_point
+                clearing_ids.add(actor.id)
+                if move_toward(actor, exit_point, dt, MOVEMENT_SPEED * (PLAYER_APPROACH_MULTIPLIER if actor is self.player else 1)):
+                    self._tree_exit_targets.pop(actor.id, None)
+        for index, (actor, entry, point) in enumerate(zip(customers, ordered, points)):
+            if actor.id in clearing_ids or self.snake.encounter and self.snake.encounter.recipient is actor:
+                continue
+            if math.dist((actor.x, actor.y), point) > 1e-6 and any(
+                    other is not actor and math.dist(point, (other.x, other.y)) < TREE_QUEUE_SPACING - 1e-6
+                    for other in neighbors):
+                continue  # Keep FIFO positions while a previous occupant clears them.
             arrived = move_toward(actor, point, dt, MOVEMENT_SPEED * (PLAYER_APPROACH_MULTIPLIER if actor is self.player else 1))
             if arrived and actor is not self.player:
                 actor.facing = TREE_QUEUE_FACING
@@ -462,6 +514,7 @@ class Simulation:
                     self.tree.reserved_by = actor
                 except ValueError as exc:
                     self.leave_tree(actor.id, str(exc))
+        return clearing_ids
 
     def listeners(self, actor, radius=None):
         radius = HEARING_RADIUS if radius is None else radius
