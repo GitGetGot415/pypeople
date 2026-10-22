@@ -8,7 +8,7 @@ from time import monotonic
 
 import pygame
 
-from app_settings import load_settings, save_settings, validate_player_name
+from app_settings import load_settings
 from character_data import load_character, random_character
 from conversation_history import ConversationRecord, describe_opinion_change
 from npc import Behavior, NPC, assign_npc_names
@@ -63,7 +63,6 @@ class Application:
         self.provider = "gemini"
         self.ollama_model = load_model()
         settings = load_settings()
-        self.player_name = settings["player_name"]
         self.npc_trait_mode = settings["npc_trait_mode"]
         self.voice_rewrites = settings["voice_rewrites"]
         self.dialogue_validation = settings["dialogue_validation"]
@@ -130,7 +129,6 @@ class Application:
         self.creative_requests.clear()
         self.player_requests.clear()
         self.simulation = simulation
-        self.simulation.player.name = self.player_name
         self.save_id, self.save_identity = save_id, save_identity
         self.screen = "game"
 
@@ -300,20 +298,11 @@ class Application:
                     inventory=player.inventory.copy(), inventory_space=player.inventory_space,
                     available_to_talk=True)
 
-    def set_player_name(self, name):
-        name = validate_player_name(name)
-        save_settings(self.npc_trait_mode, self.voice_rewrites, self.dialogue_validation,
-                      max_llm_requests=self.requests.max_requests, player_name=name)
-        self.player_name = name
-        if self.simulation:
-            self.simulation.player.name = name
-
     def player_snapshot(self, npc, message=""):
-        from player import work_choices, requested_work_id
+        from player import work_choices, requested_work_id, supplied_player_name
+        from name_knowledge import asks_name
         snapshot = npc.snapshot(self.tree, self.simulation.player.id)
         snapshot.update(player_id=self.simulation.player.id, player_inventory=self.player_target(),
-                        player_identity=dict(actor_id=self.simulation.player.id, name=self.simulation.player.name,
-                                             source="visible name tag"),
                         owned_works=work_choices(self.simulation, npc.id, message))
         from social import phase_label
         snapshot.update(_player_message=message, phase_index=self.simulation.phase_index,
@@ -326,6 +315,13 @@ class Application:
         snapshot["pending_apple_promise"] = next((o.copy() for o in offers if o["status"] == "offered"), None)
         snapshot["known_player_transfers"] = sorted([t for r in self.conversation_history for t in r.transfers
             if {t["giver_id"], t["recipient_id"]} == {self.simulation.player.id, npc.id}], key=lambda t: t["sequence"])[-PLAYER_CONTEXT_TRANSFER_LIMIT:]
+        prior = next((text for speaker, text in reversed(record.turns) if speaker == npc.name), npc.reply) if record else npc.reply
+        supplied = supplied_player_name(message, requested=asks_name(prior))
+        if supplied:
+            # The current introduction is heard now; only acceptance commits it.
+            snapshot["name_knowledge"]["known_names"][self.simulation.player.id] = {"name": supplied}
+            snapshot["player_relationship"]["learned_address"] = {"name": supplied}
+            snapshot["_name_actors"][self.simulation.player.id]["_aliases"].append(supplied)
         return snapshot
 
     def talk_to_call(self, npc):
@@ -625,8 +621,6 @@ class Application:
         self.preempt_creative_request()
         snapshot = {"request_kind": "snake_player", "snake": snake.snapshot(),
                     "player_id": self.simulation.player.id,
-                    "player_identity": dict(actor_id=self.simulation.player.id, name=self.simulation.player.name,
-                                            source="visible name tag"),
                     "_name_actors": actor_catalog(self.simulation),
                     "player_dialogue": self.game.player_record.turns[-12:] if self.game.player_record else []}
         self._submit_player_message(snake, message, snapshot, purpose="snake_player")
@@ -960,8 +954,6 @@ class Application:
                     continue
             self.simulation.player_acknowledgments.remove(acknowledgment)
         self.game.prompt_input.update(dt)
-        if self.game.inventory.visible:
-            self.game.inventory.name_input.update(dt)
         self.settings.key_input.update(dt)
         self.settings.update(self)
         if self.screen == "load_sim":

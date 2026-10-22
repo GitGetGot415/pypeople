@@ -13,6 +13,39 @@ def unquoted_speech(text):
     return re.sub(r'''"[^"]*"|“[^”]*”|‘[^’]*’|(?<!\w)'[^'\n]+'(?!\w)''', " ", text)
 
 
+def validate_environment_speech(text):
+    """Catch concrete contradictions of the fixed garden, not wishes or past lives."""
+    speech = unquoted_speech(text)
+    venue = r"(?:jazz club|nightclub|caf[eé]|restaurant)"
+    mentions_venue = bool(re.search(rf"\b{venue}\b", speech, re.I))
+    missing_tree = (r"\b(?:the|this|that|our) (?:apple )?tree(?:['’]s (?:absence|disappearance)|"
+                    r"\s+(?:is|was|has|had)(?: (?:now|completely|just|entirely))? "
+                    r"(?:gone|missing|absent|vanished|disappeared|been removed))\b|"
+                    r"\b(?:absence|disappearance) of (?:the|our) (?:apple )?tree\b")
+    for sentence in split_sentences(speech):
+        if sentence.rstrip().endswith(("?", "\uFF1F", "\u061F")):
+            continue
+        missing = re.search(missing_tree, sentence, re.I)
+        if missing and not re.search(r"\b(?:if|imagine|thought|mistaken|wrong|not|no|never|does not mean|doesn't mean)\b", sentence[:missing.start()], re.I):
+            raise ValueError("The living apple tree is still present, even with zero apples. Describe missing fruit, not a vanished tree; do not invent its disappearance or destruction.")
+        if not mentions_venue:
+            continue
+        if re.search(r"\b(?:wish|imagine|if|would|could|might|hope|dream|want|love to|let['’]s build)\b", sentence, re.I):
+            continue
+        here = re.search(r"\b(?:here|this garden|the garden|near (?:the|that|our) (?:apple )?tree)\b", sentence, re.I)
+        historical = re.search(r"\b(?:remember|used to|former life|before (?:i|we) arrived|back in|when i was)\b", sentence, re.I)
+        if historical and not here:
+            continue
+        positive = re.search(
+            rf"\b(?:i|we)(?:['’]ve| have)? (?:just )?(?:got back|came back|returned|come back|went|been) (?:from|to) (?:an? |the )?{venue}\b|"
+            rf"\b(?:there['’]s|there is|there was|i found|we found|i see|we see) (?:an? |the )?{venue}\b|"
+            rf"\b(?:a|the) {venue}\s+(?:is|was)\b|"
+            r"\bi found it (?:in|near)\b|\bit['’]s (?:a cozy|in the heart of the garden|near the tree)\b",
+            sentence, re.I)
+        if positive:
+            raise ValueError("No jazz club or other public venue exists in the current garden. Use the grassy area, its one apple tree and the apartment building. A personality or former-life memory does not create a new place here; correct any earlier invented venue instead of elaborating it.")
+
+
 def named_references(text):
     """Present narrator aliases consistently; never apply this to stored dialogue."""
     return re.sub(r"\bthe\s+(?:snake|python)\b", lambda _: SNAKE_NAME, text, flags=re.I)

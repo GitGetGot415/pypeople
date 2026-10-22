@@ -3,23 +3,24 @@
 from dataclasses import dataclass, field
 import re
 from uuid import uuid4
-from typing import ClassVar
 
 from constants import (INVENTORY_CAPACITY, PLAYER_ID, STARTING_PLAYER_FRUIT, PLAYER_CALL_LIMIT,
                        PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, PLAYER_CONTEXT_WORK_LIMIT,
                        PLAYER_OPINION_STEP, GIFT_GIVE_SECONDS, GIFT_SECONDS,
-                       PLAYER_CALL_GIFT_GENEROSITY, PLAYER_CALL_SOCIABILITY, DEFAULT_PLAYER_NAME)
+                       PLAYER_CALL_GIFT_GENEROSITY, PLAYER_CALL_SOCIABILITY)
 from conversation_history import ConversationRecord, remember
 from dialogue_text import contains_question
 
 
 @dataclass
 class Player:
-    # The name tag is a global preference, independent of simulation possessions.
-    name: ClassVar[str] = DEFAULT_PLAYER_NAME
     id: str = PLAYER_ID
     inventory: dict = field(default_factory=lambda: {"fruit": STARTING_PLAYER_FRUIT})
     inventory_capacity: int = INVENTORY_CAPACITY
+
+    @property
+    def name(self):
+        return "the player"
 
     @property
     def inventory_space(self):
@@ -150,12 +151,12 @@ def player_reply_closes(closing, reply, rewritten=()):
 def supplied_player_name(message, *, requested=False):
     from dialogue_rules import unquoted_speech
     speech = unquoted_speech(message).strip()
-    match = re.fullmatch(r"(?:my name is|call me|you can call me|i go by|i am|i['’]m)\s+([\w'-]+(?: [\w'-]+){0,3})[.!]?", speech, re.I)
+    match = re.match(r"(?:my name is|call me|you can call me|i go by|i am|i['’]m)\s+([\w'-]+(?: [\w'-]+){0,3})(?=[,.!?;:]|$)", speech, re.I)
     if match:
         candidate = match[1]
-        if not re.match(r"i (?:am|'m)", speech, re.I) or candidate[0].isupper():
+        if not re.match(r"i(?: am|['’]m)\s", speech, re.I) or candidate[0].isupper():
             return candidate
-    if requested and re.fullmatch(r"[A-Z][\w'-]*(?: [A-Z][\w'-]*){0,3}[.!]?", speech):
+    if requested and re.fullmatch(r"[^\W\d_][\w'-]*(?: [A-Z][\w'-]*){0,3}[.!]?", speech):
         if speech.rstrip(".!").casefold() in {"no", "yes", "thanks", "sorry", "maybe", "okay", "ok", "why", "nevermind"}:
             return None
         return speech.rstrip(".!")

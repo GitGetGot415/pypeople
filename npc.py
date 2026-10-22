@@ -436,11 +436,6 @@ class NPC:
             state["owned_works"] = work_choices(self.world, self.id)
             state["player_relationship"] = {"actor_id": self.world.player.id,
                 "learned_address": self.known_names.get(self.world.player.id), "opinion": self.player_opinion.copy()}
-            if partner_id == self.world.player.id:
-                # Seeing a name tag needs no spoken introduction or saved speech evidence.
-                address = dict(name=self.world.player.name, source="visible name tag")
-                state["name_knowledge"]["known_names"][partner_id] = address.copy()
-                state["player_relationship"]["learned_address"] = address
             state["memories"] = [{"partner_id": memory.partner_id, "kind": memory.kind,
                           "summary": memory.summary, "day": memory.day, "phase": memory.phase}
                                  for memory in relevant_memories(self, partner_id)]

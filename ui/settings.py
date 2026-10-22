@@ -151,7 +151,7 @@ class SettingsScreen:
                     app.game.request_status.set_capacity(limit)
                     try:
                         save_settings(app.npc_trait_mode, app.voice_rewrites, app.dialogue_validation,
-                                      max_llm_requests=limit, player_name=app.player_name)
+                                      max_llm_requests=limit)
                     except OSError:
                         self.error = "Limit applied, but could not save it for the next game launch."
                     if self.save_after_apply and not self.error:
@@ -230,7 +230,7 @@ class SettingsScreen:
                 return
         try:
             save_settings(self.npc_trait_mode, self.voice_rewrites, self.dialogue_validation,
-                          max_llm_requests=app.requests.max_requests, player_name=app.player_name)
+                          max_llm_requests=app.requests.max_requests)
         except OSError:
             self.error = "Could not save your settings. Check folder permissions and try again."
             return

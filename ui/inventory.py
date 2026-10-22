@@ -1,4 +1,4 @@
-"""Player possessions and name tags, plus read-only resident inventories."""
+"""Player possessions and read-only resident inventories."""
 
 import pygame
 
@@ -8,12 +8,10 @@ from constants import (INVENTORY_RECT, INVENTORY_ROW_HEIGHT, INVENTORY_PREVIEW_S
                        INVENTORY_MINUS_RECT, INVENTORY_PLUS_RECT, INVENTORY_GIVE_RECT, INVENTORY_CONFIRM_RECT,
                        INVENTORY_PLAY_RECT, INVENTORY_STOP_RECT, INVENTORY_TITLE_POSITION,
                        INVENTORY_DETAIL_POSITION, INVENTORY_DETAIL_WIDTH, INVENTORY_STATUS_RECT,
-                       INVENTORY_TITLE_WIDTH, INVENTORY_APPLES_POSITION,
-                       PLAYER_NAME_MAX_LENGTH, PLAYER_NAME_LABEL_POSITION, PLAYER_NAME_INPUT_RECT, PLAYER_NAME_SAVE_RECT)
+                       INVENTORY_TITLE_WIDTH, INVENTORY_APPLES_POSITION)
 from .button import Button
 from .creations import CreationsGallery
 from .text import draw_wrapped_text, scrollbar_rects
-from .text_input import TextInput
 
 
 class InventoryPanel:
@@ -31,15 +29,10 @@ class InventoryPanel:
         self.confirm = Button(INVENTORY_CONFIRM_RECT, "Confirm gift offer")
         self.play = Button(INVENTORY_PLAY_RECT, "Play")
         self.stop = Button(INVENTORY_STOP_RECT, "Stop")
-        self.name_input = TextInput(PLAYER_NAME_INPUT_RECT, max_length=PLAYER_NAME_MAX_LENGTH,
-                                    strip_paste=True, placeholder="Your name")
-        self.save_name = Button(PLAYER_NAME_SAVE_RECT, "Set name")
 
     def open(self, owner):
         self.media.close()
         self.owner = owner
-        self.name_input.set_value(owner.name)
-        self.name_input.active = False
         self.visible = True
         self.filter, self.selected_id = "All", "fruit"
         self.scroll = self.recipient_scroll = 0
@@ -49,8 +42,6 @@ class InventoryPanel:
 
     def close(self):
         self.visible = False
-        self.name_input.active = False
-        self.name_input.backspace_held = False
         self.media.close()
 
     def entries(self, world):
@@ -68,18 +59,6 @@ class InventoryPanel:
         if self.close_button.clicked(event):
             self.close()
             return
-        if self.owner is app.simulation.player:
-            self.name_input.handle_event(event)
-            if self.save_name.clicked(event) or (self.name_input.active and event.type == pygame.KEYDOWN
-                                                 and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER)):
-                try:
-                    app.set_player_name(self.name_input.text)
-                except (ValueError, OSError) as exc:
-                    self.status = str(exc) if isinstance(exc, ValueError) else "Could not save your name tag."
-                else:
-                    self.name_input.set_value(app.simulation.player.name)
-                    self.status = f"Name tag set to {app.simulation.player.name}. NPCs can read it when talking to you."
-                return
         pos = getattr(event, "pos", pygame.mouse.get_pos())
         rows = self.entries(app.simulation)
         if event.type == pygame.MOUSEWHEEL:
@@ -203,9 +182,6 @@ class InventoryPanel:
             draw_wrapped_text(surface, "This work is no longer owned here. Select a current possession.", app.font, MUTED,
                               (x, y, INVENTORY_DETAIL_WIDTH, 110))
         if self.owner is app.simulation.player:
-            surface.blit(app.small_font.render("Name tag", True, INK), PLAYER_NAME_LABEL_POSITION)
-            self.name_input.draw(surface, app.small_font)
-            self.save_name.draw(surface, app.small_font)
             enabled = not app.simulation.paused and not app.game.dialogue_open
             can_give = enabled and (self.owner.inventory["fruit"] > 0 if self.selected_id == "fruit" else work is not None)
             self.minus.draw(surface, app.small_font, enabled=enabled and self.selected_id == "fruit")
