@@ -4,7 +4,7 @@ from constants import (DIALOGUE_PANEL_HEIGHT, FAILED_CONVERSATION_SELECTED_COLOR
                        MAX_LLM_REQUESTS, PHASE_PENDING_RECT, WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH)
 from emotions import portrait_expression
 from conversation_history import RecordedTurn, display_parts, uses_original_dialogue
-from name_knowledge import actor_catalog, name_forms
+from dialogue_context import actor_catalog, name_forms
 from constants import (APARTMENT_INSPECTOR_CLOSE_RECT, APARTMENT_INSPECTOR_RECT, APARTMENT_INSPECTOR_ROW_HEIGHT,
                        APARTMENT_INSPECTOR_CONTENT_INSET, APARTMENT_INSPECTOR_CONTENT_TOP,
                        APARTMENT_INSPECTOR_TITLE_OFFSET, APARTMENT_RECT, MODAL_OVERLAY_COLOR)
@@ -548,7 +548,8 @@ class GameScreen:
         status = self.selected_npc.status if self.selected_npc is not None else f"{app.simulation.population} residents"
         request = app.pending_player_request(self.selected_npc)
         if request:
-            state = "Queued" if (app.session_id, request["id"]) in app.requests.pending else "Thinking"
+            worker = app.requests.workers.get((app.session_id, request["id"]))
+            state = "Queued" if worker and worker.control and worker.control.stage == "Waiting for provider admission" else "Thinking"
             status = f"{state} for {self.selected_npc.name}... / {status}"
         elif self.selected_npc.end_conversation:
             status = "Click Done when you've finished reading."

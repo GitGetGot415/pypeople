@@ -25,7 +25,7 @@ from constants import (
 )
 from interactions import (company_point, conversation_points, dialogue_finished, face_each_other, face_toward,
                           finish_generated_dialogue, move_toward, record_failed_dialogue, record_generated_turns)
-from name_knowledge import actor_catalog, commit_names, name_context, orientation_context, validate_names, validate_orientation
+from dialogue_context import actor_catalog, name_forms, orientation_context, validate_orientation
 
 
 ACTIVITY_FIELDS = (
@@ -137,7 +137,6 @@ class NPC:
     current_concern: ConversationConcern | None = None
     conversation_pause_remaining: float = 0.0
     conversation_return_remaining: float = 0.0
-    known_names: dict = field(default_factory=dict)
     player_opinion: dict = field(default_factory=lambda: {"opinion": 0, "reason": ""})
     player_call: dict | None = None
     player_call_cooldown: float = 0.0
@@ -417,7 +416,6 @@ class NPC:
             "npc_id": self.id,
             "npc_name": self.name,
             "character": {key: value for key, value in self.character.items() if key != "Opinions"},
-            "name_knowledge": name_context(self),
             "_name_actors": actor_catalog(self.world, self.location) if self.world else {},
             "facing": DIRECTIONS[self.facing],
             "selected": self.selected,
@@ -443,7 +441,7 @@ class NPC:
             from player_story import starting_encounter, starting_dialogue_context
             state["owned_works"] = work_choices(self.world, self.id)
             state["player_relationship"] = {"actor_id": self.world.player.id,
-                "learned_address": self.known_names.get(self.world.player.id), "opinion": self.player_opinion.copy()}
+                "opinion": self.player_opinion.copy()}
             state["memories"] = [{"partner_id": memory.partner_id, "kind": memory.kind,
                           "summary": memory.summary, "day": memory.day, "phase": memory.phase}
                                  for memory in relevant_memories(self, partner_id)]
@@ -470,7 +468,6 @@ class NPC:
                 "apple_bargain": {"stage": "apple already received; offering still owed", **advance} if advance else None,
             }
         else:
-            state.pop("name_knowledge", None)
             state.pop("_name_actors", None)
             state["character"].pop("Opinions", None)
             for field in PROFILE_FIELDS:
@@ -703,8 +700,8 @@ class NPC:
 
 def assign_npc_names(npcs, *, used_names=()):
     """Assign new labels without renaming any existing residents."""
-    from constants import PLAYER_LABEL
-    used = {name.casefold() for name in used_names} | {"python", SNAKE_NAME.casefold(), PLAYER_LABEL.casefold()}
+    from constants import PLAYER_LABEL, PLAYER_NAME_TAG
+    used = {name.casefold() for name in used_names} | {"python", SNAKE_NAME.casefold(), PLAYER_LABEL.casefold(), PLAYER_NAME_TAG.casefold()}
     for npc in npcs:
         base = npc.character["Name"].strip() or DEFAULT_CHARACTER_NAME
         label, number = base, 2
@@ -805,7 +802,6 @@ class Conversation:
             return
         from llm import (dialogue_validation_errors, validate_dialogue_format,
                          validate_dialogue_speakers, validate_resident_grounding)
-        from name_knowledge import record_self_introductions
         # Reject stale actor snapshots before displaying or committing anything.
         if getattr(self, "request_roster_revision", self.initiator.world.roster_revision) != self.initiator.world.roster_revision:
             raise ValueError("The resident roster changed while dialogue was being prepared. Retry this meeting.")
@@ -830,20 +826,8 @@ class Conversation:
                 "initiator": self.initiator.snapshot(self.initiator.world.tree),
                 "recipient": self.recipient.snapshot(self.initiator.world.tree),
                 "_information_validation": asdict(self.information_context) if self.information_context else None})
-        name_snapshot = {"request_kind": "conversation", "interaction_id": self.id,
-                         "purpose": self.purpose, "arrival_focus": self.opening_kind == "orientation", "_dialogue_validation": dialogue_validation,
-                         "initiator": self.initiator.snapshot(self.initiator.world.tree),
-                         "recipient": self.recipient.snapshot(self.initiator.world.tree),
-                         "_name_actors": self.name_actors}
-        record_self_introductions(response.turns, name_snapshot)
-        knowledge, _, name_changes = validate_names(response.turns, name_snapshot)
-        if response.handoff_thanks:
-            from llm import ConversationTurn
-            thanks_role = "recipient" if response.gift and response.gift.recipient_id == self.recipient.id else "initiator"
-            validate_names([ConversationTurn(speaker=thanks_role, parts=response.handoff_thanks)], {
-                **name_snapshot, thanks_role: {**name_snapshot[thanks_role],
-                    "name_knowledge": {"known_names": knowledge[thanks_role]}}})
-        orientation_discussed = validate_orientation(response, name_snapshot)
+        orientation_discussed = validate_orientation(response, {
+            "arrival_focus": self.opening_kind == "orientation", "_dialogue_validation": dialogue_validation})
         if not dialogue_validation:
             self.record.dialogue_errors = list(dict.fromkeys([
                 *response._dialogue_errors,
@@ -869,7 +853,7 @@ class Conversation:
         if not self.social_effects_applied:
             commit_agreements(self)
             commit_information(self)
-            commit_names(self, name_changes)
+            self.record.name_forms = name_forms(self.name_actors)
             goal = self.initiator.goal
             if goal and goal.id == self.goal_id and goal.status == "active":
                 goal.last_attempt_phase = self.initiator.world.phase_index

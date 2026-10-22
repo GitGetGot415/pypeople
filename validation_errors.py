@@ -7,8 +7,6 @@ class RecoveryKind(str, Enum):
     GENERAL = "general"
     MISSING_DISCLOSURE = "missing_disclosure"
     KNOWN_ENCOUNTER = "known_encounter"
-    UNKNOWN_NAME = "unknown_name"
-    NAME_QUESTION = "name_question"
     MISSING_PROMISE = "missing_promise"
     MISSING_ACCEPTANCE = "missing_acceptance"
     UNMATCHED_ACCOUNT = "unmatched_account"

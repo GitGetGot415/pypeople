@@ -147,7 +147,7 @@ def record_generated_turns(interaction, turns, rewritten_parts=()):
         actor = interaction.initiator if turn.speaker == "initiator" else interaction.recipient
         rewritten = rewritten_parts[index] if rewritten_parts else ()
         interaction.record.add_turn(actor.name, turn.text, [part.model_dump() for part in turn.parts], rewritten,
-                                    introductions=[intro.model_dump() for intro in turn.introductions], speaker_id=actor.id)
+                                    speaker_id=actor.id)
 
 
 def record_failed_dialogue(interaction, turns):

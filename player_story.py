@@ -5,13 +5,13 @@ from constants import SNAKE_NAME, STARTING_DAY, STARTING_PHASE, STARTING_PLAYER_
 
 PLAYER_START_ENCOUNTER = "player-start-encounter"
 INTRODUCTION_REASON = (
-    "Start our first conversation: introduce myself and ask what to call the player. "
+    "Start our first conversation: greet the player and discuss arriving here. "
     "The player is the first other person I have seen here. "
-    "We have not met before; I do not yet know the player's name."
+    "We have not met before; their floating tag already shows their name."
 )
 JUDY_OPENING = (
     "Hi, I'm {name}. I arrived here yesterday, and you're the first other person "
-    "I've seen here. What should I call you?"
+    "I've seen here."
 )
 
 
@@ -30,7 +30,7 @@ def starting_dialogue_context(world, resident_id):
         f"The snake the player is referring to IS {SNAKE_NAME}, the python guarding the apple tree. "
         "There is only one snake here, not a separate snake and a human tree guard. "
         f"Before this player arrived, you had a spoken conversation with {SNAKE_NAME}. "
-        "You exchanged names and heard it explain its apple "
+        "You could read its floating name tag and heard it explain its apple "
         "bargains and claimed divine role. You already know it speaks. The player is the first "
         "other human you have seen here; that does not include the snake. Recall that conversation "
         "when asked about the snake, rather than describing an unfamiliar animal you have only watched. "
@@ -45,14 +45,13 @@ def prepare_player_start(world):
     resident = world.npcs[0]
     add_fact(world, "snake_claim", world.snake, resident, PLAYER_START_ENCOUNTER, None,
              f"{resident.name} arrived in the garden and met {SNAKE_NAME}, the python guarding the apple tree. "
-             f"They exchanged names. {SNAKE_NAME} explained that it controls access to the apples: "
+             f"{SNAKE_NAME} explained that it controls access to the apples: "
              "when fruit is available, it gives an apple upfront in return for a private recollection "
              "or public endorsement owed later. No apple was taken and no obligation was agreed. "
              f"{SNAKE_NAME} described itself as a divine messenger and called this place purgatory; "
              f"{resident.name} heard these claims without knowing whether they are true. "
              f"At that time, {resident.name} had seen no other human here.",
              [resident, world.snake])
-    resident.known_names[world.snake.id] = dict(name=SNAKE_NAME, conversation_id=None, turn=0)
     resident.attitudes.update(
         belief_reason=f"Has heard {SNAKE_NAME}'s claims but does not know whether they are true.",
         trust_reason=f"Has met {SNAKE_NAME} and heard its apple terms, but has not made a bargain.",
@@ -79,7 +78,7 @@ def valid_introduction_call(world, npc, call):
 def scripted_player_opening(world, npc):
     """Record the first greeting once, before submitting any player reply to the model."""
     from conversation_history import ConversationRecord
-    from name_knowledge import actor_catalog, name_forms, orientation_speech
+    from dialogue_context import actor_catalog, name_forms, orientation_speech
     from player import active_player, clear_call, owns_resident
 
     if (not active_player(world) or not owns_resident(world, npc)
@@ -114,12 +113,6 @@ def validate_starting_history(world, residents):
                 or encounter.conversation_id is not None
                 or encounter.witness_ids != [resident.id, world.snake.id]):
             raise ValueError("Invalid prior-day starting encounter.")
-
-
-def validate_starting_name(world, resident_id, target_id, learned):
-    encounter = starting_encounter(world, resident_id)
-    if encounter is None or target_id != world.snake.id or learned["turn"] != 0:
-        raise ValueError("An initial name requires the resident's prior-day starting encounter.")
 
 
 def resident_arrival_days(world):

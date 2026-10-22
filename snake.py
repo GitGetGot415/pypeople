@@ -75,7 +75,6 @@ class Snake:
     request_pending: bool = False
     command_revision: int = 0
     retry_request: dict | None = None
-    known_names: dict = field(default_factory=dict)
     rng: random.Random = field(default_factory=random.Random, repr=False, compare=False)
 
     @property
@@ -127,7 +126,7 @@ class Snake:
 
     def snapshot(self, tree=None):
         from social import account_view, claim_by_id
-        from name_knowledge import actor_catalog
+        from dialogue_context import actor_catalog
         # Rehearing an event cannot replace the snake's own firsthand knowledge.
         by_fact = {}
         for belief in self.beliefs:
@@ -140,8 +139,7 @@ class Snake:
             claim = claim_by_id(self.world, belief.claim_id)
             known.append(account_view(self.world, claim, belief))
         return {"actor_id": self.id, "name": self.name, "activity": self.status,
-                "name_rule": "knows_resident_names", "_name_actors": actor_catalog(self.world),
-                "name_knowledge": {"own_name": SNAKE_NAME, "known_names": self.known_names.copy()},
+                "_name_actors": actor_catalog(self.world),
                 "known_accounts": known, "doctrine": SNAKE_DOCTRINE,
                 "tree_fruit": self.world.tree.fruit, "tree_available_fruit": self.world.available_fruit,
                 "day": self.world.day, "phase": self.world.phase,
@@ -274,7 +272,7 @@ class SnakeEncounter:
 
     def snapshot(self, tree=None, npcs=None):
         from social import account_view, claim_by_id
-        from name_knowledge import actor_catalog
+        from dialogue_context import actor_catalog
         npc, snake, world = self.recipient, self.initiator, self.world
         advance = snake.advances.get(npc.id)
         can_give_apple = self.reserved and world.tree.fruit > 0 and not advance
@@ -325,7 +323,7 @@ class SnakeEncounter:
 
     def set_response(self, response, *, reading=False, rewritten_parts=(), dialogue_validation=True):
         from llm import dialogue_validation_errors, validate_snake_response
-        from name_knowledge import commit_names, orientation_speech, snake_name_witnesses, validate_names
+        from dialogue_context import name_forms, orientation_speech
         from social import claim_by_id
         if not self.accepts_response or not self.request_context:
             return
@@ -347,23 +345,13 @@ class SnakeEncounter:
                 raise ValueError("An account changed while this exchange was being prepared. Retry the encounter.")
         if npc.attitudes != self.request_context["resident"]["private_context"]["snake_attitudes"]:
             raise ValueError("The resident's attitudes changed during generation. Retry the encounter.")
-        witnesses = [p for p in world.listeners(npc) if p is not npc and p.id in self.request_context["audience_ids"]]
-        witnessed = snake_name_witnesses({**self.request_context,
-            "_name_audience": [p.snapshot(world.tree) for p in witnesses],
-            "_name_snake_audience": [p.snapshot(world.tree) for p in world.listeners(self.initiator) if p is not npc]},
-            response.decision)
-        _, _, name_changes = validate_names(response.turns, {**self.request_context,
-            "_dialogue_validation": dialogue_validation,
-            "resident": npc.snapshot(world.tree), "_name_witnesses": witnessed})
         if not dialogue_validation:
             self.record.dialogue_errors = list(dict.fromkeys([
                 *response._dialogue_errors, *dialogue_validation_errors(response, self.request_context)]))
         # Speech describing a handoff is displayed only after the real transfer commits.
         world.commit_snake_response(self, response)
         record_generated_turns(self, response.turns, rewritten_parts)
-        for index, people in witnessed.items():
-            self.record.turns[index].witnesses = [p["npc_id"] for p in people]
-        commit_names(self, name_changes)
+        self.record.name_forms = name_forms(self.request_context.get("_name_actors", {}))
         self.record.orientation_discussed = orientation_speech(turn.text for turn in response.turns)
         self.stage = "dialogue"
         self.record.status = "Judgment announced" if self.purpose == "judgment" else "Dialogue ready"
@@ -531,7 +519,7 @@ class PlayerSnakeEncounter(SnakeEncounter):
 
     def player_snapshot(self, message, turn):
         from player import relevant_claims
-        from name_knowledge import actor_catalog
+        from dialogue_context import actor_catalog
         world, player, snake = self.world, self.recipient, self.initiator
         advance = snake.advances.get(player.id)
         can_give = bool(not advance and world.tree.fruit > 0)
@@ -607,13 +595,6 @@ class PlayerSnakeEncounter(SnakeEncounter):
             self.record.accepted_player_turns.remove(current["turn"])
             raise
         self.record.dialogue_errors = list(dict.fromkeys([*self.record.dialogue_errors, *response._dialogue_errors]))
-        from player import supplied_player_name
-        from name_knowledge import asks_name
-        prior = self.record.turns[current["turn"] - 1].text if current["turn"] else ""
-        name = supplied_player_name(message, requested=asks_name(prior))
-        if name:
-            self.initiator.known_names[self.recipient.id] = dict(name=name, conversation_id=self.record.id, turn=current["turn"])
-            self.record.turns[current["turn"]].introductions = [dict(actor_id=self.recipient.id, name=name, reference="self")]
         self.record.add_turn(self.initiator.name, response.reply,
             [{"text": response.reply, "emotion": {"name": "neutral", "intensity": 0}}], rewritten)
         if decision.startswith("advance_"):

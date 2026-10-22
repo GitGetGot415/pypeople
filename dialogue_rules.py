@@ -151,7 +151,7 @@ def validate_speaker_identity(text, speaker, listener, *, allow_third_person=Fal
                     "Names are allowed for direct address, introductions, and explicit quotations.")
 
 
-def validate_rewrite_identity(original, rewritten, *, speaker, listener, names=(), introductions=()):
+def validate_rewrite_identity(original, rewritten, *, speaker, listener, names=()):
     """A display voice may use third person, but cannot address itself as its partner."""
     validate_speaker_identity(rewritten, speaker, listener, allow_third_person=True)
     names = sorted(set(names) | {name for actor in (speaker, listener) if actor and actor != "You"
@@ -167,16 +167,6 @@ def validate_rewrite_identity(original, rewritten, *, speaker, listener, names=(
         raise ValueError("The voice rewrite added, changed or removed a participant's name. Keep each original name and its exact form.")
     if references(unquoted_speech(original)) != references(unquoted_speech(rewritten)):
         raise ValueError("The voice rewrite changed a quoted name into an actual reference, or the reverse.")
-    from name_knowledge import introduction_supported
-    for name in before:
-        if introduction_supported(original, name, "self") != introduction_supported(rewritten, name, "self"):
-            raise ValueError("The voice rewrite changed an introduction. Preserve the original name-learning effect.")
-    for intro in introductions:
-        # With base validation off, the original can carry bogus introduction
-        # metadata. Its absence in both texts is a base error, not rewrite drift.
-        if (introduction_supported(original, intro["name"], intro["reference"])
-                and not introduction_supported(rewritten, intro["name"], intro["reference"])):
-            raise ValueError("The voice rewrite changed an introduction. Preserve its identifying reference and learned form.")
 
 
 def validate_english(text, names=()):

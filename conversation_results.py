@@ -10,7 +10,7 @@ from apartments import offer_invitation, pending_invitation
 from conversation_history import describe_opinion_change
 from dialogue import ConversationTurn, ConversationPart
 from interactions import record_failed_dialogue
-from name_knowledge import actor_catalog, name_forms, orientation_speech, validate_player_reply_names
+from dialogue_context import actor_catalog, name_forms, orientation_speech
 from npc import Behavior
 from player import owns_conversation
 from simulation import PendingAction
@@ -107,8 +107,9 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
             error = str(exc)
     if not error and dialogue_validation:
         try:
-            person = npc.snapshot(world.tree)
-            validate_player_reply_names(result.reply, snapshot, person=person)
+            from constants import PLAYER_NAME_TAG
+            from dialogue_rules import validate_speaker_identity
+            validate_speaker_identity(result.reply, npc.character["Name"], PLAYER_NAME_TAG)
         except ValueError as exc:
             error = str(exc)
     if not error:

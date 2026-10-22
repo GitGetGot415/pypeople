@@ -23,15 +23,15 @@ from apartments import HOME_BEHAVIORS, INDOOR_BEHAVIORS, entrance
 from constants import (APARTMENT_ID, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_RANGE, CREATIVE_QUEUE_SECONDS,
                        HOME_ARRIVAL_TOLERANCE, OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE, WAKE_DELAY_RANGE)
 from conversation_history import ConversationRecord, Memory, WorldEvent
-from dialogue import ConversationPart, ConversationTurn, NameIntroduction, EmotionReaction
+from dialogue import ConversationPart, ConversationTurn, EmotionReaction
 from llm import AcceptedProposal, DisclosureChoice, GiftOffer, LeverageUse, ThirdPartyOpinion, ResidentGift
 from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree
 from simulation import PendingAction, Simulation
 from player import Player, PlayerHandoff
-from constants import PLAYER_ID, PLAYER_LABEL, PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, PLAYER_CALL_LIMIT
+from constants import PLAYER_ID, PLAYER_LABEL, PLAYER_NAME_TAG, PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, PLAYER_CALL_LIMIT
 from snake import Snake, SnakeEncounter
 from purgatory import Attitudes
-from player_story import (validate_starting_history, validate_starting_name,
+from player_story import (validate_starting_history,
                           valid_introduction_call, resident_arrival_days)
 from social import (Belief, Claim, ConcernKind, ConversationConcern, Disclosure, Fact, FactKind, Goal, GoalKind, OpinionEffect, Promise, Proposal, ClaimOption,
                     Stance, information_from_dict, phase_index, validate_agreements, validate_information)
@@ -123,12 +123,6 @@ class DepartureState(SaveModel):
     event_id: str = Field(min_length=1)
 
 
-class LearnedNameState(SaveModel):
-    name: str = Field(min_length=1)
-    conversation_id: str | None = Field(min_length=1)
-    turn: int = Field(ge=0)
-
-
 class PlayerOpinionState(SaveModel):
     opinion: int = Field(strict=True, ge=-100, le=100)
     reason: str = Field(max_length=400)
@@ -214,7 +208,6 @@ class NPCState(ActivityState):
     current_concern: ConcernState | None
     conversation_pause_remaining: float = Field(ge=0, le=max(CONVERSATION_PAUSE_RANGE[1], FAILURE_COOLDOWN))
     conversation_return_remaining: float = Field(ge=0, le=CONVERSATION_RETURN_PAUSE)
-    known_names: dict[str, LearnedNameState] = Field(default_factory=dict)
     player_opinion: dict
     player_call: dict | None
     player_call_cooldown: float = Field(ge=0, le=PLAYER_CALL_COOLDOWN)
@@ -285,8 +278,6 @@ class HistoryState(SaveModel):
     rewritten_parts: dict[int, list[str]] = Field(default_factory=dict)
     failed_turns: list[ConversationTurn] = Field(default_factory=list)
     name_forms: list[str] = Field(default_factory=list)
-    name_introductions: dict[int, list[NameIntroduction]] = Field(default_factory=dict)
-    name_witnesses: dict[int, list[str]] = Field(default_factory=dict)
     orientation_discussed: bool = False
     dialogue_errors: list[str] = Field(default_factory=list)
     outcomes: list[str]
@@ -301,9 +292,7 @@ class HistoryState(SaveModel):
         data.update(turns=record.transcript,
                     dialogue_parts={i: t.parts for i, t in enumerate(record.turns)
                                     if any("emotion" in p for p in t.parts)},
-                    rewritten_parts={i: t.rewritten for i, t in enumerate(record.turns) if t.rewritten},
-                    name_introductions={i: t.introductions for i, t in enumerate(record.turns) if t.introductions},
-                    name_witnesses={i: t.witnesses for i, t in enumerate(record.turns) if t.witnesses})
+                    rewritten_parts={i: t.rewritten for i, t in enumerate(record.turns) if t.rewritten})
         return cls.model_validate(data)
 
     def restore(self, actor_ids):
@@ -311,13 +300,10 @@ class HistoryState(SaveModel):
         data = self.model_dump()
         parts = data.pop("dialogue_parts")
         rewrites = data.pop("rewritten_parts")
-        introductions = data.pop("name_introductions")
-        witnesses = data.pop("name_witnesses")
         transcript = data.pop("turns")
         record = ConversationRecord(**data)
         for index, (speaker, text) in enumerate(transcript):
             record.add_turn(speaker, text, parts.get(index), rewrites.get(index, ()),
-                            introductions=introductions.get(index, ()), witnesses=witnesses.get(index, ()),
                             speaker_id=actor_ids[speaker])
         return record
 
@@ -413,7 +399,6 @@ class AppleAdvanceState(SaveModel):
 
 
 class SnakeState(SaveModel):
-    known_names: dict[str, LearnedNameState]
     id: str = Field(min_length=1)
     x: float = Field(ge=0, le=WORLD_WIDTH)
     y: float = Field(ge=0, le=WORLD_HEIGHT)
@@ -617,14 +602,12 @@ class SimulationState(SaveModel):
                 job_ids.add(job.id)
         actors = {n.id: (n.display_name or n.character["Name"]) for n in residents}
         actors[self.snake.id] = SNAKE_NAME
-        authored_names = {actors[n.id]: n.character["Name"] for n in residents}
-        authored_names[SNAKE_NAME] = SNAKE_NAME
         ids = set(actors)
         now = phase_index(self.day, self.phase)
         if len(ids) != len(residents) + 1 or self.tree.id in ids or len({v.casefold() for v in actors.values()}) != len(ids):
             raise ValueError("Actor IDs and stable display names must be unique.")
         if (self.player.id in ids or self.tree.id == self.player.id
-                or PLAYER_LABEL.casefold() in {name.casefold() for name in actors.values()}):
+                or {PLAYER_LABEL.casefold(), PLAYER_NAME_TAG.casefold()} & {name.casefold() for name in actors.values()}):
             raise ValueError("Player identity conflicts with a physical actor.")
         actors[self.player.id] = PLAYER_LABEL
         ids.add(self.player.id)
@@ -650,12 +633,6 @@ class SimulationState(SaveModel):
             return record
         def participant(actor_id, record):
             return actor_id in ids and actors[actor_id] in record.participants
-        from name_knowledge import asks_name, introduction_supported
-        def introduction_evidence(record, index, intro):
-            previous = record.turns[index - 1] if index else None
-            requested = bool(previous and previous[0] != record.turns[index][0]
-                and asks_name(previous[1], self_name=authored_names.get(previous[0], "")))
-            return introduction_supported(record.turns[index][1], intro.name, intro.reference, name_requested=requested)
         for event in self.events:
             if not set(event.participants) <= ids or phase_index(event.day, event.phase) > now:
                 raise ValueError("Invalid event actors or date.")
@@ -722,26 +699,6 @@ class SimulationState(SaveModel):
             for index, parts in record.dialogue_parts.items():
                 if index >= len(record.turns) or " ".join(p.text.strip() for p in parts) != record.turns[index][1]:
                     raise ValueError("Dialogue parts do not match their recorded turn.")
-            for index, introductions in record.name_introductions.items():
-                if not 0 <= index < len(record.turns):
-                    raise ValueError("Invalid introduction turn.")
-                # Diagnosed metadata is retained even when its name effect was
-                # unusable. Learned-name references are checked separately below.
-                if record.dialogue_errors:
-                    continue
-                if len({i.actor_id for i in introductions}) != len(introductions):
-                    raise ValueError("Invalid introduction turn or duplicate introduced actor.")
-                for intro in introductions:
-                    missing_speech = not introduction_evidence(record, index, intro)
-                    if (intro.actor_id not in ids or missing_speech
-                            or intro.reference == "self" and record.turns[index][0] != actors[intro.actor_id]):
-                        raise ValueError("Invalid introduction identity or spoken evidence.")
-            for index, witnesses in record.name_witnesses.items():
-                if (not 0 <= index < len(record.turns) or not set(witnesses) <= ids
-                        or not all(any((f.kind == "endorsement" and index == 1 or f.kind == "snake_claim" and index == 0)
-                                       and f.conversation_id == record.id
-                                       and witness in f.witness_ids for f in self.facts) for witness in witnesses)):
-                    raise ValueError("A witnessed introduction requires a recorded hearing event.")
         if sorted(t["sequence"] for t in transfer_order) != list(range(len(transfer_order))):
             raise ValueError("Transfer history must retain its unique commit order.")
         owners = {w.id: w.creator_id for w in self.creations}
@@ -835,29 +792,6 @@ class SimulationState(SaveModel):
             if npc.id in live_ids and npc.current_concern is None:
                 raise ValueError("A living resident must have a concern.")
             validate_concern(npc.current_concern, npc)
-            from name_knowledge import forms
-            for target_id, learned in npc.known_names.items():
-                learned = learned.model_dump()
-                target = next((n for n in residents if n.id == target_id), None)
-                actual_name = (learned["name"] if target_id == self.player.id else
-                               SNAKE_NAME if target_id == self.snake.id else target.character["Name"] if target else "")
-                if (target_id == npc.id or not actual_name or set(learned) != {"name", "conversation_id", "turn"}
-                        or learned["name"] not in forms(actual_name)):
-                    raise ValueError("Invalid learned name or actor reference.")
-                if learned["conversation_id"] is None:
-                    validate_starting_name(self, npc.id, target_id, learned)
-                    continue
-                source = record_for(learned["conversation_id"])
-                turn = learned["turn"]
-                if (type(turn) is not int or not 0 <= turn < len(source.turns)
-                        or actors[npc.id] not in source.participants and npc.id not in source.name_witnesses.get(turn, [])):
-                    raise ValueError("A learned name requires accepted spoken source evidence.")
-                if not any(intro.actor_id == target_id and intro.name == learned["name"]
-                           and (source.dialogue_errors or introduction_evidence(source, turn, intro))
-                           and (intro.reference != "self" or source.turns[turn][0] == actors[target_id])
-                           and source.turns[turn][0] != actors[npc.id]
-                           for intro in source.name_introductions.get(turn, [])):
-                    raise ValueError("A learned name must be supported by its source speech.")
             if npc.arrival_day > self.day or any(m.partner_id not in ids or phase_index(m.day, m.phase) > now for m in npc.memories):
                 raise ValueError("Invalid arrival day or personal memory.")
             if npc.departure and (phase_index(npc.departure.day, npc.departure.phase) > now or not any(f.source_id == npc.departure.event_id and f.kind == "eating" and f.object_id == npc.id for f in self.facts)):
@@ -1416,10 +1350,7 @@ def validate_physical_state(state):
         raise ValueError("A resident tree encounter must own the current FIFO turn.")
     if state.tree.reserved_by is not None and (not state.tree_current or state.tree.reserved_by != state.tree_current["actor_id"]):
         raise ValueError("Physical tree ownership must match the current customer.")
-    for actor_id, learned in state.snake.known_names.items():
-        record = records.get(learned.conversation_id)
-        if actor_id != state.player.id or not record or learned.turn not in record.accepted_player_turns or state.snake.id not in record.participant_ids:
-            raise ValueError("The snake's learned player name requires accepted original speech.")
+
     saved = state.player_snake_encounter
     if saved:
         if set(saved) != {*PLAYER_SNAKE_FIELDS, "record"} or not state.tree_current or state.tree_current["actor_id"] != state.player.id:
@@ -1563,7 +1494,6 @@ def restore_simulation(state):
             current_concern=ConversationConcern(**saved.current_concern.model_dump()) if saved.current_concern else None,
             conversation_pause_remaining=saved.conversation_pause_remaining,
             conversation_return_remaining=saved.conversation_return_remaining,
-            known_names=deepcopy(saved.model_dump()["known_names"]),
             attitudes=saved.attitudes.model_dump(),
             arrival_day=saved.arrival_day, departure=saved.departure.model_dump() if saved.departure else None,
         )

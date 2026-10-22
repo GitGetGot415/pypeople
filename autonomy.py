@@ -1,7 +1,7 @@
 """Small, local activity choices. Autonomous activities never call a model."""
 
 import math
-from name_knowledge import orientation_context
+from dialogue_context import orientation_context
 
 from npc import Behavior
 from conversation_history import memory_bias

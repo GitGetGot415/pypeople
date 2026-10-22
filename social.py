@@ -134,7 +134,7 @@ def refresh_concern(npc):
     """Choose locally at a safe decision boundary, never during an interaction."""
     if npc.interaction is not None or npc.departure is not None:
         return
-    from name_knowledge import orientation_context
+    from dialogue_context import orientation_context
     previous = npc.current_concern
     danger = undisclosed_danger(npc)
     # Do not repeatedly replace a thought with another witness/denial of the same fact.
@@ -1027,7 +1027,7 @@ def validate_live_agreements(conversation, response, *, dialogue_validation=True
                         for other in world.actors if other is not npc}
             if changed or related or opinions != context.opinions[role] or can_deceive(npc) != context.can_lie[role]:
                 raise ValueError("A speaker's knowledge or opinion changed during generation. Please try again.")
-    from name_knowledge import account_references
+    from dialogue_context import account_references
     validate_information(response, context, names=[actor.name for actor in world.actors],
                          participant_names={"initiator": pair[0].name, "recipient": pair[1].name},
                          dialogue_validation=dialogue_validation, actor_references=account_references(conversation.name_actors))

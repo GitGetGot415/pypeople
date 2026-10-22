@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pygame
 
-from constants import GARDEN_LOCATION, INK, PAPER, SHADOW_COLOR, WORLD_COLORS, WORLD_HEIGHT, WORLD_WIDTH
+from constants import GARDEN_LOCATION, INK, PAPER, SHADOW_COLOR, WORLD_COLORS
 from constants import APARTMENT_COLOR, APARTMENT_DOOR_COLOR, APARTMENT_DOOR_RECT, APARTMENT_RECT
-from constants import DEFAULT_BUBBLE_SPRITE_SIZE, UI_SMALL_FONT_SIZE
+from constants import DEFAULT_BUBBLE_SPRITE_SIZE, UI_SMALL_FONT_SIZE, NAME_TAG_FONT_SIZE, NAME_TAG_HEAD_GAP, PLAYER_NAME_TAG
 from .fonts import UnicodeFont
 
 
@@ -180,8 +180,9 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
         return image if image.get_size() == size else pygame.transform.scale(image, size)
 
     label_color = PAPER if phase == "night" else INK
-    name_font = npc_name_font(max(1, round(UI_SMALL_FONT_SIZE * zoom)))
-    map_rect = pygame.Rect(screen_point((0, 0)), (round(WORLD_WIDTH * zoom), round(WORLD_HEIGHT * zoom)))
+    label_font = npc_name_font(max(1, round(UI_SMALL_FONT_SIZE * zoom)))
+    name_font = npc_name_font(max(1, round(NAME_TAG_FONT_SIZE * zoom)))
+    tags = []
     tree_image, apple_image = tree_artwork()
     # NPC y is at their feet; use the bottom of the tree's trunk for the same comparison.
     objects = ([tree] if tree is not None else []) + list(npcs)
@@ -201,13 +202,15 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
             for x, y in APPLE_POINTS[:tree.fruit]:
                 center = screen_point((left + x * TREE_SCALE, top + y * TREE_SCALE))
                 surface.blit(apple, apple.get_rect(center=center))
-            label = name_font.render(f"Fruit {tree.fruit}", True, label_color)
+            label = label_font.render(f"Fruit {tree.fruit}", True, label_color)
             surface.blit(label, label.get_rect(midtop=screen_point((tree_x, tree.y + 76))))
             continue
         if obj is snake:
             image = resized(snake_artwork(snake.facing, snake.frame), zoom)
-            surface.blit(image, image.get_rect(midbottom=screen_point((snake.x, snake.y))))
-            label = name_font.render(f"{snake.name}: {snake.status}", True, label_color)
+            rect = image.get_rect(midbottom=screen_point((snake.x, snake.y)))
+            surface.blit(image, rect)
+            tags.append((snake.name, image, rect))
+            label = label_font.render(snake.status, True, label_color)
             surface.blit(label, label.get_rect(midtop=screen_point((snake.x, snake.y + 30))))
             if snake.activity == "eating":
                 bubble = resized(interaction_bubble("Eating"), zoom)
@@ -222,10 +225,16 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
         shadow = pygame.Rect(screen_point((npc.x - 16, npc.y - 4)), (round(32 * zoom), round(8 * zoom)))
         _draw_shadow(surface, shadow)
         surface.blit(sprite, sprite_rect)
-        name = name_font.render(npc.name, True, label_color)
-        name_rect = name.get_rect(midtop=screen_point((npc.x, npc.y + 6)))
-        name_rect.clamp_ip(map_rect)
-        surface.blit(name, name_rect)
+        tag = PLAYER_NAME_TAG if not hasattr(npc, "player_thinking") else npc.name
+        tags.append((tag, sprite, sprite_rect))
+    # Tags remain readable above the scene, anchored to the visible artwork's head.
+    for name, sprite, rect in tags:
+        lines = [name_font.render(word, True, label_color) for word in name.split()]
+        bottom = rect.top + sprite.get_bounding_rect().top - round(NAME_TAG_HEAD_GAP * zoom)
+        top = bottom - sum(line.get_height() for line in lines)
+        for line in lines:
+            surface.blit(line, line.get_rect(midtop=(rect.centerx, top)))
+            top += line.get_height()
     # Thinking draws above ordinary speech; ready replies have the final priority.
     for npc in sorted((n for n in npcs if hasattr(n, "player_thinking")), key=lambda person: (bool(person.unread_player_reply), person.player_thinking)):
         bubble_name = (player_bubble_name(npc) if player_bubble_visible(npc, camera_offset, zoom)

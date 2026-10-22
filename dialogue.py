@@ -34,14 +34,7 @@ class ConversationPart(StrictResponse):
         return self
 
 
-class NameIntroduction(StrictResponse):
-    actor_id: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-    reference: str = Field(min_length=1, description="self for a self-introduction; otherwise one of the actor's supplied observable references.")
-
-
 class DialoguePartsResponse(StrictResponse):
-    introductions: list[NameIntroduction] = Field(default_factory=list, max_length=3)
     parts: list[ConversationPart] = Field(min_length=1, max_length=DIALOGUE_MAX_PARTS,
         description="Consecutive sections of this one speaker's uninterrupted turn for display and emotion changes. Every part has the same speaker. Never include the listener's answer or this speaker's later turns.")
 

@@ -309,21 +309,6 @@ def player_reply_closes(closing, reply, rewritten=()):
     return closing and not any(contains_question(text) for text in (reply, *rewritten))
 
 
-def supplied_player_name(message, *, requested=False):
-    from dialogue_rules import unquoted_speech
-    speech = unquoted_speech(message).strip()
-    match = re.match(r"(?:my name is|call me|you can call me|i go by|i am|i['’]m)\s+([\w'-]+(?: [\w'-]+){0,3})(?=[,.!?;:]|$)", speech, re.I)
-    if match:
-        candidate = match[1]
-        if not re.match(r"i(?: am|['’]m)\s", speech, re.I) or candidate[0].isupper():
-            return candidate
-    if requested and re.fullmatch(r"[^\W\d_][\w'-]*(?: [A-Z][\w'-]*){0,3}[.!]?", speech):
-        if speech.rstrip(".!").casefold() in {"no", "yes", "thanks", "sorry", "maybe", "okay", "ok", "why", "nevermind"}:
-            return None
-        return speech.rstrip(".!")
-    return None
-
-
 def accept_player_evidence(world, npc, record, message, response, *, opening=False):
     if opening:
         return
@@ -332,12 +317,6 @@ def accept_player_evidence(world, npc, record, message, response, *, opening=Fal
         return
     record.accepted_player_turns.append(index)
     record_claim(world, world.player, record, message, index, npc.id)
-    from name_knowledge import asks_name
-    prior = record.turns[index - 1].text if index else ""
-    supplied = supplied_player_name(message, requested=asks_name(prior))
-    if supplied:
-        npc.known_names[world.player.id] = dict(name=supplied, conversation_id=record.id, turn=index)
-        record.turns[index].introductions = [dict(actor_id=world.player.id, name=supplied, reference="self")]
     # Store the actual report as a report, never as a witnessed fact or invented summary.
     event = world.publish("player_conversation", (world.player, npc), "Accepted a player conversation turn.", record)
     remember(npc, world.player, event, "conversation", f"The player told me: {message}", 0)

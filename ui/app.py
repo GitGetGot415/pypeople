@@ -20,7 +20,7 @@ from simulation_data import InvalidSaveName, SaveStore, capture_simulation, rest
 from simulation import Simulation
 from snake import SnakeEncounter
 from social import concern_description
-from name_knowledge import actor_catalog, name_forms
+from dialogue_context import actor_catalog, name_forms
 
 from .game import GameScreen
 from .character import CharacterScreen
@@ -37,7 +37,7 @@ from constants import (FPS, INTERACTION_GAP, STARTING_CHARACTER_FILE, STARTING_N
                        PLAYER_CONTEXT_TRANSFER_LIMIT, PLAYER_PROMISE_DEADLINE_STEPS)
 from .world import CHARACTER_SCALE
 from .fonts import UnicodeFont
-from constants import UI_TITLE_FONT_SIZE, UI_HEADING_FONT_SIZE, UI_TEXT_FONT_SIZE, UI_SMALL_FONT_SIZE
+from constants import UI_TITLE_FONT_SIZE, UI_HEADING_FONT_SIZE, UI_TEXT_FONT_SIZE, UI_SMALL_FONT_SIZE, NAME_TAG_FONT_SIZE
 
 
 STARTING_CHARACTER_PATH = Path(__file__).resolve().parent.parent / STARTING_CHARACTER_FILE
@@ -52,6 +52,7 @@ class Application:
         self.heading_font = UnicodeFont(UI_HEADING_FONT_SIZE)
         self.font = UnicodeFont(UI_TEXT_FONT_SIZE)
         self.small_font = UnicodeFont(UI_SMALL_FONT_SIZE)
+        self.name_tag_font = UnicodeFont(NAME_TAG_FONT_SIZE)
         self.running = True
         self.screen = "menu"
         self.original_dialogue = False
@@ -430,8 +431,7 @@ class Application:
         start_journey(player, destination, point, purpose="doorway", fast=True)
 
     def player_snapshot(self, npc, message=""):
-        from player import work_choices, requested_work_id, supplied_player_name
-        from name_knowledge import asks_name
+        from player import work_choices, requested_work_id
         snapshot = npc.snapshot(self.tree, self.simulation.player.id)
         from apartments import invitation_choices
         snapshot["invitation_choices"] = invitation_choices(self.simulation, npc)
@@ -453,13 +453,6 @@ class Application:
         snapshot["pending_apple_promise"] = next((o.copy() for o in offers if o["status"] == "offered"), None)
         snapshot["known_player_transfers"] = sorted([t for r in self.conversation_history for t in r.transfers
             if {t["giver_id"], t["recipient_id"]} == {self.simulation.player.id, npc.id}], key=lambda t: t["sequence"])[-PLAYER_CONTEXT_TRANSFER_LIMIT:]
-        prior = next((turn.text for turn in reversed(record.turns) if turn.speaker == npc.name), npc.reply) if record else npc.reply
-        supplied = supplied_player_name(message, requested=asks_name(prior))
-        if supplied:
-            # The current introduction is heard now; only acceptance commits it.
-            snapshot["name_knowledge"]["known_names"][self.simulation.player.id] = {"name": supplied}
-            snapshot["player_relationship"]["learned_address"] = {"name": supplied}
-            snapshot["_name_actors"][self.simulation.player.id]["_aliases"].append(supplied)
         return snapshot
 
     def talk_to_call(self, npc):
@@ -632,7 +625,8 @@ class Application:
             self.game.set_reply(error)
 
     def _interaction_spacing(self, first, second):
-        return sum(self.small_font.size(actor.name)[0] for actor in (first, second)) / 2 + INTERACTION_GAP
+        return sum(max(self.name_tag_font.size(word)[0] for word in actor.name.split())
+                   for actor in (first, second)) / 2 + INTERACTION_GAP
 
     def request_conversation_dialogue(self, conversation, *, start=True):
         if not conversation.accepts_response or not conversation.arrived:
