@@ -25,7 +25,7 @@ class PendingAction:
 
 
 class Simulation:
-    def __init__(self, npcs, tree=None, *, assign_goals=True, npc_trait_mode="normal", mode="player"):
+    def __init__(self, npcs, tree=None, *, assign_goals=True, npc_trait_mode="normal", mode="player", player_start=False):
         from npc import Tree
         from snake import Snake
 
@@ -70,6 +70,9 @@ class Simulation:
         self.social_rotation = 0
         for npc in self.npcs:
             npc.world = self
+        if player_start and mode == "player":
+            from player_story import prepare_player_start
+            prepare_player_start(self)
         if assign_goals:
             from purgatory import remember_description
             from social import assign_goal
@@ -82,6 +85,9 @@ class Simulation:
             if npc.current_concern is None:
                 refresh_concern(npc)
                 npc.decision_remaining = 0.0
+        if player_start and mode == "player":
+            from player_story import start_player_introduction
+            start_player_introduction(self)
 
     @property
     def phase_index(self):

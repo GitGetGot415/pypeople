@@ -450,6 +450,7 @@ class NPC:
         }
         if private:
             from player import work_choices
+            from player_story import starting_encounter
             state["owned_works"] = work_choices(self.world, self.id)
             state["player_relationship"] = {"actor_id": self.world.player.id,
                 "learned_address": self.known_names.get(self.world.player.id), "opinion": self.player_opinion.copy()}
@@ -467,7 +468,8 @@ class NPC:
                 "arrival_day": self.arrival_day,
                 "transition_memory": "absent", "explanation": "unknown", "way_home": "unknown",
                 "prior_conversations": len(encounters),
-                "prior_snake_encounters": sum(self.world.snake.name in record.participants for record in encounters),
+                "prior_snake_encounters": (sum(self.world.snake.name in record.participants for record in encounters)
+                                           + int(starting_encounter(self.world, self.id) is not None)),
                 "received_snake_apple": any(fact.kind == "bargain" and fact.subject_id == self.world.snake.id
                                             and fact.object_id == self.id for fact in self.world.facts),
                 "known_danger": [account for account in state["private_context"]["known_accounts"]

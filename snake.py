@@ -299,10 +299,11 @@ class SnakeEncounter:
         if self.purpose == "bargain" and not advance and not can_give_apple:
             permitted = ["talk"]
             accounts = []
+        from player_story import starting_encounter
         self.request_context = {"request_kind": "snake_encounter", "interaction_id": self.id,
             "_name_actors": actor_catalog(world),
             "purpose": self.purpose, "snake": snake.snapshot(), "resident": npc.snapshot(world.tree),
-            "first_meeting": not any(record is not self.record and record.turns
+            "first_meeting": starting_encounter(world, npc.id) is None and not any(record is not self.record and record.turns
                                      and set(record.participants) == {snake.name, npc.name} for record in world.history),
             "accusation": self.accusation, "standing": snake.standing.get(npc.id, 0),
             "permitted_decisions": permitted, "offering_accounts": accounts,

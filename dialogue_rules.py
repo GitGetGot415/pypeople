@@ -440,8 +440,8 @@ def validate_apple_acceptance(acceptance):
         raise ValueError("The apple receiver must explicitly accept the spoken promise before it can be recorded.")
 
 
-def validate_continuity(text, *, day, situation, knows_claims=False):
-    speech = unquoted_speech(text)
+def validate_continuity(text, *, day, situation, knows_claims=False, listener_is_guard=False):
+    speech = unquoted_speech(text).replace("\u2019", "'")
     receipt = situation.get("received_snake_apple")
     if receipt is False and re.search(
             rf"\bi(?:['’]ve|\s+have)?\s+(?:already\s+)?(?:received|accepted|got)\s+(?:(?:an?|one|the) apple|one|fruit)\s+"
@@ -453,9 +453,13 @@ def validate_continuity(text, *, day, situation, knows_claims=False):
     if day == 1 and re.search(r"\b(?:yesterday|(?:a few|several|\d+) days ago|last (?:night|week))\b", speech, re.I) and re.search(
             rf"{name_pattern(SNAKE_NAME)}|\b(?:garden|authority|claims)\b", speech, re.I):
         raise ValueError("This is day one. Refer to earlier today for garden events, preserving unknown former-life dates.")
+    guard = rf"(?:{name_pattern(SNAKE_NAME)}|the (?:snake|python)|it|him|her"
+    guard += r"|you)\b" if listener_is_guard else r")\b"
     if situation.get("prior_snake_encounters", 0) and re.search(
-            rf"\bi\s+(?:have not|haven['’]t|never)\s+(?:yet\s+)?(?:met|encountered|spoken to|dealt with)\s+"
-            rf"(?:{re.escape(SNAKE_NAME)}|it|him|her|you)\b", speech, re.I):
+            r"\bi(?:\s+(?:have not|haven't|have never|never|did not|didn't)|'ve (?:never|not))\s+"
+            r"(?:(?:yet|ever|actually|personally)\s+)*"
+            r"(?:met|meet|encountered|encounter|(?:spoken|speak|talked|talk) (?:to|with)|dealt with|deal with)\s+"
+            + guard, speech, re.I):
         raise ValueError("The speaker has already met the named guard. Doubting authority does not erase that encounter.")
     if knows_claims and re.search(rf"{name_pattern(SNAKE_NAME)}|\bclaims\b", speech, re.I) and re.search(
             r"\bi['’]?(?:ve| have)?\s+(?:heard nothing|haven['’]t heard anything|have not heard anything)\b", speech, re.I):

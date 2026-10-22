@@ -1,0 +1,114 @@
+"""Authored events for new Player games; ordinary simulation dialogue stays generated."""
+
+from constants import SNAKE_NAME, STARTING_DAY, STARTING_PHASE, STARTING_PLAYER_DAY
+
+
+PLAYER_START_ENCOUNTER = "player-start-encounter"
+INTRODUCTION_REASON = (
+    "Start our first conversation: introduce myself and ask what to call the player. "
+    "The player is the first other person I have seen here. "
+    "We have not met before; I do not yet know the player's name."
+)
+JUDY_OPENING = (
+    "Hi, I'm {name}. I arrived here yesterday, and you're the first other person "
+    "I've seen here. What should I call you?"
+)
+
+
+def starting_encounter(world, resident_id=None):
+    """The authored first-day meeting, retained as ordinary firsthand knowledge."""
+    return next((fact for fact in world.facts if fact.source_id == PLAYER_START_ENCOUNTER
+                 and fact.kind == "snake_claim"
+                 and (resident_id is None or fact.object_id == resident_id)), None)
+
+
+def prepare_player_start(world):
+    """Give Judy her prior day here before assigning current-day goals."""
+    from social import add_fact
+
+    resident = world.npcs[0]
+    add_fact(world, "snake_claim", world.snake, resident, PLAYER_START_ENCOUNTER, None,
+             f"{resident.name} arrived in the garden and met {SNAKE_NAME}, the python guarding the apple tree. "
+             f"They exchanged names. {SNAKE_NAME} explained that it controls access to the apples: "
+             "when fruit is available, it gives an apple upfront in return for a private recollection "
+             "or public endorsement owed later. No apple was taken and no obligation was agreed. "
+             f"{SNAKE_NAME} described itself as a divine messenger and called this place purgatory; "
+             f"{resident.name} heard these claims without knowing whether they are true. "
+             f"At that time, {resident.name} had seen no other human here.",
+             [resident, world.snake])
+    resident.known_names[world.snake.id] = dict(name=SNAKE_NAME, conversation_id=None, turn=0)
+    resident.attitudes.update(
+        belief_reason=f"Has heard {SNAKE_NAME}'s claims but does not know whether they are true.",
+        trust_reason=f"Has met {SNAKE_NAME} and heard its apple terms, but has not made a bargain.",
+        authority_reason=f"Knows {SNAKE_NAME} guards the apples, but is unsure of its claimed divine authority.")
+    world.day = STARTING_PLAYER_DAY
+
+
+def start_player_introduction(world):
+    from player import start_call
+
+    judy = world.npcs[0]
+    start_call(world, judy, dict(key=f"introduction:{judy.id}", kind="introduction",
+                               reference=world.player.id, reason=INTRODUCTION_REASON))
+
+
+def valid_introduction_call(world, npc, call):
+    interaction = world.player_interaction
+    return (call["reference"] == world.player.id and call["key"] == f"introduction:{npc.id}"
+            and starting_encounter(world, npc.id) is not None
+            and bool(interaction and interaction.get("kind") == "resident"
+                     and interaction.get("npc_id") == npc.id and interaction.get("incoming")))
+
+
+def scripted_player_opening(world, npc):
+    """Record the first greeting once, before submitting any player reply to the model."""
+    from conversation_history import ConversationRecord
+    from name_knowledge import actor_catalog, name_forms, orientation_speech
+    from player import active_player, clear_call, owns_resident
+
+    if (not active_player(world) or not owns_resident(world, npc)
+            or starting_encounter(world, npc.id) is None
+            or any(set(record.participant_ids) == {world.player.id, npc.id}
+                   and any(speaker == npc.name for speaker, _ in record.turns) for record in world.history)):
+        return None
+    text = JUDY_OPENING.format(name=npc.character["Name"])
+    record = ConversationRecord(("You", npc.name), "First meeting with the player", "Completed",
+                                origin="autonomous", participant_ids=[world.player.id, npc.id])
+    record.intended_subjects = {"You": "Listening to Judy's introduction.", npc.name: INTRODUCTION_REASON}
+    record.name_forms = name_forms(actor_catalog(world))
+    record.orientation_discussed = orientation_speech([text])
+    record.add_turn(npc.name, text, [{"text": text, "emotion": {"name": "neutral", "intensity": 0}}])
+    world.history.append(record)
+    world.player_interaction["record_id"] = record.id
+    npc.reply, npc.rewritten_reply, npc.end_conversation = text, "", False
+    npc.set_emotion("neutral", 0)
+    clear_call(npc)
+    return record
+
+
+def validate_starting_history(world, residents):
+    from social import phase_index
+
+    encounter = starting_encounter(world)
+    if encounter is not None:
+        resident = next((n for n in residents if n.id == encounter.object_id), None)
+        if (resident is None or resident.arrival_day != STARTING_DAY or world.day < STARTING_PLAYER_DAY
+                or encounter.subject_id != world.snake.id
+                or encounter.phase != phase_index(STARTING_DAY, STARTING_PHASE)
+                or encounter.conversation_id is not None
+                or encounter.witness_ids != [resident.id, world.snake.id]):
+            raise ValueError("Invalid prior-day starting encounter.")
+
+
+def validate_starting_name(world, resident_id, target_id, learned):
+    encounter = starting_encounter(world, resident_id)
+    if encounter is None or target_id != world.snake.id or learned["turn"] != 0:
+        raise ValueError("An initial name requires the resident's prior-day starting encounter.")
+
+
+def resident_arrival_days(world):
+    days = set(range(2, world.day + 1))
+    if starting_encounter(world) is not None:
+        # This dawn brought the player; the next resident arrives the following day.
+        days.discard(STARTING_PLAYER_DAY)
+    return days

@@ -743,6 +743,9 @@ Firsthand memories and accounts are events that speaker personally experienced.
 The speaker already knows whether they happened: never describe them as hearsay,
 invent a source for them, or ask another person to verify their occurrence.
 Someone else's uncertainty cannot make the speaker doubt their own experience.
+Recorded personal experience takes priority over mistaken earlier dialogue,
+including your own earlier replies. Correct a mistaken denial instead of treating
+it as proof that a recorded meeting never happened.
 {SNAKE_NAME} guards all tree apples. Visiting or shaking never awards fruit. An accepted
 bargain with {SNAKE_NAME} gives one real apple upfront, with a specific private account or public
 endorsement owed later. An advance is an actual inventory transfer, not a promise of
@@ -1894,6 +1897,12 @@ def response_contract(snapshot, *, correction=False):
         schema["properties"]["opinion_updates"] = {"type": "array", "items": structured_schema(OpinionUpdate), "maxItems": 0}
         for field in ("gift_offer", "player_opinion", "apple_promise"):
             schema["properties"][field] = {"type": "null"}
+    if snapshot.get("private_context", {}).get("situation", {}).get("prior_snake_encounters", 0):
+        instruction += (f"\nEstablished personal experience: you have already met {SNAKE_NAME}. "
+                        "Use your firsthand known_accounts to recall what you heard, including any apple terms. "
+                        "You may doubt its divine claims without denying the meeting or conversation. "
+                        "If earlier dialogue wrongly denied that encounter, acknowledge the mistake and answer "
+                        "from recorded experience. The player's question does not erase your knowledge.")
     return instruction, schema, ActionResponse
 
 
@@ -2206,7 +2215,8 @@ def validate_speech_grounding(text, snapshot):
     firsthand = speaker.get("firsthand_events_with_listener", [])
     knows_claims = bool(situation.get("prior_snake_encounters", 0)) or any(
         a.get("kind") == "snake_claim" and a.get("basis") == "firsthand" for a in firsthand)
-    validate_continuity(text, day=snapshot.get("day"), situation=situation, knows_claims=knows_claims)
+    validate_continuity(text, day=snapshot.get("day"), situation=situation, knows_claims=knows_claims,
+                        listener_is_guard=listener_name == SNAKE_NAME)
     if knows_claims:
         validate_claim_source(text, names=names, speaker=_actor_name(speaker), listener=listener_name,
                               actor_references=account_references(snapshot.get("_name_actors", {})))
@@ -2499,7 +2509,12 @@ def _validate_response(raw, snapshot, model):
                     result.gift_acceptance, result.player_opinion, result.apple_promise)):
                 raise ValueError("An unidentified-name clarification supports no new gift, promise or opinion effects. Leave these fields empty.")
         if isinstance(result, ActionResponse) and check_dialogue:
-            validate_english(result.reply, (snapshot.get("npc_name", ""), SNAKE_NAME))
+            validate_speech_grounding(result.reply, {
+                "_name_actors": snapshot.get("_name_actors", {}),
+                "speaker": {"name": snapshot.get("npc_name", ""),
+                            "situation": snapshot.get("private_context", {}).get("situation", {})},
+                "listener": "You", "day": snapshot.get("day"),
+            })
             validate_dialogue_format([ConversationTurn(speaker="initiator", parts=[ConversationPart(text=result.reply)])])
             for entry in result.opinion_updates:
                 validate_opinion_reason(entry.reason, snapshot.get("npc_name", snapshot.get("character", {}).get("Name", "")), entry.person)

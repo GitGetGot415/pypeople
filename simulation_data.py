@@ -30,6 +30,8 @@ from player import Player, PlayerHandoff
 from constants import PLAYER_ID, PLAYER_LABEL, PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, PLAYER_CALL_LIMIT
 from snake import Snake, SnakeEncounter
 from purgatory import Attitudes
+from player_story import (validate_starting_history, validate_starting_name,
+                          valid_introduction_call, resident_arrival_days)
 from social import (Belief, Claim, ConcernKind, ConversationConcern, Disclosure, Fact, FactKind, Goal, GoalKind, OpinionEffect, Promise, Proposal,
                     Stance, information_from_dict, phase_index, validate_agreements, validate_information)
 
@@ -229,7 +231,7 @@ class DepartureState(SaveModel):
 
 class LearnedNameState(SaveModel):
     name: str = Field(min_length=1)
-    conversation_id: str = Field(min_length=1)
+    conversation_id: str | None = Field(min_length=1)
     turn: int = Field(ge=0)
 
 
@@ -714,6 +716,7 @@ class SimulationState(SaveModel):
         facts = {f.id: f for f in self.facts}
         claims = {c.id: c for c in self.claims}
         disclosures = {d.id: d for d in self.disclosures}
+        validate_starting_history(self, residents)
         for index, source in ((history, self.history), (events, self.events), (facts, self.facts), (claims, self.claims), (disclosures, self.disclosures)):
             if len(index) != len(source):
                 raise ValueError("Duplicate social record IDs.")
@@ -920,6 +923,9 @@ class SimulationState(SaveModel):
                 if (target_id == npc.id or not actual_name or set(learned) != {"name", "conversation_id", "turn"}
                         or learned["name"] not in forms(actual_name)):
                     raise ValueError("Invalid learned name or actor reference.")
+                if learned["conversation_id"] is None:
+                    validate_starting_name(self, npc.id, target_id, learned)
+                    continue
                 source = record_for(learned["conversation_id"])
                 turn = learned["turn"]
                 if (type(turn) is not int or not 0 <= turn < len(source.turns)
@@ -1120,7 +1126,8 @@ class SimulationState(SaveModel):
                             giver_id=action.npc_id, recipient_id=action.target_id, item=action.item, quantity=action.quantity)):
                     raise ValueError("A queued gift needs its real item and accepted matching authorization.")
         pending, processed = self.pending_arrival_days, self.processed_arrival_days
-        if pending != sorted(set(pending)) or processed != sorted(set(processed)) or set(pending) & set(processed) or set(pending) | set(processed) != set(range(2, self.day + 1)):
+        arrival_days = resident_arrival_days(self)
+        if pending != sorted(set(pending)) or processed != sorted(set(processed)) or set(pending) & set(processed) or set(pending) | set(processed) != arrival_days:
             raise ValueError("Every dawn must have exactly one pending or completed arrival.")
         arrivals = [n.arrival_day for n in residents if n.arrival_day >= 2]
         if sorted(arrivals) != processed:
@@ -1158,9 +1165,7 @@ class SimulationState(SaveModel):
                 raise ValueError("Invalid waiting player call.")
             if call:
                 ref = call["reference"]
-                valid = (ref == self.player.id and call["key"] == f"introduction:{npc.id}"
-                         and bool(self.player_interaction and self.player_interaction.get("kind") == "resident"
-                                  and self.player_interaction.get("npc_id") == npc.id and self.player_interaction.get("incoming"))
+                valid = (valid_introduction_call(self, npc, call)
                          if call["kind"] == "introduction" else
                          npc.inventory["fruit"] > 0 and self.player.inventory_capacity > self.player.inventory["fruit"]
                          if call["kind"] == "gift" and ref == "fruit" else

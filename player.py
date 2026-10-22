@@ -475,8 +475,8 @@ def call_valid(world, npc, call):
         return False
     ref = call["reference"]
     if call["kind"] == "introduction":
-        return (ref == world.player.id and call["key"] == f"introduction:{npc.id}"
-                and owns_resident(world, npc) and world.player_interaction.get("incoming"))
+        from player_story import valid_introduction_call
+        return valid_introduction_call(world, npc, call)
     if call["kind"] == "reply":
         return any(r.id == ref and {world.player.id, npc.id} == set(r.participant_ids)
                    and r.turns and r.turns[-1][0] == npc.name and not r.error for r in world.history)

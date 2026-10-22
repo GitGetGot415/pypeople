@@ -175,14 +175,8 @@ class Application:
             npc.sprite_size = sprite.get_size()
             npcs.append(npc)
         assign_npc_names(npcs)
-        simulation = Simulation(npcs, npc_trait_mode=self.npc_trait_mode, mode=self.setup.mode)
-        if self.setup.mode == "player":
-            from player import start_call
-            judy = npcs[0]
-            start_call(simulation, judy, dict(key=f"introduction:{judy.id}", kind="introduction",
-                reference=simulation.player.id,
-                reason="Start our first conversation: introduce myself and ask what to call the player. "
-                       "We have not met before; I do not yet know the player's name."))
+        simulation = Simulation(npcs, npc_trait_mode=self.npc_trait_mode, mode=self.setup.mode,
+                                player_start=self.setup.mode == "player")
         self._activate_simulation(simulation)
         self.menu.message = ""
 
@@ -361,6 +355,9 @@ class Application:
         else:
             interaction = self.simulation.player_interaction
             record = next((r for r in self.simulation.history if r.id == interaction.get("record_id")), None)
+            if record is None:
+                from player_story import scripted_player_opening
+                record = scripted_player_opening(self.simulation, npc)
             self.game.player_record = record
             gift = interaction.get("gift")
             if gift:
@@ -473,6 +470,13 @@ class Application:
         self.simulation.player_interaction["stage"] = "conversation"
         self.game.dialogue_open, self.game.selected_npc = True, npc
         npc.set_selected(True)
+        from player_story import scripted_player_opening
+        record = scripted_player_opening(self.simulation, npc)
+        if record is not None:
+            self.game.player_record = record
+            self.game.set_reply(npc.reply)
+            self.game.prompt_input.focus()
+            return ""
         snapshot = self.player_snapshot(npc)
         from player import work_choices
         snapshot["owned_works"] = work_choices(self.simulation, npc.id, call["reference"])
