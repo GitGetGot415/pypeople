@@ -402,6 +402,8 @@ class NPC:
     def contains(self, point):
         if self.sprite_size is not None:
             width, height = self.sprite_size
+            if self.behavior == Behavior.SLEEP:
+                width, height = height, width
             return (
                 self.x - width / 2 <= point[0] < self.x + width / 2
                 and self.y - height <= point[1] < self.y

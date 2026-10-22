@@ -6,6 +6,8 @@ import pygame
 from constants import GARDEN_LOCATION, INK, PAPER, SHADOW_COLOR, WORLD_COLORS
 from constants import APARTMENT_COLOR, APARTMENT_DOOR_COLOR, APARTMENT_DOOR_RECT, APARTMENT_RECT
 from constants import DEFAULT_BUBBLE_SPRITE_SIZE, UI_SMALL_FONT_SIZE, NAME_TAG_FONT_SIZE, NAME_TAG_HEAD_GAP, PLAYER_NAME_TAG
+from constants import ROOM_BED_RECT, SLEEP_FACING, SLEEP_ROTATION
+from npc import Behavior
 from .fonts import UnicodeFont
 
 
@@ -120,6 +122,8 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
         surface.fill(INDOOR_BACKGROUND)
         kind = location.split(":")[0]
         scene.blit(apartment_art(kind), (0, 0))
+        if kind == "room":
+            scene.blit(apartment_art("bed"), ROOM_BED_RECT[:2])
         if world:
             for target in targets(world, location):
                 if target["kind"] in ("room", "elevator"):
@@ -218,12 +222,16 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
             continue
         npc = obj
         position = screen_point((npc.x, npc.y))
+        sleeping = getattr(npc, "behavior", None) == Behavior.SLEEP
         # Always resize from the original composed artwork, including when zooming out.
-        original = character_renderer.render(npc.appearance if hasattr(npc, "appearance") else npc.character, npc.facing, giving=getattr(npc, "giving", False), eating=getattr(npc, "eating", False))
+        original = character_renderer.render(npc.appearance if hasattr(npc, "appearance") else npc.character, SLEEP_FACING if sleeping else npc.facing, giving=getattr(npc, "giving", False), eating=getattr(npc, "eating", False))
+        if sleeping:
+            original = pygame.transform.rotate(original, SLEEP_ROTATION)
         sprite = resized(original, CHARACTER_SCALE * zoom)
         sprite_rect = sprite.get_rect(midbottom=position)
         shadow = pygame.Rect(screen_point((npc.x - 16, npc.y - 4)), (round(32 * zoom), round(8 * zoom)))
-        _draw_shadow(surface, shadow)
+        if not sleeping:
+            _draw_shadow(surface, shadow)
         surface.blit(sprite, sprite_rect)
         tag = PLAYER_NAME_TAG if not hasattr(npc, "player_thinking") else npc.name
         tags.append((tag, sprite, sprite_rect))

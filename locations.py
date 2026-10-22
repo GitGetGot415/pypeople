@@ -159,4 +159,4 @@ def environment(location):
         return "An open grassy garden with its guarded apple tree and apartment building entrance."
     if location.startswith("hallway:"):
         return "An apartment hallway on one floor, with five closed room doors and an elevator. Only people on this floor can hear."
-    return "Inside a narrow private apartment room, with a doorway at its north end. There is no tree or grass inside. Only people in this room can hear."
+    return "Inside a narrow private apartment room, with a doorway at its north end and a bed at its south end. There is no tree or grass inside. Only people in this room can hear."

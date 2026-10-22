@@ -945,6 +945,7 @@ class Application:
             self.game.inventory.draw(self)
         if self.screen == "game":
             self.game.draw_menu_confirmation(self)
+            self.game.draw_bed_popup(self)
         pygame.display.flip()
 
     def run(self):

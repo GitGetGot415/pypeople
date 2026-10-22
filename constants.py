@@ -31,13 +31,17 @@ APARTMENT_OVERLAY_SIZE = (112, 168)
 ROOM_DOOR_ORIGIN = (8, 8)
 HALLWAY_ARRIVAL_Y = 212
 ROOM_ARRIVAL = (64.0, 216.0)
+ROOM_BED_RECT = (8, 360, 112, 80)
+ROOM_SLEEP_POSITION = (64.0, 416.0)  # Bottom center of the lying sprite, over the mattress.
+SLEEP_FACING = 1  # Northeast before rotating the sprite counterclockwise.
+SLEEP_ROTATION = 90
 ELEVATOR_ARRIVAL = (760.0, 212.0)
 HALLWAY_EXIT = (8.0, 212.0)
 GARDEN_BUILDING_POINT = (48.0, 112.0)
 GARDEN_BUILDING_ARRIVAL = (80.0, 112.0)
 APARTMENT_ART = {"hallway": "assets/Apartment Building Hallway.png",
                  "room": "assets/Apartment Room.png", "door": "assets/Door.png",
-                 "elevator": "assets/Elevator.png"}
+                 "elevator": "assets/Elevator.png", "bed": "assets/Apartment Bed.png"}
 STARTING_MODE = "spectator"
 STARTING_PLAYER_POSITION = (100.0, 280.0)
 PLAYER_APPROACH_MULTIPLIER = 2.0
@@ -157,6 +161,11 @@ GAME_MENU_CONFIRM_TITLE_Y = 268
 GAME_MENU_CONFIRM_MESSAGE_RECT = (420, 320, 440, 56)
 GAME_MENU_KEEP_PLAYING_RECT = (420, 405, 190, 42)
 GAME_MENU_LEAVE_RECT = (630, 405, 230, 42)
+BED_POPUP_RECT = (390, 245, 500, 230)
+BED_POPUP_TITLE_Y = 268
+BED_POPUP_MESSAGE_RECT = (420, 312, 440, 78)
+BED_ADVANCE_RECT = (420, 405, 260, 42)
+BED_CANCEL_RECT = (700, 405, 160, 42)
 STATS_INVENTORY_RECT = (900, 190, 160, 34)
 STATS_INVENTORY_DETAIL_TOP = 236
 INVENTORY_LIST_RECT = (160, 204, 340, 330)

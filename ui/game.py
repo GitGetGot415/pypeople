@@ -22,6 +22,8 @@ from constants import (INVENTORY_BUTTON_RECT, GAME_PAUSE_RECT, GAME_CLOCK_RECT, 
                        DIALOGUE_ORIGINAL_TOGGLE_RECT)
 from constants import (BORDER_RADIUS, GAME_MENU_CONFIRM_RECT, GAME_MENU_CONFIRM_TITLE_Y,
                        GAME_MENU_CONFIRM_MESSAGE_RECT, GAME_MENU_KEEP_PLAYING_RECT, GAME_MENU_LEAVE_RECT)
+from constants import (ROOM_BED_RECT, BED_POPUP_RECT, BED_POPUP_TITLE_Y, BED_POPUP_MESSAGE_RECT,
+                       BED_ADVANCE_RECT, BED_CANCEL_RECT)
 
 
 class GameScreen:
@@ -54,6 +56,9 @@ class GameScreen:
         self.pause_button = Button(GAME_PAUSE_RECT, "Pause")
         self.arrival_retry = Button((476, 72, 120, 32), "Retry arrival")
         self.clock_button = Button(GAME_CLOCK_RECT, "")
+        self.bed_open = False
+        self.bed_advance_button = Button(BED_ADVANCE_RECT, "")
+        self.bed_cancel_button = Button(BED_CANCEL_RECT, "Cancel")
         self.save_message = ""
         self.save_message_remaining = 0
         self.send_button = Button((1136, 644, 120, 44), "Send")
@@ -92,6 +97,7 @@ class GameScreen:
         self.apartment_close = Button(APARTMENT_INSPECTOR_CLOSE_RECT, "Close")
 
     def reset(self):
+        self.bed_open = False
         self.confirm_menu = False
         self.menu_restore_focus = False
         self.inventory.close()
@@ -165,6 +171,9 @@ class GameScreen:
     def handle_event(self, app, event):
         from player import active_player
         world = app.simulation
+        if self.bed_open:
+            self.handle_bed_event(app, event)
+            return
         if self.confirm_menu:
             if self.keep_playing_button.clicked(event) or event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 self.confirm_menu = False
@@ -347,10 +356,48 @@ class GameScreen:
             self.panning = False
             return True
         if self.clock_button.clicked(event):
-            if not app.simulation.paused and not app.simulation.phase_pending and not app.simulation.player_attention_pending:
+            from player import active_player
+            if active_player(app.simulation):
+                self.show_save_message("To pass time, go to your room and click your bed.")
+            elif not app.simulation.paused and not app.simulation.phase_pending and not app.simulation.player_attention_pending:
                 app.simulation.next_phase()
             return True
         return False
+
+    def can_use_bed(self, world):
+        from player import active_player
+        return (active_player(world) and self.location == world.player.location == "room:1"
+                and not world.player_interaction and not world.player.journey
+                and not world.tree_has_actor(world.player.id)
+                and not (world.visit and world.visit["stage"] == "travel"))
+
+    def can_advance_from_bed(self, world):
+        return (self.can_use_bed(world) and not world.paused
+                and not world.phase_pending and not world.player_attention_pending)
+
+    def handle_bed_event(self, app, event):
+        if self.bed_cancel_button.clicked(event) or event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            self.bed_open = False
+        elif self.bed_advance_button.clicked(event, enabled=self.can_advance_from_bed(app.simulation)):
+            self.bed_open = False
+            app.simulation.next_phase()
+
+    def draw_bed_popup(self, app):
+        if not self.bed_open:
+            return
+        world = app.simulation
+        overlay = pygame.Surface(app.window.get_size(), pygame.SRCALPHA)
+        overlay.fill(MODAL_OVERLAY_COLOR)
+        app.window.blit(overlay, (0, 0))
+        pygame.draw.rect(app.window, PAPER, BED_POPUP_RECT, border_radius=BORDER_RADIUS)
+        draw_centered_text(app.window, "Rest in your bed", app.heading_font, BED_POPUP_TITLE_Y)
+        message = ("Resume the game before passing time." if world.paused else
+                   "Time will change after the current conversations finish." if world.phase_pending else
+                   "Pass time until the next phase? Current conversations and handoffs will finish first.")
+        draw_wrapped_text(app.window, message, app.font, INK, BED_POPUP_MESSAGE_RECT)
+        self.bed_advance_button.label = f"Rest until {world.next_phase_label}"
+        self.bed_advance_button.draw(app.window, app.small_font, enabled=self.can_advance_from_bed(world))
+        self.bed_cancel_button.draw(app.window, app.small_font)
 
     def open_menu_confirmation(self):
         self.confirm_menu = True
@@ -373,11 +420,12 @@ class GameScreen:
         self.leave_game_button.draw(app.window, app.small_font)
 
     def draw_clock(self, app):
+        from player import active_player
         paused = app.simulation.paused
         self.pause_button.label = "Resume" if paused else "Pause"
         self.pause_button.draw(app.window, app.small_font)
         self.clock_button.draw(app.window, app.small_font, enabled=not paused and not app.simulation.phase_pending
-                               and not app.simulation.player_attention_pending)
+                               and not app.simulation.player_attention_pending and not active_player(app.simulation))
         x, y = self.clock_button.rect.center
         pygame.draw.circle(app.window, PAPER, (x, y), 12, width=2)
         pygame.draw.line(app.window, PAPER, (x, y), (x, y - 8), 2)
@@ -451,6 +499,12 @@ class GameScreen:
                                      or world.visit and world.visit["stage"] == "travel"):
             return
         point = self.screen_to_world(screen_pos)
+        if self.can_use_bed(world) and pygame.Rect(ROOM_BED_RECT).collidepoint(point):
+            self.close_dialogue()
+            self.bed_open = True
+            self.pan_start = self.pan_last = None
+            self.panning = False
+            return
         actors = [n for n in world.npcs if n.location == self.location]
         if self.location == "garden":
             actors.append(world.snake)
@@ -868,8 +922,10 @@ class GameScreen:
         self.app = app
         if not active_player(world) and self.inventory.visible and self.inventory.owner is world.player:
             self.inventory.close()
+        if self.bed_open and not self.can_use_bed(world):
+            self.bed_open = False
         world.player_menu_blocked = bool(self.location_menu or self.inventory.visible or self.apartment_open
-            or self.call_choice or self.confirm_menu or app.screen != "game")
+            or self.call_choice or self.confirm_menu or self.bed_open or app.screen != "game")
         if self.confirm_menu:
             return
         if active_player(world):

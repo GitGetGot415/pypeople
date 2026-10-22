@@ -6,7 +6,8 @@ from uuid import uuid4
 from constants import (APARTMENT_APPROACH, APARTMENT_ID, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_RANGE,
                        CREATIVE_QUEUE_SECONDS, HOME_ARRIVAL_TOLERANCE, INDOOR_RECOVERY_PER_SECOND,
                        MINIMUM_INDOOR_SECONDS, OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE,
-                       RETREAT_SOCIABILITY_WEIGHT, RETREAT_THRESHOLD_BASE, WAKE_DELAY_RANGE)
+                       RETREAT_SOCIABILITY_WEIGHT, RETREAT_THRESHOLD_BASE, WAKE_DELAY_RANGE,
+                       ROOM_SLEEP_POSITION, SLEEP_FACING)
 from creations import CreativeJob
 from npc import Behavior
 
@@ -68,6 +69,8 @@ def sleep(npc):
     cancel_work(npc)
     npc.command_revision += 1
     npc.behavior = Behavior.SLEEP
+    npc.x, npc.y = ROOM_SLEEP_POSITION
+    npc.facing = SLEEP_FACING
     npc.home_reason = "night"
     npc.home_remaining = MINIMUM_INDOOR_SECONDS
     npc.wake_remaining = None
