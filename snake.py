@@ -610,6 +610,7 @@ class PlayerSnakeEncounter(SnakeEncounter):
         if not self.active:
             return
         self.active, self.reserved = False, False
+        error = error or self.record.error
         self.record.status, self.record.error = ("Failed", error) if error else ("Finished", "")
         self.initiator.encounter = None
         self.initiator.target_id = None

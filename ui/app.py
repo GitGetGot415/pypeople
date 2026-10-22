@@ -342,7 +342,7 @@ class Application:
             if encounter.outcome == "eat":
                 self.simulation.player_interaction = None
             else:
-                encounter.finish()
+                encounter.finish(error=reason if reason != "Conversation ended." else "")
         else:
             end_interaction(self.simulation, reason)
         self.game.pending_offer = None
@@ -952,6 +952,13 @@ class Application:
                     self.game.set_reply(npc.reply)
                 self.requests.finish(active_session, request_id, error)
                 if error:
+                    if isinstance(encounter, PlayerSnakeEncounter) and encounter.record is record:
+                        from interactions import record_failed_dialogue
+                        from llm import ConversationTurn, ConversationPart
+                        drafts = failed_turns
+                        if not drafts and result is not None:
+                            drafts = [ConversationTurn(speaker="recipient", parts=[ConversationPart(text=result.reply)])]
+                        record_failed_dialogue(encounter, drafts)
                     record.status, record.error = "Failed", error
                     self.end_player_conversation(error)
                 continue

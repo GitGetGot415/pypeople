@@ -1396,12 +1396,13 @@ def validate_snake_perspective(text, *, snake_role):
         raise ValueError(f"{SNAKE_NAME} is the {snake_role} in this exchange. Use I/my for yourself and you/your for the listener, retaining the event's ownership.")
     identity = r"i am|i['’]m|am i" if snake_role == "speaker" else r"you are|you['’]re|are you"
     pronoun = r"i|my" if snake_role == "speaker" else r"you|your"
+    identifying_prefix = rf"\b(?:{identity})\s+(?:{name_pattern(SNAKE_NAME)}\s*,\s*)?$"
     for match in re.finditer(r"\bthe\s+(?:snake|python)\b", unquoted, flags=re.IGNORECASE):
         if " ".join(match[0].casefold().split()) == " ".join(SNAKE_NAME.casefold().split()):
             continue  # A configured name may itself use these words.
         prefix, suffix = unquoted[:match.start()], unquoted[match.end():]
         # Identifying oneself or the listener is different from narrating a third party.
-        if (re.search(rf"\b(?:{identity})\s+$", prefix, re.IGNORECASE)
+        if (re.search(identifying_prefix, prefix, re.IGNORECASE)
                 and not re.match(r"['’]s\b", suffix, re.IGNORECASE)):
             continue
         if (re.search(r"\bas\s+$", prefix, re.IGNORECASE)
@@ -2092,6 +2093,9 @@ def _generated_dialogue(raw, snapshot):
     if not isinstance(data, dict):
         return []
     values = data.get("turns", [])
+    if snapshot.get("request_kind") == "snake_player" and isinstance(data.get("reply"), str):
+        # Direct-player records list the human first and the responding guard second.
+        values = [{"speaker": "recipient", "parts": [{"text": data["reply"]}]}]
     if snapshot.get("request_kind") in ("snake_turn", "conversation_closing", "resident_turn", "handoff_thanks") and "parts" in data:
         values = [{"speaker": snapshot.get("speaker_role", "initiator"), "parts": data["parts"],
                    "introductions": data.get("introductions", [])}]
