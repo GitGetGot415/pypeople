@@ -39,7 +39,7 @@ _ORDINARY_NAME_WORDS = {
     "will", "may", "hope", "joy", "rose", "grace", "faith", "pat", "mark", "bill",
     "judge", "price", "hill", "green", "brown", "white", "baker", "king", "young", "hall",
     "west", "summer", "autumn", "hunter", "chase", "river", "dawn", "june", "august", "ivy", "ray", "chance",
-    "apple", "cheese", "brick", "ash", "jazz", "argon",
+    "apple", "cheese", "brick", "ash", "jazz", "argon", "player",
 }
 
 
@@ -66,7 +66,7 @@ def validate_speaker_identity(text, speaker, listener, *, allow_third_person=Fal
     text = unquoted_speech(text)
     own, other = speaker, listener
     aliases = {own.casefold(), own.split()[0].casefold()} if own else set()
-    if own and not allow_third_person and re.search(name_pattern(own) + r"(?:['’]s\b|\s+(?:heard|said|gave|received|refused|accepted|decided|agreed|was|has|had)\b)", text, re.I):
+    if own and not allow_third_person and re.search(name_pattern(own) + r"(?:['’]s\b|\s+(?:heard|said|gave|received|refused|accepted|decided|agreed|was|has|had|is doing|is feeling|is thinking)\b)", text, re.I):
         raise ValueError("The speaker narrates their own experience as another person. Use I/my for yourself, preserving who did what.")
     other_aliases = {other.casefold(), other.split()[0].casefold()} if other else set()
     for alias in sorted(aliases - other_aliases, key=len, reverse=True):

@@ -17,6 +17,8 @@ from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_C
                        EMOTION_THRESHOLD, FURIOUS_THRESHOLD, LEVERAGE_ACCOUNT_KINDS,
                        MODEL_STREAM_REPEAT_CHECK_CHARACTERS, MODEL_STREAM_REPEAT_COUNT,
                        MODEL_STREAM_REPEAT_MAX_BLOCK_CHARACTERS, MODEL_STREAM_REPEAT_MIN_CHARACTERS,
+                       MODEL_STREAM_REPEAT_PUNCTUATION_CHARACTERS,
+                       MODEL_DEFAULT_CONTEXT_TOKENS, MODEL_DIALOGUE_CONTEXT_TOKENS,
                        RESIDENT_TURN_COUNT, FOOD_REQUEST_TURN_COUNT, CONVERSATION_MAX_TURNS, DIALOGUE_STAGE_ATTEMPTS,
                        DIALOGUE_REPEAT_PHRASE_WORDS, DIALOGUE_REPEAT_SENTENCE_WORDS, DIALOGUE_REPEAT_TURN_WORDS,
                        CONVERSATION_MAX_AGREEMENTS, CONVERSATION_MAX_DISCLOSURES,
@@ -37,7 +39,7 @@ from name_knowledge import (NAME_INSTRUCTION, account_references, account_speech
                             actor_id, forms, listener_address, own_name, record_self_introductions,
                             asks_name, declines_name, introduction_supported, orientation_speech,
                             snake_name_witnesses, validate_names, validate_orientation,
-                            unidentified_player_names, validate_player_reply_names)
+                            unidentified_player_names, validate_player_reply_names, player_asks_own_name)
 
 MODEL = "gemini-2.5-flash"
 OLLAMA_URL = "http://localhost:11434/api/chat"
@@ -475,24 +477,29 @@ def request_voice_rewrite(provider, api_key, response, snapshot, *, deadline,
             else:
                 return available_rewrites()
             try:
-                result = generate()
-            except StreamRepetitionError as exc:
-                # Only an interrupted generation gets a retry. Completed rewrite
-                # content/identity diagnostics remain nonblocking and never retry.
-                remaining = deadline - monotonic()
-                if remaining <= 0:
-                    raise
-                batch["_timeout"] = remaining
-                if progress is not None:
-                    progress(f"Correcting looping voice generation for {name}")
-                result = generate(correction=str(exc))
+                try:
+                    result = generate()
+                except StreamRepetitionError as exc:
+                    # Only an interrupted generation gets a retry. Completed rewrite
+                    # content/identity diagnostics remain nonblocking and never retry.
+                    remaining = deadline - monotonic()
+                    if remaining <= 0:
+                        raise
+                    batch["_timeout"] = remaining
+                    if progress is not None:
+                        progress(f"Correcting looping voice generation for {name}")
+                    result = generate(correction=str(exc))
+            except Exception as exc:
+                logger.warning("Voice rewrite unavailable for %s; using that speaker's originals: %s", name, exc)
+                record_output("validation", f"Voice rewrite unavailable for {name}; using that speaker's originals: {exc}")
+                continue
             if monotonic() > deadline:
                 logger.warning("Voice rewrite arrived after its deadline; using originals for unavailable voices.")
                 return available_rewrites()
             checked = retain_voice_rewrite(result.model_dump_json(), batch["turns"], speakers=batch["speakers"])
             for index, parts in zip(indices, checked.turns):
                 rewritten[index] = parts
-        return rewritten
+        return available_rewrites()
     except Exception as exc:
         # Presentation failure must never discard an accepted original or its effects.
         logger.warning("Voice rewrite unavailable; using originals for unavailable voices: %s", exc)
@@ -2485,8 +2492,10 @@ An offer has not transferred anything. Do not claim a transfer already happened.
 Use gift_acceptance only for player_interaction.incoming_gift; explicitly accept
 or decline in your speech. No transfer occurs before engine handoff. Never promise
 unsupported tasks, creative commissions or unrecorded future transfers.
-Use player_relationship.learned_address when known; otherwise address the player
-as you and optionally ask what to call them. Player reports retain their source
+Use the visible player_identity name tag when supplied. It identifies only the
+player, never you or another resident. Do not ask for a name already on the tag.
+Otherwise use player_relationship.learned_address when known, or address the
+player as you. Player reports retain their source
 and uncertainty; reports are not witnessed events. player_opinion is optional,
 small and directional: quote exact evidence from the current player message,
 retain mixed earlier evidence, and give no reward for routine/repeated greetings.
@@ -2649,6 +2658,15 @@ class _StreamRepetitionGuard:
             piece = text[offset:offset + MODEL_STREAM_REPEAT_CHECK_CHARACTERS].casefold()
             tail = (tail + piece)[-window:]
             unchecked += len(piece)
+            # A short punctuation loop can crash a constrained decoder before
+            # the general repeated-prose threshold is reached.
+            punctuation = tail[-MODEL_STREAM_REPEAT_PUNCTUATION_CHARACTERS:]
+            if (len(punctuation) == MODEL_STREAM_REPEAT_PUNCTUATION_CHARACTERS
+                    and re.fullmatch(r"([.!?,;:\u2026])(?:\s*\1)+\s*", punctuation.strip())):
+                reason = ("Generation stopped: the stream kept repeating punctuation. "
+                          "Start fresh, follow the requested Voice and return complete finite JSON strings.")
+                record_output("validation", reason)
+                raise StreamRepetitionError(reason)
             if unchecked < MODEL_STREAM_REPEAT_CHECK_CHARACTERS:
                 continue
             unchecked = 0
@@ -2949,6 +2967,34 @@ def _request_payload(message, snapshot, correction):
                    "unidentified_names_heard": sorted(unidentified_player_names(snapshot)),
                    "request_intent": snapshot["request_intent"]}
         stock_instruction = ""
+    if snapshot.get("player_identity"):
+        speaker = snapshot.get("snake", snapshot)
+        context["spoken_identity"] = {
+            "speaker_actor_id": actor_id(speaker), "speaker_self_name": own_name(speaker),
+            "listener": snapshot["player_identity"],
+        }
+        instruction += (
+            f"\nWrite only {own_name(speaker)}'s next reply to the human player, in first person. "
+            "In YOUR reply, I/my is the speaker and you/your is the player. "
+            "In the INCOMING player message, I/me/my means the human player; you/your means you, the NPC. "
+            f"The player's visible name tag reads {json.dumps(snapshot['player_identity']['name'], ensure_ascii=False)}. "
+            "If the player asks their own name, answer about that tag, not by introducing yourself. "
+            "Read the listener's visible name tag and use that exact name when addressing them. "
+            "A greeting naming you does not give the player your name. Do not echo their greeting as your reply. "
+            "Your profile, private_context, memories, opinions, goals, snake bargain and last_reply belong to YOU. "
+            "They are not the player's biography or actions. Attribute every account to its actual actors. "
+            "Never assume the player met someone, received an apple or owes an offering because you did. "
+            "Only actual player speech and recorded player transfers support such claims. "
+            "An engine-initiated opening has no player utterance to thank, summarize or answer. "
+            "Do not invent earlier player statements or a shared experience."
+        )
+        if player_asks_own_name(message):
+            context["question_to_answer"] = {
+                "subject_actor_id": snapshot["player_identity"]["actor_id"],
+                "name_on_visible_tag": snapshot["player_identity"]["name"],
+            }
+            instruction += (" The CURRENT question asks for the HUMAN PLAYER'S name from their visible tag. "
+                            "Answer about question_to_answer, not your own name.")
     payload = {"world_state": context, "player_message": message}
     if correction:
         if snapshot.get("request_kind") in ("resident_turn", "snake_turn", "conversation_closing", "handoff_thanks"):
@@ -2964,6 +3010,24 @@ def _request_payload(message, snapshot, correction):
 
 def _provider_messages(content, snapshot):
     """Keep private context separate from chronological, speaker-relative speech."""
+    if snapshot.get("player_identity") and snapshot.get("request_kind") != "intent":
+        payload = json.loads(content)
+        context = payload["world_state"]
+        context.pop("player_dialogue", None)
+        context.pop("last_reply", None)
+        message = payload.pop("player_message", "")
+        messages = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}]
+        for turn in snapshot.get("player_dialogue", []):
+            speaker, text = (turn["speaker"], turn["text"]) if isinstance(turn, dict) else turn
+            if speaker == "You":
+                messages.append({"role": "user", "content": text})
+            elif speaker == own_name(snapshot.get("snake", snapshot)) or speaker == snapshot.get("npc_name"):
+                messages.append({"role": "assistant", "content": json.dumps({"reply": text}, ensure_ascii=False)})
+        if message:
+            messages.append({"role": "user", "content": message})
+        else:
+            messages.append({"role": "user", "content": "Generate your own opening or acknowledgment from player_interaction. The player has not spoken a new line."})
+        return messages
     if snapshot.get("request_kind") not in ("resident_turn", "snake_turn", "conversation_closing"):
         return [{"role": "user", "content": content}]
     payload = json.loads(content)
@@ -3104,7 +3168,8 @@ def _request_ollama(message, snapshot, model=DEFAULT_OLLAMA_MODEL, *, correction
     if correction:
         record_output("validation", correction)
     options = {
-        "num_ctx": 16384 if snapshot.get("request_kind") in ("resident_turn", "resident_assessment", "handoff_thanks", "snake_decision") else 8192,
+        "num_ctx": MODEL_DIALOGUE_CONTEXT_TOKENS if snapshot.get("player_identity") or snapshot.get("request_kind") in (
+            "resident_turn", "resident_assessment", "handoff_thanks", "snake_decision") else MODEL_DEFAULT_CONTEXT_TOKENS,
         "num_predict": -1,
     }
     if snapshot.get("request_kind") == "voice_rewrite":

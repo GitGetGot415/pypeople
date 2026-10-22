@@ -4,11 +4,18 @@ import json
 from pathlib import Path
 
 from character_data import NPC_TRAIT_MODES
-from constants import MAX_CONFIGURABLE_LLM_REQUESTS, MAX_LLM_REQUESTS
+from constants import MAX_CONFIGURABLE_LLM_REQUESTS, MAX_LLM_REQUESTS, DEFAULT_PLAYER_NAME, PLAYER_NAME_MAX_LENGTH
 
 
 SETTINGS_PATH = Path(__file__).resolve().parent / "app_settings.json"
 DEFAULT_NPC_TRAIT_MODE = "normal"
+
+
+def validate_player_name(name):
+    name = name.strip() if isinstance(name, str) else ""
+    if not name or len(name) > PLAYER_NAME_MAX_LENGTH or not name.isprintable():
+        raise ValueError(f"Enter a name of 1 to {PLAYER_NAME_MAX_LENGTH} printable characters.")
+    return name
 
 
 def load_settings():
@@ -20,7 +27,12 @@ def load_settings():
         settings = {}
     mode = settings.get("npc_trait_mode")
     limit = settings.get("max_llm_requests")
+    try:
+        player_name = validate_player_name(settings.get("player_name"))
+    except ValueError:
+        player_name = DEFAULT_PLAYER_NAME
     return {
+        "player_name": player_name,
         "npc_trait_mode": mode if mode in NPC_TRAIT_MODES else DEFAULT_NPC_TRAIT_MODE,
         "voice_rewrites": settings.get("voice_rewrites") if isinstance(settings.get("voice_rewrites"), bool) else True,
         "dialogue_validation": settings.get("dialogue_validation") if isinstance(settings.get("dialogue_validation"), bool) else True,
@@ -28,13 +40,15 @@ def load_settings():
     }
 
 
-def save_settings(npc_trait_mode, voice_rewrites, dialogue_validation, *, max_llm_requests=MAX_LLM_REQUESTS):
+def save_settings(npc_trait_mode, voice_rewrites, dialogue_validation, *, max_llm_requests=MAX_LLM_REQUESTS,
+                  player_name=DEFAULT_PLAYER_NAME):
     if npc_trait_mode not in NPC_TRAIT_MODES:
         raise ValueError(f"Trait mode must be one of: {', '.join(NPC_TRAIT_MODES)}.")
     if type(max_llm_requests) is not int or not 1 <= max_llm_requests <= MAX_CONFIGURABLE_LLM_REQUESTS:
         raise ValueError(f"Request limit must be between 1 and {MAX_CONFIGURABLE_LLM_REQUESTS}.")
     settings = {"npc_trait_mode": npc_trait_mode, "voice_rewrites": voice_rewrites,
-                "dialogue_validation": dialogue_validation, "max_llm_requests": max_llm_requests}
+                "dialogue_validation": dialogue_validation, "max_llm_requests": max_llm_requests,
+                "player_name": validate_player_name(player_name)}
     temporary = SETTINGS_PATH.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     temporary.replace(SETTINGS_PATH)

@@ -3,24 +3,23 @@
 from dataclasses import dataclass, field
 import re
 from uuid import uuid4
+from typing import ClassVar
 
 from constants import (INVENTORY_CAPACITY, PLAYER_ID, STARTING_PLAYER_FRUIT, PLAYER_CALL_LIMIT,
                        PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, PLAYER_CONTEXT_WORK_LIMIT,
                        PLAYER_OPINION_STEP, GIFT_GIVE_SECONDS, GIFT_SECONDS,
-                       PLAYER_CALL_GIFT_GENEROSITY, PLAYER_CALL_SOCIABILITY)
+                       PLAYER_CALL_GIFT_GENEROSITY, PLAYER_CALL_SOCIABILITY, DEFAULT_PLAYER_NAME)
 from conversation_history import ConversationRecord, remember
 from dialogue_text import contains_question
 
 
 @dataclass
 class Player:
+    # The name tag is a global preference, independent of simulation possessions.
+    name: ClassVar[str] = DEFAULT_PLAYER_NAME
     id: str = PLAYER_ID
     inventory: dict = field(default_factory=lambda: {"fruit": STARTING_PLAYER_FRUIT})
     inventory_capacity: int = INVENTORY_CAPACITY
-
-    @property
-    def name(self):
-        return "the player"
 
     @property
     def inventory_space(self):

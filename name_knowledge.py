@@ -4,7 +4,7 @@ from copy import deepcopy
 import re
 
 from constants import SNAKE_NAME
-from dialogue_rules import is_name_reference, name_pattern, unquoted_speech
+from dialogue_rules import is_name_reference, name_pattern, unquoted_speech, validate_speaker_identity
 from dialogue_text import split_sentences
 
 
@@ -32,6 +32,9 @@ mention, quotation or name in a record does not identify a visible stranger.
 Only the listener learns after that turn; earlier speech cannot use that knowledge.
 The snake explicitly knows residents' authored names in advance as a character
 rule. Residents still learn the snake's name through a supported introduction.
+When speaking to the player, player_identity supplies their visible name tag.
+You can read and use that name immediately; do not guess it from a greeting,
+your own name, a mentioned resident, or an old nickname.
 """
 
 
@@ -77,7 +80,7 @@ def actor_catalog(world):
     catalog[world.snake.id]["references"] = ["the python guarding the apple tree"]
     catalog[world.player.id] = {"name": "Player", "self_name": "Player", "kind": "player",
                                "references": ["the player"],
-                               "_aliases": list({p.known_names[world.player.id]["name"] for p in people if world.player.id in p.known_names})}
+                               "_aliases": list({world.player.name} | {p.known_names[world.player.id]["name"] for p in people if world.player.id in p.known_names})}
     return catalog
 
 
@@ -245,8 +248,22 @@ def validate_player_reply_names(text, snapshot, *, person=None):
     person = snapshot if person is None else person
     catalog = person.get("_name_actors", {})
     known = snapshot.get("name_knowledge", {}).get("known_names", {})
+    if snapshot.get("player_id"):
+        validate_speaker_identity(text, own_name(snapshot), snapshot.get("player_identity", {}).get("name", "You"))
+    tag = snapshot.get("player_identity", {}).get("name")
+    if (tag and player_asks_own_name(snapshot.get("_player_message", ""))
+            and not any(re.search(name_pattern(name), text, re.I) for name in forms(tag))
+            and any(introduction_supported(text, name, "self") for name in forms(own_name(snapshot)))):
+        raise ValueError(f"The player asked their own name, not yours. Their visible name tag says {tag!r}. Answer about the player or explicitly decline; do not substitute your own introduction.")
     validate_name_use(text, permitted_forms(person, catalog, known), catalog,
                       heard=player_heard_names(snapshot))
+
+
+def player_asks_own_name(message):
+    speech = unquoted_speech(message).replace("\u2019", "'")
+    return bool(re.search(r"\b(?:what(?:'s| is| was) my (?:full |first |preferred )?name|"
+                          r"(?:do you (?:know|remember)|can you (?:read|see)) my name|"
+                          r"what am i called|who am i)\b", speech, re.I))
 
 
 def introduction_supported(text, name, reference, *, name_requested=False):
