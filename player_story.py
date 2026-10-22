@@ -22,6 +22,22 @@ def starting_encounter(world, resident_id=None):
                  and (resident_id is None or fact.object_id == resident_id)), None)
 
 
+def starting_dialogue_context(world, resident_id):
+    """Keep the authored conversation clear when answering questions about the snake."""
+    if starting_encounter(world, resident_id) is None:
+        return ""
+    return (
+        f"The snake the player is referring to IS {SNAKE_NAME}, the python guarding the apple tree. "
+        "There is only one snake here, not a separate snake and a human tree guard. "
+        f"Before this player arrived, you had a spoken conversation with {SNAKE_NAME}. "
+        "You exchanged names and heard it explain its apple "
+        "bargains and claimed divine role. You already know it speaks. The player is the first "
+        "other human you have seen here; that does not include the snake. Recall that conversation "
+        "when asked about the snake, rather than describing an unfamiliar animal you have only watched. "
+        "You took no apple and agreed to no debt in that meeting. You may still doubt its divine claims."
+    )
+
+
 def prepare_player_start(world):
     """Give Judy her prior day here before assigning current-day goals."""
     from social import add_fact

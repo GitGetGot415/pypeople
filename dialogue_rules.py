@@ -457,8 +457,9 @@ def validate_continuity(text, *, day, situation, knows_claims=False, listener_is
     guard += r"|you)\b" if listener_is_guard else r")\b"
     if situation.get("prior_snake_encounters", 0) and re.search(
             r"\bi(?:\s+(?:have not|haven't|have never|never|did not|didn't)|'ve (?:never|not))\s+"
-            r"(?:(?:yet|ever|actually|personally)\s+)*"
-            r"(?:met|meet|encountered|encounter|(?:spoken|speak|talked|talk) (?:to|with)|dealt with|deal with)\s+"
+            r"(?:(?:yet|ever|actually|personally|really)\s+)*"
+            r"(?:met|meet|encountered|encounter|(?:spoken|speak|talked|talk) (?:to|with)|dealt with|deal with|"
+            r"(?:thought about|considered) (?:speaking|talking) (?:to|with))\s+"
             + guard, speech, re.I):
         raise ValueError("The speaker has already met the named guard. Doubting authority does not erase that encounter.")
     if knows_claims and re.search(rf"{name_pattern(SNAKE_NAME)}|\bclaims\b", speech, re.I) and re.search(

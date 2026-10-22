@@ -450,7 +450,7 @@ class NPC:
         }
         if private:
             from player import work_choices
-            from player_story import starting_encounter
+            from player_story import starting_encounter, starting_dialogue_context
             state["owned_works"] = work_choices(self.world, self.id)
             state["player_relationship"] = {"actor_id": self.world.player.id,
                 "learned_address": self.known_names.get(self.world.player.id), "opinion": self.player_opinion.copy()}
@@ -458,6 +458,9 @@ class NPC:
                           "summary": memory.summary, "day": memory.day, "phase": memory.phase}
                                  for memory in relevant_memories(self, partner_id)]
             state["private_context"] = private_context(self, partner_id)
+            starting_experience = starting_dialogue_context(self.world, self.id)
+            if starting_experience:
+                state["private_context"]["starting_experience"] = starting_experience
             state["private_context"]["opinions"] = self.opinions
             state["private_context"]["snake_attitudes"] = self.attitudes.copy()
             advance = self.world.snake.advances.get(self.id)

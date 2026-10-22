@@ -1897,7 +1897,14 @@ def response_contract(snapshot, *, correction=False):
         schema["properties"]["opinion_updates"] = {"type": "array", "items": structured_schema(OpinionUpdate), "maxItems": 0}
         for field in ("gift_offer", "player_opinion", "apple_promise"):
             schema["properties"][field] = {"type": "null"}
-    if snapshot.get("private_context", {}).get("situation", {}).get("prior_snake_encounters", 0):
+    starting_experience = snapshot.get("private_context", {}).get("starting_experience")
+    if starting_experience:
+        instruction += "\nYour established personal experience: " + starting_experience
+        instruction += (" If earlier dialogue denied this conversation, correct that mistake. "
+                        "The player's uncertainty does not erase what you personally heard. "
+                        "Messages labeled Engine context are recorded background, not player speech. "
+                        "Answer the actual final player message using that experience.")
+    elif snapshot.get("private_context", {}).get("situation", {}).get("prior_snake_encounters", 0):
         instruction += (f"\nEstablished personal experience: you have already met {SNAKE_NAME}. "
                         "Use your firsthand known_accounts to recall what you heard, including any apple terms. "
                         "You may doubt its divine claims without denying the meeting or conversation. "
@@ -3177,6 +3184,8 @@ def _provider_messages(content, snapshot):
         context.pop("player_dialogue", None)
         context.pop("last_reply", None)
         message = payload.pop("player_message", "")
+        starting_experience = snapshot.get("private_context", {}).get("starting_experience")
+        correction = payload.pop("correction_request", None) if starting_experience else None
         messages = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}]
         for turn in snapshot.get("player_dialogue", []):
             speaker, text = (turn["speaker"], turn["text"]) if isinstance(turn, dict) else turn
@@ -3184,6 +3193,12 @@ def _provider_messages(content, snapshot):
                 messages.append({"role": "user", "content": text})
             elif speaker == own_name(snapshot.get("snake", snapshot)) or speaker == snapshot.get("npc_name"):
                 messages.append({"role": "assistant", "content": json.dumps({"reply": text}, ensure_ascii=False)})
+        if starting_experience:
+            reminder = {"context": "Engine context, not player speech. Recorded experience overrides mistaken earlier replies.",
+                        "recorded_personal_experience": starting_experience}
+            if correction:
+                reminder["correction_request"] = correction
+            messages.append({"role": "user", "content": json.dumps(reminder, ensure_ascii=False)})
         if message:
             messages.append({"role": "user", "content": message})
         else:
@@ -4181,6 +4196,12 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                               "Correct the error using your supplied choices and own knowledge. "
                               "Keep accepted preceding speech and effects unchanged. Write shorter complete sentences. "
                               "Do not read internal records aloud or write the listener's answer.")
+                if (isinstance(exc.response, ActionResponse) and str(exc).startswith("The speaker has already met")
+                        and state.get("private_context", {}).get("starting_experience")):
+                    correction = ("Your reply denied an established conversation. Regenerate this reply from these facts: "
+                                  + state["private_context"]["starting_experience"]
+                                  + " Correct any earlier mistaken denial and answer the player's latest question. "
+                                  "Write your own speech, not these instructions. Keep accepted history and effects unchanged.")
                 if kind == "resident_turn" and str(exc).startswith("The speaker has not learned the name form"):
                     correction = ("Your last reply used a name you have not learned. Regenerate only this reply, "
                                   "using you/your for the current listener and an observable description from "
