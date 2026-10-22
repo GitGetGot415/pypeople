@@ -581,6 +581,10 @@ The player is speaking TO this NPC. Comments and observations about the NPC,
 such as "you seem to have a lot of apples", are SAY. Questions are also SAY.
 Do not turn a remark into an instruction to approach someone else. Another NPC's
 presence or profile is never a reason to choose TALK_TO_NPC or GIVE_ITEM.
+Short conversational answers such as yes please, no thanks and sure are SAY;
+answering_npc_utterance explains what is being answered, not a new command.
+An observation such as seeing someone talking to someone else is COMMENT/SAY,
+even when it starts with yes. Talking in a report does not request TALK_TO_NPC.
 Return only message_type, action, target, item, and quantity; do not write dialogue or roleplay.
 Supported actions are WANDER (wander around), STOP (stay still), GO_TO_TREE
 (walk to the tree), SHAKE_TREE (walk to the tree and shake it), TALK_TO_NPC
@@ -1177,27 +1181,41 @@ def build_system_instruction(character):
 
 
 def intent_snapshot(snapshot):
-    """Identify people without carrying old replies or opinion history into routing."""
+    """Route from current intent, with only the latest utterance for short answers."""
     def identity(person):
         return {
             "npc_name": person["npc_name"],
-            "character": {key: value for key, value in character_context(person["character"]).items() if key != "Opinions"},
+            "character": {"Name": person["character"]["Name"]},
             "inventory": person.get("inventory", {}).copy(),
             "inventory_space": person.get("inventory_space", 0),
         }
 
+    previous = ""
+    if _short_player_answer(snapshot.get("_player_message", "")):
+        previous = snapshot.get("last_reply", "")
+        for turn in reversed(snapshot.get("player_dialogue", [])):
+            speaker, text = (turn["speaker"], turn["text"]) if isinstance(turn, dict) else turn
+            if speaker == snapshot["npc_name"]:
+                previous = text
+                break
     return {
         "request_kind": "intent",
         **identity(snapshot),
         "owned_works": snapshot.get("owned_works", []),
         "player_inventory": snapshot.get("player_inventory", {}),
         "_player_message": snapshot.get("_player_message", ""),
+        "answering_npc_utterance": previous,
         "resolved_work_id": snapshot.get("resolved_work_id"),
         "other_npcs": [
             {**identity(other), "available_to_talk": other.get("available_to_talk", True)}
             for other in snapshot.get("other_npcs", [])
         ],
     }
+
+
+def _short_player_answer(message):
+    return bool(re.fullmatch(r"\s*(?:yes(?: please)?|no(?: thanks| thank you| not really)?|yep|yup|nope|nah|sure|"
+                             r"ok(?:ay)?|absolutely|sounds good|thanks|thank you)\s*[.!?]*\s*", message, re.I))
 
 
 def _personal_apple_request(message):
@@ -1773,13 +1791,20 @@ def response_contract(snapshot, *, correction=False):
         snapshot = {**snapshot, "request_intent": dict(action="SAY", target="", item="", quantity=0)}
     if snapshot.get("request_intent"):
         intent = snapshot["request_intent"]
+        giving = intent["action"] == "GIVE_ITEM"
         schema = {**schema, "properties": {
             **schema["properties"],
-            "action": {"type": "string", "enum": [intent["action"]]},
-            "target": {"type": "string", "enum": [intent["target"]]},
-            "item": {"type": "string", "enum": [intent["item"]]},
-            "quantity": {"type": "integer", "minimum": intent["quantity"], "maximum": intent["quantity"]},
+            "action": {"type": "string", "enum": [intent["action"], "SAY"] if giving else [intent["action"]]},
+            "target": {"type": "string", "enum": [intent["target"], ""] if giving else [intent["target"]]},
+            "item": {"type": "string", "enum": [intent["item"], ""] if giving else [intent["item"]]},
+            "quantity": {"type": "integer", "enum": [intent["quantity"], 0] if giving else [intent["quantity"]]},
         }}
+        if giving:
+            instruction += (" A requested gift is not yet a commitment. If you decline, lack the item, "
+                            "or need an answer before agreeing, use SAY with empty target/item and quantity 0. "
+                            "A question must use SAY. Use GIVE_ITEM only when agreeing to perform the exact "
+                            "requested handoff; give a brief acknowledgment with no question. "
+                            "Never substitute a different recipient, item or quantity.")
     if _player_name_clarification(snapshot):
         instruction = (f"You are {own_name(snapshot)}, speaking directly to the PLAYER in English. "
                        "The player mentioned a name but you do not know who it identifies. "
@@ -2361,7 +2386,7 @@ def _validate_response(raw, snapshot, model):
     if isinstance(result, PlayerIntent):
         # Observations and questions cannot issue commands, even if the model
         # also supplied an action or irrelevant recipient/item fields.
-        result = (ActionIntent(action="SAY") if result.message_type != "COMMAND" else
+        result = (ActionIntent(action="SAY") if result.message_type != "COMMAND" or _short_player_answer(snapshot.get("_player_message", "")) else
                   ActionIntent.model_validate(result.model_dump(exclude={"message_type"})))
         # A first-person apple request has no third-party recipient. Resolve its
         # pronoun before the reply is generated or any gift is authorized.
@@ -2379,7 +2404,9 @@ def _validate_response(raw, snapshot, model):
         intent = snapshot.get("request_intent")
         if isinstance(result, ActionResponse) and intent:
             result._authorized_intent = intent.copy()
-        if intent and (result.action != intent["action"] or result.target.strip().casefold() != intent["target"].casefold()
+        declined_gift = (isinstance(result, ActionResponse) and intent and intent["action"] == "GIVE_ITEM"
+                         and result.action == "SAY" and not result.target and not result.item and result.quantity == 0)
+        if intent and not declined_gift and (result.action != intent["action"] or result.target.strip().casefold() != intent["target"].casefold()
                        or result.item != intent["item"] or result.quantity != intent["quantity"]):
             raise ValueError("The action, recipient, item, or quantity differs from the current request.")
         if isinstance(result, ActionResponse) and not result.reply.strip():

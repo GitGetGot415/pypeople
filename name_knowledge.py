@@ -212,8 +212,22 @@ def _identity_question(speech, match):
     sentence = speech[start:match.end() + end.end()].strip()
     name = re.escape(match.group())
     return bool(re.fullmatch(
-        rf"(?:who (?:is|was) {name}|who do you mean by {name}|which {name} do you mean|"
-        rf"(?:can|could|would) you (?:please )?tell me who {name} (?:is|was)|{name})\s*[?\uFF1F\u061F]",
+        rf"(?:who(?: is| was|['’]s) {name}|who do you mean by {name}|which {name} do you mean|"
+        rf"(?:can|could|would) you (?:please )?tell me (?:more about )?who {name} (?:is|was)"
+        rf"(?: or what (?:they|he|she)(?:['’]s| is) like)?|{name})\s*[?\uFF1F\u061F]",
+        sentence, re.I))
+
+
+def _unknown_name_statement(speech, match):
+    """Explicit lack of recognition can repeat a heard label without identifying it."""
+    start = max((speech.rfind(mark, 0, match.start()) for mark in ".!?\uFF1F\u061F"), default=-1) + 1
+    end = re.search(r"[.!?\uFF1F\u061F]", speech[match.end():])
+    sentence = speech[start:match.end() + end.end() if end else len(speech)].strip()
+    sentence = re.sub(r"^i(?:['’]m| am) (?:a bit )?(?:confused|unsure)(?: though)?,\s*", "", sentence, flags=re.I)
+    name = re.escape(match.group())
+    return bool(re.fullmatch(
+        rf"(?:i(?:['’]ve| have) never heard of {name}(?: before)?|"
+        rf"i (?:don['’]t|do not) know (?:who {name} is|anyone (?:called|named) {name}))\s*[.!?]?",
         sentence, re.I))
 
 
@@ -229,7 +243,7 @@ def validate_name_use(text, permitted, catalog, *, heard=()):
         used = match.group()
         if used.casefold() in {name.casefold() for name in permitted}:
             continue
-        if used.casefold() in heard and _identity_question(speech, match):
+        if used.casefold() in heard and (_identity_question(speech, match) or _unknown_name_statement(speech, match)):
             continue
         # Ordinary words and ambiguous shared first names are insufficient to
         # identify an actor. They can never create knowledge without an effect.
@@ -277,6 +291,10 @@ def introduction_supported(text, name, reference, *, name_requested=False):
         pattern = (r"\b(?:my name is|my name['’]s|name['’]s|i am|i['’]m|call me|you can call me|i go by|i['’]m called)\s+"
                    + escaped + r"|\bi,\s*" + escaped + r"\s*,|(?:^|[.!?]\s*|,\s*)"
                    + escaped + r"\s+here(?=\s*[,!.]|$)|\bmy (?:own )?name\b[^.!?;]{0,45}\b(?:it is|it['’]s)\s+" + escaped)
+        pattern += (r"|\bi(?:['’]d| would)? (?:prefer|like) to be called\s+" + escaped
+                    + r"|\byou (?:can|may) call me\s+" + escaped)
+        if name_requested or asks_name(speech):
+            pattern += r"|\bmine(?: is|['’]s)\s+" + escaped
         if name_requested:
             pattern += r"|^\s*(?:it is|it['’]s)\s+" + escaped + r"(?=\s*(?:[,!.;]|$))"
     else:

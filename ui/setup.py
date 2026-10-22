@@ -8,7 +8,7 @@ from .button import Button
 from .file_dialog import character_file_dialog
 from .text import draw_centered_text, draw_wrapped_text
 from .text_input import TextInput
-from constants import ACCENT, BORDER_RADIUS, GRASS, INK, MUTED, PAPER, STARTING_ADDITIONAL_NPCS
+from constants import ACCENT, BORDER_RADIUS, GRASS, INK, MUTED, PAPER, STARTING_ADDITIONAL_NPCS, SETUP_LOAD_NPCS_RECT
 
 
 class SetupScreen:
@@ -24,6 +24,7 @@ class SetupScreen:
         self.remove_button = Button((540, 138, 40, 40), "-")
         self.add_button = Button((700, 138, 40, 40), "+")
         self.apply_button = Button((755, 138, 145, 40), "Set count")
+        self.load_npcs_button = Button(SETUP_LOAD_NPCS_RECT, "Load NPC JSONs")
         self.previous_button = Button((260, 525, 120, 32), "Previous")
         self.next_button = Button((900, 525, 120, 32), "Next")
         self.back_button = Button((260, 605, 160, 44), "Back")
@@ -56,6 +57,35 @@ class SetupScreen:
         self.set_count(count)
         return True
 
+    def load_characters(self, paths, index=None):
+        paths = [Path(path).resolve() for path in paths]
+        if not paths:
+            return
+        for path in paths:
+            try:
+                load_character(path)
+            except (OSError, ValueError) as error:
+                raise ValueError(f"{path.name}: {error}") from error
+        slots = ([index] if index is not None else []) + [
+            slot for slot, source in enumerate(self.sources) if source is None and slot != index]
+        first = slots[0] if slots else len(self.sources)
+        replaced = min(len(slots), len(paths))
+        for offset, path in enumerate(paths):
+            if offset < len(slots):
+                self.sources[slots[offset]] = path
+            else:
+                self.sources.append(path)
+        self.count_input.set_value(str(len(self.sources)))
+        self.page = first // self.ROWS_PER_PAGE
+        self.message = f"Loaded {len(paths)} NPCs: replaced {replaced} slots, added {len(paths) - replaced} slots."
+
+    def choose_characters(self, index=None):
+        try:
+            paths = character_file_dialog(save=False, title="Select NPC JSON files", multiple=True)
+            self.load_characters(paths, index)
+        except (ImportError, OSError, ValueError) as error:
+            self.message = f"Could not load NPCs: {error}"
+
     def handle_event(self, app, event):
         if self.back_button.clicked(event) or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
             self.count_input.active = False
@@ -68,6 +98,9 @@ class SetupScreen:
             self.set_count(len(self.sources) - 1)
         elif self.add_button.clicked(event):
             self.set_count(len(self.sources) + 1)
+        elif self.load_npcs_button.clicked(event):
+            self.choose_characters()
+            return
         elif self.previous_button.clicked(event, enabled=self.page > 0):
             self.page -= 1
         elif self.next_button.clicked(event, enabled=self.page < self.last_page):
@@ -87,15 +120,7 @@ class SetupScreen:
                 self.sources[index] = None
                 self.message = ""
             elif json_button.clicked(event):
-                try:
-                    path = character_file_dialog(save=False)
-                    if path:
-                        path = Path(path).resolve()
-                        load_character(path)
-                        self.sources[index] = path
-                        self.message = ""
-                except (ImportError, OSError, ValueError) as error:
-                    self.message = f"Could not load NPC {index + 2}: {error}"
+                self.choose_characters(index)
 
     def update(self, dt):
         self.count_input.update(dt)
@@ -109,6 +134,7 @@ class SetupScreen:
         self.remove_button.draw(app.window, app.font, enabled=bool(self.sources))
         self.add_button.draw(app.window, app.font)
         self.apply_button.draw(app.window, app.font)
+        self.load_npcs_button.draw(app.window, app.small_font)
         app.window.blit(app.small_font.render(f"Total: {len(self.sources) + 1} NPCs, including Judy", True, MUTED), (260, 188))
         pygame.draw.rect(app.window, (225, 232, 210), (260, 215, 760, 32))
         app.window.blit(app.font.render("NPC 1: judy.json (fixed)", True, INK), (272, 220))
