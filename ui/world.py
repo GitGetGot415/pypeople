@@ -1,7 +1,8 @@
 import pygame
 from functools import lru_cache
 from pathlib import Path
-from constants import (GARDEN_LOCATION, INK, PAPER, SHADOW_COLOR, WORLD_COLORS,
+from constants import (GARDEN_LOCATION, INK, PAPER, SHADOW_COLOR, CHARACTER_SHADOW_HEIGHT,
+                      CHARACTER_SHADOW_OFFSET_Y, WORLD_COLORS,
                       APARTMENT_DOOR_RECT, APARTMENT_RECT, DEFAULT_BUBBLE_SPRITE_SIZE,
                       UI_SMALL_FONT_SIZE, NAME_TAG_FONT_SIZE, NAME_TAG_HEAD_GAP, PLAYER_NAME_TAG,
                       ROOM_BED_RECT, SLEEP_FACING, SLEEP_ROTATION, PLAYER_ROOM_NUMBER)
@@ -236,7 +237,9 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
             original = pygame.transform.rotate(original, SLEEP_ROTATION)
         sprite = resized(original, CHARACTER_SCALE * zoom)
         sprite_rect = sprite.get_rect(midbottom=position)
-        shadow = pygame.Rect(screen_point((npc.x - 16, npc.y - 4)), (round(32 * zoom), round(8 * zoom)))
+        shadow_height = CHARACTER_SHADOW_HEIGHT
+        shadow = pygame.Rect(screen_point((npc.x - 16, npc.y + CHARACTER_SHADOW_OFFSET_Y - shadow_height / 2)),
+                             (round(32 * zoom), round(shadow_height * zoom)))
         if not sleeping:
             _draw_shadow(surface, shadow)
         surface.blit(sprite, sprite_rect)
