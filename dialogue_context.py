@@ -118,7 +118,7 @@ def account_speech_context(value, speaker, listener, catalog):
 def orientation_context(npc):
     world = npc.world
     from constants import ARRIVAL_DISCUSSION_THRESHOLD
-    discussed = {record.id for record in world.history if npc.name in record.participants
+    discussed = {record.id for record in world.history if record.includes(npc)
                  and record.orientation_discussed and record.turns
                  and orientation_speech(turn.text for turn in record.turns)}
     return {"days_here": world.day - npc.arrival_day,

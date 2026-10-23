@@ -19,13 +19,13 @@ class PendingAction:
     revision: int
     target_id: str | None = None
     topic: str = ""
-    record: int | None = None
+    record: str | None = None
     item: str = ""
     quantity: int = 0
 
 
 class Simulation:
-    def __init__(self, npcs, tree=None, *, assign_goals=True, npc_trait_mode="normal", mode="player", player_start=False):
+    def __init__(self, npcs, tree=None, *, assign_goals=True, npc_trait_mode="normal", mode="player", player_start=False, initialize_opinions=True):
         from npc import Tree
         from snake import Snake
 
@@ -71,6 +71,9 @@ class Simulation:
         self.social_rotation = 0
         for npc in self.npcs:
             npc.world = self
+        if initialize_opinions:
+            for npc in self.npcs:
+                npc.bind_authored_opinions()
         if player_start and mode == "player":
             from player_story import prepare_player_start
             prepare_player_start(self)
@@ -89,6 +92,9 @@ class Simulation:
         if player_start and mode == "player":
             from player_story import start_player_introduction
             start_player_introduction(self)
+
+    def record_by_id(self, record_id):
+        return next((record for record in self.history if record.id == record_id), None)
 
     @property
     def phase_index(self):
@@ -141,7 +147,7 @@ class Simulation:
     def publish(self, kind, participants, text, record=None):
         from conversation_history import WorldEvent
 
-        reference = next((i for i, entry in enumerate(self.history) if entry is record), None)
+        reference = record.id if record is not None else None
         event = WorldEvent(self.day, self.phase, kind, [npc.id for npc in participants], text, reference)
         self.events.append(event)
         from social import record_event_fact
@@ -192,7 +198,7 @@ class Simulation:
             if npc:
                 npc.request_pending = False
             if action.record is not None:
-                record = self.history[action.record]
+                record = self.record_by_id(action.record)
                 record.status, record.error = "Cancelled", reason
                 record.outcomes.append(reason)
         self.pending_actions = retained
@@ -642,7 +648,8 @@ class Simulation:
 
     def interrupt_resident(self, target, reason, *, departing=False):
         """Cancel only unfinished work; preserve every committed handoff and record."""
-        from npc import Behavior, Gift
+        from npc import Behavior
+        from transfers import Handoff
         from player import owns_resident, end_interaction
         if owns_resident(self, target):
             end_interaction(self, reason)
@@ -651,10 +658,11 @@ class Simulation:
             finish_visit(self)
         self.leave_tree(target.id, reason)
         interaction = target.conversation or target.gift
-        from player import PlayerHandoff, clear_call
+        from player import clear_call
+        from transfers import Handoff
         clear_call(target)
         self.player_acknowledgments = [a for a in self.player_acknowledgments if a["npc_id"] != target.id]
-        if isinstance(interaction, (Gift, PlayerHandoff)):
+        if isinstance(interaction, Handoff):
             interaction.finish(reason)
             interaction = None
         if interaction:
@@ -676,7 +684,7 @@ class Simulation:
             encounter.finish(error=reason)
         self.tree.release(target)
         for record in self.history:
-            if target.name in record.participants and "You" in record.participants and record.status in ("Waiting for reply", "Reply pending when saved"):
+            if record.includes(target) and self.player.id in record.participant_ids and record.status in ("Waiting for reply", "Reply pending when saved"):
                 record.status, record.error = "Cancelled", reason
                 record.outcomes.append(reason)
         if departing:
@@ -685,7 +693,8 @@ class Simulation:
         interactions = {id(p.conversation or p.gift): p.conversation or p.gift
                         for p in self.npcs if p.conversation or p.gift}
         states = [state for interaction in interactions.values()
-                  for state in (interaction.saved_states if hasattr(interaction, "saved_states") else [interaction.saved_state])]
+                  for state in (interaction.saved_states.values() if isinstance(interaction.saved_states, dict)
+                                else interaction.saved_states)]
         if self.snake.encounter is not None and self.snake.encounter.saved_state is not None:
             states.append(self.snake.encounter.saved_state)
         for state in states:
@@ -702,7 +711,7 @@ class Simulation:
                     owner.request_pending = False
                     owner.command_revision += 1
                 if action.record is not None:
-                    record = self.history[action.record]
+                    record = self.record_by_id(action.record)
                     record.status, record.error = "Cancelled", reason
                     record.outcomes.append(reason)
             else:
@@ -828,6 +837,8 @@ class Simulation:
         npc.world = self
         remember_description(npc)
         self.npcs.append(npc)
+        for resident in self.npcs:
+            resident.bind_authored_opinions()
         from apartments import assign_rooms
         assign_rooms(self)
         self.processed_arrival_days.append(day)

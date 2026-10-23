@@ -64,13 +64,16 @@ def accept_snake_reply(world, request, result, error, failed_turns, rewritten):
     return AcceptedReply(error)
 
 
-def remember_response_opinions(world, npc, response):
+def remember_response_opinions(world, npc, response, snapshot):
     updates = {}
     for entry in response.opinion_updates:
-        matches = [other for other in world.npcs if other is not npc and other.name.casefold() == entry.person.strip().casefold()]
-        if len(matches) != 1:
+        actor_id = response._opinion_targets.get(entry.person)
+        permitted = [actor for actor in snapshot.get("other_npcs", []) if actor.get("kind") != "player"
+                     and actor["npc_name"].casefold() == entry.person.strip().casefold()]
+        if (len(permitted) != 1 or permitted[0].get("npc_id") != actor_id
+                or world.npc_by_id(actor_id) is None):
             return "I couldn't identify that person to remember my opinion. Please try again."
-        updates[matches[0].name] = {"opinion": entry.opinion, "reason": entry.reason}
+        updates[actor_id] = {"opinion": entry.opinion, "reason": entry.reason}
     if updates:
         try:
             npc.remember_opinions(updates)
@@ -90,7 +93,8 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
     if not error:
         try:
             from llm import validate_player_transfer
-            from player import validate_transfer, call_valid
+            from player import call_valid
+            from transfers import validate_transfer
             validate_player_transfer(result, snapshot)
             context = snapshot.get("player_interaction", {})
             if context.get("call") and not call_valid(world, npc, context["call"]):
@@ -147,14 +151,14 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
                         npc.id, result.action, npc.command_revision,
                         target.id if result.action in ("TALK_TO_NPC", "GIVE_ITEM") else None,
                         message,
-                        world.history.index(record) if record is not None else None,
+                        record.id if record is not None else None,
                         result.item, result.quantity,
                     )
     if not error:
         opinion_outcomes = [describe_opinion_change(npc.name, entry.person,
-            npc.opinions.get(entry.person, {}).get("opinion"), entry.opinion, entry.reason)
+            npc.opinion_score(result._opinion_targets.get(entry.person), default=None), entry.opinion, entry.reason)
             for entry in result.opinion_updates]
-        error = remember_response_opinions(world, npc, result)
+        error = remember_response_opinions(world, npc, result, snapshot)
     if not error and planned_action is not None:
         if planned_action.action == "GIVE_ITEM" and record is not None:
             record.transfer_intent = dict(giver_id=npc.id, recipient_id=planned_action.target_id,
@@ -168,7 +172,8 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
     if not error and record is not None:
         record.dialogue_errors = list(dict.fromkeys([*record.dialogue_errors, *result._dialogue_errors]))
         record.outcomes.extend(opinion_outcomes)
-        from player import accept_player_evidence, PlayerHandoff
+        from player import accept_player_evidence
+        from transfers import Handoff
         context = snapshot.get("player_interaction", {})
         incoming = context.get("incoming_gift")
         opening = snapshot.get("request_kind") in ("player_opening", "player_gift", "player_acknowledgment")
@@ -176,7 +181,7 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
         from player import accept_player_promises
         accept_player_promises(world, npc, record, result, message, opening=opening)
         if incoming and result.gift_acceptance:
-            PlayerHandoff(world, world.player, npc, incoming["item"], incoming["quantity"], record)
+            Handoff(world.player, npc, incoming["item"], incoming["quantity"], record)
         if visible:
             pending_offer = ({**result.gift_offer.model_dump(), "npc_id": npc.id,
                 "revision": npc.command_revision, "record_id": record.id} if result.gift_offer else None)
@@ -199,7 +204,7 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
             record.add_turn(npc.name, npc.reply, [{
                 "text": npc.reply,
                 "emotion": {"name": npc.emotion, "intensity": npc.emotion_intensity},
-            }], rewritten[0] if rewritten else ())
+            }], rewritten[0] if rewritten else (), speaker_id=npc.id)
         record.error = error or ""
         waiting_for_done = npc.request_pending and npc.end_conversation
         if error:
@@ -253,7 +258,7 @@ def apply_pending_action(world, action, spacing):
     elif action.action == "GIVE_ITEM":
         target = world.participant_by_id(action.target_id)
         try:
-            record = world.history[action.record] if action.record is not None else None
+            record = world.record_by_id(action.record) if action.record is not None else None
             gift_spacing = spacing(npc, target) if target and target is not world.player else 0
             gift = npc.give_items(target, action.item, action.quantity, record, gift_spacing)
             if record is None:
@@ -266,7 +271,7 @@ def apply_pending_action(world, action, spacing):
         except ValueError as exc:
             error = str(exc)
     if action.record is not None:
-        record = world.history[action.record]
+        record = world.record_by_id(action.record)
         record.status = "Failed" if error else ("Walking to give" if action.action == "GIVE_ITEM" else "Completed")
         if error:
             record.error = error

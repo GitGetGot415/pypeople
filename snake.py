@@ -269,7 +269,7 @@ class SnakeEncounter:
             "_name_actors": actor_catalog(world),
             "purpose": self.purpose, "snake": snake.snapshot(), "resident": npc.snapshot(world.tree),
             "first_meeting": starting_encounter(world, npc.id) is None and not any(record is not self.record and record.turns
-                                     and set(record.participants) == {snake.name, npc.name} for record in world.history),
+                                     and set(record.participant_ids) == {snake.id, npc.id} for record in world.history),
             "accusation": self.accusation, "known_warning": snake.offenses.get(npc.id),
             "warning_record": next((f.summary for f in world.facts if f.id == snake.offenses.get(npc.id)), ""),
             "permitted_decisions": permitted, "offering_accounts": accounts,
@@ -518,7 +518,7 @@ class PlayerSnakeEncounter(SnakeEncounter):
             raise
         self.record.dialogue_errors = list(dict.fromkeys([*self.record.dialogue_errors, *response._dialogue_errors]))
         self.record.add_turn(self.initiator.name, response.reply,
-            [{"text": response.reply, "emotion": {"name": "neutral", "intensity": 0}}], rewritten)
+            [{"text": response.reply, "emotion": {"name": "neutral", "intensity": 0}}], rewritten, speaker_id=self.initiator.id)
         self.question_account_id = response.snake_account_id if contains_question(response.reply) else ""
         self.dialogue_state = "ready"
         if decision == "eat":

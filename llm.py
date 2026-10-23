@@ -3,30 +3,32 @@ import logging
 import re
 import unicodedata
 from copy import deepcopy
+from dataclasses import dataclass
 from time import monotonic
-from typing import Literal
 from types import SimpleNamespace
 
 from google import genai
 from google.genai import errors, types
 import httpx
-from pydantic import Field, ValidationError, model_validator
+from pydantic import ValidationError
 from validation_errors import DialogueValidationError, RecoveryKind
-from dialogue import (StrictResponse, EmotionReaction, ConversationPart,
-                      DialoguePartsResponse, ConversationTurn)
-from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_CHARACTERS, DIALOGUE_MAX_PARTS,
-                       DIALOGUE_PART_TARGET_CHARACTERS, DIALOGUE_PARTS_PER_TURN,
-                       DIALOGUE_REPAIR_WORD_LIMIT, DIALOGUE_TIMEOUT_SECONDS,
-                       EMOTION_THRESHOLD, FURIOUS_THRESHOLD, LEVERAGE_ACCOUNT_KINDS,
-                       MODEL_STREAM_REPEAT_CHECK_CHARACTERS, MODEL_STREAM_REPEAT_COUNT,
-                       MODEL_STREAM_REPEAT_MAX_BLOCK_CHARACTERS, MODEL_STREAM_REPEAT_MIN_CHARACTERS,
-                       MODEL_STREAM_REPEAT_PUNCTUATION_CHARACTERS, MODEL_STREAM_REPEAT_SYMBOL_CHARACTERS,
-                       MODEL_DEFAULT_CONTEXT_TOKENS, MODEL_DIALOGUE_CONTEXT_TOKENS,
-                       RESIDENT_TURN_COUNT, FOOD_REQUEST_TURN_COUNT, CONVERSATION_MAX_TURNS, DIALOGUE_STAGE_ATTEMPTS,
-                       DIALOGUE_REPEAT_PHRASE_WORDS, DIALOGUE_REPEAT_SENTENCE_WORDS, DIALOGUE_REPEAT_TURN_WORDS,
-                       CONVERSATION_MAX_AGREEMENTS, CONVERSATION_MAX_DISCLOSURES,
-                       CONVERSATION_MAX_REPUTATION_EFFECTS, CONVERSATION_MAX_LEVERAGE,
-                       PLAYER_LABEL, PLAYER_NAME_TAG, SNAKE_NAME, SNAKE_TURN_COUNT, VOICE_REWRITE_TEMPERATURE)
+from dialogue import (AcceptedProposal, ActionIntent, ActionResponse, ConversationPart, ConversationResponse,
+                     ConversationTurn, DialoguePartsResponse, DialogueRepairResponse, DisclosureChoice,
+                     EmotionReaction, LeverageUse, PlayerIntent, ResidentAssessment, ResidentGift,
+                     ResidentTurnResponse, SnakeDecision, SnakePlayerResponse, SnakeResidentResponse,
+                     SnakeResponse, ThirdPartyOpinion, VoiceRewriteResponse)
+from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_CHARACTERS,
+                      DIALOGUE_PART_TARGET_CHARACTERS, DIALOGUE_PARTS_PER_TURN, DIALOGUE_REPAIR_WORD_LIMIT,
+                      DIALOGUE_TIMEOUT_SECONDS, EMOTION_THRESHOLD, FURIOUS_THRESHOLD, LEVERAGE_ACCOUNT_KINDS,
+                      MODEL_STREAM_REPEAT_CHECK_CHARACTERS, MODEL_STREAM_REPEAT_COUNT,
+                      MODEL_STREAM_REPEAT_MAX_BLOCK_CHARACTERS, MODEL_STREAM_REPEAT_MIN_CHARACTERS,
+                      MODEL_STREAM_REPEAT_PUNCTUATION_CHARACTERS, MODEL_STREAM_REPEAT_SYMBOL_CHARACTERS,
+                      MODEL_DEFAULT_CONTEXT_TOKENS, MODEL_DIALOGUE_CONTEXT_TOKENS, RESIDENT_TURN_COUNT,
+                      FOOD_REQUEST_TURN_COUNT, CONVERSATION_MAX_TURNS, DIALOGUE_STAGE_ATTEMPTS,
+                      DIALOGUE_REPEAT_PHRASE_WORDS, DIALOGUE_REPEAT_SENTENCE_WORDS,
+                      DIALOGUE_REPEAT_TURN_WORDS, CONVERSATION_MAX_AGREEMENTS, CONVERSATION_MAX_DISCLOSURES,
+                      CONVERSATION_MAX_REPUTATION_EFFECTS, CONVERSATION_MAX_LEVERAGE, PLAYER_LABEL,
+                      PLAYER_NAME_TAG, SNAKE_NAME, SNAKE_TURN_COUNT, VOICE_REWRITE_TEMPERATURE)
 from dialogue_text import contains_question, contains_serialized_dialogue, contains_speaker_label, speech_is_complete, split_sentences
 from dialogue_code import DELIVERY_INSTRUCTION
 from dialogue_rules import (_asserts, is_name_reference, mentions_account, mentions_private_recollection, named_context, named_references, name_pattern, unquoted_speech,
@@ -37,7 +39,6 @@ from ollama_manager import DEFAULT_OLLAMA_MODEL, mark_ollama_ready
 from model_debug import admitted_provider, provider_wait_seconds, check_cancelled, cancellable_stream, disconnect_response, record_output, streaming_output, watch_response
 from conversation_history import rewrite_validation_error, usable_rewrite
 from social import (information_from_dict, listener_stances, phase_index, validate_agreements, validate_information)
-from purgatory import Attitudes
 from dialogue_context import (NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION, account_references, account_speech_context,
                               name_forms, actor_id, forms, own_name, orientation_speech, validate_orientation)
 
@@ -45,207 +46,6 @@ from dialogue_context import (NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION, acc
 MODEL = "gemini-2.5-flash"
 OLLAMA_URL = "http://localhost:11434/api/chat"
 logger = logging.getLogger(__name__)
-
-
-class OpinionUpdate(StrictResponse):
-    person: str = Field(min_length=1)
-    opinion: int = Field(ge=-100, le=100)
-    reason: str = Field(min_length=1, max_length=400)
-
-    @model_validator(mode="after")
-    def validate_text(self):
-        if not self.person.strip() or not self.reason.strip():
-            raise ValueError("Opinions require a person and a reason.")
-        return self
-
-
-class ActionIntent(StrictResponse):
-    action: Literal["WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "GIVE_ITEM", "EAT", "SAY"]
-    target: str = ""
-    item: str = ""
-    quantity: int = Field(default=0, ge=0)
-
-
-class PlayerIntent(ActionIntent):
-    message_type: Literal["COMMENT", "QUESTION", "COMMAND"]
-
-
-class GiftOffer(StrictResponse):
-    recipient_id: str
-    item: str
-    quantity: int = Field(ge=1)
-
-
-class ResidentGift(GiftOffer):
-    giver_id: str
-    offer_turn: int = Field(ge=0)
-    accept_turn: int | None = Field(default=None, ge=0)
-
-
-class PlayerOpinionChange(StrictResponse):
-    delta: int = Field(ge=-4, le=4)
-    reason: str = Field(min_length=1, max_length=200)
-    evidence: str = Field(min_length=1, max_length=200)
-
-
-class PlayerApplePromise(StrictResponse):
-    giver_id: str
-    deadline: int = Field(ge=0)
-
-
-class PlayerInvitation(StrictResponse):
-    destination: Literal["garden", "tree", "home"]
-    evidence: str = Field(min_length=1)
-
-
-class ActionResponse(ActionIntent):
-    reply: str = Field(description="Your words to the player. If end_conversation is true, give only a brief closing without a question or invitation to continue.")
-    end_conversation: bool = Field(default=False, description="True when you finish talking without asking a question. If your SAY reply asks the player a question, this must be false so they can answer. End when the player is done or declines further conversation.")
-    opinion_updates: list[OpinionUpdate] = Field(default_factory=list, max_length=8)
-    emotion: EmotionReaction = Field(default_factory=EmotionReaction)
-    gift_offer: GiftOffer | None = None
-    gift_acceptance: bool = False
-    player_opinion: PlayerOpinionChange | None = None
-    apple_promise: PlayerApplePromise | None = None
-    invitation: PlayerInvitation | None = None
-    invitation_acceptance: str = ""
-    invitation_resolution: Literal["", "declined", "withdrawn"] = ""
-    invitation_resolution_evidence: str = ""
-
-    @model_validator(mode="after")
-    def close_for_action(self):
-        # Committed tasks always give the player a final line to read first.
-        if self.action != "SAY":
-            self.end_conversation = True
-        elif contains_question(self.reply):
-            # Preserve generated speech; a question leaves room for an answer.
-            self.end_conversation = False
-        return self
-
-
-class AcceptedProposal(StrictResponse):
-    proposal_id: str = Field(min_length=1)
-    offer_turn: int = Field(ge=0, le=CONVERSATION_MAX_TURNS - 1)
-    accept_turn: int = Field(ge=1, le=CONVERSATION_MAX_TURNS - 1)
-
-
-class DisclosureChoice(StrictResponse):
-    turn: int = Field(ge=0, le=CONVERSATION_MAX_TURNS - 1)
-    claim_id: str = Field(min_length=1)
-    intent: Literal["share", "challenge", "lie"]
-    listener_stance: Literal["uncertain", "believed", "disbelieved"]
-
-
-class ThirdPartyOpinion(StrictResponse):
-    turn: int = Field(ge=0, le=CONVERSATION_MAX_TURNS - 1)
-    claim_id: str = Field(min_length=1)
-    subject_id: str = Field(min_length=1)
-    delta: int = Field(ge=-6, le=6)
-    reason: str = Field(min_length=1, max_length=400)
-
-
-class LeverageUse(StrictResponse):
-    turn: int = Field(ge=0, le=CONVERSATION_MAX_TURNS - 1)
-    claim_id: str = Field(min_length=1)
-    demand: Literal["apple", "repayment", "disclosure"]
-
-
-class AccountDisclosure(StrictResponse):
-    claim_id: str
-    intent: Literal["share", "challenge", "lie"]
-
-
-class AccountReaction(StrictResponse):
-    disclosure_turn: int = Field(ge=0, le=CONVERSATION_MAX_TURNS - 1)
-    stance: Literal["uncertain", "believed", "disbelieved"]
-
-
-class ReputationChoice(StrictResponse):
-    claim_id: str
-    subject_id: str
-    delta: int = Field(ge=-6, le=6)
-    reason: str = Field(min_length=1, max_length=400)
-
-
-class LeverageChoice(StrictResponse):
-    claim_id: str
-    demand: Literal["apple", "repayment", "disclosure"]
-
-
-class ResidentTurnResponse(DialoguePartsResponse):
-    gift_offer: GiftOffer | None = None
-    accept_gift: bool = False
-    offers: list[str] = Field(default_factory=list, max_length=CONVERSATION_MAX_AGREEMENTS)
-    acceptances: list[str] = Field(default_factory=list, max_length=CONVERSATION_MAX_AGREEMENTS)
-    disclosures: list[AccountDisclosure] = Field(default_factory=list, max_length=1)
-    reactions: list[AccountReaction] = Field(default_factory=list, max_length=CONVERSATION_MAX_DISCLOSURES)
-    third_party_opinions: list[ReputationChoice] = Field(default_factory=list, max_length=CONVERSATION_MAX_REPUTATION_EFFECTS)
-    leverage: list[LeverageChoice] = Field(default_factory=list, max_length=CONVERSATION_MAX_LEVERAGE)
-
-
-class ResidentAssessment(StrictResponse):
-    opinion: OpinionUpdate
-    reactions: list[AccountReaction] = Field(default_factory=list, max_length=CONVERSATION_MAX_DISCLOSURES)
-
-
-class SnakeResidentResponse(DialoguePartsResponse):
-    account_id: str = ""
-    attitudes: Attitudes | None = None
-
-
-class SnakeDecision(StrictResponse):
-    interaction_id: str
-    decision: Literal["talk", "give_apple", "warn", "eat"]
-    account_id: str = ""
-    snake_account_id: str = ""
-    account_stance: Literal["uncertain", "believed", "disbelieved"] = "uncertain"
-    accusation: str = ""
-    evidence: str = ""
-    attitudes: Attitudes | None = None
-
-
-class SnakeResponse(SnakeDecision):
-    turns: list[ConversationTurn] = Field(min_length=SNAKE_TURN_COUNT, max_length=CONVERSATION_MAX_TURNS)
-    outcome_turn: Literal[2, 4] = 2
-
-
-class SnakePlayerResponse(SnakeDecision):
-    interaction_id: str = ""
-    decision: Literal["talk", "give_apple", "warn", "eat"] = "talk"
-    reply: str = Field(min_length=1)
-    disclosure_evidence: str = ""
-
-
-class ConversationResponse(StrictResponse):
-    gift: ResidentGift | None = None
-    turns: list[ConversationTurn] = Field(min_length=FOOD_REQUEST_TURN_COUNT, max_length=CONVERSATION_MAX_TURNS,
-        description="Conversation in chronological order. Each turn is one uninterrupted stretch of speech before the partner replies.")
-    initiator_opinion: OpinionUpdate
-    recipient_opinion: OpinionUpdate
-    food_outcome: Literal["", "accepted", "need", "refused", "unavailable"] = ""
-    handoff_thanks: list[ConversationPart] = Field(default_factory=list, max_length=3)
-    accepted_proposals: list[AcceptedProposal] = Field(max_length=CONVERSATION_MAX_AGREEMENTS)
-    disclosures: list[DisclosureChoice] = Field(max_length=CONVERSATION_MAX_DISCLOSURES)
-    third_party_opinions: list[ThirdPartyOpinion] = Field(max_length=CONVERSATION_MAX_REPUTATION_EFFECTS)
-    leverage: list[LeverageUse] = Field(max_length=CONVERSATION_MAX_LEVERAGE)
-    orientation_discussed: bool = Field(default=False,
-        description="True only if actual speech engages with arrival, surroundings, finding help or safety. This never solves the mystery or establishes a route home.")
-
-    @model_validator(mode="after")
-    def validate_turns(self):
-        for index, turn in enumerate(self.turns):
-            expected = "initiator" if index % 2 == 0 else "recipient"
-            if turn.speaker != expected or not turn.text.strip():
-                raise ValueError("Conversation must contain alternating, nonempty turns.")
-        return self
-
-
-class DialogueRepairResponse(DialoguePartsResponse):
-    parts: list[ConversationPart] = Field(min_length=1, max_length=1)
-
-
-class VoiceRewriteResponse(StrictResponse):
-    turns: list[list[str]]
 
 
 class VoiceRewriteValidationError(ValueError):
@@ -1493,6 +1293,22 @@ def creative_contract(kind):
     return instruction, structured_schema(model), model
 
 
+def response_model(snapshot):
+    """Select the trusted contract without constructing prompts or dynamic schemas."""
+    kind = snapshot.get("request_kind")
+    if kind in ("create_art", "create_music"):
+        from creations import response_model as creation_model
+        return creation_model(kind.removeprefix("create_"))
+    if kind == "snake_turn":
+        return (SnakeResidentResponse if snapshot["speaker_role"] == "recipient"
+                and "permitted_accounts" in snapshot["speaker"] else DialoguePartsResponse)
+    return {"resident_turn": ResidentTurnResponse, "resident_assessment": ResidentAssessment,
+            "handoff_thanks": DialoguePartsResponse, "conversation": ConversationResponse,
+            "snake_encounter": SnakeResponse, "conversation_closing": DialogueRepairResponse,
+            "snake_decision": SnakeDecision, "snake_player": SnakePlayerResponse,
+            "intent": PlayerIntent, "voice_rewrite": VoiceRewriteResponse}.get(kind, ActionResponse)
+
+
 def response_contract(snapshot, *, correction=False):
     kind = snapshot.get("request_kind")
     if kind in ("create_art", "create_music"):
@@ -1859,13 +1675,20 @@ def validate_response(raw, snapshot):
             raise InvalidResponseError("Invalid creation data: " + reason) from None
     if snapshot.get("request_kind") == "voice_rewrite":
         return _parse_voice_rewrite(raw, snapshot["turns"], speakers=snapshot["speakers"])
-    model = response_contract(snapshot)[2]
+    model = response_model(snapshot)
     try:
         result = _validate_response(raw, snapshot, model)
         if not snapshot.get("_dialogue_validation", True):
             result._dialogue_errors = dialogue_validation_errors(result, snapshot)
             for error in result._dialogue_errors:
                 record_output("validation", f"Base dialogue failed validation; retaining dialogue and effects: {error}")
+        if isinstance(result, ActionResponse):
+            for entry in result.opinion_updates:
+                matches = [actor for actor in snapshot.get("other_npcs", [])
+                           if actor.get("kind") != "player" and actor["npc_name"].casefold() == entry.person.strip().casefold()]
+                if len(matches) != 1 or not matches[0].get("npc_id"):
+                    raise ValueError("Opinion targets must identify one permitted resident.")
+                result._opinion_targets[entry.person] = matches[0]["npc_id"]
         return result
     except DialogueTurnError as exc:
         raise InvalidResponseError(str(exc), kind=getattr(exc, "kind", RecoveryKind.GENERAL), response=model.model_validate_json(raw),
@@ -2616,12 +2439,12 @@ def _tree_stock_instruction(context):
     return instruction
 
 
-def _request_payload(message, snapshot, correction):
+def _request_context(message, snapshot, correction):
     """Build the same instructions and world payload for both providers."""
     if snapshot.get("request_kind") in ("create_art", "create_music"):
         instruction, schema, _ = response_contract(snapshot)
-        content = json.dumps({"author": snapshot["author"], "theme": "A quiet garden with an apple tree",
-                              "correction": correction}, ensure_ascii=False, separators=(",", ":"))
+        content = {"author": snapshot["author"], "theme": "A quiet garden with an apple tree",
+                   "correction": correction}
         return instruction, schema, content
     if snapshot.get("request_kind") in ("conversation", "snake_encounter"):
         raise ValueError("Autonomous conversations must use the worker's sequential turn loop.")
@@ -2659,8 +2482,7 @@ def _request_payload(message, snapshot, correction):
             "description": f"Direct utterance by {part.get('speaker_name', 'the current speaker')} to {part.get('listener_name', 'the current listener')}. No speaker label, narration or outer quotes. Keep original names unchanged."
         } for key, part in parts.items()}, "required": list(parts)}
         return (VOICE_REWRITE_INSTRUCTION + ("\n" + correction if correction else ""), schema,
-                json.dumps({"parts": parts},
-                           ensure_ascii=False, separators=(",", ":")))
+                {"parts": parts})
     instruction, schema, _ = response_contract(snapshot, correction=bool(correction))
     context = world_context(snapshot, correction=bool(correction))
     if snapshot.get("_compact_rewrite") and snapshot.get("request_kind") not in ("resident_turn", "snake_turn"):
@@ -2761,13 +2583,12 @@ def _request_payload(message, snapshot, correction):
             payload["correction_request"] = named_references(correction)
     if stock_instruction:
         payload["resource_constraints"] = stock_instruction.strip()
-    return instruction, schema, json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return instruction, schema, payload
 
 
-def _provider_messages(content, snapshot):
+def _conversation_messages(payload, snapshot):
     """Keep private context separate from chronological, speaker-relative speech."""
     if snapshot.get("player_id") and snapshot.get("request_kind") != "intent":
-        payload = json.loads(content)
         context = payload["world_state"]
         dialogue = context.pop("player_dialogue", [])
         context.pop("last_reply", None)
@@ -2779,19 +2600,19 @@ def _provider_messages(content, snapshot):
             # Historical replies contain words, not structured receipts. Present
             # them as a transcript, rather than assistant examples to imitate.
             context["earlier_dialogue"] = dialogue
-        messages = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}]
+        messages = [{"role": "user", "content": payload}]
         for turn in (() if transaction else snapshot.get("player_dialogue", [])):
             speaker, text = (turn["speaker"], turn["text"]) if isinstance(turn, dict) else turn
             if speaker == "You":
                 messages.append({"role": "user", "content": text})
             elif speaker == own_name(snapshot.get("snake", snapshot)) or speaker == snapshot.get("npc_name"):
-                messages.append({"role": "assistant", "content": json.dumps({"reply": text}, ensure_ascii=False)})
+                messages.append({"role": "assistant", "content": {"reply": text}})
         if starting_experience:
             reminder = {"context": "Engine context, not player speech. Recorded experience overrides mistaken earlier replies.",
                         "recorded_personal_experience": starting_experience}
             if correction:
                 reminder["correction_request"] = correction
-            messages.append({"role": "user", "content": json.dumps(reminder, ensure_ascii=False)})
+            messages.append({"role": "user", "content": reminder})
         if transaction:
             reminder = {"context": "Engine context, not player speech. Immediate information exchange; no debts. "
                                    "Return decision, interaction_id, disclosure_evidence and reply together.",
@@ -2799,26 +2620,25 @@ def _provider_messages(content, snapshot):
                         "evidence_source": message}
             if correction:
                 reminder["correction_request"] = correction
-            messages.append({"role": "user", "content": json.dumps(reminder, ensure_ascii=False)})
+            messages.append({"role": "user", "content": reminder})
         if message:
             messages.append({"role": "user", "content": message})
         else:
             messages.append({"role": "user", "content": "Generate your own opening or acknowledgment from player_interaction. The player has not spoken a new line."})
         return messages
     if snapshot.get("request_kind") not in ("resident_turn", "snake_turn", "conversation_closing"):
-        return [{"role": "user", "content": content}]
-    payload = json.loads(content)
+        return [{"role": "user", "content": payload}]
     payload["world_state"].pop("preceding_turns", None)
     payload["world_state"].get("reply_context", {}).pop("last_heard", None)
     # Accepted current speech is authoritative, including diagnosed speech when
     # validation is off. Historical-example filtering must not drop a live reply.
     preceding = snapshot.get("preceding_turns", [])
-    messages = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}]
+    messages = [{"role": "user", "content": payload}]
     for turn in preceding:
         role = "assistant" if turn["role"] == snapshot["speaker_role"] else "user"
         # Own past replies use the same speech-object shape as new output. The
         # listener speaks in plain words; neither message carries private effects.
-        content = (json.dumps({"parts": [{"text": turn["text"]}]}, ensure_ascii=False, separators=(",", ":"))
+        content = ({"parts": [{"text": turn["text"]}]}
                    if role == "assistant" else turn["text"])
         messages.append({"role": role, "content": content})
     if snapshot.get("_compact_rewrite"):
@@ -2836,6 +2656,38 @@ def _provider_messages(content, snapshot):
                 + " If the outcome gives an apple, write the present physical handoff, not an offer or a promise. "
                 "Use one short complete sentence and return the required JSON.")
         messages.append({"role": "user", "content": reminder})
+    return messages
+
+
+@dataclass(frozen=True)
+class PreparedRequest:
+    system_instruction: str
+    messages: list[dict]
+    response_schema: dict
+    response_model: type
+
+
+def prepare_request(message, snapshot, *, correction=""):
+    # Context builders and chronological projection may remove fields. Never let
+    # those operations alter a caller's snapshot or an accepted stage prefix.
+    snapshot = deepcopy(snapshot)
+    instruction, schema, context = _request_context(message, snapshot, correction)
+    return PreparedRequest(instruction, _conversation_messages(context, snapshot), schema,
+                           response_model(snapshot))
+
+
+def _transport_messages(request):
+    """Serialize structured context only at the provider boundary."""
+    messages = []
+    for message in request.messages:
+        content = message["content"]
+        if not isinstance(content, str):
+            # Retain the existing presentation of player assistant examples and
+            # engine reminders; compact world and resident speech objects.
+            compact = "world_state" in content or "parts" in content or "author" in content
+            content = json.dumps(content, ensure_ascii=False,
+                                 separators=(",", ":") if compact else None)
+        messages.append({"role": message["role"], "content": content})
     return messages
 
 
@@ -2859,8 +2711,8 @@ def _request_timeout(snapshot):
 
 @admitted_provider
 def _request_gemini(api_key, message, snapshot, *, correction=""):
-    instruction, schema, content = _request_payload(message, snapshot, correction)
-    contents = _gemini_contents(_provider_messages(content, snapshot))
+    prepared = prepare_request(message, snapshot, correction=correction)
+    contents = _gemini_contents(_transport_messages(prepared))
     record_output("call", snapshot.get("request_kind", "reply"))
     if correction:
         record_output("validation", correction)
@@ -2875,11 +2727,11 @@ def _request_gemini(api_key, message, snapshot, *, correction=""):
             ),
         ) as client, cancellable_stream(client.close):
             config = types.GenerateContentConfig(
-                system_instruction=instruction,
+                system_instruction=prepared.system_instruction,
                 temperature=VOICE_REWRITE_TEMPERATURE if snapshot.get("request_kind") == "voice_rewrite" else 0 if (snapshot.get("request_kind") == "intent"
                                   or snapshot.get("transaction", {}).get("apple_handoff_now")) else None,
                 response_mime_type="application/json",
-                response_schema=schema,
+                response_schema=prepared.response_schema,
                 candidate_count=1,
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             )
@@ -2938,7 +2790,7 @@ def _request_gemini(api_key, message, snapshot, *, correction=""):
 
 @admitted_provider
 def _request_ollama(message, snapshot, model=DEFAULT_OLLAMA_MODEL, *, correction=""):
-    instruction, schema, content = _request_payload(message, snapshot, correction)
+    prepared = prepare_request(message, snapshot, correction=correction)
     record_output("call", snapshot.get("request_kind", "reply"))
     if correction:
         record_output("validation", correction)
@@ -2963,12 +2815,12 @@ def _request_ollama(message, snapshot, model=DEFAULT_OLLAMA_MODEL, *, correction
             "messages": [
                 {
                     "role": "system",
-                    "content": instruction + "\nReturn only JSON matching this schema: "
-                    + json.dumps(schema, ensure_ascii=False, separators=(",", ":")),
+                    "content": prepared.system_instruction + "\nReturn only JSON matching this schema: "
+                    + json.dumps(prepared.response_schema, ensure_ascii=False, separators=(",", ":")),
                 },
-                *_provider_messages(content, snapshot),
+                *_transport_messages(prepared),
             ],
-            "format": schema,
+            "format": prepared.response_schema,
             "stream": streaming_output(),
             "keep_alive": "15m",
             # The profiles, rules, schema, and dialogue exceed Ollama's

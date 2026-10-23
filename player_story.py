@@ -101,7 +101,7 @@ def scripted_player_opening(world, npc):
     record.intended_subjects = {"You": "Listening to Judy's introduction.", npc.name: INTRODUCTION_REASON}
     record.name_forms = name_forms(actor_catalog(world))
     record.orientation_discussed = orientation_speech([text])
-    record.add_turn(npc.name, text, [{"text": text, "emotion": {"name": "neutral", "intensity": 0}}])
+    record.add_turn(npc.name, text, [{"text": text, "emotion": {"name": "neutral", "intensity": 0}}], speaker_id=npc.id)
     world.history.append(record)
     world.player_interaction["record_id"] = record.id
     npc.reply, npc.rewritten_reply, npc.end_conversation = text, "", False

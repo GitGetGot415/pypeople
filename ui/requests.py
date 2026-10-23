@@ -6,9 +6,8 @@ from time import monotonic
 from pydantic import ValidationError
 
 from constants import CREATIVE_REQUEST_SECONDS, DIALOGUE_TIMEOUT_SECONDS, MAX_LLM_REQUESTS
-from llm import (MODEL, ConversationTurn, InvalidResponseError, RequestError, VoiceRewriteResponse,
-                 VoiceRewriteValidationError, request_response,
-                 request_voice_rewrite, validate_response, validate_voice_rewrite, voice_rewrite_snapshot)
+from llm import MODEL, InvalidResponseError, RequestError, VoiceRewriteValidationError, request_response, request_voice_rewrite, validate_response, validate_voice_rewrite, voice_rewrite_snapshot
+from dialogue import ConversationTurn, VoiceRewriteResponse
 from ollama_manager import DEFAULT_OLLAMA_MODEL
 from model_debug import DebugLogs, ProviderAdmission, RequestLog, RequestCancelled, RequestControl, capture_output, record_output
 

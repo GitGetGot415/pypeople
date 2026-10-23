@@ -1081,11 +1081,11 @@ def apply_opinion_effects(npc):
             update_player_opinion(npc, effect.delta, effect.reason)
             npc.pending_social_opinions.pop(0)
             continue
-        previous = npc.opinions.get(target.name, {"opinion": 0, "reason": ""})
+        previous = npc.opinions.get(target.id, {"opinion": 0, "reason": ""})
         # Keep the specific unresolved outcome when later impressions are added.
         reason = effect.reason + (f" Earlier: {previous['reason']}" if previous["reason"] else "")
         try:
-            npc.remember_opinions({target.name: {
+            npc.remember_opinions({target.id: {
                 "opinion": max(-100, min(100, previous["opinion"] + effect.delta)), "reason": reason[:400]}})
         except ValueError:
             return False
@@ -1095,7 +1095,7 @@ def apply_opinion_effects(npc):
             npc.attitudes["trust_reason"] = effect.reason[:400]
         if effect.claim_id:
             record = next(entry for entry in npc.world.history if entry.id == effect.conversation_id)
-            actual_delta = npc.opinions[target.name]["opinion"] - previous["opinion"]
+            actual_delta = npc.opinions[target.id]["opinion"] - previous["opinion"]
             text = f"{npc.name}'s opinion of {target.name} changed {actual_delta:+d} after assessing an allegation. {effect.reason}"
             event = npc.world.publish("reputation_changed", (npc, target), text, record)
             record.outcomes.append(text)

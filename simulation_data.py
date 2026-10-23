@@ -12,22 +12,23 @@ from pydantic import Field, field_validator, model_validator
 from records import SaveModel, saved_record
 
 from character_data import normalize_character, normalize_opinions
-from constants import (
-    CONCERN_LIFETIME_RANGE, CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN,
-    CONVERSATION_MAX_TURNS, CONVERSATION_MAX_AGREEMENTS, DECISION_SECONDS, DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, GIFT_GIVE_SECONDS, GIFT_SECONDS,
-    MAX_SIMULATION_STEP_SECONDS, SHAKE_SECONDS, SNAKE_EAT_SECONDS, PLAYER_ROOM_NUMBER, PLAYER_ROOM_LOCATION,
-    POST_DIALOGUE_SECONDS, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME, WORLD_HEIGHT, WORLD_WIDTH,
-)
+from constants import (CONCERN_LIFETIME_RANGE, CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE,
+                      FAILURE_COOLDOWN, CONVERSATION_MAX_TURNS, CONVERSATION_MAX_AGREEMENTS, DECISION_SECONDS,
+                      DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, GIFT_GIVE_SECONDS, GIFT_SECONDS,
+                      MAX_SIMULATION_STEP_SECONDS, SHAKE_SECONDS, SNAKE_EAT_SECONDS, PLAYER_ROOM_NUMBER,
+                      PLAYER_ROOM_LOCATION, POST_DIALOGUE_SECONDS, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS,
+                      SNAKE_NAME, WORLD_HEIGHT, WORLD_WIDTH)
 from creations import Creation, CreativeJob
 from apartments import HOME_BEHAVIORS, INDOOR_BEHAVIORS, entrance
 from constants import (APARTMENT_ID, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_RANGE, CREATIVE_QUEUE_SECONDS,
                        HOME_ARRIVAL_TOLERANCE, OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE, WAKE_DELAY_RANGE)
-from conversation_history import ConversationRecord, Memory, WorldEvent
+from conversation_history import RecordedTurn, ConversationRecord, Memory, WorldEvent
 from dialogue import ConversationPart, ConversationTurn, EmotionReaction
-from llm import AcceptedProposal, DisclosureChoice, GiftOffer, LeverageUse, ThirdPartyOpinion, ResidentGift
-from npc import ACTIVITY_FIELDS, Behavior, Conversation, Gift, NPC, Tree
+from dialogue import AcceptedProposal, DisclosureChoice, GiftOffer, LeverageUse, ThirdPartyOpinion, ResidentGift
+from npc import ACTIVITY_FIELDS, Behavior, Conversation, NPC, Tree
 from simulation import PendingAction, Simulation
-from player import Player, PlayerHandoff
+from player import Player
+from transfers import Handoff
 from constants import PLAYER_ID, PLAYER_LABEL, PLAYER_NAME_TAG, PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, PLAYER_CALL_LIMIT
 from snake import Snake, SnakeEncounter
 from purgatory import Attitudes
@@ -195,14 +196,14 @@ class NPCState(ActivityState):
     x: float = Field(ge=0, le=WORLD_WIDTH)
     y: float = Field(ge=0, le=WORLD_HEIGHT)
     reply: str
-    rewritten_reply: str = ""
+    rewritten_reply: str
     emotion: EmotionReaction
     social: float = Field(ge=0, le=100)
     inventory: dict[Literal["fruit"], Annotated[int, Field(strict=True, ge=0)]]
-    inventory_capacity: int | None = Field(strict=True, ge=1)
     preferences: PreferencesState
     memories: list[MemoryState] = Field(max_length=20)
     goal: GoalState | None
+    opinions: dict[str, dict]
     pending_social_opinions: list[OpinionEffectState]
     beliefs: list[BeliefState]
     current_concern: ConcernState | None
@@ -227,6 +228,11 @@ class NPCState(ActivityState):
     last_creative_day: int = Field(strict=True, ge=0)
     creative_job: CreativeJob | None
 
+    @field_validator("opinions")
+    @classmethod
+    def validate_runtime_opinions(cls, value):
+        return normalize_opinions(value)
+
     @field_validator("character")
     @classmethod
     def validate_character(cls, value):
@@ -246,16 +252,15 @@ class NPCState(ActivityState):
         return model.model_validate(value).model_dump()
 
 
-class HistoryState(SaveModel):
-    id: str = Field(min_length=1)
-    participants: tuple[str, str]
-    topic: str
-    participant_ids: list[str]
-    transfers: list[dict]
-    accepted_player_turns: list[Annotated[int, Field(strict=True, ge=0)]]
-    authorization_id: str | None
-    transfer_intent: dict | None
-    player_promise_offers: list[dict]
+class RecordedTurnState(saved_record(RecordedTurn)):
+    # Reuse the canonical value's derivations while requiring every saved field.
+    text = RecordedTurn.text
+    speech = RecordedTurn.speech
+
+
+class HistoryState(saved_record(ConversationRecord)):
+    turns: list[RecordedTurnState]
+    failed_turns: list[ConversationTurn]
 
     @field_validator("transfers")
     @classmethod
@@ -271,48 +276,31 @@ class HistoryState(SaveModel):
     @classmethod
     def validate_transfer_intent(cls, value):
         return TransferIntentState.model_validate(value).model_dump() if value is not None else None
-    intended_subjects: dict[str, str]
-    status: str
-    turns: list[tuple[str, str]]
-    dialogue_parts: dict[int, list[ConversationPart]] = Field(default_factory=dict)
-    rewritten_parts: dict[int, list[str]] = Field(default_factory=dict)
-    failed_turns: list[ConversationTurn] = Field(default_factory=list)
-    name_forms: list[str] = Field(default_factory=list)
-    orientation_discussed: bool = False
-    dialogue_errors: list[str] = Field(default_factory=list)
-    outcomes: list[str]
-    error: str
-    origin: Literal["player", "autonomous"]
-    purpose: Literal["chat", "orientation", "food_request", "gossip", "bargain", "judgment", "introduction", "snake_player"]
 
     @classmethod
     def capture(cls, record):
-        """Encode the current save layout from the single runtime turn list."""
-        data = asdict(record)
-        data.update(turns=record.transcript,
-                    dialogue_parts={i: t.parts for i, t in enumerate(record.turns)
-                                    if any("emotion" in p for p in t.parts)},
-                    rewritten_parts={i: t.rewritten for i, t in enumerate(record.turns) if t.rewritten})
-        return cls.model_validate(data)
+        return cls.model_validate(asdict(record))
 
-    def restore(self, actor_ids):
-        """Decode the current save layout; no alternate format or migration."""
+    def restore(self):
         data = self.model_dump()
-        parts = data.pop("dialogue_parts")
-        rewrites = data.pop("rewritten_parts")
-        transcript = data.pop("turns")
-        record = ConversationRecord(**data)
-        for index, (speaker, text) in enumerate(transcript):
-            record.add_turn(speaker, text, parts.get(index), rewrites.get(index, ()),
-                            speaker_id=actor_ids[speaker])
-        return record
+        data["turns"] = [RecordedTurn(**turn) for turn in data["turns"]]
+        return ConversationRecord(**data)
+
+    def generated_turns(self):
+        return ConversationRecord.generated_turns(self)
 
     @model_validator(mode="after")
-    def validate_rewrites(self):
-        for index, texts in self.rewritten_parts.items():
-            if (index < 0 or index >= len(self.turns) or self.turns[index][0] == "You"
-                    or len(texts) != len(self.dialogue_parts.get(index, []))
-                    or not texts or any(not text.strip() for text in texts)):
+    def validate_turns(self):
+        for turn in self.turns:
+            if not turn.parts:
+                raise ValueError("Historical turns need their original words.")
+            for part in turn.parts:
+                if set(part) - {"text", "emotion"} or not part["text"].strip():
+                    raise ValueError("Invalid historical speech part.")
+                if "emotion" in part:
+                    EmotionReaction.model_validate(part["emotion"])
+            if turn.rewritten and (len(turn.rewritten) != len(turn.parts)
+                    or turn.speaker_id == PLAYER_ID or any(not text.strip() for text in turn.rewritten)):
                 raise ValueError("A rewrite must match the original NPC dialogue parts.")
         return self
 
@@ -332,17 +320,15 @@ class ConversationState(SaveModel):
     food_outcome: Literal["", "accepted", "need", "refused", "unavailable"]
     food_reason: str
     handoff_thanks: list[ConversationPart] = Field(max_length=3)
-    rewritten_handoff_thanks: list[str] = Field(default_factory=list)
+    rewritten_handoff_thanks: list[str]
     outcome_event_id: str | None
     reactions: list[tuple[str, float]] = Field(max_length=2)
-    initiator: int = Field(ge=0)
-    recipient: int = Field(ge=0)
-    record: int = Field(ge=0)
+    initiator: str = Field(min_length=1)
+    recipient: str = Field(min_length=1)
+    record: str = Field(min_length=1)
     topic: str
     arrived: bool
-    turns: list[ConversationTurn] = Field(max_length=CONVERSATION_MAX_TURNS)
     saved_states: tuple[ActivityState, ActivityState]
-    pending_opinions: list[tuple[int, dict]]
     proposals: list[ProposalState] = Field(max_length=2)
     accepted_proposals: list[AcceptedProposal] = Field(max_length=2)
     social_effects_applied: bool
@@ -352,25 +338,19 @@ class ConversationState(SaveModel):
     third_party_opinions: list[ThirdPartyOpinion] = Field(max_length=4)
     leverage_uses: list[LeverageUse] = Field(max_length=2)
 
-    @field_validator("pending_opinions")
-    @classmethod
-    def validate_opinions(cls, value):
-        return [(index, normalize_opinions(opinions)) for index, opinions in value]
-
-
-class GiftState(SaveModel):
-    initiator: int = Field(ge=0)
-    recipient: int = Field(ge=0)
-    record: int = Field(ge=0)
+class HandoffState(SaveModel):
+    initiator: str
+    recipient: str
+    record: str
     item: str = Field(min_length=1)
-    quantity: int = Field(ge=1)
+    quantity: int = Field(strict=True, ge=1)
     arrived: bool
     elapsed: float = Field(ge=0, lt=GIFT_SECONDS)
     transferred: bool
     outcome_event_id: str | None
     thanks: list[ConversationPart] = Field(max_length=3)
-    rewritten_thanks: list[str] = Field(default_factory=list)
-    saved_states: tuple[ActivityState, ActivityState]
+    rewritten_thanks: list[str]
+    saved_states: dict[str, ActivityState]
 
 
 class TreeState(SaveModel):
@@ -408,7 +388,7 @@ class SnakeState(SaveModel):
     decision_remaining: float = Field(ge=0)
     command_revision: int = Field(ge=0)
     reply: str
-    rewritten_reply: str = ""
+    rewritten_reply: str
     retry_request: SnakeRetryState | None
 
     @field_validator("destination")
@@ -422,7 +402,7 @@ class SnakeState(SaveModel):
 class SnakeEncounterState(SaveModel):
     id: str
     resident_id: str
-    record: int = Field(ge=0)
+    record: str = Field(min_length=1)
     purpose: Literal["bargain", "judgment", "introduction"]
     origin: Literal["player", "autonomous"]
     topic: str
@@ -438,7 +418,6 @@ class SnakeEncounterState(SaveModel):
     outcome_event_id: str | None
     stage: Literal["approach", "waiting", "dialogue", "condemned_approach", "eating"]
     elapsed: float = Field(ge=0, le=SNAKE_EAT_SECONDS + MAX_SIMULATION_STEP_SECONDS)
-    turns: list[ConversationTurn] = Field(max_length=CONVERSATION_MAX_TURNS)
     request_context: dict | None
 
 
@@ -448,15 +427,14 @@ class PendingActionState(SaveModel):
     revision: int = Field(ge=0)
     target_id: str | None
     topic: str
-    record: int | None = Field(ge=0)
-    item: str = ""
-    quantity: int = Field(default=0, ge=0)
+    record: str | None
+    item: str
+    quantity: int = Field(ge=0)
 
 
 class PlayerState(SaveModel):
     id: Literal[PLAYER_ID]
     inventory: dict[Literal["fruit"], Annotated[int, Field(strict=True, ge=0)]]
-    inventory_capacity: int | None = Field(strict=True, ge=1)
     x: float
     y: float
     facing: int = Field(ge=0, le=7)
@@ -472,18 +450,6 @@ class PlayerState(SaveModel):
         return self
 
 
-class PlayerHandoffState(SaveModel):
-    initiator: str
-    recipient: str
-    record: int = Field(ge=0)
-    item: str = Field(min_length=1)
-    quantity: int = Field(strict=True, ge=1)
-    elapsed: float = Field(ge=0, lt=GIFT_SECONDS)
-    transferred: bool
-    outcome_event_id: str | None
-    saved_state: ActivityState
-
-
 class SimulationState(SaveModel):
     mode: Literal["player", "spectator"]
     player_interaction: dict | None
@@ -495,10 +461,9 @@ class SimulationState(SaveModel):
     player_snake_encounter: dict | None
     day: int = Field(ge=1)
     player: PlayerState
-    player_handoffs: list[PlayerHandoffState]
     player_call_check: float = Field(ge=0, le=PLAYER_CALL_CHECK_SECONDS)
     player_acknowledgments: list[dict]
-    npc_trait_mode: Literal["normal", "extreme", "both"] = "normal"
+    npc_trait_mode: Literal["normal", "extreme", "both"]
     phase: Literal["day", "night"]
     events: list[EventState] = Field(max_length=200)
     promises: list[PromiseState]
@@ -520,9 +485,9 @@ class SimulationState(SaveModel):
     pending_actions: list[PendingActionState]
     history: list[HistoryState]
     conversations: list[ConversationState]
-    gifts: list[GiftState] = Field(default_factory=list)
+    handoffs: list[HandoffState]
     camera_offset: tuple[float, float]
-    camera_zoom: float = Field(default=1.0, ge=0.5, le=2.5)
+    camera_zoom: float = Field(ge=0.5, le=2.5)
 
     @field_validator("player_acknowledgments")
     @classmethod
@@ -536,6 +501,7 @@ class SimulationState(SaveModel):
         except (KeyError, TypeError, AttributeError, IndexError) as exc:
             raise ValueError("Invalid physical state: required ownership, location or source data is missing.") from exc
         residents = [*self.npcs, *self.archived]
+        live = {npc.id: npc for npc in self.npcs}
         live_ids = {n.id for n in self.npcs}
         indoor_ids = {n.id for n in self.npcs if n.location != "garden"}
         if len({n.room_number for n in residents}) != len(residents):
@@ -572,7 +538,7 @@ class SimulationState(SaveModel):
                       self.player_interaction.get("saved_state") if self.player_interaction and self.player_interaction.get("npc_id") == n.id else None)
             for conversation in self.conversations:
                 for index, activity in zip((conversation.initiator, conversation.recipient), conversation.saved_states):
-                    if index < len(self.npcs) and self.npcs[index].id == n.id:
+                    if index == n.id:
                         frozen = activity.model_dump()
             if frozen:
                 effective_behavior = frozen["behavior"]
@@ -592,6 +558,9 @@ class SimulationState(SaveModel):
         actors = {n.id: (n.display_name or n.character["Name"]) for n in residents}
         actors[self.snake.id] = SNAKE_NAME
         ids = set(actors)
+        for npc in residents:
+            if any(target not in ids or target == npc.id for target in npc.opinions):
+                raise ValueError("Runtime opinions require distinct resident or snake actor IDs.")
         now = phase_index(self.day, self.phase)
         if len(ids) != len(residents) + 1 or self.tree.id in ids or len({v.casefold() for v in actors.values()}) != len(ids):
             raise ValueError("Actor IDs and stable display names must be unique.")
@@ -621,11 +590,11 @@ class SimulationState(SaveModel):
                 raise ValueError("Missing source conversation.")
             return record
         def participant(actor_id, record):
-            return actor_id in ids and actors[actor_id] in record.participants
+            return actor_id in ids and actor_id in record.participant_ids
         for event in self.events:
             if not set(event.participants) <= ids or phase_index(event.day, event.phase) > now:
                 raise ValueError("Invalid event actors or date.")
-            if event.history is not None and event.history >= len(self.history):
+            if event.history is not None and event.history not in history:
                 raise ValueError("Invalid event history link.")
         transfer_ids, transfer_order, player_offer_ids = set(), [], set()
         for record in self.history:
@@ -640,31 +609,31 @@ class SimulationState(SaveModel):
                         or offer["status"] not in ("offered", "accepted", "declined", "expired", "closed")
                         or not 0 <= offer["created_phase"] <= now or offer["deadline"] < offer["created_phase"]
                         or not 0 <= offer["offer_turn"] < len(record.turns)
-                        or record.turns[offer["offer_turn"]][0] != actors[offer["giver_id"]]):
+                        or record.turns[offer["offer_turn"]].speaker_id != offer["giver_id"]):
                     raise ValueError("Invalid player apple offer authority or source.")
                 player_offer_ids.add(offer["id"])
                 from dialogue_rules import validate_apple_offer, validate_apple_promise
-                validate_apple_offer(record.turns[offer["offer_turn"]][1], offer["deadline"], current_phase=offer["created_phase"])
+                validate_apple_offer(record.turns[offer["offer_turn"]].text, offer["deadline"], current_phase=offer["created_phase"])
                 if offer["status"] == "accepted":
                     turn = offer["accept_turn"]
                     if (type(turn) is not int or not offer["offer_turn"] < turn < len(record.turns)
-                            or record.turns[turn][0] != actors[offer["recipient_id"]]
+                            or record.turns[turn].speaker_id != offer["recipient_id"]
                             or not any(p.id == offer["id"] and p.conversation_id == record.id
                                        and p.promisor_id == offer["giver_id"] and p.recipient_id == offer["recipient_id"]
                                        and p.deadline == offer["deadline"] for p in self.promises)):
                         raise ValueError("An accepted player apple promise needs its actual ordered acceptance.")
-                    validate_apple_promise(record.turns[offer["offer_turn"]][1], record.turns[turn][1],
+                    validate_apple_promise(record.turns[offer["offer_turn"]].text, record.turns[turn].text,
                                            offer["deadline"], current_phase=offer["created_phase"])
                 elif offer["accept_turn"] is not None:
                     raise ValueError("An unaccepted apple offer cannot retain an acceptance.")
             if record.authorization_id is not None and record.authorization_id not in history:
                 raise ValueError("Missing transfer authorization conversation.")
-            if record.participant_ids and (len(record.participant_ids) != 2 or not set(record.participant_ids) <= ids
-                    or len(set(record.participant_ids)) != 2
-                    or {actors[i] for i in record.participant_ids} != set(record.participants)):
+            if (len(record.participant_ids) != 2 or len(set(record.participants)) != 2
+                    or any(not label.strip() for label in record.participants) or not set(record.participant_ids) <= ids
+                    or len(set(record.participant_ids)) != 2):
                 raise ValueError("Historical participant identities do not match the speakers.")
             if (len(set(record.accepted_player_turns)) != len(record.accepted_player_turns)
-                    or any(i >= len(record.turns) or record.turns[i][0] != PLAYER_LABEL for i in record.accepted_player_turns)):
+                    or any(i >= len(record.turns) or record.turns[i].speaker_id != self.player.id for i in record.accepted_player_turns)):
                 raise ValueError("Player encounter effects need unique accepted player turns.")
             for transfer in record.transfers:
                 if (set(transfer) != {"id", "giver_id", "recipient_id", "item", "quantity", "day", "phase", "sequence"}
@@ -678,16 +647,13 @@ class SimulationState(SaveModel):
                     raise ValueError("Invalid committed transfer provenance.")
                 transfer_ids.add(transfer["id"])
                 transfer_order.append(transfer)
-            if any(name != "You" and name not in actors.values() for name in record.participants):
-                raise ValueError("Unknown historical speaker.")
             if (not set(record.intended_subjects) <= set(record.participants)
                     or any(not subject.strip() for subject in record.intended_subjects.values())):
                 raise ValueError("Intended subjects must describe participants in their recorded conversation.")
-            if any(speaker not in record.participants or not text.strip() for speaker, text in record.turns):
-                raise ValueError("Invalid historical speech.")
-            for index, parts in record.dialogue_parts.items():
-                if index >= len(record.turns) or " ".join(p.text.strip() for p in parts) != record.turns[index][1]:
-                    raise ValueError("Dialogue parts do not match their recorded turn.")
+            if any(turn.speaker_id not in record.participant_ids
+                   or turn.speaker != record.participants[record.participant_ids.index(turn.speaker_id)]
+                   for turn in record.turns):
+                raise ValueError("Historical speech must retain its participant identity and recorded label.")
         if sorted(t["sequence"] for t in transfer_order) != list(range(len(transfer_order))):
             raise ValueError("Transfer history must retain its unique commit order.")
         owners = {w.id: w.creator_id for w in self.creations}
@@ -737,7 +703,7 @@ class SimulationState(SaveModel):
             record = record_for(disclosure.conversation_id)
             if (disclosure.claim_id not in claims or disclosure.speaker_id == disclosure.listener_id
                     or not participant(disclosure.speaker_id, record) or disclosure.listener_id not in ids
-                    or disclosure.turn >= len(record.turns) or record.turns[disclosure.turn][0] != actors[disclosure.speaker_id]
+                    or disclosure.turn >= len(record.turns) or record.turns[disclosure.turn].speaker_id != disclosure.speaker_id
                     or disclosure.phase > now):
                 raise ValueError("Invalid disclosure actor, speech or account.")
             if disclosure.source_disclosure_id:
@@ -823,95 +789,112 @@ class SimulationState(SaveModel):
             elif target is not None:
                 raise ValueError("Unexpected action target.")
         reserved = set()
-        for handoff in self.player_handoffs:
+        for handoff in self.handoffs:
             pair = {handoff.initiator, handoff.recipient}
-            resident_id = next(iter(pair - {self.player.id}), None)
-            if (len(pair) != 2 or self.player.id not in pair or resident_id not in live_ids
-                    or handoff.record >= len(self.history)
-                    or next(n for n in self.npcs if n.id == resident_id).location != self.player.location):
-                raise ValueError("Invalid player handoff participants.")
-            index = next(i for i, n in enumerate(self.npcs) if n.id == resident_id)
-            if index in reserved or set(self.history[handoff.record].participants) != {"You", actors[resident_id]}:
-                raise ValueError("Conflicting player handoff reservation or record.")
+            residents_in_pair = pair - {self.player.id}
+            record = record_for(handoff.record)
+            if (len(pair) != 2 or not residents_in_pair <= live_ids
+                    or residents_in_pair & reserved or set(record.participant_ids) != pair
+                    or set(handoff.saved_states) != residents_in_pair):
+                raise ValueError("Invalid handoff participants, reservation, or source record.")
+            if self.player.id in pair:
+                ownership = self.player_interaction
+                resident_id = next(iter(residents_in_pair))
+                if (not ownership or ownership.get("kind") != "resident"
+                        or ownership.get("npc_id") != resident_id or ownership.get("record_id") != record.id
+                        or ownership.get("stage") not in ("conversation", "handoff")
+                        or self.mode != "player" or not self.player.alive):
+                    raise ValueError("A player handoff requires its actual exclusive physical owner.")
+            locations = {live[i].location if i != self.player.id else self.player.location for i in pair}
+            if len(locations) != 1 or self.player.id in pair and not handoff.arrived:
+                raise ValueError("Handoff participants must share their physical location.")
             if (handoff.transferred != bool(handoff.outcome_event_id)
                     or handoff.transferred != (handoff.elapsed >= GIFT_GIVE_SECONDS)
+                    or not handoff.arrived and handoff.elapsed != 0
                     or handoff.item != "fruit" and (handoff.item not in creation_ids or handoff.quantity != 1)):
-                raise ValueError("Invalid player handoff progress or possession.")
-            if self.history[handoff.record].transfer_intent != dict(giver_id=handoff.initiator,
+                raise ValueError("Invalid handoff progress or possession.")
+            if record.transfer_intent != dict(giver_id=handoff.initiator,
                     recipient_id=handoff.recipient, item=handoff.item, quantity=handoff.quantity):
-                raise ValueError("A player handoff needs matching accepted authorization.")
-            reserved.add(index)
-            activity_target(handoff.saved_state, self.npcs[index])
-        for interaction in [*self.conversations, *self.gifts]:
+                raise ValueError("A handoff needs matching accepted authorization.")
+            receipts = [t for t in record.transfers if t["giver_id"] == handoff.initiator
+                        and t["recipient_id"] == handoff.recipient and t["item"] == handoff.item
+                        and t["quantity"] == handoff.quantity]
+            if handoff.transferred and (not receipts or handoff.outcome_event_id not in events
+                    or events[handoff.outcome_event_id].kind != ("fruit_shared" if handoff.item == "fruit" else "work_shared")
+                    or events[handoff.outcome_event_id].history != record.id
+                    or set(events[handoff.outcome_event_id].participants) != pair):
+                raise ValueError("A committed handoff needs its receipt and event.")
+            if handoff.rewritten_thanks and (len(handoff.rewritten_thanks) != len(handoff.thanks)
+                    or any(not text.strip() for text in handoff.rewritten_thanks)):
+                raise ValueError("Rewritten thanks must match the original parts.")
+            reserved.update(residents_in_pair)
+            for actor_id, activity in handoff.saved_states.items():
+                activity_target(activity, live[actor_id])
+        for interaction in self.conversations:
             pair = (interaction.initiator, interaction.recipient)
-            if pair[0] == pair[1] or any(i >= len(self.npcs) or i in reserved for i in pair) or interaction.record >= len(self.history):
+            if pair[0] == pair[1] or any(i not in live or i in reserved for i in pair) or interaction.record not in history:
                 raise ValueError("Invalid live interaction participants.")
             for index, activity in zip(pair, interaction.saved_states):
-                if self.npcs[pair[0]].location != self.npcs[pair[1]].location:
+                if live[pair[0]].location != live[pair[1]].location:
                     raise ValueError("Conversation participants must share a location.")
-                activity_target(activity, self.npcs[index])
-            record = self.history[interaction.record]
-            if set(record.participants) != {actors[self.npcs[i].id] for i in pair}:
+                activity_target(activity, live[index])
+            record = history[interaction.record]
+            if set(record.participant_ids) != set(pair):
                 raise ValueError("An interaction must match its record.")
             reserved.update(pair)
-            thanks = interaction.handoff_thanks if isinstance(interaction, ConversationState) else interaction.thanks
-            rewritten = (interaction.rewritten_handoff_thanks if isinstance(interaction, ConversationState)
-                         else interaction.rewritten_thanks)
+            thanks = interaction.handoff_thanks
+            rewritten = interaction.rewritten_handoff_thanks
             if rewritten and (len(rewritten) != len(thanks) or any(not text.strip() for text in rewritten)):
                 raise ValueError("Rewritten thanks must match the original parts.")
-            if isinstance(interaction, ConversationState):
-                if set(interaction.concerns) != {"initiator", "recipient"}:
-                    raise ValueError("A meeting must retain both frozen concerns.")
-                for role, index in zip(("initiator", "recipient"), pair):
-                    validate_concern(interaction.concerns[role], self.npcs[index])
-                if interaction.goal_id and (self.npcs[pair[0]].goal is None or interaction.goal_id != self.npcs[pair[0]].goal.id):
-                    raise ValueError("A meeting goal must belong to its initiator.")
-                if interaction.focus_claim_id and not any(b.claim_id == interaction.focus_claim_id for b in self.npcs[pair[0]].beliefs):
-                    raise ValueError("A required meeting account must be known to its initiator.")
-                ready = interaction.dialogue_state == "ready"
-                if record.id != interaction.id or ready != bool(interaction.turns) or ready != interaction.social_effects_applied:
-                    raise ValueError("Invalid conversation commit progress.")
-                if interaction.information_context:
-                    context = interaction.information_context
-                    if context.participants != {"initiator": self.npcs[pair[0]].id, "recipient": self.npcs[pair[1]].id}:
-                        raise ValueError("Invalid information speakers.")
-                    if context.focus_claim_id != interaction.focus_claim_id:
-                        raise ValueError("The required meeting account must match its information snapshot.")
-                    if any(o.fact_id not in facts for o in context.options):
-                        raise ValueError("Missing snapshot facts.")
-                validate_agreements(interaction.accepted_proposals, [p.model_dump() for p in interaction.proposals], interaction.turns, self.npcs[pair[0]].id, self.npcs[pair[1]].id)
-                if ready:
-                    validate_information(SimpleNamespace(turns=interaction.turns, disclosures=interaction.accepted_disclosures,
-                        third_party_opinions=interaction.third_party_opinions, leverage=interaction.leverage_uses),
-                        interaction.information_context.model_dump() if interaction.information_context else None)
-                if interaction.accepted_gift:
-                    from llm import validate_resident_gift
-                    validate_resident_gift(interaction.accepted_gift, interaction.turns, {
-                        "purpose": interaction.purpose, "arrival_focus": interaction.opening_kind == "orientation",
-                        **{
-                        role: {"npc_id": self.npcs[index].id, "inventory": self.npcs[index].inventory,
-                               "owned_works": [{"id": w.id, "title": w.title} for w in self.creations
-                                               if w.owner_id == self.npcs[index].id]}
-                        for role, index in zip(("initiator", "recipient"), pair)}})
-                    if interaction.accepted_gift.accept_turn is None:
-                        raise ValueError("A pending gift handoff needs an accepted offer.")
-            elif interaction.transferred != (interaction.elapsed >= GIFT_GIVE_SECONDS) or interaction.transferred != bool(interaction.outcome_event_id):
-                raise ValueError("Invalid apple handoff progress.")
-            if isinstance(interaction, GiftState):
-                if (interaction.item != "fruit" and (interaction.item not in creation_ids or interaction.quantity != 1)
-                        or record.transfer_intent != dict(giver_id=self.npcs[pair[0]].id,
-                            recipient_id=self.npcs[pair[1]].id, item=interaction.item, quantity=interaction.quantity)):
-                    raise ValueError("A handoff needs a real possession and accepted matching authorization.")
+            if set(interaction.concerns) != {"initiator", "recipient"}:
+                raise ValueError("A meeting must retain both frozen concerns.")
+            for role, index in zip(("initiator", "recipient"), pair):
+                validate_concern(interaction.concerns[role], live[index])
+            if interaction.goal_id and (live[pair[0]].goal is None or interaction.goal_id != live[pair[0]].goal.id):
+                raise ValueError("A meeting goal must belong to its initiator.")
+            if interaction.focus_claim_id and not any(b.claim_id == interaction.focus_claim_id for b in live[pair[0]].beliefs):
+                raise ValueError("A required meeting account must be known to its initiator.")
+            if len(record.turns) > CONVERSATION_MAX_TURNS:
+                raise ValueError("A resident conversation exceeds its accepted turn budget.")
+            ready = interaction.dialogue_state == "ready"
+            if record.id != interaction.id or ready != bool(record.generated_turns()) or ready != interaction.social_effects_applied:
+                raise ValueError("Invalid conversation commit progress.")
+            if interaction.information_context:
+                context = interaction.information_context
+                if context.participants != {"initiator": live[pair[0]].id, "recipient": live[pair[1]].id}:
+                    raise ValueError("Invalid information speakers.")
+                if context.focus_claim_id != interaction.focus_claim_id:
+                    raise ValueError("The required meeting account must match its information snapshot.")
+                if any(o.fact_id not in facts for o in context.options):
+                    raise ValueError("Missing snapshot facts.")
+            validate_agreements(interaction.accepted_proposals, [p.model_dump() for p in interaction.proposals], record.generated_turns(), live[pair[0]].id, live[pair[1]].id)
+            if ready:
+                validate_information(SimpleNamespace(turns=record.generated_turns(), disclosures=interaction.accepted_disclosures,
+                    third_party_opinions=interaction.third_party_opinions, leverage=interaction.leverage_uses),
+                    interaction.information_context.model_dump() if interaction.information_context else None)
+            if interaction.accepted_gift:
+                from llm import validate_resident_gift
+                validate_resident_gift(interaction.accepted_gift, record.generated_turns(), {
+                    "purpose": interaction.purpose, "arrival_focus": interaction.opening_kind == "orientation",
+                    **{
+                    role: {"npc_id": live[index].id, "inventory": live[index].inventory,
+                           "owned_works": [{"id": w.id, "title": w.title} for w in self.creations
+                                           if w.owner_id == live[index].id]}
+                    for role, index in zip(("initiator", "recipient"), pair)}})
+                if interaction.accepted_gift.accept_turn is None:
+                    raise ValueError("A pending gift handoff needs an accepted offer.")
         encounter = self.snake_encounter
         if encounter:
             if (encounter.resident_id not in live_ids or encounter.resident_id in indoor_ids
-                    or encounter.saved_state.behavior in HOME_BEHAVIORS or encounter.record >= len(self.history)):
+                    or encounter.saved_state.behavior in HOME_BEHAVIORS or encounter.record not in history):
                 raise ValueError("A snake encounter needs a living resident.")
             resident_index = next(i for i, n in enumerate(self.npcs) if n.id == encounter.resident_id)
-            if resident_index in reserved or self.history[encounter.record].id != encounter.id or self.snake.target_id != encounter.resident_id:
+            if encounter.resident_id in reserved or history[encounter.record].id != encounter.id or self.snake.target_id != encounter.resident_id:
                 raise ValueError("Conflicting snake encounter reservation.")
-            reserved.add(resident_index)
-            if encounter.committed != bool(encounter.turns) or encounter.committed != (encounter.dialogue_state == "ready") or encounter.committed != bool(encounter.outcome):
+            reserved.add(encounter.resident_id)
+            if len(history[encounter.record].turns) > CONVERSATION_MAX_TURNS:
+                raise ValueError("A snake conversation exceeds its accepted turn budget.")
+            if encounter.committed != bool(history[encounter.record].turns) or encounter.committed != (encounter.dialogue_state == "ready") or encounter.committed != bool(encounter.outcome):
                 raise ValueError("Invalid snake encounter commit progress.")
             if encounter.reserved and (encounter.committed or encounter.purpose == "introduction" or self.tree.fruit < 1):
                 raise ValueError("Invalid apple reservation.")
@@ -926,9 +909,9 @@ class SimulationState(SaveModel):
         if self.snake.retry_request and self.snake.retry_request.resident_id not in live_ids:
             raise ValueError("Invalid snake retry target.")
         for index, npc in enumerate(self.npcs):
-            if index not in reserved:
+            if npc.id not in reserved:
                 activity_target(npc, npc)
-            if index in reserved and npc.behavior != Behavior.WAIT:
+            if npc.id in reserved and npc.behavior != Behavior.WAIT:
                 raise ValueError("Encounter participants must wait.")
         for reference in (self.tree.reserved_by, self.tree.shaker):
             if reference is not None and (reference not in live_ids | ({self.player.id} if self.player.alive and self.mode == "player" else set()) or reference in indoor_ids):
@@ -947,12 +930,12 @@ class SimulationState(SaveModel):
                 if positions[action.npc_id] != positions[action.target_id]:
                     raise ValueError("A queued interaction must share a location.")
             pending_owners.add(action.npc_id)
-            if action.record is not None and action.record >= len(self.history):
+            if action.record is not None and action.record not in history:
                 raise ValueError("Invalid queued history record.")
             if action.action == "GIVE_ITEM":
                 if (action.target_id is None or action.quantity < 1
                         or action.item != "fruit" and (action.item not in creation_ids or action.quantity != 1)
-                        or action.record is None or self.history[action.record].transfer_intent != dict(
+                        or action.record is None or history[action.record].transfer_intent != dict(
                             giver_id=action.npc_id, recipient_id=action.target_id, item=action.item, quantity=action.quantity)):
                     raise ValueError("A queued gift needs its real item and accepted matching authorization.")
         pending, processed = self.pending_arrival_days, self.processed_arrival_days
@@ -964,7 +947,7 @@ class SimulationState(SaveModel):
             raise ValueError("Completed arrivals must match their preserved residents.")
         if not set(self.introductions) <= live_ids:
             raise ValueError("Invalid introduction identity.")
-        reserved_ids = {self.npcs[index].id for index in reserved}
+        reserved_ids = reserved
         for npc in residents:
             opinion = npc.player_opinion
             if (set(opinion) != {"opinion", "reason"} or type(opinion["opinion"]) is not int
@@ -976,8 +959,8 @@ class SimulationState(SaveModel):
                 actions = [a for a in self.pending_actions if a.npc_id == npc.id]
                 if (npc.id not in live_ids or npc.id in reserved_ids
                         or set(record.participant_ids) != {npc.id, self.player.id} or record.error
-                        or not record.turns or record.turns[-1] != (actors[npc.id], npc.reply)
-                        or (actions and (not call["closing"] or any(a.record is None or self.history[a.record].id != record.id for a in actions)))):
+                        or not record.turns or (record.turns[-1].speaker_id, record.turns[-1].text) != (npc.id, npc.reply)
+                        or (actions and (not call["closing"] or any(a.record is None or history[a.record].id != record.id for a in actions)))):
                     raise ValueError("A waiting reply needs its resident's accepted player conversation and matching queued task.")
                 offer = call["gift_offer"]
                 if offer and (offer["recipient_id"] != self.player.id
@@ -1011,7 +994,7 @@ class SimulationState(SaveModel):
 
 
 class SimulationSave(SaveModel):
-    name: str = ""
+    name: str
     created_at: datetime
     updated_at: datetime
     state: SimulationState
@@ -1258,8 +1241,11 @@ def validate_physical_state(state):
         if actor is not state.player:
             ActivityState.model_validate(entry["saved_state"])
         exclusive.add(actor.id)
-    reserved_ids = {state.npcs[i].id for c in [*state.conversations, *state.gifts] for i in (c.initiator, c.recipient) if i < len(state.npcs)}
-    if exclusive & reserved_ids:
+    reserved_ids = {i for c in [*state.conversations, *state.handoffs] for i in (c.initiator, c.recipient) if i != state.player.id}
+    player_handoff_ids = {actor_id for h in state.handoffs if state.player.id in (h.initiator, h.recipient)
+                          and interaction and h.record == interaction.get("record_id")
+                          for actor_id in (h.initiator, h.recipient) if actor_id == interaction.get("npc_id")}
+    if exclusive & (reserved_ids - player_handoff_ids):
         raise ValueError("An actor cannot belong to two exclusive interactions.")
     if state.visit:
         visit = state.visit
@@ -1295,7 +1281,7 @@ def validate_physical_state(state):
         if (set(claim) != {"id", "speaker_id", "conversation_id", "turn", "day", "phase", "text", "kind", "listener_ids"}
                 or claim["id"] in claim_ids or claim["speaker_id"] != state.player.id or claim["kind"] != "report"
                 or not record or type(turn) is not int or turn not in record.accepted_player_turns
-                or record.turns[turn] != ("You", claim["text"])
+                or (record.turns[turn].speaker_id, record.turns[turn].text) != (state.player.id, claim["text"])
                 or set(claim["listener_ids"]) != set(record.participant_ids) - {state.player.id}
                 or phase_index(claim["day"], claim["phase"]) > phase_index(state.day, state.phase)):
             raise ValueError("Player claims require their actual accepted original speech and listener.")
@@ -1307,7 +1293,7 @@ def validate_physical_state(state):
         if (offer["id"] in invitation_ids or not record or not speaker or offer["status"] not in ("offered", "accepted", "withdrawn", "declined")
                 or offer["destination"] not in ("garden", "tree", "home")
                 or not 0 <= offer["turn"] < len(record.turns)
-                or record.turns[offer["turn"]] != (speaker.display_name or speaker.character["Name"], offer["speech"])
+                or (record.turns[offer["turn"]].speaker_id, record.turns[offer["turn"]].text) != (speaker.id, offer["speech"])
                 or offer["location"] != (f"room:{speaker.room_number}" if offer["destination"] == "home" else "garden")):
             raise ValueError("Invitations must retain their real speaker, speech and destination.")
         expected_point = {"garden": GARDEN_VISIT_POINT, "home": ROOM_ARRIVAL,
@@ -1330,7 +1316,7 @@ def validate_physical_state(state):
     if saved:
         if set(saved) != {*PLAYER_SNAKE_FIELDS, "record"} or not state.tree_current or state.tree_current["actor_id"] != state.player.id:
             raise ValueError("Player tree service needs its current FIFO association.")
-        if not 0 <= saved["record"] < len(state.history) or state.history[saved["record"]].id != saved["id"] or state.snake.target_id != state.player.id:
+        if saved["record"] not in records or saved["record"] != saved["id"] or state.snake.target_id != state.player.id:
             raise ValueError("Player tree service must match its original encounter.")
         if saved["stage"] not in ("player", "dialogue", "condemned_approach", "eating") or saved["stage"] != "player" and (not saved["committed"] or saved["outcome"] != "eat"):
             raise ValueError("Invalid player eating progress.")
@@ -1354,7 +1340,7 @@ def capture_resident(npc):
     from player import call_valid
     stale_call = npc.player_call and not call_valid(npc.world, npc, npc.player_call)
     return _capture_fields(
-        NPCState, npc, inventory_capacity=None, emotion=EmotionReaction(name=npc.emotion, intensity=npc.emotion_intensity),
+        NPCState, npc, emotion=EmotionReaction(name=npc.emotion, intensity=npc.emotion_intensity),
         memories=[asdict(memory) for memory in npc.memories],
         goal=asdict(npc.goal) if npc.goal else None,
         current_concern=asdict(npc.current_concern) if npc.current_concern else None,
@@ -1367,42 +1353,42 @@ def capture_resident(npc):
     )
 
 
-def capture_simulation(app):
+def capture_simulation(world, *, camera_offset, camera_zoom):
     """Capture main-thread state, including accepted actions awaiting a tick."""
-    npc_indices = {id(npc): index for index, npc in enumerate(app.npcs)}
-    records = {id(record): index for index, record in enumerate(app.conversation_history)}
-    history = [HistoryState.capture(record).model_dump() for record in app.conversation_history]
-    unread_records = {npc.unread_player_reply["reference"] for npc in app.npcs if npc.unread_player_reply}
+    records = {id(record): record.id for record in world.history}
+    history = [HistoryState.capture(record).model_dump() for record in world.history]
+    unread_records = {npc.unread_player_reply["reference"] for npc in world.npcs if npc.unread_player_reply}
     for record in history:
         for offer in record["player_promise_offers"]:
             if offer["status"] == "offered" and record["id"] not in unread_records:
                 offer["status"] = "closed"
-    for request in getattr(app, "player_requests", {}).values():
-        if request["pending"] and id(request["record"]) in records:
-            record = history[records[id(request["record"])]]
+    interaction = world.player_interaction
+    if interaction and interaction.get("pending_request"):
+        record = next((row for row in history if row["id"] == interaction.get("record_id")), None)
+        if record:
             record["status"] = "Reply pending when saved"
             record["outcomes"].insert(0, "The reply was not saved. Send the request again after loading.")
-    npcs, conversations, gifts = [], [], []
-    for npc in app.npcs:
+    npcs, conversations, handoffs = [], [], []
+    captured_handoffs = set()
+    for npc in world.npcs:
         npcs.append(capture_resident(npc))
         gift = npc.gift
-        if gift is not None and not isinstance(gift, PlayerHandoff) and gift.initiator is npc:
-            gifts.append(_capture_fields(GiftState, gift,
-                initiator=npc_indices[id(npc)], recipient=npc_indices[id(gift.recipient)],
+        if gift is not None and id(gift) not in captured_handoffs:
+            captured_handoffs.add(id(gift))
+            handoffs.append(_capture_fields(HandoffState, gift,
+                initiator=gift.initiator.id, recipient=gift.recipient.id,
                 record=records[id(gift.record)],
             ))
         conversation = npc.conversation
         if conversation is None or conversation.initiator is not npc:
             continue
         conversations.append(_capture_fields(ConversationState, conversation,
-            initiator=npc_indices[id(npc)], recipient=npc_indices[id(conversation.recipient)],
+            initiator=npc.id, recipient=conversation.recipient.id,
             record=records[id(conversation.record)],
-            pending_opinions=[],
             proposals=[asdict(p) for p in conversation.proposals],
             information_context=asdict(conversation.information_context) if conversation.information_context else None,
             concerns={role: asdict(c) if c else None for role, c in conversation.concerns.items()},
         ))
-    world = app.simulation
     encounter = world.snake.encounter
     return SimulationState(
         day=world.day, npc_trait_mode=world.npc_trait_mode, phase=world.phase,
@@ -1410,11 +1396,8 @@ def capture_simulation(app):
         player_invitations=deepcopy(world.player_invitations), player_claims=deepcopy(world.player_claims),
         visit=deepcopy(world.visit), tree_queue=deepcopy(world.tree_queue), tree_current=deepcopy(world.tree_current),
         player_snake_encounter=capture_player_snake(encounter, records),
-        player=PlayerState(**asdict(world.player), inventory_capacity=None), player_call_check=max(0.0, world.player_call_check),
+        player=PlayerState(**asdict(world.player)), player_call_check=max(0.0, world.player_call_check),
         player_acknowledgments=deepcopy(world.player_acknowledgments),
-        player_handoffs=[_capture_fields(PlayerHandoffState, npc.gift,
-            initiator=npc.gift.initiator.id, recipient=npc.gift.recipient.id,
-            record=records[id(npc.gift.record)]) for npc in world.npcs if isinstance(npc.gift, PlayerHandoff)],
         creations=world.creations,
         events=[asdict(event) for event in world.events],
         promises=[asdict(promise) for promise in world.promises],
@@ -1429,13 +1412,13 @@ def capture_simulation(app):
         snake_encounter=(_capture_fields(SnakeEncounterState, encounter,
                          resident_id=encounter.recipient.id, record=records[id(encounter.record)])
                          if encounter is not None and encounter.recipient is not world.player else None),
-        npcs=npcs, history=history, conversations=conversations, gifts=gifts,
-        tree=_capture_fields(TreeState, app.tree,
-                       shaker=app.tree.shaker.id if app.tree.shaker is not None else None,
-                       reserved_by=app.tree.reserved_by.id if app.tree.reserved_by is not None else None),
+        npcs=npcs, history=history, conversations=conversations, handoffs=handoffs,
+        tree=_capture_fields(TreeState, world.tree,
+                       shaker=world.tree.shaker.id if world.tree.shaker is not None else None,
+                       reserved_by=world.tree.reserved_by.id if world.tree.reserved_by is not None else None),
         pending_actions=[asdict(action) for action in world.pending_actions],
-        camera_offset=tuple(app.game.camera_offset),
-        camera_zoom=app.game.camera_zoom,
+        camera_offset=tuple(camera_offset),
+        camera_zoom=camera_zoom,
     )
 
 
@@ -1447,7 +1430,7 @@ def restore_simulation(state):
         npc = NPC(
             id=saved.id, character=saved.character, display_name=saved.display_name, x=saved.x, y=saved.y,
             reply=saved.reply, emotion=saved.emotion.name, emotion_intensity=saved.emotion.intensity,
-            social=saved.social,
+            social=saved.social, opinions=deepcopy(saved.opinions),
             sprite_size=saved.sprite_size, room_number=saved.room_number, location=saved.location, journey=deepcopy(saved.journey), social_fatigue=saved.social_fatigue,
             home_remaining=saved.home_remaining, outdoor_remaining=saved.outdoor_remaining,
             bedtime_remaining=saved.bedtime_remaining, wake_remaining=saved.wake_remaining,
@@ -1473,9 +1456,9 @@ def restore_simulation(state):
     tree = Tree(id=state.tree.id, x=state.tree.x, y=state.tree.y, fruit=state.tree.fruit,
                 shake_elapsed=state.tree.shake_elapsed, shaker=by_id.get(state.tree.shaker),
                 reserved_by=by_id.get(state.tree.reserved_by))
-    world = Simulation(npcs, tree, assign_goals=False, npc_trait_mode=state.npc_trait_mode, mode=state.mode)
+    world = Simulation(npcs, tree, assign_goals=False, npc_trait_mode=state.npc_trait_mode, mode=state.mode, initialize_opinions=False)
     world.archived = all_residents[len(state.npcs):]
-    world.player = Player(**state.player.model_dump(exclude={"inventory_capacity"}))
+    world.player = Player(**state.player.model_dump())
     world.player.world = world
     world.player_interaction = deepcopy(state.player_interaction)
     world.player_invitations = deepcopy(state.player_invitations)
@@ -1505,10 +1488,9 @@ def restore_simulation(state):
     world.pending_actions = [PendingAction(**action.model_dump()) for action in state.pending_actions]
     for action in world.pending_actions:
         by_id[action.npc_id].request_pending = True
-    actor_ids = {actor.name: actor.id for actor in world.actors}
-    actor_ids[PLAYER_LABEL] = world.player.id
-    history = [saved.restore(actor_ids) for saved in state.history]
+    history = [saved.restore() for saved in state.history]
     world.history = history
+    history = {record.id: record for record in history}
     world.events = [WorldEvent(**event.model_dump()) for event in state.events]
     world.promises = [Promise(**promise.model_dump()) for promise in state.promises]
     world.facts = [Fact(**fact.model_dump()) for fact in state.facts]
@@ -1518,14 +1500,12 @@ def restore_simulation(state):
     for saved in state.conversations:
         # Loading bypasses __init__: it would interrupt the saved activities again.
         conversation = Conversation.__new__(Conversation)
-        _restore_fields(conversation, saved, exclude=("turns", "pending_opinions"),
-            initiator=npcs[saved.initiator], recipient=npcs[saved.recipient], record=history[saved.record],
+        _restore_fields(conversation, saved,
+            initiator=by_id[saved.initiator], recipient=by_id[saved.recipient], record=history[saved.record],
             proposals=[Proposal(**proposal.model_dump()) for proposal in saved.proposals],
             information_context=information_from_dict(saved.information_context.model_dump()) if saved.information_context else None,
             concerns={role: ConversationConcern(**c.model_dump()) if c else None for role, c in saved.concerns.items()},
             saved_states=[activity.model_dump() for activity in saved.saved_states])
-        for index, opinions in saved.pending_opinions:
-            npcs[index].remember_opinions(opinions)
         conversation.active = True
         conversation.name_actors = {}  # Pending generation takes a fresh reference snapshot after loading.
         for npc in (conversation.initiator, conversation.recipient):
@@ -1533,23 +1513,15 @@ def restore_simulation(state):
         if conversation.dialogue_state == "pending":
             conversation.dialogue_state = "waiting"
             conversation.wait_elapsed = 0.0
-    for saved in state.gifts:
-        gift = Gift.__new__(Gift)
-        _restore_fields(gift, saved,
-            initiator=npcs[saved.initiator], recipient=npcs[saved.recipient], record=history[saved.record],
-            saved_states=[activity.model_dump() for activity in saved.saved_states])
-        gift.active = True
-        for npc in (gift.initiator, gift.recipient):
-            npc.gift = gift
-    for saved in state.player_handoffs:
-        gift = PlayerHandoff.__new__(PlayerHandoff)
-        _restore_fields(gift, saved, initiator=world.participant_by_id(saved.initiator),
-            recipient=world.participant_by_id(saved.recipient), record=history[saved.record],
-            saved_state=saved.saved_state.model_dump())
-        gift.world = world
-        gift.resident = gift.recipient if gift.initiator is world.player else gift.initiator
-        gift.active = gift.arrived = True
-        gift.resident.gift = gift
+    actor_lookup = {actor.id: actor for actor in [*world.actors, world.player]}
+    for saved in state.handoffs:
+        handoff = Handoff.__new__(Handoff)
+        _restore_fields(handoff, saved, initiator=actor_lookup[saved.initiator],
+            recipient=actor_lookup[saved.recipient], record=history[saved.record],
+            saved_states={actor_id: activity.model_dump() for actor_id, activity in saved.saved_states.items()})
+        handoff.world, handoff.active = world, True
+        for npc in handoff.residents:
+            npc.gift = handoff
     saved = state.snake_encounter
     if saved:
         encounter = SnakeEncounter.__new__(SnakeEncounter)

@@ -79,7 +79,7 @@ class EventFeed:
                 for entry, top, height, _ in self.rows:
                     if top <= pos[1] - self.body.y + self.scroll < top + height and entry.history is not None:
                         app.open_stats()
-                        app.stats.open_record(app.conversation_history[entry.history])
+                        app.stats.open_record(app.simulation.record_by_id(entry.history))
                         break
         return True
 

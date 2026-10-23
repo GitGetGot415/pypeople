@@ -34,6 +34,9 @@ ACTIVITY_FIELDS = (
 )
 
 
+from transfers import Handoff
+
+
 class Behavior(str, Enum):
     WANDER = "WANDER"
     STOP = "STOP"
@@ -119,7 +122,7 @@ class NPC:
     rewritten_reply: str = ""
     end_conversation: bool = False
     conversation: "Conversation | None" = field(default=None, repr=False, compare=False)
-    gift: "Gift | None" = field(default=None, repr=False, compare=False)
+    gift: "Handoff | None" = field(default=None, repr=False, compare=False)
     display_name: str | None = None
     emotion: str = "neutral"
     emotion_intensity: int = 0
@@ -132,6 +135,7 @@ class NPC:
     })
     memories: list = field(default_factory=list)
     goal: Goal | None = None
+    opinions: dict[str, dict] = field(default_factory=dict)
     pending_social_opinions: list = field(default_factory=list)
     beliefs: list = field(default_factory=list)
     current_concern: ConversationConcern | None = None
@@ -313,8 +317,8 @@ class NPC:
         self.cooldowns = {key: value - dt for key, value in self.cooldowns.items() if value > dt}
         interaction = self.conversation or self.gift
         if interaction is not None:
-            index = 0 if interaction.initiator is self else 1
-            suspended = interaction.saved_states[index]
+            suspended = (self.gift.saved_states[self.id] if self.gift else
+                         interaction.saved_states[0 if interaction.initiator is self else 1])
             suspended["decision_remaining"] = max(0.0, suspended["decision_remaining"] - dt)
             suspended["cooldowns"] = {key: value - dt for key, value in suspended["cooldowns"].items() if value > dt}
 
@@ -451,15 +455,15 @@ class NPC:
             starting_experience = starting_dialogue_context(self.world, self.id)
             if starting_experience:
                 state["private_context"]["starting_experience"] = starting_experience
-            state["private_context"]["opinions"] = self.opinions
+            state["private_context"]["opinions"] = self.named_opinions()
             state["private_context"]["snake_attitudes"] = self.attitudes.copy()
-            encounters = [record for record in self.world.history if self.name in record.participants and record.turns]
+            encounters = [record for record in self.world.history if record.includes(self) and record.turns]
             state["private_context"]["situation"] = {
                 **orientation_context(self),
                 "arrival_day": self.arrival_day,
                 "transition_memory": NPC_ARRIVAL_MEMORY, "explanation": "unknown", "way_home": "unknown",
                 "prior_conversations": len(encounters),
-                "prior_snake_encounters": (sum(self.world.snake.name in record.participants for record in encounters)
+                "prior_snake_encounters": (sum(self.world.snake.id in record.participant_ids for record in encounters)
                                            + int(starting_encounter(self.world, self.id) is not None)),
                 "received_snake_apple": any(fact.kind == "bargain" and fact.subject_id == self.world.snake.id
                                             and fact.object_id == self.id for fact in self.world.facts),
@@ -480,38 +484,48 @@ class NPC:
                 state.pop(key)
         return state
 
-    @property
-    def opinions(self):
-        # Copy nested entries so worker snapshots cannot modify live opinions.
-        return {person: entry.copy() for person, entry in self.character.get("Opinions", {}).items()}
+    def bind_authored_opinions(self):
+        """Bind exact assigned labels once; unresolved authored names stay visible."""
+        if self.world is None:
+            return
+        unresolved = {}
+        for person, entry in self.character.get("Opinions", {}).items():
+            targets = [actor for actor in self.world.actors if actor.name == person and actor is not self]
+            if len(targets) == 1:
+                self.opinions.setdefault(targets[0].id, entry.copy())
+            else:
+                unresolved[person] = entry.copy()
+        self.character = {**self.character, "Opinions": unresolved}
+
+    def named_opinions(self):
+        actors = {actor.id: actor.name for actor in self.world.actors} if self.world else {}
+        bound_names = {actors[key] for key in self.opinions if key in actors}
+        result = {name: entry.copy() for name, entry in self.character.get("Opinions", {}).items()
+                  if name not in bound_names}
+        result.update({actors[key]: entry.copy() for key, entry in self.opinions.items() if key in actors})
+        return result
 
     def opinion_score(self, actor_id, default=0):
-        """Resolve engine identity here; profile and prompt dictionaries retain labels."""
-        target = self.world.participant_by_id(actor_id)
-        return self.opinions.get(target.name, {}).get("opinion", default) if target else default
+        return self.opinions.get(actor_id, {}).get("opinion", default)
 
     def remember_opinion(self, actor_id, opinion, reason):
-        target = self.world.participant_by_id(actor_id)
-        if target is None:
-            raise ValueError("The opinion target is no longer available.")
-        self.remember_opinions({target.name: {"opinion": opinion, "reason": reason}})
+        self.remember_opinions({actor_id: {"opinion": opinion, "reason": reason}})
 
     def remember_opinions(self, updates):
         updates = normalize_opinions(updates)
-        if self.world:
-            for person, entry in updates.items():
-                target = next((npc for npc in self.world.npcs if npc.name == person), None)
-                outcomes = [p.outcome for p in self.world.promises if p.status != "pending" and target is not None
-                            and {p.promisor_id, p.recipient_id} == {self.id, target.id}]
-                if outcomes and outcomes[-1] not in entry["reason"]:
-                    entry["reason"] = (outcomes[-1] + " Current impression: " + entry["reason"])[:400]
-        opinions = normalize_opinions({**self.opinions, **updates})
-        if opinions == self.opinions:
+        for actor_id, entry in updates.items():
+            target = self.world.participant_by_id(actor_id) if self.world else None
+            if target is None or target is self or target is self.world.player:
+                raise ValueError("The opinion target is no longer available.")
+            outcomes = [p.outcome for p in self.world.promises if p.status != "pending"
+                        and {p.promisor_id, p.recipient_id} == {self.id, target.id}]
+            if outcomes and outcomes[-1] not in entry["reason"]:
+                entry["reason"] = (outcomes[-1] + " Current impression: " + entry["reason"])[:400]
+        if all(self.opinions.get(key) == value for key, value in updates.items()):
             return
-        self.character["Opinions"] = opinions
-        if self.world:
-            interaction = self.conversation or self.gift
-            check_relationship_goals(self.world, self, interaction.record if interaction else None)
+        self.opinions.update(updates)
+        interaction = self.conversation or self.gift
+        check_relationship_goals(self.world, self, interaction.record if interaction else None)
 
     def _face_when_still(self):
         point = self.world.tree.interaction_point if self.world else None
@@ -559,7 +573,7 @@ class NPC:
             self.begin_activity(Behavior(action), self.world, tree.id, "Player asked me to visit the tree" if action == "GO_TO_TREE" else "Player asked for a cosmetic tree shake", owner="player_task")
 
     def check_gift(self, recipient, item, quantity, *, player_authorization=None):
-        from player import validate_transfer
+        from transfers import validate_transfer
         validate_transfer(self.world, self, recipient, item, quantity, player_authorization=player_authorization)
         if recipient is self.world.player:
             return
@@ -594,10 +608,7 @@ class NPC:
     def give_items(self, recipient, item, quantity, record=None, spacing=0):
         """Walk over and hand the items to the recipient before transferring them."""
         self.check_gift(recipient, item, quantity)
-        if recipient is self.world.player:
-            from player import PlayerHandoff
-            return PlayerHandoff(self.world, self, recipient, item, quantity, record)
-        return Gift(self, recipient, item, quantity, record, spacing)
+        return Handoff(self, recipient, item, quantity, record, spacing)
 
     def _move(self, dt):
         return move_toward(self, self.destination, dt, MOVEMENT_SPEED)
@@ -817,7 +828,7 @@ class Conversation:
             "initiator": self.initiator.snapshot(self.initiator.world.tree),
             "recipient": self.recipient.snapshot(self.initiator.world.tree)})
         if response.gift and response.gift.accept_turn is not None:
-            from player import validate_transfer
+            from transfers import validate_transfer
             world = self.initiator.world
             validate_transfer(world, world.npc_by_id(response.gift.giver_id), world.npc_by_id(response.gift.recipient_id),
                               response.gift.item, response.gift.quantity, interaction=self)
@@ -934,7 +945,7 @@ class Conversation:
                     states = self.saved_states if giver is self.initiator else self.saved_states[::-1]
                     self.active = False
                     self.initiator.conversation = self.recipient.conversation = None
-                    Gift(giver, recipient, gift.item, gift.quantity, self.record, saved_states=states,
+                    Handoff(giver, recipient, gift.item, gift.quantity, self.record, saved_states=states,
                          already_met=True, thanks=self.handoff_thanks, rewritten_thanks=self.rewritten_handoff_thanks)
                 elif self.purpose == "food_request" and self.food_outcome == "accepted":
                     self.handoff()
@@ -1048,94 +1059,6 @@ class Conversation:
         requester, donor = self.initiator, self.recipient
         self.active = False
         requester.conversation = donor.conversation = None
-        Gift(donor, requester, "fruit", 1, self.record,
+        Handoff(donor, requester, "fruit", 1, self.record,
              saved_states=[self.saved_states[1], self.saved_states[0]], already_met=True,
              thanks=self.handoff_thanks, rewritten_thanks=self.rewritten_handoff_thanks)
-
-
-class Gift:
-    """Reserve both participants through approach, giving, and thanking."""
-
-    def __init__(self, initiator, recipient, item, quantity, record=None, spacing=0, *, saved_states=None, already_met=False, thanks=None, rewritten_thanks=()):
-        destination = (initiator.x, initiator.y) if already_met else company_point(initiator, recipient, spacing)
-        if destination is None:
-            raise ValueError("There isn't enough room here to give the items.")
-        self.initiator, self.recipient = initiator, recipient
-        self.item, self.quantity = item, quantity
-        self.arrived = already_met
-        self.active = True
-        self.transferred = False
-        self.outcome_event_id = None
-        self.thanks = list(thanks) if thanks is not None else []
-        self.rewritten_thanks = list(rewritten_thanks)
-        self.elapsed = 0.0
-        self.record = record or ConversationRecord((initiator.name, recipient.name), "Give items", "Walking to give",
-                                                  participant_ids=[initiator.id, recipient.id])
-        if set(self.record.participants) != {initiator.name, recipient.name}:
-            self.record = ConversationRecord((initiator.name, recipient.name), "Directed gift", "Walking to give",
-                authorization_id=record.id, participant_ids=[initiator.id, recipient.id])
-            initiator.world.history.append(self.record)
-        self.record.transfer_intent = dict(giver_id=initiator.id, recipient_id=recipient.id, item=item, quantity=quantity)
-        self.saved_states = []
-        self.record.status = "Giving items" if already_met else "Walking to give"
-        for npc in (initiator, recipient):
-            self.saved_states.append(npc.suspend_activity("Giving items" if npc is initiator else "Receiving items"))
-            npc.gift = self
-        if saved_states is not None:
-            self.saved_states = saved_states
-        initiator.destination = None if already_met else destination
-
-    def update(self, dt):
-        if not self.active:
-            return
-        giver, recipient = self.initiator, self.recipient
-        if giver.location != recipient.location or any(giver.world.npc_by_id(p.id) is not p for p in (giver, recipient)):
-            self.finish("A participant is no longer outdoors.")
-            return
-        if not self.arrived:
-            self.arrived = giver._move(max(0.0, dt))
-            if self.arrived:
-                giver.destination = None
-                self.record.status = "Giving items"
-                face_each_other(giver, recipient)
-            return
-        elapsed = self.elapsed + max(0.0, dt)
-        if not self.transferred and elapsed + 1e-9 >= GIFT_GIVE_SECONDS:
-            from player import commit_transfer
-            try:
-                commit_transfer(giver.world, self)
-            except ValueError as exc:
-                self.finish(str(exc))
-                return
-            if self.thanks:
-                self.record.add_turn(recipient.name, " ".join(part.text.strip() for part in self.thanks),
-                                     [part.model_dump() for part in self.thanks], self.rewritten_thanks)
-            self.record.outcomes[0:1] = [f"Gave {self.quantity} {self.item} to {recipient.name}."]
-            self.record.status = "Thanking"
-            elapsed = max(GIFT_GIVE_SECONDS, elapsed)
-        self.elapsed = elapsed
-        if self.elapsed + 1e-9 >= GIFT_SECONDS:
-            self.finish()
-
-    def finish(self, error=""):
-        if not self.active:
-            return
-        self.active = False
-        self.record.status = "Failed" if error and not self.transferred else "Completed"
-        self.record.error = error if not self.transferred else ""
-        if error and self.transferred:
-            self.record.outcomes.append(f"The transfer remains committed. {error}")
-        elif error:
-            self.record.outcomes[0:1] = [error]
-            event = self.initiator.world.publish("interaction_failed", (self.initiator, self.recipient), error, self.record)
-            self.outcome_event_id = event.id
-        for npc, state in zip((self.initiator, self.recipient), self.saved_states):
-            other = self.recipient if npc is self.initiator else self.initiator
-            if npc.gift is not self:
-                continue
-            npc.gift = None
-            if npc.world.npc_by_id(npc.id) is not npc:
-                continue
-            npc.restore_after_interaction(state, other.id, preserve_facing=True)
-            if self.record.purpose == "food_request":
-                npc.pause_after_conversation(True)

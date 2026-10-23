@@ -46,7 +46,6 @@ class GameScreen:
         self.save_button = Button((904, 16, 108, 38), "Save")
         self.inventory_button = Button(INVENTORY_BUTTON_RECT, "Inventory")
         self.inventory = InventoryPanel()
-        self.pending_offer = None
         self.accept_offer_button = Button(GIFT_ACCEPT_RECT, "Accept gift")
         self.decline_offer_button = Button(GIFT_DECLINE_RECT, "Decline")
         self.call_choice = None
@@ -77,7 +76,6 @@ class GameScreen:
         self.selected_npc = None
         self.reply = ""
         self._reply_version = None
-        self.player_record = None
         self.viewed_conversation = None
         self.conversation_tree = None
         self.conversation_page_index = 0
@@ -95,6 +93,14 @@ class GameScreen:
         self.apartment_open = False
         self.apartment_scroll = 0
         self.apartment_close = Button(APARTMENT_INSPECTOR_CLOSE_RECT, "Close")
+
+    @property
+    def pending_offer(self):
+        return self.app.conversations.pending_offer if self.app and self.app.conversations else None
+
+    @property
+    def player_record(self):
+        return self.app.conversations.record if self.app and self.app.conversations else None
 
     def reset(self):
         self.bed_open = False
@@ -121,20 +127,15 @@ class GameScreen:
         self.save_message = message
         self.save_message_remaining = 8
 
-    def close_dialogue(self, *, terminate=True):
-        if terminate and self.app and self.app.simulation:
-            self.app.end_player_conversation()
-        self.pending_offer = None
-        if self.player_record:
-            for offer in self.player_record.player_promise_offers:
-                if offer["status"] == "offered":
-                    offer["status"] = "closed"
-        self.player_record = None
+    def close_dialogue(self, *, terminate=True, notify=True):
+        if notify and self.app and self.app.conversations:
+            self.app._sync_conversation_view()
+            self.app.conversations.view_closed(terminate=terminate)
+            self.app._present_conversation_events()
         if self.viewed_conversation is not None:
             self.viewed_conversation = None
             self.conversation_tree = None
         if self.selected_npc is not None:
-            self.selected_npc.set_selected(False)
             self.selected_npc = None
         self.dialogue_open = False
         self.conversation_page_index = 0
@@ -145,15 +146,10 @@ class GameScreen:
         self.prompt_input.backspace_held = False
 
     def set_reply(self, text):
-        if self.selected_npc is not None and text != self.selected_npc.reply:
-            # Interface messages replacing a reply have no emotional reaction.
-            self.selected_npc.set_emotion("neutral", 0)
-            self.selected_npc.rewritten_reply = ""
         normalized = " ".join(text.split())
         self.reply = "".join(char for char in normalized if char.isprintable())
         self.dialogue_scroll = 0
         if self.selected_npc is not None:
-            self.selected_npc.reply = self.reply
             if self.selected_npc.end_conversation:
                 self.prompt_input.set_value("")
                 self.prompt_input.active = False
@@ -657,28 +653,7 @@ class GameScreen:
 
     def open_call(self, app, npc):
         if npc.unread_player_reply:
-            from player import call_valid, clear_call, player_reply_closes
-            call = npc.unread_player_reply
-            if not call_valid(app.simulation, npc, call):
-                clear_call(npc)
-                return
-            record = next(r for r in app.conversation_history if r.id == call["reference"])
-            self.close_dialogue()
-            self.call_choice = None
-            self.dialogue_open, self.selected_npc, self.player_record = True, npc, record
-            npc.set_selected(True)
-            npc.end_conversation = call["closing"]
-            if not npc.request_pending:
-                npc.end_conversation = player_reply_closes(npc.end_conversation, npc.reply,
-                                                          (npc.rewritten_reply,) if npc.rewritten_reply else ())
-            self.pending_offer = ({**call["gift_offer"], "npc_id": npc.id,
-                "revision": npc.command_revision, "record_id": record.id} if call["gift_offer"] else None)
-            clear_call(npc)
-            record.status = "Waiting for Done" if npc.end_conversation and npc.request_pending else "Completed"
-            self.prompt_input.set_value("")
-            self.set_reply(npc.reply)
-            if not npc.end_conversation:
-                self.prompt_input.focus()
+            app.open_unread(npc)
             self.pan_start = self.pan_last = None
             self.panning = False
             return

@@ -393,7 +393,7 @@ class StatsScreen:
         else:
             add("Opinion scores range from -100 to 100.", app.small_font, MUTED)
             gap()
-            opinions = npc.opinions
+            opinions = npc.named_opinions()
             if not opinions:
                 add("No opinions recorded yet.", color=MUTED)
             for person, entry in sorted(opinions.items(), key=lambda item: item[0].casefold()):

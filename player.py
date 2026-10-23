@@ -4,15 +4,14 @@ from dataclasses import dataclass, field
 import re
 from uuid import uuid4
 
-from constants import (PLAYER_ID, STARTING_PLAYER_FRUIT, PLAYER_CALL_LIMIT,
-                       PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, PLAYER_CONTEXT_WORK_LIMIT,
-                       PLAYER_OPINION_STEP, GIFT_GIVE_SECONDS, GIFT_SECONDS,
-                       PLAYER_CALL_GIFT_GENEROSITY, PLAYER_CALL_SOCIABILITY)
-from conversation_history import ConversationRecord, remember
+from constants import (PLAYER_ID, STARTING_PLAYER_FRUIT, PLAYER_CALL_LIMIT, PLAYER_CALL_COOLDOWN,
+                      PLAYER_CALL_CHECK_SECONDS, PLAYER_CONTEXT_WORK_LIMIT, PLAYER_OPINION_STEP,
+                      PLAYER_CALL_GIFT_GENEROSITY, PLAYER_CALL_SOCIABILITY)
+from conversation_history import remember
 from dialogue_text import contains_question
 from constants import (GARDEN_LOCATION, ARRIVAL_LOCATION, STARTING_PLAYER_POSITION, STARTING_FACING,
-                       PLAYER_DEFAULT_APPEARANCE, MOVEMENT_SPEED, PLAYER_APPROACH_MULTIPLIER, PLAYER_RUN_MULTIPLIER,
-                       PLAYER_APPROACH_TIMEOUT, PLAYER_TALK_DISTANCE, PLAYER_EVIDENCE_LIMIT)
+                      PLAYER_DEFAULT_APPEARANCE, MOVEMENT_SPEED, PLAYER_APPROACH_MULTIPLIER,
+                      PLAYER_RUN_MULTIPLIER, PLAYER_APPROACH_TIMEOUT, PLAYER_EVIDENCE_LIMIT)
 
 
 @dataclass
@@ -204,94 +203,6 @@ def requested_work_id(world, owner_id, message):
     return matches[0].id if len(matches) == 1 else ""
 
 
-def validate_transfer(world, giver, recipient, item, quantity, *, interaction=None, player_authorization=None):
-    """Always enforce authority, including with speech diagnostics disabled."""
-    from locations import available, colocated
-    if giver is None or recipient is None or giver is recipient:
-        raise ValueError("Choose a giver and a different recipient.")
-    if not colocated(giver, recipient):
-        raise ValueError("Gifts require both people in the same location.")
-    if world.player in (giver, recipient):
-        resident = recipient if giver is world.player else giver
-        if not active_player(world) or not owns_resident(world, resident):
-            raise ValueError("Meet the resident before exchanging a gift.")
-        import math
-        if math.dist((giver.x, giver.y), (recipient.x, recipient.y)) > PLAYER_TALK_DISTANCE and not world.player_interaction.get("knock_room"):
-            raise ValueError("Move within talking distance before giving.")
-        if world.player_interaction.get("knock_room"):
-            raise ValueError("Enter the room before exchanging possessions.")
-    for person in (giver, recipient):
-        if person is world.player:
-            continue
-        authorized = bool(player_authorization and world.player_interaction
-            and player_authorization == world.player_interaction["id"] and owns_resident(world, giver))
-        if world.player not in (giver, recipient) and owns_resident(world, person) and not authorized:
-            raise ValueError("The resident is meeting the player.")
-        if world.player not in (giver, recipient) and world.visit and world.visit["host_id"] == person.id:
-            raise ValueError("The resident is hosting the player.")
-        if (interaction is None and giver is not world.player and recipient is not world.player
-                and (person.player_call or person is recipient and person.selected)):
-            raise ValueError("The resident is waiting to talk to the player.")
-        if world.npc_by_id(person.id) is not person or not available(person):
-            raise ValueError("The resident is no longer available.")
-        if person.interaction is not None and person.interaction is not interaction:
-            raise ValueError("The resident is occupied in another interaction.")
-    if type(quantity) is not int or quantity < 1:
-        raise ValueError("Select a positive apple quantity or one work.")
-    if item == "fruit":
-        if giver.inventory["fruit"] < quantity:
-            raise ValueError("The giver no longer has enough apples.")
-    else:
-        work = next((w for w in world.creations if w.id == item), None)
-        if quantity != 1 or work is None or work.owner_id != giver.id:
-            raise ValueError("This work is no longer owned by the giver. A fresh offer is needed.")
-    # Existing accepted handoffs reserve stock, while unaccepted offers reserve nothing.
-    pending = {id(n.gift): n.gift for n in world.npcs if n.gift and n.gift is not interaction}
-    reserved = sum(g.quantity for g in pending.values()
-                   if not g.transferred and g.initiator is giver and g.item == item)
-    if (item == "fruit" and giver.inventory["fruit"] - reserved < quantity
-            or item != "fruit" and reserved):
-        raise ValueError("That possession is already reserved for an accepted handoff.")
-
-
-def commit_transfer(world, interaction):
-    if interaction.transferred:
-        return
-    giver, recipient = interaction.initiator, interaction.recipient
-    item, quantity, record = interaction.item, interaction.quantity, interaction.record
-    validate_transfer(world, giver, recipient, item, quantity, interaction=interaction)
-    work = next((w for w in world.creations if w.id == item), None)
-    if item == "fruit":
-        giver.inventory["fruit"] -= quantity
-        recipient.inventory["fruit"] += quantity
-        description = f"{quantity} apple" + ("s" if quantity != 1 else "")
-    else:
-        work.owner_id = recipient.id
-        description = f'{work.kind}: {work.title} [{work.id}]'
-    interaction.transferred = True
-    transfer = dict(id=uuid4().hex, giver_id=giver.id, recipient_id=recipient.id,
-                    item=item, quantity=quantity, day=world.day, phase=world.phase,
-                    sequence=sum(len(r.transfers) for r in world.history))
-    record.transfers.append(transfer)
-    event = world.publish("fruit_shared" if item == "fruit" else "work_shared", (giver, recipient),
-                          f"{giver.name} gave {description} to {recipient.name}.", record)
-    interaction.outcome_event_id = event.id
-    for actor, partner, kind, summary, weight in (
-        (giver, recipient, "gave_fruit" if item == "fruit" else "gave_work", f"I gave {description} to {recipient.name}.", 2),
-        (recipient, giver, "received_fruit" if item == "fruit" else "received_work", f"{giver.name} gave me {description}.", 6)):
-        if actor is not world.player:
-            remember(actor, partner, event, kind, summary, weight)
-            if partner is world.player:
-                update_player_opinion(actor, weight, summary)
-    if item == "fruit":
-        from social import on_transfer
-        on_transfer(world, giver, recipient, quantity, event, record)
-    record.outcomes[0:1] = [f"Gave {description} to {recipient.name}."]
-    if giver is world.player or recipient is world.player:
-        resident = recipient if giver is world.player else giver
-        world.player_acknowledgments.append(dict(npc_id=resident.id, record_id=record.id, transfer_id=transfer["id"]))
-
-
 def update_player_opinion(npc, delta, reason):
     """Keep mixed evidence, and scale a bounded change by this resident's personality."""
     entry = npc.player_opinion
@@ -370,52 +281,6 @@ def accept_player_promises(world, npc, record, response, message, *, opening=Fal
         event = world.publish("promise_created", (world.player, npc), text, record)
         remember(npc, world.player, event, "promise_created", text, 1)
         record.outcomes.append(text)
-
-
-class PlayerHandoff:
-    """A timed, co-located handoff owned by the physical player interaction."""
-    def __init__(self, world, giver, recipient, item, quantity, record):
-        validate_transfer(world, giver, recipient, item, quantity)
-        self.world, self.initiator, self.recipient = world, giver, recipient
-        self.resident = recipient if giver is world.player else giver
-        self.item, self.quantity, self.record = item, quantity, record
-        self.record.transfer_intent = dict(giver_id=giver.id, recipient_id=recipient.id, item=item, quantity=quantity)
-        self.active, self.arrived, self.transferred = True, True, False
-        self.elapsed, self.outcome_event_id = 0.0, None
-        self.saved_state = self.resident.suspend_activity("Exchanging a gift with the player")
-        self.resident.gift = self
-        self.record.status = "Giving items"
-
-    def update(self, dt):
-        if not self.active:
-            return
-        from locations import colocated
-        if not active_player(self.world) or not colocated(self.world.player, self.resident):
-            self.finish("The resident is no longer available.")
-            return
-        self.elapsed += max(0.0, dt)
-        if not self.transferred and self.elapsed + 1e-9 >= GIFT_GIVE_SECONDS:
-            try:
-                commit_transfer(self.world, self)
-            except ValueError as exc:
-                self.finish(str(exc))
-                return
-        if self.elapsed + 1e-9 >= GIFT_SECONDS:
-            self.finish()
-
-    def finish(self, error=""):
-        if not self.active:
-            return
-        self.active = False
-        self.record.status, self.record.error = ("Failed", error) if error and not self.transferred else ("Completed", "")
-        if error and self.transferred:
-            self.record.outcomes.append(f"The transfer remains committed. {error}")
-        if self.resident.gift is self:
-            self.resident.gift = None
-            if self.world.npc_by_id(self.resident.id) is self.resident:
-                self.resident.restore_after_interaction(self.saved_state, self.world.player.id, preserve_facing=True)
-        if owns_resident(self.world, self.resident) and self.world.player_interaction["stage"] == "handoff":
-            end_interaction(self.world, error or "The accepted handoff finished.")
 
 
 def call_reason(world, npc):

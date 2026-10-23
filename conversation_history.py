@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from typing import Annotated, Literal
+from typing_extensions import TypedDict, NotRequired
 from uuid import uuid4
 
 from pydantic import Field
@@ -11,12 +12,17 @@ from dialogue_text import contains_serialized_dialogue, contains_speaker_label
 from dialogue_rules import validate_rewrite_identity
 
 
+class RecordedPart(TypedDict):
+    text: str
+    emotion: NotRequired[dict]
+
+
 @dataclass
 class RecordedTurn:
-    speaker: str
-    parts: list[dict]
+    speaker: Annotated[str, Field(min_length=1)]
+    parts: list[RecordedPart]
     rewritten: list[str] = field(default_factory=list)
-    speaker_id: str | None = None
+    speaker_id: Annotated[str, Field(min_length=1)] | None = None
 
     @property
     def text(self):
@@ -41,9 +47,9 @@ class ConversationRecord:
     turns: list[RecordedTurn] = field(default_factory=list)
     outcomes: list[str] = field(default_factory=list)
     error: str = ""
-    origin: str = "player"
-    purpose: str = "chat"
-    id: str = field(default_factory=lambda: uuid4().hex)
+    origin: Literal["player", "autonomous"] = "player"
+    purpose: Literal["chat", "orientation", "food_request", "gossip", "bargain", "judgment", "introduction", "snake_player"] = "chat"
+    id: Annotated[str, Field(min_length=1)] = field(default_factory=lambda: uuid4().hex)
     failed_turns: list[dict] = field(default_factory=list)
     name_forms: list[str] = field(default_factory=list)
     orientation_discussed: bool = False
@@ -51,7 +57,7 @@ class ConversationRecord:
     intended_subjects: dict[str, str] = field(default_factory=dict)
     participant_ids: list[str] = field(default_factory=list)
     transfers: list[dict] = field(default_factory=list)
-    accepted_player_turns: list[int] = field(default_factory=list)
+    accepted_player_turns: list[Annotated[int, Field(strict=True, ge=0)]] = field(default_factory=list)
     authorization_id: str | None = None
     transfer_intent: dict | None = None
     player_promise_offers: list[dict] = field(default_factory=list)
@@ -61,15 +67,12 @@ class ConversationRecord:
         return [turn.speech for turn in self.turns]
 
     def includes(self, actor):
-        return actor.id in self.participant_ids if self.participant_ids else actor.name in self.participants
+        return actor.id in self.participant_ids
 
     def between(self, first, second):
-        return (set(self.participant_ids) == {first.id, second.id} if self.participant_ids else
-                set(self.participants) == {first.name, second.name})
+        return set(self.participant_ids) == {first.id, second.id}
 
-    def add_turn(self, speaker, text, parts=None, rewritten=(), *, speaker_id=None):
-        if speaker_id is None and self.participant_ids and speaker in self.participants:
-            speaker_id = self.participant_ids[self.participants.index(speaker)]
+    def add_turn(self, speaker, text, parts=None, rewritten=(), *, speaker_id):
         turn = RecordedTurn(speaker, parts if parts is not None else [{"text": text}],
                             list(rewritten), speaker_id)
         self.turns.append(turn)
@@ -77,7 +80,7 @@ class ConversationRecord:
 
     def generated_turns(self):
         """Project stored speech into the speaker roles used by effect validators."""
-        return [ConversationTurn(speaker="initiator" if turn.speaker == self.participants[0] else "recipient",
+        return [ConversationTurn(speaker="initiator" if turn.speaker_id == self.participant_ids[0] else "recipient",
                                  parts=turn.parts) for turn in self.turns]
 
 
@@ -167,7 +170,7 @@ class WorldEvent:
                   "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "promise_cancelled", "work_shared", "player_call", "player_conversation", "tree_queue", "travel_failed", "visit"]
     participants: list[str]
     text: str
-    history: Annotated[int | None, Field(ge=0)] = None
+    history: str | None = None
     id: Annotated[str, Field(min_length=1)] = field(default_factory=lambda: uuid4().hex)
 
 
@@ -219,18 +222,20 @@ def relevant_memories(npc, partner_id=None):
 def shared_conversation_history(conversation):
     """Describe this pair's actual earlier dialogue, excluding the current request."""
     world = conversation.initiator.world
-    records = {index for index, record in enumerate(world.history)
+    records = {record.id for record in world.history
                if record.id != conversation.id and record.between(conversation.initiator, conversation.recipient)
                and len(record.turns) >= 2}
     dated = {event.history for event in world.events
              if event.history in records and event.kind in ("conversation_completed", "food_requested")}
     days = sorted({event.day for event in world.events
                    if event.history in dated and event.kind in ("conversation_completed", "food_requested")})
-    # Older saves can contain replayed conversations. Feed each transcript only
-    # once so duplicate records do not reinforce the model's repeated wording.
+    # Feed repeated transcripts once so ordinary similar meetings do not
+    # reinforce the model's repeated wording.
     recent_dialogue, seen = [], set()
-    for index in sorted(records, reverse=True):
-        excerpts = [(turn.speaker, turn.text[:400]) for turn in world.history[index].turns]
+    for record in reversed(world.history):
+        if record.id not in records:
+            continue
+        excerpts = [(turn.speaker, turn.text[:400]) for turn in record.turns]
         signature = tuple((speaker, " ".join(text.casefold().split())) for speaker, text in excerpts)
         if signature in seen:
             continue
