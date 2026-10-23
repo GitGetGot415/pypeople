@@ -163,5 +163,11 @@ def environment(location):
     if location == GARDEN_LOCATION:
         return "An open grassy garden with its guarded apple tree and apartment building entrance."
     if location.startswith("hallway:"):
-        return "An apartment hallway on one floor, with five closed room doors and an elevator. Only people on this floor can hear."
-    return "Inside a narrow private apartment room, with a doorway at its north end and a bed at its south end. There is no tree or grass inside. Only people in this room can hear."
+        floor = location.split(":")[1]
+        return (f"Inside the apartment building's hallway on floor {floor}, with five closed room doors and an elevator. "
+                "The garden and its apple tree are outside the building; there is no grass or open sky here. "
+                "Only people in this hallway can hear. The garden exit is on the first floor; other floors reach it by elevator.")
+    number = location.split(":")[1]
+    return (f"Inside narrow private apartment room {number}, with a doorway at its north end and a bed at its south end. "
+            "The doorway leads to the hallway. The garden and apple tree are outside the building, with no grass or open sky here. "
+            "Only people in this room can hear.")

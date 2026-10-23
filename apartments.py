@@ -7,7 +7,7 @@ from constants import (APARTMENT_APPROACH, APARTMENT_ID, BEDTIME_DELAY_RANGE, CR
                        CREATIVE_QUEUE_SECONDS, HOME_ARRIVAL_TOLERANCE, INDOOR_RECOVERY_PER_SECOND,
                        MINIMUM_INDOOR_SECONDS, OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE,
                        RETREAT_SOCIABILITY_WEIGHT, RETREAT_THRESHOLD_BASE, WAKE_DELAY_RANGE,
-                       ROOM_SLEEP_POSITION, SLEEP_FACING, PLAYER_ROOM_NUMBER)
+                       ROOM_SLEEP_POSITION, SLEEP_FACING, PLAYER_ROOM_NUMBER, JUDY_ROOM_NUMBER, JUDY_WAKE_DELAY)
 from creations import CreativeJob
 from npc import Behavior
 
@@ -57,15 +57,21 @@ def discard_work(npc):
 
 def leave(npc, world):
     cancel_work(npc)
-    from locations import start_journey
-    from constants import GARDEN_BUILDING_ARRIVAL
-    start_journey(npc, "garden", GARDEN_BUILDING_ARRIVAL, purpose="leave_home")
+    from locations import start_journey, door_point
+    from constants import GARDEN_BUILDING_ARRIVAL, ARRIVAL_LOCATION
+    from autonomy import next_arrival_to_greet
+    greeting = (npc.room_number == JUDY_ROOM_NUMBER and world.phase == "day"
+                and (world.pending_arrival_days or next_arrival_to_greet(world) is not None))
+    start_journey(npc, ARRIVAL_LOCATION if greeting else "garden",
+                  door_point(npc.room_number) if greeting else GARDEN_BUILDING_ARRIVAL,
+                  purpose="arrival_greeting" if greeting else "leave_home")
     npc.home_reason = None
     npc.bedtime_remaining = npc.wake_remaining = None
     npc.home_remaining = 0.0
     npc.outdoor_remaining = OUTDOOR_COOLDOWN_SECONDS
     npc.command_revision += 1
-    npc.begin_activity(Behavior.WANDER, world, reason="Back from my apartment")
+    npc.begin_activity(Behavior.WAIT if greeting else Behavior.WANDER, world,
+                       reason="Going to welcome a new arrival" if greeting else "Back from my apartment")
 
 
 def sleep(npc):
@@ -183,7 +189,8 @@ def update_home(npc, world, dt):
         if world.phase != "day":
             return
         if npc.wake_remaining is None:
-            npc.wake_remaining = npc.rng.uniform(*WAKE_DELAY_RANGE)
+            npc.wake_remaining = (JUDY_WAKE_DELAY if npc.room_number == JUDY_ROOM_NUMBER
+                                  else npc.rng.uniform(*WAKE_DELAY_RANGE))
         npc.wake_remaining = max(0.0, npc.wake_remaining - dt)
         if npc.wake_remaining == 0:
             leave(npc, world)
@@ -212,6 +219,8 @@ def phase_changed(world):
                 sleep(npc)
             if world.phase != "day":
                 npc.wake_remaining = None
+            elif npc.behavior == Behavior.SLEEP and npc.room_number == JUDY_ROOM_NUMBER:
+                update_home(npc, world, 0.0)
         elif world.phase != "night" and npc.home_reason == "night":
             npc.home_reason = None
             npc.bedtime_remaining = None

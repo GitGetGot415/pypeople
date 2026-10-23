@@ -26,6 +26,18 @@ def validate_environment_speech(text, *, location="garden"):
     for sentence in split_sentences(speech):
         if sentence.rstrip().endswith(("?", "\uFF1F", "\u061F")):
             continue
+        if location != "garden" and not re.search(
+                r"\b(?:if|imagine|remember|used to|former life|earlier|yesterday|thought|mistaken|"
+                r"before (?:i|we) arrived|when i was|in my mind|painting|dream)\b", sentence, re.I):
+            outside = re.search(
+                r"\b(?:we(?: are|['\u2019]re)|i(?: am|['\u2019]m)) (?:(?:still|currently|now) )?"
+                r"(?:outdoors|outside(?! (?:of )?(?:the |a |an |your |my |this |that |our |their )?(?:elevator|room|door)\b)|"
+                r"in (?:the|this) garden|(?:standing|sitting|waiting|walking)(?: here)? (?:in|on) (?:the|this) (?:grass|lawn))\b|"
+                r"\b(?:i|we) can see (?:the |an? )?(?:open sky|sky|apple tree)\b|"
+                r"\b(?:the )?grass (?:under|beneath) (?:my|our) feet\b", sentence, re.I)
+            if outside:
+                area = "the apartment hallway" if location.startswith("hallway:") else "a private apartment room"
+                raise ValueError(f"You are inside {area}. Describe your current indoor surroundings; the garden, grass, apple tree and open sky are outside. Distinguish memories or plans from where you are now.")
         missing = re.search(missing_tree, sentence, re.I)
         if location == "garden" and missing and not re.search(r"\b(?:if|imagine|thought|mistaken|wrong|not|no|never|does not mean|doesn't mean)\b", sentence[:missing.start()], re.I):
             raise ValueError("The living apple tree is still present, even with zero apples. Describe missing fruit, not a vanished tree; do not invent its disappearance or destruction.")

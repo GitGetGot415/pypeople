@@ -28,6 +28,11 @@ def awaiting_arrival_greeting(npc, world):
                         for record in world.history))
 
 
+def next_arrival_to_greet(world):
+    return next((person for person in sorted(world.npcs, key=lambda person: person.arrival_day)
+                 if awaiting_arrival_greeting(person, world)), None)
+
+
 def greet_arrivals(world):
     """Give the first resident the first automatic attempt to welcome each arrival."""
     if world.phase_pending:
@@ -35,8 +40,7 @@ def greet_arrivals(world):
     greeter = arrival_greeter(world)
     if greeter is None or not world.company_available(greeter):
         return
-    newcomer = next((person for person in sorted(world.npcs, key=lambda person: person.arrival_day)
-                     if awaiting_arrival_greeting(person, world)), None)
+    newcomer = next_arrival_to_greet(world)
     if newcomer is None or not world.company_available(newcomer, allow_arrival=True):
         return
     if greeter.location != newcomer.location:

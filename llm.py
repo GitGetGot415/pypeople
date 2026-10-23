@@ -912,10 +912,22 @@ def garden_environment():
             "tree_present": True, "other_venues": []}
 
 
+def local_environment(location="garden"):
+    from locations import environment
+    if location == "garden":
+        return {**garden_environment(), "location": location, "description": environment(location), "indoors": False}
+    kind, number = location.split(":")
+    return {"location": location, "indoors": True,
+            "place": f"Apartment hallway, floor {number}" if kind == "hallway" else f"Private apartment room {number}",
+            "description": environment(location),
+            "objects": ["An elevator", "Five closed room doors"] if kind == "hallway" else ["A bed", "A doorway to the hallway"],
+            "elsewhere": "The garden, apple tree, grass and open sky are outside the apartment building."}
+
+
 def _orientation_world_context(snapshot, *, correction=False):
     """A present concern must not compete with private goals or a menu of bargains."""
     context = {"request_kind": "conversation", "purpose": "chat", "arrival_focus": True,
-               "environment": garden_environment(),
+               "environment": local_environment(snapshot["initiator"].get("location", "garden")),
                "day": snapshot["initiator"].get("day", 1),
                "time_of_day": snapshot["initiator"].get("time_of_day", "day")}
     for role, other in (("initiator", "recipient"), ("recipient", "initiator")):
@@ -923,6 +935,7 @@ def _orientation_world_context(snapshot, *, correction=False):
         private = person.get("private_context", {})
         context[role] = {
             "npc_id": actor_id(person), "opinion_record_name": person["npc_name"],
+            "location": person.get("location", "garden"),
             "character": {"Name": own_name(person), "personality": character_context(person["character"])["personality"]},
             "partner_name_tag": own_name(partner),
             "opinion_of_partner": _base_opinions(private.get("opinions", {}), person["npc_name"]).get(partner["npc_name"]),
@@ -948,6 +961,9 @@ def world_context(snapshot, *, correction=False):
         return _orientation_world_context(snapshot, correction=correction)
     if snapshot.get("request_kind") in ("snake_turn", "conversation_closing", "resident_turn", "resident_assessment", "handoff_thanks"):
         context = {k: v for k, v in snapshot.items() if not k.startswith("_")}
+        context["environment"] = local_environment(snapshot.get("location", "garden"))
+        if snapshot.get("location", "garden") == "garden":
+            context["environment"].update(snapshot.get("environment", {}))
         names = (_actor_name(snapshot["speaker"]), _actor_name(snapshot["listener"]), SNAKE_NAME)
         context["preceding_turns"] = _base_preceding_turns(context.get("preceding_turns", []), names)
         if correction and context.get("shared_history"):
@@ -992,7 +1008,7 @@ def world_context(snapshot, *, correction=False):
         if conversation or snapshot.get("request_kind") in ("snake_encounter", "snake_decision"):
             # Rendering and movement bookkeeping do not help write a conversation.
             fields = {"npc_id", "npc_name", "character", "activity", "satisfaction", "inventory",
-                      "memories", "private_context", "arrival_day",
+                      "memories", "private_context", "arrival_day", "location",
                       "tree_fruit", "tree_available_fruit", "living_count"}
             person = {key: value for key, value in person.items() if key in fields}
             # Private facts already have individually scoped accounts. A second full
@@ -1043,12 +1059,11 @@ def world_context(snapshot, *, correction=False):
     context = snapshot.copy() if conversation or snake_request else person_context(snapshot, include_reply=True)
     context = {key: value for key, value in context.items() if not key.startswith("_")}
     context.pop("_information_validation", None)
-    context["environment"] = {
-        **garden_environment(),
-        "people": f"The listed residents, {SNAKE_NAME}, and the player",
-    }
     current = snapshot["initiator"] if conversation else snapshot["snake"] if snake_request else snapshot
-    if "tree_fruit" in current:
+    context["environment"] = local_environment(current.get("location", "garden"))
+    if current.get("location", "garden") == "garden":
+        context["environment"]["people"] = f"The listed residents, {SNAKE_NAME}, and the player"
+    if current.get("location", "garden") == "garden" and "tree_fruit" in current:
         context["environment"]["tree"] = {
             "fruit": current["tree_fruit"], "available_fruit": current["tree_available_fruit"],
         }
@@ -2142,6 +2157,7 @@ def validate_resident_grounding(result, snapshot):
                      if b["claim_id"] in options} for role in ("initiator", "recipient")}
     for index, turn in enumerate(result.turns):
         speaker = snapshot[turn.speaker]
+        validate_environment_speech(turn.text, location=speaker.get("location", "garden"))
         other_role = "recipient" if turn.speaker == "initiator" else "initiator"
         private = speaker.get("private_context", {})
         validate_speech_grounding(turn.text, {
@@ -2806,10 +2822,6 @@ def _request_payload(message, snapshot, correction):
                            ensure_ascii=False, separators=(",", ":")))
     instruction, schema, _ = response_contract(snapshot, correction=bool(correction))
     context = world_context(snapshot, correction=bool(correction))
-    local_location = snapshot.get("location", snapshot.get("initiator", {}).get("location", "garden"))
-    if local_location != "garden":
-        from locations import environment
-        context["environment"] = {"location": local_location, "description": environment(local_location)}
     if snapshot.get("_compact_rewrite") and snapshot.get("request_kind") != "resident_turn":
         instruction = (
             f"You are {_actor_name(snapshot['speaker'])}, speaking only to {_actor_name(snapshot['listener'])}. "
@@ -2967,12 +2979,15 @@ def _request_payload(message, snapshot, correction):
         )
     location = snapshot.get("location", snapshot.get("initiator", {}).get("location", "garden"))
     if location == "garden":
-        context.setdefault("environment", garden_environment())
+        context.setdefault("environment", local_environment(location))
         instruction += "\n" + GARDEN_INSTRUCTION
     else:
-        from locations import environment
-        context["environment"] = {"location": location, "description": environment(location)}
-        instruction += "\nThe current map is indoors. Use environment.description; outdoor actors and the tree are elsewhere."
+        context["environment"] = local_environment(location)
+        instruction += ("\nYour current surroundings are " + context["environment"]["place"] + ". "
+                        "Use environment.description and its visible objects when describing where you are. "
+                        "You are inside the apartment building. The garden, grass, apple tree and open sky are outside, "
+                        "and are not visible from here. Distinguish memories of being outside and plans to go outside "
+                        "from your present surroundings. Earlier dialogue cannot change your current location.")
     payload = {"world_state": context, "player_message": message}
     if correction:
         if snapshot.get("request_kind") in ("resident_turn", "snake_turn", "conversation_closing", "handoff_thanks"):
@@ -3466,11 +3481,11 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
     owned_context = world_context(snapshot)
     owned = owned_context[role]
     private = owned.get("private_context", {})
-    speaker = dict(npc_id=actor_id(person), name=own_name(person), kind="human resident",
+    speaker = dict(npc_id=actor_id(person), name=own_name(person), kind="human resident", location=person.get("location", "garden"),
                    opinion_record_name=person["npc_name"], personality=character_context(person["character"]).get("personality", ""),
                    situation=private.get("situation", {}), concern=deepcopy(private.get("concern")),
                    opinion_of_listener=private.get("opinions", {}).get(partner["npc_name"]))
-    listener = dict(npc_id=actor_id(partner), name=own_name(partner), kind="human resident")
+    listener = dict(npc_id=actor_id(partner), name=own_name(partner), kind="human resident", location=partner.get("location", "garden"))
     if not assessment and speaker["opinion_of_listener"]:
         # Reasons are private assessments, often long or written in third person;
         # feeding their wording into speech teaches the model to recite them.
@@ -3554,7 +3569,7 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
                  interaction_id=snapshot.get("interaction_id"), arrival_focus=orientation, speaker=speaker, listener=listener,
                  opinion_target=partner["npc_name"], pending_reactions=pending, choices=choices,
                  day=person.get("day", 1), time_of_day=person.get("time_of_day", "day"),
-                 environment=garden_environment(), location=person.get("location", "garden"),
+                 environment=local_environment(person.get("location", "garden")), location=person.get("location", "garden"),
                  preceding_turns=preceding, shared_history=deepcopy(owned_context.get("shared_history", {})),
                  _preceding_turns=preceding, _name_actors=catalog, _dialogue_validation=snapshot.get("_dialogue_validation", True),
                  _baseline=snapshot, _draft=draft, _closing=closing,
@@ -3581,7 +3596,7 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
         state["permitted_proposals"] = [p for p in snapshot.get("permitted_proposals", [])
             if p["id"] in choices["offers"] or p["id"] in choices["acceptances"]]
         state["pending_offers"] = [dict(proposal_id=p, offer_turn=t) for p, t in draft["offers"].items()]
-        if "tree_fruit" in person:
+        if person.get("location", "garden") == "garden" and "tree_fruit" in person:
             state["environment"]["tree"] = dict(fruit=person["tree_fruit"], available_fruit=person["tree_available_fruit"])
     if orientation:
         state["task"] = ("Find your bearings: raise an arrival or surroundings concern. "
