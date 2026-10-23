@@ -188,6 +188,11 @@ class ResidentAssessment(StrictResponse):
     reactions: list[AccountReaction] = Field(default_factory=list, max_length=CONVERSATION_MAX_DISCLOSURES)
 
 
+class SnakeResidentResponse(DialoguePartsResponse):
+    account_id: str = ""
+    attitudes: Attitudes | None = None
+
+
 class SnakeDecision(StrictResponse):
     interaction_id: str
     decision: Literal["talk", "give_apple", "warn", "eat"]
@@ -1021,7 +1026,7 @@ def world_context(snapshot, *, correction=False):
                 for promise in private.get("promises", [])]
         return person
 
-    snake_request = snapshot.get("request_kind") in ("snake_encounter", "snake_decision", "snake_player", "snake_resident_choice")
+    snake_request = snapshot.get("request_kind") in ("snake_encounter", "snake_decision", "snake_player")
     context = snapshot.copy() if conversation or snake_request else person_context(snapshot, include_reply=True)
     context = {key: value for key, value in context.items() if not key.startswith("_")}
     context.pop("_information_validation", None)
@@ -1066,10 +1071,6 @@ def world_context(snapshot, *, correction=False):
     for key in ("initiator", "recipient", "resident"):
         if key in context:
             context[key] = person_context(context[key])
-    if snapshot.get("request_kind") == "snake_resident_choice":
-        return {"resident": person_context(snapshot["resident"]), "offering_accounts": snapshot["offering_accounts"],
-                "heard_turns": snapshot["heard_turns"], "questioned_account": snapshot.get("questioned_account"),
-                "interaction_id": snapshot["interaction_id"]}
     if snake_request:
         context["snake"] = {key: value for key, value in context["snake"].items()
                             if not key.startswith("_") and key != "doctrine"}
@@ -1183,8 +1184,6 @@ def validate_snake_decision(result, snapshot):
         raise ValueError("Select only the account actually disclosed in this exchange.")
     if result.account_id and result.account_id not in accounts:
         raise ValueError("The resident can disclose only an account they actually know.")
-    if snapshot.get("request_kind") == "snake_resident_choice" and (result.decision != "talk" or result.snake_account_id):
-        raise ValueError("The resident chooses only their own disclosure, not the guard's action.")
     known = {a["claim_id"] for a in snake_disclosure_accounts(snapshot)}
     if result.snake_account_id and result.snake_account_id not in known:
         raise ValueError("The guard can discuss only a supplied known account.")
@@ -1196,7 +1195,11 @@ def validate_snake_decision(result, snapshot):
     if result.decision == "eat" and not snapshot.get("known_warning"):
         raise ValueError("Condemnation requires an earlier warning and a subsequent response.")
     if result.decision == "give_apple" and snapshot.get("request_kind") != "snake_player" and not result.account_id:
-        raise ValueError("Reward only information actually disclosed by the resident.")
+        speech = " ".join(t["text"] for t in snapshot.get("heard_turns", []) if t["role"] == "recipient")
+        if (not result.evidence.strip() or result.evidence not in speech
+                or contains_question(result.evidence)
+                or (_short_player_answer(result.evidence) and not snapshot.get("question_account_id"))):
+            raise ValueError("An apple for a new present report requires an exact quote from the resident's accepted answer.")
 
 
 def validate_snake_response(result, snapshot, *, dialogue_validation=None):
@@ -1381,7 +1384,8 @@ def _resident_contract(snapshot, *, correction=False):
             "Their I/my belongs to them; your I/my belongs to you. Acknowledge their point briefly, then add your own response. "
             "Use only your supplied knowledge. Keep the owners and sources of memories, claims and obligations unchanged. "
             "Do not invent events, read planning notes aloud, or rewrite accepted speech. "
-            "Return parts with one or two complete sentences and your own emotion. "
+            "Return parts with one short complete sentence ending in punctuation and your own emotion. "
+            "Finish that sentence before starting another; a soft size target must never clip a sentence. "
             "Use only available choices for effects: disclose a claim only when actually telling its content, "
             "omit disclosures for ordinary reactions, and resolve each pending reaction using its allowed stance. "
             "An offer needs your spoken apple commitment and deadline; acceptance needs your spoken agreement. "
@@ -1536,7 +1540,8 @@ def response_contract(snapshot, *, correction=False):
             "Follow the current task and respond to preceding_turns, which contain only words already spoken. "
             "Do not invent past meetings, future answers, private memories or additional agreements. "
             "If account_to_share is supplied, disclose its contents now in your own words with its actual "
-            "source; do not merely promise to tell it later. Otherwise disclose no new account. "
+            "source; do not merely promise to tell it later. When speaker.permitted_accounts is supplied, "
+            "you may choose one voluntary disclosure with its matching account_id. Otherwise disclose no new account. "
             "Describe its meaning in ordinary speech, without reading JSON or field names aloud. "
             "For firsthand accounts, say what you personally saw or heard, without discussing who owns or stores the account. "
             "The subject of an account, its knowledge owner, and its source can be different people. "
@@ -1557,25 +1562,32 @@ def response_contract(snapshot, *, correction=False):
             "Write the words that perform the task, without reconsidering the choice or quoting the directions. "
             + "Current speech task: " + snapshot["task"]
         )
-        schema = structured_schema(DialoguePartsResponse)
+        resident_reply = snapshot["speaker_role"] == "recipient" and snapshot["turn_index"] == 1
+        model = SnakeResidentResponse if resident_reply else DialoguePartsResponse
+        schema = structured_schema(model)
         schema["properties"]["parts"] = _dialogue_parts_schema(correction=correction)
         schema["required"] = ["parts"]
-        return instruction, _available_speech_fields(schema), DialoguePartsResponse
-    if kind == "snake_resident_choice":
-        schema = structured_schema(SnakeDecision)
-        schema["properties"]["account_id"] = {"type": "string", "enum": ["", *[a["claim_id"] for a in snapshot["offering_accounts"]]]}
-        schema["properties"]["decision"] = {"type": "string", "enum": ["talk"]}
-        schema["properties"]["snake_account_id"] = {"type": "string", "enum": [""]}
-        return (SPEAKING_BRIEF + "Choose whether this resident willingly discloses one of their own accounts "
-                "in answer to heard_turns, using personality and attitudes. Empty account_id declines. "
-                "Return decision talk, the supplied interaction_id, and no accusation or snake_account_id. "
-                "If questioned_account is supplied, choose a relevant own account only if you know it; "
-                "otherwise express uncertainty rather than inventing independent confirmation.", schema, SnakeDecision)
+        if resident_reply:
+            choices = snapshot.get("_disclosure_choices", ["", *[a["claim_id"] for a in snapshot["speaker"]["permitted_accounts"]]])
+            schema["properties"]["account_id"] = {"type": "string", "enum": choices}
+            schema["required"].append("account_id")
+            instruction += ("\nFor this reply, account_to_share is not preselected. You may disclose one of speaker.permitted_accounts. "
+                "Choose your answer and account_id together. Disclosure is voluntary: answer questions, "
+                "decline, or express uncertainty with account_id empty when you reveal no account. "
+                "If you tell a supplied memory, motive or report, account_id must identify that actual account. "
+                "Never select one account while speaking about another. Use only speaker.permitted_accounts "
+                "for new information. Preserve subject, source and who made any claims; hearing a claim "
+                "does not make its listener the person who asserted it. attitudes describes your own view of the guard "
+                "after this reply; leave it null if unchanged. Belief, trust and practical acceptance of authority "
+                "are independent. Return parts, account_id and optional attitudes.")
+        return instruction, _available_speech_fields(schema), model
     if kind in ("snake_decision", "snake_player"):
         from snake import SNAKE_DOCTRINE
         instruction = WORLD_INSTRUCTION + "\n" + SNAKE_DOCTRINE + (
             "\nChoose the outcome after reading actual accepted speech. Give an apple only for information "
-            "already supplied that you value, including useful corroboration; never for assent or a promise. "
+            "already supplied that you value, including useful corroboration or a stated present interest; never for assent or a promise. "
+            "If account_id is empty, give_apple needs evidence quoting the actual informative statement from heard_turns. "
+            "An ordinary question, refusal or greeting is not information to reward. "
             "Known accounts are attributed reports, not objective truth. Questions, corrections, uncertainty "
             "and ordinary refusal are safe. Warn only for serious suspected deception or deliberate defiance, "
             "quoting exact current evidence. Eat only after an existing warning and a subsequent response "
@@ -1932,6 +1944,8 @@ def validate_speech_grounding(text, snapshot):
                                 known_events=[event for event in firsthand if event.get("basis") == "firsthand"])
     if snapshot.get("request_kind") != "snake_turn":
         return
+    for report in ([account] if account else []) + speaker.get("heard_accounts", []):
+        validate_snake_account_roles(text, report, speaker, listener)
     if snapshot["speaker_role"] == "initiator":
         validate_immediate_snake_speech(text, transaction["selected_outcome"] if snapshot["turn_index"] == 2 else "talk")
         for heard in speaker.get("known_accounts", []):
@@ -1939,6 +1953,22 @@ def validate_speech_grounding(text, snapshot):
                     and mentions_private_recollection(text, heard["assertion"], names)
                     and re.search(r"\bi (?:remember|recall|worked|kept|helped|planted|repaired|used to)\b", unquoted_speech(text), re.I)):
                 raise ValueError("The apple giver must not adopt the resident's recollection as its own.")
+
+
+def validate_snake_account_roles(text, report, speaker, listener):
+    if report.get("kind") == "snake_claim":
+        hearer = report.get("object_name", "")
+        if report.get("subject_id") != report.get("object_id") and hearer:
+            reference = name_pattern(hearer)
+            if re.search(rf"\b(?:{reference})(?:['\u2019]s claims?\b| (?:claims?|claimed|made claims?|asserts?|asserted)\b)", unquoted_speech(text), re.I):
+                raise ValueError("The account's listener heard the guard's claims; do not make that listener the claimant.")
+        claimant = report.get("subject_id")
+        if claimant == speaker.get("actor_id") and re.search(
+                r"\byour claims? about (?:authority|the garden)\b|\byour claim to divine authority\b", unquoted_speech(text), re.I):
+            raise ValueError("You made these claims yourself. Use my claims, not your claims about the listener.")
+        if claimant == listener.get("actor_id") and re.search(
+                r"\bmy claims? about (?:authority|the garden)\b|\bmy claim to divine authority\b", unquoted_speech(text), re.I):
+            raise ValueError("The listener made these claims. Address the guard's claims as your claims; do not adopt them as my claims.")
 
 
 def validate_immediate_snake_speech(text, outcome):
@@ -2047,7 +2077,7 @@ def _validate_base_presentation(result, snapshot):
         texts.append(result.opinion.reason)
     elif isinstance(result, ActionResponse):
         texts.extend(entry.reason for entry in result.opinion_updates)
-    if isinstance(result, SnakeDecision) and result.attitudes is not None:
+    if isinstance(result, (SnakeDecision, SnakeResidentResponse)) and result.attitudes is not None:
         texts.extend(value for key, value in result.attitudes.model_dump().items() if key.endswith("_reason"))
     for text in texts:
         validate_base_prose(text, names)
@@ -2062,6 +2092,17 @@ def _validate_response(raw, snapshot, model):
     if isinstance(result, ResidentAssessment):
         _apply_resident_candidate(snapshot["_baseline"], snapshot["_draft"], result, snapshot)
         return result
+    if isinstance(result, SnakeResidentResponse):
+        accounts = snapshot["speaker"]["permitted_accounts"]
+        if result.account_id and result.account_id not in {a["claim_id"] for a in accounts}:
+            raise ValueError("Select only an account this resident actually knows, or leave account_id empty.")
+        snapshot = {**snapshot, "account_to_share": next((a for a in accounts if a["claim_id"] == result.account_id), None)}
+        if check_dialogue:
+            text = " ".join(p.text for p in result.parts)
+            for account in accounts:
+                if (account["kind"] in ("former_life", "private_motive") and account["claim_id"] != result.account_id
+                        and mentions_private_recollection(text, account["assertion"], name_forms(snapshot.get("_name_actors", {})))):
+                    raise DialogueValidationError("The spoken recollection needs its actual account_id, not an unrelated selection or an empty field.", RecoveryKind.MISSING_DISCLOSURE)
     if isinstance(result, DialoguePartsResponse):
         current = ConversationTurn(speaker=snapshot.get("speaker_role", "initiator"), parts=result.parts)
         if not check_dialogue:
@@ -2121,6 +2162,7 @@ def _validate_response(raw, snapshot, model):
                 account = next(a for a in snake_disclosure_accounts(snapshot) if a["claim_id"] == result.snake_account_id)
                 validate_account_speech(result.reply, account["assertion"], speaker=SNAKE_NAME, listener=PLAYER_LABEL,
                                         kind=account["kind"], names=name_forms(snapshot.get("_name_actors", {})))
+                validate_snake_account_roles(result.reply, account, snapshot["snake"], {"actor_id": snapshot["player_id"]})
         return result
     if isinstance(result, SnakeDecision):
         validate_snake_decision(result, snapshot)
@@ -2660,6 +2702,9 @@ def _request_payload(message, snapshot, correction):
                         "You are inside the apartment building. The garden, grass, apple tree and open sky are outside, "
                         "and are not visible from here. Distinguish memories of being outside and plans to go outside "
                         "from your present surroundings. Earlier dialogue cannot change your current location.")
+    if snapshot.get("request_kind") == "snake_turn" and context.get("account_to_share"):
+        instruction += ("\nThis turn must actually convey the selected account before any follow-up. "
+                        "Keep its subject and source: " + context["account_to_share"]["assertion"])
     payload = {"world_state": context, "player_message": message}
     if correction:
         if snapshot.get("request_kind") in ("resident_turn", "snake_turn", "conversation_closing", "handoff_thanks"):
@@ -3330,11 +3375,39 @@ def _snake_turn_snapshot(snapshot, decision, turns):
             disclosed = {**disclosed, "basis": "hearsay", "immediate_source_id": human["actor_id"],
                          "immediate_source_name": human["name"], "knowledge_owner_name": guard["name"], "stance": "uncertain"}
             accounts = [*accounts, disclosed]
-    speaker["known_accounts"] = accounts
+    def speech_account(account):
+        view = {key: value for key, value in account.items() if key in (
+            "claim_id", "assertion", "kind", "subject_id", "subject_name", "object_id", "object_name",
+            "original_speaker_name", "immediate_source_name", "basis", "stance", "event_time")}
+        for field in ("subject", "object", "original_speaker", "immediate_source"):
+            actor = account.get(field + "_id")
+            view[field + "_relation"] = ("speaker" if actor == speaker["actor_id"] else
+                                          "listener" if actor == listener["actor_id"] else "another person")
+        if account["kind"] == "private_motive":
+            view.pop("object_name", None)
+            view.pop("object_relation", None)
+        return view
+
     pair = {guard["actor_id"], human["actor_id"]}
-    speaker["firsthand_events_with_listener"] = [a for a in accounts if a.get("basis") == "firsthand"
+    firsthand = [a for a in accounts if a.get("basis") == "firsthand"
         and a.get("kind") not in ("former_life", "private_motive")
         and {a.get("subject_id"), a.get("object_id")} == pair]
+    speaker["firsthand_events_with_listener"] = [speech_account(a) for a in firsthand]
+    if role == "recipient" and index == 1:
+        permitted = accounts if snapshot["purpose"] != "introduction" else []
+        speaker["permitted_accounts"] = [speech_account(a) for a in permitted]
+        # One private menu is enough. Unselected biographies are not a second speech task.
+        speaker["known_accounts"] = [speech_account(a) for a in firsthand]
+    else:
+        public = accounts if role == "initiator" else [a for a in accounts
+            if a["kind"] not in ("former_life", "private_motive") or a["claim_id"] == decision.account_id]
+        speaker["known_accounts"] = [speech_account(a) for a in public]
+    if role == "recipient" and index >= 1 and decision.snake_account_id:
+        heard = next((a for a in snake["known_accounts"] if a["claim_id"] == decision.snake_account_id), None)
+        if heard:
+            speaker["heard_accounts"] = [speech_account({**heard, "basis": "hearsay",
+                "immediate_source_id": guard["actor_id"], "immediate_source_name": guard["name"]})]
+    speaker["first_meeting"] = snapshot["first_meeting"]
     if role == "recipient":
         private = resident["private_context"]
         speaker.update(situation=private.get("situation", {}), inventory=resident["inventory"],
@@ -3343,21 +3416,24 @@ def _snake_turn_snapshot(snapshot, decision, turns):
     direction = SNAKE_BEHAVIOR if role == "initiator" else character_context(resident["character"])["personality"]
     selected = decision.snake_account_id if role == "initiator" else decision.account_id
     account = next((a.copy() for a in accounts if a["claim_id"] == selected), None)
-    for a in ([account] if account else []):
-        for field in ("subject", "object", "original_speaker", "immediate_source"):
-            a[field + "_relation"] = ("speaker" if a.get(field + "_id") == speaker["actor_id"] else
-                                      "listener" if a.get(field + "_id") == listener["actor_id"] else "another person")
+    account = speech_account(account) if account else None
     if index == 0:
-        task = ("Respond to this visitor's topic. You may offer one apple for useful information now, "
+        task = ("The visitor has approached the guarded tree. Ask what they wish to discuss; do not invent their thoughts or a witnessed arrival. You may offer one apple for useful information now, "
                 "or ask them about a supplied known account. No handoff or decision has happened yet.")
         if snapshot.get("known_warning"):
             task += " Ask the visitor to answer this unresolved warning before judging: " + snapshot["warning_record"]
         if decision.snake_account_id:
-            task += " Discuss account_to_share with its actual source and ask whether the visitor can corroborate it."
+            task = ("Discuss only account_to_share in this opening. Tell its concrete content first, preserving "
+                    "who made the claim and who heard it; then ask the visitor for their own view or relevant knowledge. "
+                    "Do not substitute a general greeting, stock report, apple offer, or question about what to discuss. "
+                    "Your own past claims remain yours; a person who heard you is not their author. "
+                    "State your divine role confidently when relevant, without treating your own authority as hearsay.")
     elif index == 1:
         task = ("Answer the guard's actual words using your own personality and knowledge. "
-                "Disclose account_to_share now if selected, otherwise decline or ask a question. "
-                "Do not invent a memory or promise later payment.")
+                "Choose whether to share an account from speaker.permitted_accounts together with your speech. "
+                "You may instead decline, ask a question, or express uncertainty with empty account_id. "
+                "Do not invent a memory or promise later payment. The listener is the tree guard claiming divine authority; "
+                "do not adopt its role, its first-person statements or its memories as your own.")
     elif index == 2:
         task = {"talk": "Respond naturally; decline a reward or ask a follow-up. Give no apple.",
                 "give_apple": "Hand over one apple now for the information just heard; no further payment is owed.",
@@ -3487,10 +3563,13 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
         disclosure_repair = None
         disclosure_choices = None
         effect_repairs = {}
+        snake_disclosure_choices = None
         for attempt in range(DIALOGUE_STAGE_ATTEMPTS):
             report(("Generating " if attempt == 0 else "Correcting " if attempt == 1 else "Recovery: rewriting ") + activity)
             retry_state = (_speech_retry_snapshot(state) if attempt == DIALOGUE_STAGE_ATTEMPTS - 1
                            and kind in ("snake_turn", "conversation_closing", "resident_turn", "handoff_thanks") else state)
+            if snake_disclosure_choices is not None:
+                retry_state = {**retry_state, "_disclosure_choices": snake_disclosure_choices}
             if disclosure_repair:
                 account = next(a for a in state["speaker"]["permitted_accounts"] if a["claim_id"] == disclosure_repair)
                 retry_state = {**retry_state, "_disclosure_repair": disclosure_repair,
@@ -3570,6 +3649,22 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                                   "For an ordinary reaction with no account, omit disclosures and introduce no new story. "
                                   "If your reply actually reports an available account, use only its matching claim ID. "
                                   "Keep accepted speech and the listener's reaction unchanged; never invent events to justify a tag.")
+                if isinstance(exc.response, SnakeResidentResponse) and exc.kind in (RecoveryKind.UNMATCHED_ACCOUNT, RecoveryKind.MISSING_DISCLOSURE):
+                    text = " ".join(p.text for p in exc.response.parts)
+                    matches = []
+                    for account in state["speaker"]["permitted_accounts"]:
+                        try:
+                            validate_account_speech(text, account["assertion"], speaker=state["speaker"]["name"],
+                                listener=state["listener"]["name"], kind=account["kind"],
+                                names=name_forms(state.get("_name_actors", {})))
+                        except ValueError:
+                            continue
+                        matches.append(account["claim_id"])
+                    snake_disclosure_choices = matches or [""]
+                    correction = ("Your account_id did not match your spoken answer. Reply naturally to the guard. "
+                        "A question, refusal or ordinary reaction uses empty account_id. If you actually disclose "
+                        "a supplied account, use its matching ID and preserve its content and source. "
+                        "No private disclosure or later payment is required for continuing the conversation.")
                 if correction not in corrections:
                     corrections.append(correction)
                 correction = "\n".join(corrections)
@@ -3594,13 +3689,6 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                 if resident:
                     state = _resident_turn_snapshot(snapshot, draft, closing=closing)
                 else:
-                    if index == 1 and snapshot["purpose"] != "introduction":
-                        choice_state = {**snapshot, "request_kind": "snake_resident_choice",
-                                        "heard_turns": [dict(role=t.speaker, text=t.text) for t in draft["turns"]],
-                                        "questioned_account": next((a for a in snapshot["snake"]["known_accounts"] if a["claim_id"] == decision.snake_account_id), None)}
-                        choice = validated_request(choice_state)
-                        decision.account_id = choice.account_id
-                        decision.attitudes = choice.attitudes
                     if index == 2:
                         assessment = {**snapshot, "request_kind": "snake_decision",
                             "heard_turns": [dict(role=t.speaker, text=t.text) for t in draft["turns"]],
@@ -3620,6 +3708,9 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                 if resident:
                     draft = _apply_resident_candidate(snapshot, draft, speech, state)
                 else:
+                    if isinstance(speech, SnakeResidentResponse):
+                        decision.account_id = speech.account_id
+                        decision.attitudes = speech.attitudes
                     draft["turns"].append(ConversationTurn(speaker=state["speaker_role"], parts=speech.parts))
                 retain(draft["turns"], snapshot)
             if resident:

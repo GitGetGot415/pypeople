@@ -577,8 +577,8 @@ class Simulation:
             if player_encounter:
                 if not response.disclosure_evidence or response.disclosure_evidence not in encounter.request_context["_player_message"]:
                     raise ValueError("The player must actually supply information now.")
-            elif not response.account_id:
-                raise ValueError("An apple requires an actual disclosed account.")
+            elif not response.account_id and (not response.evidence.strip() or response.evidence not in response.turns[1].text):
+                raise ValueError("An apple requires an actual disclosure or quoted present report.")
         if not player_encounter and response.account_id:
             allowed = {a["claim_id"] for a in encounter.request_context["offering_accounts"]}
             if response.account_id not in allowed or not any(b.claim_id == response.account_id for b in npc.beliefs):
@@ -601,6 +601,9 @@ class Simulation:
                      f"{npc.name} answered about this account: {known['assertion']} "
                      f"Their response: {response.turns[1].text} This response is not independently verified.", [npc, snake])
             learn_account(self, snake, npc, response.snake_account_id, encounter.record, 0, "uncertain")
+        if not player_encounter and decision == "give_apple" and not response.account_id:
+            add_fact(self, "report", npc, snake, encounter.id + ":report", encounter.record,
+                     f"{npc.name} reported: {response.turns[1].text} This is their account, not independently verified.", [npc, snake])
         if player_encounter and response.disclosure_evidence:
             current = encounter.request_context["current_claim"]
             add_fact(self, "report", npc, snake, current["id"], encounter.record,
