@@ -1,7 +1,7 @@
 import pygame
 from functools import lru_cache
 from pathlib import Path
-from constants import (GARDEN_LOCATION, INK, PAPER, SHADOW_COLOR, CHARACTER_SHADOW_HEIGHT,
+from constants import (GARDEN_LOCATION, GARDEN_FLOOR_ART, INK, PAPER, SHADOW_COLOR, CHARACTER_SHADOW_HEIGHT,
                       CHARACTER_SHADOW_OFFSET_Y, WORLD_COLORS,
                       APARTMENT_DOOR_RECT, APARTMENT_RECT, DEFAULT_BUBBLE_SPRITE_SIZE,
                       UI_SMALL_FONT_SIZE, NAME_TAG_FONT_SIZE, NAME_TAG_HEAD_GAP, PLAYER_NAME_TAG,
@@ -163,19 +163,25 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     surface.set_clip(previous_clip)
 
 
+@lru_cache(maxsize=1)
+def garden_floor_art():
+    return pygame.image.load(str(Path(__file__).resolve().parent.parent / GARDEN_FLOOR_ART)).convert()
+
+
+@lru_cache(maxsize=2)
+def colored_garden_floor(phase):
+    floor = garden_floor_art().copy()
+    mask = pygame.mask.from_threshold(floor, (255, 0, 0), (1, 1, 1, 255))
+    overlay = mask.to_surface(setcolor=(*WORLD_COLORS[phase][1], 255), unsetcolor=(0, 0, 0, 0))
+    floor.blit(overlay, (0, 0))
+    return floor
+
+
 def _draw_scene(surface, tree, phase):
-    from locations import feet_bounds
-    grass, walkable = WORLD_COLORS[phase]
-    # Darken only the band between the walking area and the map's outer edge.
-    surface.fill(tuple(channel - 10 for channel in grass))
-    left, right, top, bottom = feet_bounds(GARDEN_LOCATION)
-    walkable_rect = pygame.Rect(
-        round(left),
-        round(top),
-        round(right - left),
-        round(bottom - top),
-    )
-    pygame.draw.rect(surface, walkable, walkable_rect)
+    floor = colored_garden_floor(phase)
+    if floor.get_size() != surface.get_size():
+        floor = pygame.transform.scale(floor, surface.get_size())
+    surface.blit(floor, (0, 0))
 
     tree_x = round(tree.x) + tree.offset
     # Shadows lie on the ground beneath every sprite.

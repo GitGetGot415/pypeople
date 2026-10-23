@@ -16,6 +16,7 @@ PLAYER_NAME_TAG = "Player"
 # World geometry and resident presentation.
 WORLD_WIDTH = 960
 WORLD_HEIGHT = 460
+GARDEN_FLOOR_ART = "assets/Garden Floor.png"
 # Physical maps use feet positions and a small footprint, including indoors.
 GARDEN_LOCATION = "garden"
 HALLWAY_SIZE = (840, 240)
