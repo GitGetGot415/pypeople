@@ -13,7 +13,7 @@ from conversation_history import remember
 from dialogue_rules import named_references, validate_account_speech, validate_apple_promise
 
 GoalKind = Literal["obtain_apple", "help_with_apple", "repair_relationship", "sabotage_relationship"]
-FactKind = Literal["apple_given", "work_given", "apple_refused", "promise_kept", "promise_broken", "private_motive", "former_life", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "visit"]
+FactKind = Literal["apple_given", "work_given", "apple_refused", "promise_kept", "promise_broken", "private_motive", "former_life", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "visit", "report"]
 Stance = Literal["uncertain", "believed", "disbelieved"]
 ConcernKind = Literal["orientation", "recollection", "news", "surroundings", "plans"]
 

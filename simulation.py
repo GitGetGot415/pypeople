@@ -5,7 +5,7 @@ import math
 from uuid import uuid4
 
 from constants import (
-    APPLE_ADVANCE_SECONDS, COMPANY_SOCIAL_RECOVERY, CROWD_LIMIT, DECISION_SECONDS,
+    COMPANY_SOCIAL_RECOVERY, CROWD_LIMIT, DECISION_SECONDS,
     HEARING_RADIUS, MAX_SIMULATION_STEP_SECONDS, PROTECTED_POPULATION,
     RECOVERY_SECONDS, SATISFACTION_PHASE_LOSS, SOCIAL_RADIUS, SNAKE_NAME,
     STARTING_DAY, STARTING_PAUSED, STARTING_PHASE, WITNESS_RADIUS, COMPANY_FATIGUE_PER_SECOND,
@@ -130,7 +130,6 @@ class Simulation:
             self.snake.eaten_today = 0
             if self.day not in self.pending_arrival_days and self.day not in self.processed_arrival_days:
                 self.pending_arrival_days.append(self.day)
-        self.snake.pardons.clear()
         for npc in self.npcs:
             npc.social = max(0.0, npc.social - SATISFACTION_PHASE_LOSS)
         self.tree.fruit = self.population
@@ -404,7 +403,7 @@ class Simulation:
     def join_tree(self, actor, purpose="bargain", reason=""):
         if not self.tree_can_admit(actor):
             return False
-        if purpose == "bargain" and actor.id not in self.snake.advances and self.available_fruit < 1:
+        if purpose == "bargain" and self.available_fruit < 1:
             return False
         from npc import Behavior
         saved = None if actor is self.player else actor.suspend_activity("Waiting in the tree line")
@@ -438,7 +437,7 @@ class Simulation:
         for entry in [*self.tree_queue, *([self.tree_current] if self.tree_current else [])]:
             actor = self.participant_by_id(entry["actor_id"])
             unavailable = (actor is None or not self.is_outdoors(actor)
-                or entry["purpose"] == "bargain" and actor.id not in self.snake.advances
+                or entry["purpose"] == "bargain"
                 and self.available_fruit < 1 and not (self.snake.encounter and self.snake.encounter.recipient is actor))
             if unavailable:
                 self.leave_tree(entry["actor_id"], "Tree service became unavailable.")
@@ -562,132 +561,80 @@ class Simulation:
         return True
 
     def commit_snake_response(self, encounter, response):
-        from social import claim_by_id, learn_account
+        from social import learn_account, add_fact
         npc, snake = encounter.recipient, self.snake
         decision = response.decision
         if not encounter.accepts_response or encounter.committed or not encounter.arrived:
             raise ValueError("This encounter is no longer available.")
         if decision not in encounter.request_context["permitted_decisions"]:
-            raise ValueError("That decision is not available for this encounter.")
-        advance = snake.advances.get(npc.id)
-        expected = encounter.request_context["advance"]
-        if bool(advance) != bool(expected) or advance and any(
-                advance[key] != expected[key] for key in ("offering", "account_id", "conversation_id")):
-            raise ValueError("The resident's apple agreement changed. Retry the encounter.")
-        giving_apple = decision in ("advance_secret", "advance_endorsement")
+            raise ValueError("That decision is unavailable.")
         player_encounter = npc is self.player
-        trust_before = 0 if player_encounter else npc.attitudes["trust"]
-        audience = self.endorsement_audience(npc)
-        if giving_apple:
-            if advance:
-                raise ValueError("This resident already owes an offering for an upfront apple.")
-            if not encounter.reserved or self.tree.fruit < 1:
-                raise ValueError("The reserved apple is no longer available. Retry the bargain.")
-            if (math.dist((npc.x, npc.y), self.tree.interaction_point) > 8
+        if decision == "give_apple":
+            if (not encounter.reserved or self.tree.fruit < 1
+                    or math.dist((npc.x, npc.y), self.tree.interaction_point) > 8
                     or math.dist((npc.x, npc.y), (snake.x, snake.y)) > HEARING_RADIUS):
-                raise ValueError("The resident must be at the guarded tree to receive the apple.")
-            if decision == "advance_endorsement" and self.population < 2:
-                raise ValueError("There is no other resident to hear a later endorsement.")
-        elif decision in ("secret", "endorsement"):
-            if (not advance or advance["offering"] != decision
-                    or not player_encounter and decision == "secret" and response.account_id != advance["account_id"]):
-                raise ValueError("The offering must match the existing upfront apple agreement.")
-            if decision == "endorsement" and (not audience or not set(encounter.request_context["audience_ids"]) & {p.id for p in audience}):
-                raise ValueError("No intended listener can hear the endorsement now. Retry when someone is nearby.")
-        elif decision == "eat" and not self.eating_permitted(npc):
-            raise ValueError("Eating permission changed. Retry the judgment.")
-        if player_encounter and decision == "secret":
-            if not any(c["id"] == response.account_id and snake.id in c["listener_ids"] for c in self.player_claims):
-                raise ValueError("This recollection has no accepted player source.")
-        if not player_encounter and decision in ("secret", "advance_secret"):
+                raise ValueError("An apple requires stock and the present tree customer.")
+            if player_encounter:
+                if not response.disclosure_evidence or response.disclosure_evidence not in encounter.request_context["_player_message"]:
+                    raise ValueError("The player must actually supply information now.")
+            elif not response.account_id:
+                raise ValueError("An apple requires an actual disclosed account.")
+        if not player_encounter and response.account_id:
             allowed = {a["claim_id"] for a in encounter.request_context["offering_accounts"]}
-            owned = {b.claim_id for b in npc.beliefs if b.stance != "disbelieved"}
-            if response.account_id not in allowed & owned:
-                raise ValueError("That account is no longer owned or available to share.")
-            claim = claim_by_id(self, response.account_id)
-            if giving_apple and any((claim_by_id(self, b.claim_id).fact_id, claim_by_id(self, b.claim_id).affirmed)
-                                   == (claim.fact_id, claim.affirmed) for b in snake.beliefs):
-                raise ValueError(f"{SNAKE_NAME} already knows this account.")
-        if response.snake_account_id:
-            if response.snake_account_id not in {b.claim_id for b in snake.beliefs}:
-                raise ValueError(f"{SNAKE_NAME} no longer knows that account.")
-        # All rejection checks precede this single simulation-thread commit.
-        encounter.committed, encounter.outcome = True, decision
-        encounter.reserved = False
-        if giving_apple:
+            if response.account_id not in allowed or not any(b.claim_id == response.account_id for b in npc.beliefs):
+                raise ValueError("The disclosed account is not owned by this resident.")
+        if response.snake_account_id and (not any(b.claim_id == response.snake_account_id for b in snake.beliefs)
+                or response.snake_account_id not in {a["claim_id"] for a in encounter.request_context["snake"]["known_accounts"]}):
+            raise ValueError("The guard cannot disclose an unknown account.")
+        if decision == "eat" and (not self.eating_permitted(npc)
+                or not encounter.request_context.get("known_warning")
+                or snake.offenses.get(npc.id) != encounter.request_context["known_warning"]):
+            raise ValueError("Condemnation requires the existing warning and current eating permission.")
+        encounter.committed, encounter.outcome, encounter.reserved = True, decision, False
+        # Disclosures survive refusal of a reward. They never become verified truth.
+        if not player_encounter and response.account_id:
+            learn_account(self, npc, snake, response.account_id, encounter.record, 1, "uncertain", private=True)
+        if response.snake_account_id and not player_encounter:
+            known = next(a for a in encounter.request_context["snake"]["known_accounts"] if a["claim_id"] == response.snake_account_id)
+            # Preserve the reply as testimony about a report, never rewrite the original fact.
+            add_fact(self, "report", npc, snake, encounter.id + ":answer", encounter.record,
+                     f"{npc.name} answered about this account: {known['assertion']} "
+                     f"Their response: {response.turns[1].text} This response is not independently verified.", [npc, snake])
+            learn_account(self, snake, npc, response.snake_account_id, encounter.record, 0, "uncertain")
+        if player_encounter and response.disclosure_evidence:
+            current = encounter.request_context["current_claim"]
+            add_fact(self, "report", npc, snake, current["id"], encounter.record,
+                     f"{npc.name} reported: {encounter.request_context['_player_message']} "
+                     + (f"In response to this sourced account: {encounter.request_context['questioned_account']['assertion']} "
+                        if encounter.request_context.get("questioned_account") else "")
+                     + "This is their account, not independently verified.", [snake])
+        if decision == "give_apple":
             self.tree.fruit -= 1
             npc.inventory["fruit"] = npc.inventory.get("fruit", 0) + 1
-            offering = "secret" if decision == "advance_secret" else "endorsement"
-            snake.advances[npc.id] = {"offering": offering, "account_id": response.account_id,
-                                      "conversation_id": encounter.record.id, "remaining": APPLE_ADVANCE_SECONDS}
-            text = (f"{SNAKE_NAME} gave {npc.name} one apple upfront. {npc.name} agreed to provide "
-                    f"{'private information' if offering == 'secret' else 'a public endorsement'} later; the offering is still owed.")
+            text = f"{SNAKE_NAME} gave {npc.name} one apple for information supplied in this conversation. No further payment is owed."
             event, _ = self.observed_event("bargain", snake, npc, text, encounter.record)
             encounter.outcome_event_id = event.id
-        elif decision in ("secret", "endorsement"):
-            if decision == "secret" and not player_encounter:
-                learn_account(self, npc, snake, response.account_id, encounter.record, 1, "uncertain", private=True)
-            elif decision == "endorsement":
-                text = f"{npc.name} publicly endorsed {SNAKE_NAME} after receiving an apple upfront; the endorsement is their claim."
-                self.observed_event("endorsement", npc, snake, text, encounter.record, witnesses=[npc, snake, *audience])
-            snake.advances.pop(npc.id)
-            text = f"{npc.name} fulfilled the offering owed for {SNAKE_NAME}'s earlier upfront apple. No additional apple was transferred."
-            event, _ = self.observed_event("bargain", snake, npc,
-                                           text, encounter.record)
-            next(r for r in self.history if r.id == advance["conversation_id"]).outcomes.append(text)
+        elif decision == "warn":
+            text = f"{SNAKE_NAME} warned {npc.name} of being eaten: {response.accusation} Evidence from their response: {response.evidence} This is an accusation, not established guilt."
+            event, fact = self.observed_event("judgment", snake, npc, text, encounter.record)
+            snake.offenses[npc.id] = fact.id
             encounter.outcome_event_id = event.id
-            snake.standing[npc.id] = min(100, snake.standing.get(npc.id, 0) + 5)
-        elif decision in ("refuse", "negotiate", "challenge"):
-            action = {"challenge": f"challenged {SNAKE_NAME}'s control of the tree",
-                      "refuse": "declined the current bargain", "negotiate": f"asked to negotiate {SNAKE_NAME}'s price"}[decision]
-            broken = advance is not None and decision in ("refuse", "challenge")
-            if broken:
-                offering = "private recollection" if advance["offering"] == "secret" else "public endorsement"
-                text = f"{npc.name} refused the agreed {offering} after receiving an apple upfront from {SNAKE_NAME}. The offering remained unpaid."
-                snake.advances.pop(npc.id)
-                next(r for r in self.history if r.id == advance["conversation_id"]).outcomes.append(text)
-            elif advance:
-                text = f"{npc.name}'s offering for an earlier upfront apple is waiting for a feasible opportunity; no additional apple was given."
-                advance["remaining"] = APPLE_ADVANCE_SECONDS
-            else:
-                text = f"{npc.name} {action}; no payment or apple changed hands."
-            event, fact = self.observed_event("defiance" if broken or decision == "challenge" else "bargain", npc, snake, text, encounter.record)
-            encounter.outcome_event_id = event.id
-            if broken or decision == "challenge":
-                snake.offenses[npc.id] = fact.id
-                snake.standing[npc.id] = max(-100, snake.standing.get(npc.id, 0) - (12 if broken else 8))
-                if npc.id in snake.pardons:
-                    snake.pardons.remove(npc.id)
-        if encounter.purpose == "judgment":
+        elif decision == "eat":
+            encounter.accusation = response.accusation
             event, _ = self.observed_event("judgment", snake, npc,
-                f"{SNAKE_NAME} accused {npc.name}: {encounter.accusation} The judgment was {'condemnation' if decision == 'eat' else 'a pardon or accepted remedy'}.", encounter.record)
+                f"{SNAKE_NAME} condemned {npc.name} after an earlier warning and subsequent response: {response.accusation}", encounter.record)
             encounter.outcome_event_id = event.id
-            if decision != "eat":
-                if npc.id not in snake.pardons:
-                    snake.pardons.append(npc.id)
-                snake.offenses.pop(npc.id, None)
-                if decision == "spare" and advance:
-                    snake.advances.pop(npc.id)
-                    text = f"{SNAKE_NAME} waived {npc.name}'s outstanding offering for the earlier upfront apple."
-                    next(r for r in self.history if r.id == advance["conversation_id"]).outcomes.append(text)
-                self.observed_event("pardon", snake, npc, f"{SNAKE_NAME} spared {npc.name} for this phase.", encounter.record)
-        # A real encounter supports an attitude change, independently of compliance.
+        elif npc.id in snake.offenses:
+            # A satisfactory response resolves the warning without a separate pardon system.
+            snake.offenses.pop(npc.id)
         if not player_encounter and response.attitudes is not None:
             updated = response.attitudes.model_dump()
             updated["trust"] = max(npc.attitudes["trust"] - 6, min(npc.attitudes["trust"] + 6, updated["trust"]))
-            for key in ("belief_reason", "trust_reason", "authority_reason"):
-                updated[key] = (f"After the {encounter.purpose} on day {self.day}: " + updated[key])[:400]
             npc.attitudes = updated
-        if giving_apple and not player_encounter:
-            npc.attitudes["trust"] = min(100, max(npc.attitudes["trust"], trust_before + 4))
-            npc.attitudes["trust_reason"] = f"Received a real apple upfront from {SNAKE_NAME} on day {self.day}, before providing the agreed offering."
-        if response.snake_account_id and not player_encounter:
-            learn_account(self, snake, npc, response.snake_account_id, encounter.record, 2, response.account_stance)
         if encounter.request_context["first_meeting"]:
             self.observed_event("snake_claim", snake, npc,
-                f"{npc.name} heard {SNAKE_NAME} present claims about authority and the garden; those claims remain unverified.", encounter.record,
-                witnesses=[snake, npc, *self.listeners(snake)])
-        encounter.record.outcomes.append(f"Decision: {decision}. " + ("One apple transferred upfront; the offering is still owed." if giving_apple else "No additional apple transferred."))
+                f"{npc.name} heard {SNAKE_NAME}'s claims about authority and the garden; these remain unverified.", encounter.record)
+        encounter.record.outcomes.append(f"Decision: {decision}. " + ("One apple transferred." if decision == "give_apple" else "No apple transferred."))
 
     def interrupt_resident(self, target, reason, *, departing=False):
         """Cancel only unfinished work; preserve every committed handoff and record."""
@@ -813,11 +760,6 @@ class Simulation:
         self.snake.eaten_today += 1
         self.snake.recovery_remaining = RECOVERY_SECONDS
         self.snake.offenses.pop(target.id, None)
-        advance = self.snake.advances.pop(target.id, None)
-        if advance:
-            next(r for r in self.history if r.id == advance["conversation_id"]).outcomes.append(
-                f"The outstanding offering was cancelled because {target.name} was eaten.")
-        self.snake.pardons[:] = [i for i in self.snake.pardons if i != target.id]
         if self.snake.retry_request and self.snake.retry_request["resident_id"] == target.id:
             self.snake.retry_request = None
         encounter.outcome_event_id = event.id
@@ -845,11 +787,7 @@ class Simulation:
                 promise.status, promise.resolved_phase, promise.outcome = "cancelled", self.phase_index, reason
                 event = self.publish("promise_cancelled", (self.player,), reason, encounter.record)
                 promise.resolution_event_id = promise.consequence_event_id = event.id
-        advance = self.snake.advances.pop(self.player.id, None)
-        if advance:
-            next(r for r in self.history if r.id == advance["conversation_id"]).outcomes.append(reason)
         self.snake.offenses.pop(self.player.id, None)
-        self.snake.pardons[:] = [i for i in self.snake.pardons if i != self.player.id]
         self.snake.eaten_today += 1
         self.snake.recovery_remaining = RECOVERY_SECONDS
         self.player_acknowledgments.clear()

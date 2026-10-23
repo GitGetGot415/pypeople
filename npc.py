@@ -453,8 +453,6 @@ class NPC:
                 state["private_context"]["starting_experience"] = starting_experience
             state["private_context"]["opinions"] = self.opinions
             state["private_context"]["snake_attitudes"] = self.attitudes.copy()
-            advance = self.world.snake.advances.get(self.id)
-            state["private_context"]["snake_apple_advance"] = advance.copy() if advance else None
             encounters = [record for record in self.world.history if self.name in record.participants and record.turns]
             state["private_context"]["situation"] = {
                 **orientation_context(self),
@@ -467,7 +465,6 @@ class NPC:
                                             and fact.object_id == self.id for fact in self.world.facts),
                 "known_danger": [account for account in state["private_context"]["known_accounts"]
                                  if account["kind"] in ("eating", "judgment", "defiance")][:3],
-                "apple_bargain": {"stage": "apple already received; offering still owed", **advance} if advance else None,
             }
         else:
             state.pop("_name_actors", None)

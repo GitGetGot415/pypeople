@@ -13,7 +13,7 @@ from records import SaveModel, saved_record
 
 from character_data import normalize_character, normalize_opinions
 from constants import (
-    APPLE_ADVANCE_SECONDS, CONCERN_LIFETIME_RANGE, CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN,
+    CONCERN_LIFETIME_RANGE, CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN,
     CONVERSATION_MAX_TURNS, CONVERSATION_MAX_AGREEMENTS, DECISION_SECONDS, DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, GIFT_GIVE_SECONDS, GIFT_SECONDS,
     MAX_SIMULATION_STEP_SECONDS, SHAKE_SECONDS, SNAKE_EAT_SECONDS, PLAYER_ROOM_NUMBER, PLAYER_ROOM_LOCATION,
     POST_DIALOGUE_SECONDS, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME, WORLD_HEIGHT, WORLD_WIDTH,
@@ -391,13 +391,6 @@ class SnakeRetryState(SaveModel):
     error: str
 
 
-class AppleAdvanceState(SaveModel):
-    offering: Literal["secret", "endorsement"]
-    account_id: str
-    conversation_id: str
-    remaining: float = Field(ge=0, le=APPLE_ADVANCE_SECONDS)
-
-
 class SnakeState(SaveModel):
     id: str = Field(min_length=1)
     x: float = Field(ge=0, le=WORLD_WIDTH)
@@ -409,13 +402,9 @@ class SnakeState(SaveModel):
     activity: Literal["guarding", "recovering", "judging", "bargaining", "introducing", "approaching condemned resident", "eating"]
     target_id: str | None
     beliefs: list[BeliefState]
-    standing: dict[str, int]
     offenses: dict[str, str]
-    advances: dict[str, AppleAdvanceState] = Field(default_factory=dict)
     eaten_today: int = Field(ge=0)
     recovery_remaining: float = Field(ge=0, le=RECOVERY_SECONDS)
-    pardons: list[str]
-    judged_phase: int = Field(ge=-1)
     decision_remaining: float = Field(ge=0)
     command_revision: int = Field(ge=0)
     reply: str
@@ -445,7 +434,7 @@ class SnakeEncounterState(SaveModel):
     wait_elapsed: float = Field(ge=0, le=DIALOGUE_TIMEOUT_SECONDS + MAX_SIMULATION_STEP_SECONDS)
     talking_remaining: float = Field(ge=0, le=max(POST_DIALOGUE_SECONDS, DECISION_SECONDS))
     committed: bool
-    outcome: Literal["", "talk", "advance_secret", "advance_endorsement", "secret", "endorsement", "refuse", "negotiate", "challenge", "spare", "eat"]
+    outcome: Literal["", "talk", "give_apple", "warn", "eat"]
     outcome_event_id: str | None
     stage: Literal["approach", "waiting", "dialogue", "condemned_approach", "eating"]
     elapsed: float = Field(ge=0, le=SNAKE_EAT_SECONDS + MAX_SIMULATION_STEP_SECONDS)
@@ -931,25 +920,11 @@ class SimulationState(SaveModel):
             activity_target(encounter.saved_state, self.npcs[resident_index])
         elif self.snake.target_id is not None and not self.player_snake_encounter:
             raise ValueError("A snake target requires an encounter.")
-        if (not set(self.snake.standing) <= ids or any(not -100 <= score <= 100 for score in self.snake.standing.values())
-                or not set(self.snake.pardons) <= live_ids | ({self.player.id} if self.player.alive else set()) or not set(self.snake.offenses) <= live_ids | ({self.player.id} if self.player.alive else set())
+        if (not set(self.snake.offenses) <= live_ids | ({self.player.id} if self.player.alive else set())
                 or any(f not in facts for f in self.snake.offenses.values())):
-            raise ValueError("Invalid snake standing, offenses or pardons.")
-        for resident_id, advance in self.snake.advances.items():
-            record = record_for(advance.conversation_id)
-            if (resident_id not in live_ids | ({self.player.id} if self.player.alive else set()) or not participant(resident_id, record)
-                    or not participant(self.snake.id, record)
-                    or not any(f.kind == "bargain" and f.conversation_id == record.id
-                               and f.subject_id == self.snake.id and f.object_id == resident_id for f in self.facts)):
-                raise ValueError("An apple advance needs its living recipient and actual handoff record.")
-            if advance.offering == "secret" and resident_id != self.player.id:
-                resident = next(n for n in self.npcs if n.id == resident_id)
-                if advance.account_id not in claims or not any(b.claim_id == advance.account_id for b in resident.beliefs):
-                    raise ValueError("A promised private account must belong to the recipient.")
-            elif advance.account_id:
-                raise ValueError("An endorsement advance cannot select a private account.")
-        if self.snake.judged_phase > now or self.snake.retry_request and self.snake.retry_request.resident_id not in live_ids:
-            raise ValueError("Invalid snake judgment phase or retry target.")
+            raise ValueError("Invalid snake warning sources.")
+        if self.snake.retry_request and self.snake.retry_request.resident_id not in live_ids:
+            raise ValueError("Invalid snake retry target.")
         for index, npc in enumerate(self.npcs):
             if index not in reserved:
                 activity_target(npc, npc)
@@ -1163,7 +1138,7 @@ class SaveStore:
 
 
 PLAYER_SNAKE_FIELDS = ("id", "purpose", "origin", "topic", "accusation", "reserved", "arrived",
-    "dialogue_state", "stage", "wait_elapsed", "elapsed", "talking_remaining", "committed", "outcome", "outcome_event_id", "offer")
+    "dialogue_state", "stage", "wait_elapsed", "elapsed", "talking_remaining", "committed", "outcome", "outcome_event_id", "question_account_id")
 
 
 def capture_player_snake(encounter, records):
@@ -1359,14 +1334,8 @@ def validate_physical_state(state):
             raise ValueError("Player tree service must match its original encounter.")
         if saved["stage"] not in ("player", "dialogue", "condemned_approach", "eating") or saved["stage"] != "player" and (not saved["committed"] or saved["outcome"] != "eat"):
             raise ValueError("Invalid player eating progress.")
-        offer = saved["offer"]
-        if offer:
-            record = state.history[saved["record"]]
-            if (set(offer) != {"offering", "turn", "conversation_id", "speech"}
-                    or offer["offering"] not in ("secret", "endorsement") or offer["conversation_id"] != record.id
-                    or type(offer["turn"]) is not int or not 0 <= offer["turn"] < len(record.turns)
-                    or record.turns[offer["turn"]] != (SNAKE_NAME, offer["speech"])):
-                raise ValueError("A player apple offer must retain its actual original speaker and turn.")
+        if saved["question_account_id"] and not any(b.claim_id == saved["question_account_id"] for b in state.snake.beliefs):
+            raise ValueError("The current guard question must reference its actual knowledge.")
 
 
 def _capture_fields(model, source, **overrides):

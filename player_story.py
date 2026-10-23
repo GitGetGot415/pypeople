@@ -36,10 +36,10 @@ def starting_dialogue_context(world, resident_id):
         "There is only one snake here, not a separate snake and a human tree guard. "
         f"Before this player arrived, you had a spoken conversation with {SNAKE_NAME}. "
         "You could read its floating name tag and heard it explain its apple "
-        "bargains and claimed divine role. You already know it speaks. The player is the first "
+        "information exchanges and claimed divine role. You already know it speaks. The player is the first "
         "other human you have seen here; that does not include the snake. Recall that conversation "
         "when asked about the snake, rather than describing an unfamiliar animal you have only watched. "
-        "You took no apple and agreed to no debt in that meeting. You may still doubt its divine claims."
+        "You took no apple in that meeting. You may still doubt its divine claims."
     )
 
 
@@ -51,8 +51,8 @@ def prepare_player_start(world):
     add_fact(world, "snake_claim", world.snake, resident, PLAYER_START_ENCOUNTER, None,
              f"{resident.name} arrived in the garden and met {SNAKE_NAME}, the python guarding the apple tree. "
              f"{SNAKE_NAME} explained that it controls access to the apples: "
-             "when fruit is available, it gives an apple upfront in return for a private recollection "
-             "or public endorsement owed later. No apple was taken and no obligation was agreed. "
+             "when fruit is available, it exchanges an apple immediately for information it values. "
+             "No apple was taken and no information was traded. "
              f"{SNAKE_NAME} described itself as a divine messenger and called this place purgatory; "
              f"{resident.name} heard these claims without knowing whether they are true. "
              f"At that time, {resident.name} had seen no other human here.",
