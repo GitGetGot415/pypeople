@@ -299,8 +299,10 @@ def accept_invitation(world, offer_id):
                        location=offer.location, stage="travel", destination=offer.destination,
                        return_location=host.location, return_point=[host.x, host.y])
     from constants import HOST_MEETING_OFFSET
+    # At home, the host waits farther into the room, clear of its bottom exit.
+    host_offset_y = -HOST_MEETING_OFFSET[1] if offer.destination == "home" else HOST_MEETING_OFFSET[1]
     start_journey(host, offer.location, (offer.point[0] + HOST_MEETING_OFFSET[0],
-        offer.point[1] + HOST_MEETING_OFFSET[1]), purpose="host_visit")
+        offer.point[1] + host_offset_y), purpose="host_visit")
     start_journey(world.player, offer.location, offer.point, purpose="invitation", fast=True)
 
 

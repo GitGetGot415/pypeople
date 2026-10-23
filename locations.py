@@ -2,8 +2,9 @@
 
 from constants import (GARDEN_LOCATION, WORLD_WIDTH, WORLD_HEIGHT, HALLWAY_SIZE, ROOM_SIZE, FOOT_MARGIN,
                       INDOOR_FLOOR_TOP, ROOMS_PER_FLOOR, HALLWAY_DOOR_ORIGINS, HALLWAY_ELEVATOR_ORIGIN,
-                      APARTMENT_OVERLAY_SIZE, APARTMENT_OVERLAY_SCALE, ROOM_DOOR_ORIGIN, HALLWAY_ARRIVAL_Y, ROOM_ARRIVAL,
-                      ELEVATOR_ARRIVAL, HALLWAY_EXIT, GARDEN_BUILDING_POINT, GARDEN_BUILDING_ARRIVAL,
+                      APARTMENT_OVERLAY_SIZE, APARTMENT_OVERLAY_SCALE, HALLWAY_ARRIVAL_Y, ROOM_ARRIVAL,
+                      ELEVATOR_ARRIVAL, HALLWAY_EXIT, ROOM_EXIT, HALLWAY_ENTRY, HALLWAY_EXIT_RECT, ROOM_EXIT_RECT,
+                      GARDEN_BUILDING_POINT, GARDEN_BUILDING_ARRIVAL,
                       MOVEMENT_SPEED, TRAVEL_STEP_TIMEOUT, PLAYER_APPROACH_MULTIPLIER, PLAYER_ROOM_NUMBER)
 from interactions import move_toward
 from dataclasses import dataclass, field
@@ -62,11 +63,18 @@ def valid_location(world, location):
 
 
 def map_size(location):
-    return (WORLD_WIDTH, WORLD_HEIGHT) if location == GARDEN_LOCATION else HALLWAY_SIZE if location.startswith("hallway:") else ROOM_SIZE
+    if location == GARDEN_LOCATION:
+        return WORLD_WIDTH, WORLD_HEIGHT
+    width, height = HALLWAY_SIZE if location.startswith("hallway:") else ROOM_SIZE
+    exit_rect = HALLWAY_EXIT_RECT if location.startswith("hallway:") else ROOM_EXIT_RECT
+    return width, max(height, exit_rect[1] + exit_rect[3])
 
 
 def feet_bounds(location):
-    width, height = map_size(location)
+    # Exit strips attach beyond the floor; feet stay on the floor and touch
+    # the strip at its edge rather than walking into the surrounding black.
+    width, height = ((WORLD_WIDTH, WORLD_HEIGHT) if location == GARDEN_LOCATION else
+                     HALLWAY_SIZE if location.startswith("hallway:") else ROOM_SIZE)
     return FOOT_MARGIN, width - FOOT_MARGIN, FOOT_MARGIN if location == GARDEN_LOCATION else INDOOR_FLOOR_TOP + FOOT_MARGIN, height - FOOT_MARGIN
 
 
@@ -111,14 +119,14 @@ def overlay_rect(origin):
 def targets(world, location):
     """UI targets include their floor standing point and destination identity."""
     if location == GARDEN_LOCATION:
-        from constants import APARTMENT_RECT
-        return [dict(kind="building", rect=APARTMENT_RECT, point=GARDEN_BUILDING_POINT,
+        from constants import APARTMENT_DOOR_RECT
+        return [dict(kind="building", rect=APARTMENT_DOOR_RECT, point=GARDEN_BUILDING_POINT,
                      destination=hallway_location(1))]
     kind, number = location.split(":")
     number = int(number)
     if kind == "room":
-        return [dict(kind="exit_room", rect=overlay_rect(ROOM_DOOR_ORIGIN),
-                     point=ROOM_ARRIVAL, destination=hallway_location(floor_for_room(number)), room=number)]
+        return [dict(kind="exit_room", rect=ROOM_EXIT_RECT,
+                     point=ROOM_EXIT, destination=hallway_location(floor_for_room(number)), room=number)]
     result = []
     for slot, (x, y) in enumerate(HALLWAY_DOOR_ORIGINS):
         room = (number - 1) * ROOMS_PER_FLOOR + slot + 1
@@ -127,9 +135,16 @@ def targets(world, location):
     result.append(dict(kind="elevator", rect=overlay_rect(HALLWAY_ELEVATOR_ORIGIN),
                        point=ELEVATOR_ARRIVAL))
     if number == 1:
-        result.append(dict(kind="garden", rect=(0, INDOOR_FLOOR_TOP, FOOT_MARGIN * 3, HALLWAY_SIZE[1] - INDOOR_FLOOR_TOP),
+        result.append(dict(kind="garden", rect=HALLWAY_EXIT_RECT,
                            point=HALLWAY_EXIT, destination=GARDEN_LOCATION))
     return result
+
+
+def doorway_arrival(target):
+    destination = target["destination"]
+    return (ROOM_ARRIVAL if destination.startswith("room:") else
+            GARDEN_BUILDING_ARRIVAL if destination == GARDEN_LOCATION else
+            door_point(target["room"]) if target["kind"] == "exit_room" else HALLWAY_ENTRY)
 
 
 def route(source, destination, point):
@@ -139,12 +154,12 @@ def route(source, destination, point):
     if current.startswith("room:") and current != destination:
         room = int(current.split(":")[1])
         current = hallway_location(floor_for_room(room))
-        steps.append(RouteStep(point=ROOM_ARRIVAL, destination=current, arrival=door_point(room)))
+        steps.append(RouteStep(point=ROOM_EXIT, destination=current, arrival=door_point(room)))
     target_hall = (hallway_location(floor_for_room(int(destination.split(":")[1])))
                    if destination.startswith("room:") else destination)
     if current == GARDEN_LOCATION and target_hall != GARDEN_LOCATION:
         current = hallway_location(1)
-        steps.append(RouteStep(point=GARDEN_BUILDING_POINT, destination=current, arrival=HALLWAY_EXIT))
+        steps.append(RouteStep(point=GARDEN_BUILDING_POINT, destination=current, arrival=HALLWAY_ENTRY))
     if current.startswith("hallway:") and target_hall == GARDEN_LOCATION:
         if current != hallway_location(1):
             steps.append(RouteStep(point=ELEVATOR_ARRIVAL, destination=hallway_location(1), arrival=ELEVATOR_ARRIVAL))
@@ -209,8 +224,8 @@ def environment(location):
                 "People in this hallway can see visible activity throughout it; speech is private to its participants. "
                 "The garden exit is on the first floor; other floors reach it by elevator.")
     number = location.split(":")[1]
-    return (f"Inside narrow private apartment room {number}, with a doorway at its north end and a bed at its south end. "
-            "The doorway leads to the hallway. The garden and apple tree are outside the building, with no grass or open sky here. "
+    return (f"Inside narrow private apartment room {number}, with a bed at the top of the floor and an entrance and walk-back exit at the bottom. "
+            "The exit leads to the hallway. The garden and apple tree are outside the building, with no grass or open sky here. "
             "People in this room can see its visible activity; speech is private to its participants.")
 
 

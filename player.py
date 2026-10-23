@@ -12,7 +12,7 @@ from constants import (PLAYER_ID, STARTING_PLAYER_FRUIT, PLAYER_CALL_COOLDOWN, P
                        PLAYER_CALL_SOCIABILITY, ARRIVAL_LOCATION, STARTING_PLAYER_POSITION, STARTING_FACING,
                        PLAYER_DEFAULT_APPEARANCE, MOVEMENT_SPEED, PLAYER_APPROACH_MULTIPLIER,
                        PLAYER_RUN_MULTIPLIER, PLAYER_APPROACH_TIMEOUT, PLAYER_EVIDENCE_LIMIT,
-                       CONVERSATION_CANCELLED, CONVERSATION_PENDING_REPLY_STATUSES)
+                       CONVERSATION_CANCELLED, CONVERSATION_PENDING_REPLY_STATUSES, FOOT_MARGIN)
 from conversation_history import remember
 from locations import Journey
 from player_records import (PlayerCall, PlayerCallReason, PlayerPromiseOffer, PlayerReport)
@@ -199,7 +199,7 @@ def move_player(world, dx, dy, dt, *, running=False):
     if not can_claim(world) or world.paused:
         return
     from interactions import move_toward
-    from locations import clamp_point
+    from locations import clamp_point, targets, doorway_arrival, start_journey
     distance = (dx * dx + dy * dy) ** 0.5
     if distance:
         p = world.player
@@ -207,6 +207,14 @@ def move_player(world, dx, dy, dt, *, running=False):
         point = clamp_point(p.location, (p.x + dx / distance * speed * dt,
                                         p.y + dy / distance * speed * dt))
         move_toward(p, point, dt, speed)
+        for target in targets(world, p.location):
+            if target["kind"] not in ("building", "garden", "exit_room"):
+                continue
+            x, y, width, height = target["rect"]
+            if (x - FOOT_MARGIN <= p.x <= x + width + FOOT_MARGIN
+                    and y - FOOT_MARGIN <= p.y <= y + height + FOOT_MARGIN):
+                start_journey(p, target["destination"], doorway_arrival(target), purpose="doorway", fast=True)
+                break
 
 
 def record_claim(world, speaker, record, text, turn, listener_id):

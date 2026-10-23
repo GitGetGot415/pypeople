@@ -1,8 +1,8 @@
 import pygame
 from functools import lru_cache
 from pathlib import Path
-from constants import (GARDEN_LOCATION, INK, PAPER, SHADOW_COLOR, WORLD_COLORS, APARTMENT_COLOR,
-                      APARTMENT_DOOR_COLOR, APARTMENT_DOOR_RECT, APARTMENT_RECT, DEFAULT_BUBBLE_SPRITE_SIZE,
+from constants import (GARDEN_LOCATION, INK, PAPER, SHADOW_COLOR, WORLD_COLORS,
+                      APARTMENT_DOOR_RECT, APARTMENT_RECT, DEFAULT_BUBBLE_SPRITE_SIZE,
                       UI_SMALL_FONT_SIZE, NAME_TAG_FONT_SIZE, NAME_TAG_HEAD_GAP, PLAYER_NAME_TAG,
                       ROOM_BED_RECT, SLEEP_FACING, SLEEP_ROTATION, PLAYER_ROOM_NUMBER)
 from activity import Behavior
@@ -101,34 +101,38 @@ def _draw_shadow(surface, rect):
 
 def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), phase="day", zoom=1.0, viewport=None, snake=None, *, world=None, location="garden"):
     # Use nearest-neighbor scaling throughout to keep the original pixels crisp.
-    # Scale the ground separately; sprites are drawn from their original artwork.
+    # Scale the ground separately; artwork is drawn directly at the camera zoom.
     from locations import map_size, targets, player_has_room
-    from constants import APARTMENT_ART, INDOOR_BACKGROUND
+    from constants import INDOOR_BACKGROUND, APARTMENT_ART_SCALE, ROOM_EXIT_RECT, HALLWAY_EXIT_RECT
     size = map_size(location)
     scene = pygame.Surface(size)
+    artwork = []
+    labels = []
     if location == "garden":
         _draw_scene(scene, tree, phase)
         surface.fill(WORLD_COLORS[phase][0])
+        artwork.extend((("exterior", APARTMENT_RECT), ("door", APARTMENT_DOOR_RECT)))
     else:
         surface.fill(INDOOR_BACKGROUND)
+        scene.fill(INDOOR_BACKGROUND)
         kind = location.split(":")[0]
-        door_targets = []
-        scene.blit(apartment_art_at_size(kind, size), (0, 0))
+        art_size = tuple(round(extent * APARTMENT_ART_SCALE) for extent in apartment_art(kind).get_size())
+        artwork.append((kind, (0, 0, *art_size)))
         if kind == "room":
-            scene.blit(apartment_art("bed"), ROOM_BED_RECT[:2])
+            artwork.extend((("bed", ROOM_BED_RECT), ("exit", ROOM_EXIT_RECT)))
+        elif location == "hallway:1":
+            artwork.append(("exit", HALLWAY_EXIT_RECT))
         if world:
             for target in targets(world, location):
-                if target["kind"] in ("room", "exit_room", "elevator"):
-                    door_targets.append(target)
+                if target["kind"] in ("room", "elevator"):
+                    artwork.append(("elevator" if target["kind"] == "elevator" else "door", target["rect"]))
                     target_rect = pygame.Rect(target["rect"])
                     if target["kind"] == "room":
                         number = target["room"]
                         owner = next((n for n in world.npcs if n.room_number == number), None)
                         label = ("Your room" if number == PLAYER_ROOM_NUMBER and player_has_room(world)
                                  else owner.name if owner else "Vacant")
-                        label_image = font.render(label, True, INK)
-                        scene.blit(label_image, label_image.get_rect(
-                            midbottom=(target_rect.centerx, target_rect.top - 2)))
+                        labels.append((label, (target_rect.centerx, target_rect.top - 2)))
     if zoom != 1.0:
         scene = pygame.transform.scale(scene, (round(size[0] * zoom), round(size[1] * zoom)))
     previous_clip = surface.get_clip()
@@ -137,23 +141,19 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     # Bubbles can extend beyond the ground's rectangle into the surrounding view.
     surface.set_clip(viewport.clip(previous_clip))
     surface.blit(scene, scene_rect)
-    if location != "garden":
-        for target in door_targets:
-            art_kind = "elevator" if target["kind"] == "elevator" else "door"
-            art = apartment_art(art_kind)
-            x, y, width, height = target["rect"]
-            rect = pygame.Rect(round(x * zoom + camera_offset[0]),
-                               round(y * zoom + camera_offset[1]),
-                               max(1, round(width * zoom)), max(1, round(height * zoom)))
-            # Scale once from the original art, after camera zoom, to match the
-            # NPC render path and preserve crisp nearest-neighbor pixels.
-            surface.blit(pygame.transform.scale(art, rect.size), rect)
-    for geometry, color in (((APARTMENT_RECT, APARTMENT_COLOR), (APARTMENT_DOOR_RECT, APARTMENT_DOOR_COLOR)) if location == "garden" else ()):
+    for kind, geometry in artwork:
         x, y, width, height = geometry
-        # Draw directly into the clipped camera view so negative coordinates survive.
         rect = pygame.Rect(round(x * zoom + camera_offset[0]), round(y * zoom + camera_offset[1]),
-                           round(width * zoom), round(height * zoom))
-        pygame.draw.rect(surface, color, rect)
+                           max(1, round(width * zoom)), max(1, round(height * zoom)))
+        # Always start from the full-resolution source, including when zooming in.
+        surface.blit(apartment_art_at_size(kind, rect.size), rect)
+    for label, (x, y) in labels:
+        label_image = font.render(label, True, INK)
+        if zoom != 1.0:
+            label_image = pygame.transform.scale(label_image, (
+                max(1, round(label_image.get_width() * zoom)), max(1, round(label_image.get_height() * zoom))))
+        surface.blit(label_image, label_image.get_rect(midbottom=(
+            round(x * zoom + camera_offset[0]), round(y * zoom + camera_offset[1]))))
     npcs = [npc for npc in npcs if npc.location == location]
     if world and world.mode == "player" and world.player.alive and world.player.location == location:
         npcs.append(world.player)

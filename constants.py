@@ -32,21 +32,27 @@ HALLWAY_DOOR_ORIGINS = ((160, 8), (296, 8), (432, 8), (568, 8), (704, 8))
 HALLWAY_ELEVATOR_ORIGIN = (24, 8)
 APARTMENT_OVERLAY_SIZE = (112, 168)
 APARTMENT_OVERLAY_SCALE = 0.5
-ROOM_DOOR_ORIGIN = (8, 8)
+APARTMENT_ART_SCALE = 0.5
+APARTMENT_EXIT_SIZE = (128, 29)
+HALLWAY_EXIT_RECT = (16, HALLWAY_SIZE[1] - 1, *APARTMENT_EXIT_SIZE)
+ROOM_EXIT_RECT = (0, ROOM_SIZE[1] - 1, *APARTMENT_EXIT_SIZE)
 HALLWAY_ARRIVAL_Y = 212
-ROOM_ARRIVAL = (64.0, 216.0)
-ROOM_BED_RECT = (8, 360, 112, 80)
-ROOM_SLEEP_POSITION = (64.0, 416.0)  # Bottom center of the lying sprite, over the mattress.
+HALLWAY_ENTRY = (80.0, HALLWAY_ARRIVAL_Y)
+ROOM_ARRIVAL = (64.0, ROOM_SIZE[1] - 32.0)
+ROOM_BED_RECT = (8, INDOOR_FLOOR_TOP + 8, 112, 80)
+ROOM_SLEEP_POSITION = (64.0, ROOM_BED_RECT[1] + 56.0)  # Bottom center of the lying sprite, over the mattress.
 SLEEP_FACING = 1  # Northeast before rotating the sprite counterclockwise.
 SLEEP_ROTATION = 90
 ELEVATOR_ARRIVAL = (HALLWAY_ELEVATOR_ORIGIN[0] + APARTMENT_OVERLAY_SIZE[0] / 2, HALLWAY_ARRIVAL_Y)
-HALLWAY_EXIT = (8.0, 212.0)
-GARDEN_BUILDING_POINT = (48.0, 112.0)
-GARDEN_BUILDING_ARRIVAL = (80.0, 112.0)
+HALLWAY_EXIT = (80.0, HALLWAY_SIZE[1] - FOOT_MARGIN)
+ROOM_EXIT = (64.0, ROOM_SIZE[1] - FOOT_MARGIN)
+GARDEN_BUILDING_POINT = (48.0, FOOT_MARGIN)
+GARDEN_BUILDING_ARRIVAL = (48.0, 40.0)
 GARDEN_VISIT_POINT = (100.0, 280.0)
 APARTMENT_ART = {"hallway": "assets/Apartment Building Hallway.png",
                  "room": "assets/Apartment Room.png", "door": "assets/Door.png",
-                 "elevator": "assets/Elevator.png", "bed": "assets/Apartment Bed.png"}
+                 "elevator": "assets/Elevator.png", "bed": "assets/Apartment Bed.png",
+                 "exterior": "assets/Apartment Building Exterior.png", "exit": "assets/Walk here to Exit.png"}
 STARTING_MODE = "spectator"
 ARRIVAL_LOCATION = "hallway:1"
 STARTING_PLAYER_POSITION = ELEVATOR_ARRIVAL
@@ -334,10 +340,8 @@ LLM_SLOT_HEIGHT = 84
 
 # Apartments use the camera's surrounding space; the garden stays unchanged.
 APARTMENT_ID = "apartments"
-APARTMENT_RECT = (-144, -64, 168, 200)
-APARTMENT_COLOR = (201, 164, 122)
-APARTMENT_DOOR_RECT = (12, 80, 12, 32)
-APARTMENT_DOOR_COLOR = (121, 84, 56)
+APARTMENT_RECT = (-32, FOOT_MARGIN - HALLWAY_SIZE[1], *HALLWAY_SIZE)
+APARTMENT_DOOR_RECT = (20, FOOT_MARGIN - 84, 56, 84)
 APARTMENT_APPROACH = GARDEN_BUILDING_POINT
 HOME_ARRIVAL_TOLERANCE = 2.0
 STARTING_FATIGUE_RANGE = (0.0, 10.0)

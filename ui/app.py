@@ -302,8 +302,8 @@ class Application:
 
 
     def use_door(self, target):
-        from locations import start_journey, allocated_floors, hallway_location, door_point, valid_location
-        from constants import ROOM_ARRIVAL, ELEVATOR_ARRIVAL, HALLWAY_EXIT, GARDEN_BUILDING_ARRIVAL, PLAYER_ROOM_NUMBER
+        from locations import start_journey, allocated_floors, hallway_location, doorway_arrival, valid_location
+        from constants import PLAYER_ROOM_NUMBER
         world, player = self.simulation, self.simulation.player
         if target["kind"] == "elevator":
             self.game.open_location_menu("Elevator", [(f"Floor {f}", hallway_location(f)) for f in allocated_floors(world)])
@@ -333,10 +333,7 @@ class Application:
                     self.game.show_save_message(str(exc))
                 return
         destination = target["destination"]
-        point = (ROOM_ARRIVAL if destination.startswith("room:") else
-                 GARDEN_BUILDING_ARRIVAL if destination == "garden" else
-                 door_point(target["room"]) if target["kind"] == "exit_room" else HALLWAY_EXIT)
-        start_journey(player, destination, point, purpose="doorway", fast=True)
+        start_journey(player, destination, doorway_arrival(target), purpose="doorway", fast=True)
 
 
     def apply_pending_action(self, action):
