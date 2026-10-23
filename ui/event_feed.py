@@ -2,7 +2,7 @@
 
 import pygame
 
-from .text import wrap_text
+from .text import wrap_text, scrollbar_rects, ScrollbarDrag
 from constants import ACCENT, EVENT_FEED_BODY_HEIGHT, HUD_HEADER_HEIGHT, HUD_PANEL_GAP, INK, MUTED, PAPER
 
 
@@ -17,6 +17,7 @@ class EventFeed:
         self.rows = []
         self.known_ids = set()
         self.limit = 0
+        self.scrollbar = ScrollbarDrag()
 
     @property
     def rect(self):
@@ -57,16 +58,23 @@ class EventFeed:
 
     def handle_event(self, app, event):
         if event.type not in (pygame.MOUSEWHEEL, pygame.MOUSEBUTTONDOWN,
-                              pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION):
+                              pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION, pygame.WINDOWFOCUSLOST):
             return False
         self.position(app)
         pos = getattr(event, "pos", pygame.mouse.get_pos())
-        if not self.rect.collidepoint(pos):
+        if not self.rect.collidepoint(pos) and not self.scrollbar.active:
             return False
         # A drag that crosses the panel cannot select the world on release.
         app.game.pan_start = app.game.pan_last = None
         app.game.panning = False
         self.layout(app)
+        value = self.scrollbar.handle_event(event, self.body, self.scroll, self.limit if not self.collapsed else 0)
+        if value is not None:
+            self.scroll = value
+            self.following = self.scroll >= self.limit
+            if self.following:
+                self.unread = 0
+            return True
         if event.type == pygame.MOUSEWHEEL and not self.collapsed:
             self.scroll = max(0, min(self.limit, self.scroll - event.y * 42))
             self.following = self.scroll >= self.limit
@@ -109,6 +117,6 @@ class EventFeed:
                 y += app.small_font.get_linesize()
         surface.set_clip(previous_clip)
         if self.limit:
-            height = max(12, round(self.body.height ** 2 / (self.limit + self.body.height)))
-            top = self.body.y + round((self.body.height - height) * self.scroll / self.limit)
-            pygame.draw.rect(surface, MUTED, (self.body.right - 6, top, 4, height))
+            track, thumb = scrollbar_rects(self.body, self.scroll, self.limit)
+            pygame.draw.rect(surface, MUTED, track)
+            pygame.draw.rect(surface, ACCENT, thumb)

@@ -6,9 +6,54 @@ from .fonts import text_units
 
 def scrollbar_rects(rect, scroll, limit):
     track = pygame.Rect(rect.right - SCROLLBAR_WIDTH, rect.top, SCROLLBAR_WIDTH, rect.height)
-    height = max(SCROLLBAR_MIN_THUMB, round(rect.height * rect.height / (rect.height + limit)))
+    height = min(track.height, max(SCROLLBAR_MIN_THUMB, round(rect.height * rect.height / (rect.height + limit))))
     top = track.top + round((track.height - height) * scroll / limit) if limit else track.top
     return track, pygame.Rect(track.x, top, track.width, height)
+
+
+class ScrollbarDrag:
+    """Capture a scrollbar drag until release, including outside its viewport."""
+
+    def __init__(self):
+        self.offset = None
+
+    @property
+    def active(self):
+        return self.offset is not None
+
+    def cancel(self):
+        self.offset = None
+
+    def handle_event(self, event, rect, scroll, limit):
+        """Return a bounded scroll position when the scrollbar consumes an event."""
+        if event.type == pygame.WINDOWFOCUSLOST:
+            self.cancel()
+            return None
+        scroll = max(0, min(limit, scroll))
+        if event.type == pygame.MOUSEBUTTONUP and event.button == 1 and self.active:
+            self.cancel()
+            return scroll
+        if limit <= 0:
+            self.cancel()
+            return None
+        track, thumb = scrollbar_rects(rect, scroll, limit)
+        travel = track.height - thumb.height
+        if travel <= 0:
+            self.cancel()
+            return None
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            self.cancel()
+            if not track.collidepoint(event.pos):
+                return None
+            self.offset = event.pos[1] - thumb.top if thumb.collidepoint(event.pos) else thumb.height / 2
+        elif event.type == pygame.MOUSEMOTION and self.active:
+            if not event.buttons[0]:
+                self.cancel()
+                return None
+        else:
+            return None
+        top = event.pos[1] - track.top - self.offset
+        return max(0, min(limit, round(top * limit / travel)))
 
 
 def draw_centered_text(surface, text, font, y, color=INK):

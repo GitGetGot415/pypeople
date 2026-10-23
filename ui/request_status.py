@@ -7,6 +7,7 @@ import pygame
 
 from constants import ACCENT, HUD_HEADER_HEIGHT, INK, LLM_PANEL_WIDTH, LLM_SLOT_HEIGHT, MUTED, PAPER
 from .button import Button
+from .text import scrollbar_rects, ScrollbarDrag
 
 
 class RequestStatus:
@@ -15,6 +16,7 @@ class RequestStatus:
         self.header = pygame.Rect(self.rect.x, self.rect.y, self.rect.width, HUD_HEADER_HEIGHT)
         self.collapsed = False
         self.slot_scroll = 0
+        self.scrollbar = ScrollbarDrag()
         self.set_capacity(max_requests)
 
     def set_capacity(self, max_requests):
@@ -34,15 +36,25 @@ class RequestStatus:
         y = self.rect.y + HUD_HEADER_HEIGHT + 8 + (slot - 1 - self.slot_scroll) * LLM_SLOT_HEIGHT
         return Button((self.rect.right - 34, y - 2, 24, 22), "X")
 
+    @property
+    def body(self):
+        return pygame.Rect(self.rect.x, self.header.bottom, self.rect.width,
+                           self.visible_slots * LLM_SLOT_HEIGHT + 8)
+
     def handle_event(self, app, event):
         if event.type not in (pygame.MOUSEWHEEL, pygame.MOUSEBUTTONDOWN,
-                              pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION):
+                              pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION, pygame.WINDOWFOCUSLOST):
             return False
         pos = getattr(event, "pos", pygame.mouse.get_pos())
-        if not self.rect.collidepoint(pos):
+        if not self.rect.collidepoint(pos) and not self.scrollbar.active:
             return False
         app.game.pan_start = app.game.pan_last = None
         app.game.panning = False
+        limit = (self.max_requests - self.visible_slots) * LLM_SLOT_HEIGHT if not self.collapsed else 0
+        value = self.scrollbar.handle_event(event, self.body, self.slot_scroll * LLM_SLOT_HEIGHT, limit)
+        if value is not None:
+            self.slot_scroll = round(value / LLM_SLOT_HEIGHT)
+            return True
         if event.type == pygame.MOUSEWHEEL and not self.collapsed:
             self.slot_scroll = max(0, min(self.max_requests - self.visible_slots, self.slot_scroll - event.y))
             return True
@@ -118,3 +130,8 @@ class RequestStatus:
             line(worker.participants, x, y + 20, width - 62)
             line(worker.topic, x, y + 38, width - 62, MUTED)
             line(worker.stage, x, y + 56, width, ACCENT)
+        if self.max_requests > self.visible_slots:
+            track, thumb = scrollbar_rects(self.body, self.slot_scroll * LLM_SLOT_HEIGHT,
+                                           (self.max_requests - self.visible_slots) * LLM_SLOT_HEIGHT)
+            pygame.draw.rect(surface, MUTED, track)
+            pygame.draw.rect(surface, ACCENT, thumb)

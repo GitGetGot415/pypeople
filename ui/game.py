@@ -19,7 +19,7 @@ from actor_identity import actor_catalog, name_forms
 from .button import Button
 from .event_feed import EventFeed
 from .request_status import RequestStatus
-from .text import draw_centered_text, draw_wrapped_text, paginate_turn, wrap_text
+from .text import draw_centered_text, draw_wrapped_text, paginate_turn, wrap_text, scrollbar_rects, ScrollbarDrag
 from .text_input import TextInput
 from .world import draw_world
 from .character_sprite import draw_actor_portrait
@@ -84,6 +84,9 @@ class GameScreen:
         self._conversation_page_turns = None
         self.dialogue_scroll = 0
         self.reply_rect = pygame.Rect(dialogue_x, 580, 1256 - dialogue_x, 58)
+        self.dialogue_scroll_rect = self.reply_rect.copy()
+        self.dialogue_scroll_limit = 0
+        self.dialogue_scrollbar = ScrollbarDrag()
         self.camera_offset = [0.0, 0.0]
         self.camera_zoom = 1.0
         self.pan_start = None
@@ -93,6 +96,7 @@ class GameScreen:
         self.feed = EventFeed()
         self.apartment_open = False
         self.apartment_scroll = 0
+        self.apartment_scrollbar = ScrollbarDrag()
         self.apartment_close = Button(APARTMENT_INSPECTOR_CLOSE_RECT, "Close")
 
     @property
@@ -104,6 +108,7 @@ class GameScreen:
         return self.app.conversations.record if self.app and self.app.conversations else None
 
     def reset(self):
+        self.apartment_scrollbar.cancel()
         self.bed_open = False
         self.confirm_menu = False
         self.menu_restore_focus = False
@@ -129,6 +134,8 @@ class GameScreen:
         self.save_message_remaining = 8
 
     def close_dialogue(self, *, terminate=True, notify=True):
+        self.dialogue_scrollbar.cancel()
+        self.dialogue_scroll_limit = 0
         if notify and self.app and self.app.conversations:
             self.app._sync_conversation_view()
             self.app.conversations.view_closed(terminate=terminate)
@@ -242,12 +249,21 @@ class GameScreen:
                 app._present_conversation_events()
                 return
         if self.apartment_open:
+            _, content, height = self.apartment_rows(app)
+            limit = max(0, height - content.height)
+            value = self.apartment_scrollbar.handle_event(event, content, self.apartment_scroll, limit)
+            if value is not None:
+                self.apartment_scroll = value
+                return
             if self.apartment_close.clicked(event) or event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 self.apartment_open = False
+                self.apartment_scrollbar.cancel()
             elif event.type == pygame.MOUSEWHEEL:
-                _, content, height = self.apartment_rows(app)
-                limit = max(0, height - content.height)
                 self.apartment_scroll = max(0, min(limit, self.apartment_scroll - event.y * APARTMENT_INSPECTOR_ROW_HEIGHT))
+            return
+        if self.dialogue_open and self.dialogue_scrollbar.active and self.handle_dialogue_scroll(app, event):
+            return
+        if self.request_status.scrollbar.active and self.request_status.handle_event(app, event):
             return
         paused = app.simulation.paused
         if self.arrival_retry.clicked(event, enabled=not paused):
@@ -481,6 +497,11 @@ class GameScreen:
 
     def handle_dialogue_scroll(self, app, event):
         font = app.font
+        value = self.dialogue_scrollbar.handle_event(event, self.dialogue_scroll_rect,
+                                                    self.dialogue_scroll, self.dialogue_scroll_limit)
+        if value is not None:
+            self.dialogue_scroll = value
+            return True
         if event.type == pygame.MOUSEWHEEL:
             pos = getattr(event, "pos", pygame.mouse.get_pos())
             if self.viewed_conversation is None and not self.reply_rect.collidepoint(pos):
@@ -707,7 +728,7 @@ class GameScreen:
         rows, top = [], 0
         for npc in sorted((npc for npc in app.npcs if npc.indoors), key=lambda npc: npc.room_number):
             for paragraph in (f"Room {npc.room_number}: {npc.name}", npc.status):
-                for line in wrap_text(paragraph, app.small_font, content.width):
+                for line in wrap_text(paragraph, app.small_font, content.width - 12):
                     rows.append((line, top))
                     top += app.small_font.get_linesize()
             top += APARTMENT_INSPECTOR_ROW_HEIGHT - app.small_font.get_linesize()
@@ -733,6 +754,10 @@ class GameScreen:
             app.window.blit(app.small_font.render(label, True, INK),
                             (content.x, content.y + top - self.apartment_scroll))
         app.window.set_clip(previous_clip)
+        if limit:
+            track, thumb = scrollbar_rects(content, self.apartment_scroll, limit)
+            pygame.draw.rect(app.window, MUTED, track)
+            pygame.draw.rect(app.window, INK, thumb)
 
     def draw_dialogue_background(self, app, original):
         top = WINDOW_SIZE[1] - DIALOGUE_PANEL_HEIGHT
@@ -826,6 +851,8 @@ class GameScreen:
         line_height = font.get_linesize()
         total_height = len(lines) * line_height
         scroll_limit = max(0, total_height - rect.height)
+        self.dialogue_scroll_rect = rect.copy()
+        self.dialogue_scroll_limit = scroll_limit
         self.dialogue_scroll = max(0, min(self.dialogue_scroll, scroll_limit))
         previous_clip = surface.get_clip()
         surface.set_clip(rect.clip(previous_clip))
@@ -834,11 +861,9 @@ class GameScreen:
             if rect.top - line_height < y < rect.bottom:
                 surface.blit(font.render(line, True, color), (rect.x, y))
         if scroll_limit:
-            track = pygame.Rect(rect.right - 5, rect.top, 4, rect.height)
-            height = max(12, round(rect.height * rect.height / total_height))
-            top = rect.top + round((rect.height - height) * self.dialogue_scroll / scroll_limit)
+            track, thumb = scrollbar_rects(rect, self.dialogue_scroll, scroll_limit)
             pygame.draw.rect(surface, (181, 191, 174), track)
-            pygame.draw.rect(surface, MUTED, (track.x, top, track.width, height))
+            pygame.draw.rect(surface, MUTED, thumb)
         surface.set_clip(previous_clip)
 
     def pending_invitation(self, world):

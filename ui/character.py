@@ -111,6 +111,7 @@ class CharacterScreen:
     def _clear_focus(self):
         self.stats_dragging = False
         for text_input in self.inputs.values():
+            text_input.scrollbar.cancel()
             text_input.active = False
             text_input.backspace_held = False
             text_input._navigation_key = None
@@ -152,6 +153,13 @@ class CharacterScreen:
             self._set_stats_scroll(self.stats_scroll + field.rect.bottom - self.stats_viewport.bottom + 10)
 
     def _handle_stats_event(self, event):
+        for name in self._panel_fields():
+            field = self.inputs[name]
+            visible = field.rect.colliderect(self.stats_viewport)
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                visible = visible and self.stats_viewport.collidepoint(event.pos)
+            if (field.scrollbar.active or visible) and field.handle_scroll_event(event):
+                return True
         if event.type == pygame.MOUSEWHEEL:
             pos = getattr(event, "pos", pygame.mouse.get_pos())
             if self.stats_viewport.collidepoint(pos):

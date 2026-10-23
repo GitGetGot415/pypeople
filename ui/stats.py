@@ -9,7 +9,7 @@ from npc import NPC
 from social import assertion_text, claim_by_id, concern_description, fact_by_id, phase_label, selected_beliefs
 from .creations import CreationsGallery
 from .button import Button
-from .text import paginate_turn, wrap_text, scrollbar_rects
+from .text import paginate_turn, wrap_text, scrollbar_rects, ScrollbarDrag
 from .character_sprite import draw_actor_portrait
 from constants import (STATS_PORTRAIT_PADDING, CONVERSATION_FAILED, ACCENT, FAILED_CONVERSATION_COLOR,
                        FAILED_CONVERSATION_SELECTED_COLOR, GENERATING_CONVERSATION_COLOR,
@@ -52,6 +52,7 @@ class StatsScreen:
         self.list_scroll = 0
         self.detail_scroll = 0
         self.scroll_focus = "list"
+        self.scrollbars = {pane: ScrollbarDrag() for pane in ("list", "detail")}
         self.show_private = False
         self.private_toggle_top = None
         self.promise_links = []
@@ -425,6 +426,17 @@ class StatsScreen:
 
     def handle_event(self, app, event):
         self._position_detail()
+        if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION,
+                          pygame.WINDOWFOCUSLOST):
+            limits = self._scroll_limits(app)
+            for pane, rect in (("list", self.list_rect), ("detail", self.detail_rect)):
+                value = self.scrollbars[pane].handle_event(event, rect, getattr(self, f"{pane}_scroll"), limits[pane])
+                if value is not None:
+                    self.scroll_focus = pane
+                    if pane == "detail" and self.tab == "Model logs":
+                        self.follow_log = False
+                    self._scroll(pane, value, limits)
+                    return
         if self.tab == "Statistics" and isinstance(self.selected_npc, NPC) and self.inventory_button.clicked(event):
             app.game.inventory.open(self.selected_npc)
             return
@@ -506,13 +518,6 @@ class StatsScreen:
                             record = next(entry for entry in app.conversation_history if entry.id == record_id)
                             self.open_record(record)
                             return
-                track, thumb = self._scrollbar(rect, scroll, limits[pane])
-                if limits[pane] and track.collidepoint(pos):
-                    if pane == "detail" and self.tab == "Model logs":
-                        self.follow_log = False
-                    offset = pos[1] - track.top - thumb.height / 2
-                    self._scroll(pane, offset * limits[pane] / (track.height - thumb.height), limits)
-                    return
                 if pane == "list":
                     rows, _ = self._list_rows(app)
                     for entry, top, height, _ in rows:
@@ -661,7 +666,7 @@ class StatsScreen:
                 track, thumb = self._scrollbar(rect, getattr(self, f"{pane}_scroll"), limits[pane])
                 pygame.draw.rect(surface, GRASS, track)
                 pygame.draw.rect(surface, MUTED, thumb)
-        surface.blit(app.small_font.render("Scroll or use Up/Down and Page Up/Down. Escape returns to the game.", True, MUTED), (184, 655))
+        surface.blit(app.small_font.render("Drag the scrollbar, scroll, or use Up/Down and Page Up/Down. Escape returns to the game.", True, MUTED), (184, 655))
 
     def _position_detail(self):
         top = STATS_INVENTORY_DETAIL_TOP if self.tab == "Statistics" and isinstance(self.selected_npc, NPC) else 200

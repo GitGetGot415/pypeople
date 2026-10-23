@@ -2,6 +2,7 @@ import pygame
 import pyperclip
 
 from constants import ACCENT, BORDER_RADIUS, INK, MUTED
+from .text import scrollbar_rects, ScrollbarDrag
 
 
 class TextInput:
@@ -21,6 +22,7 @@ class TextInput:
         self.cursor = 0
         self.scroll_y = 0
         self.scroll_x = 0
+        self.scrollbar = ScrollbarDrag()
         self._font = None
         self._show_cursor = True
         self.active = False
@@ -32,6 +34,7 @@ class TextInput:
         self._navigation_repeat_in = 0.0
 
     def set_value(self, value):
+        self.scrollbar.cancel()
         self.text = value[: self.max_length]
         self.cursor = len(self.text)
         self.scroll_y = 0
@@ -180,8 +183,24 @@ class TextInput:
                 self._navigate(self._navigation_key)
                 self._navigation_repeat_in += 0.04
 
+    def handle_scroll_event(self, event):
+        if (not self.multiline or self._font is None or event.type not in
+                (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION, pygame.WINDOWFOCUSLOST)):
+            return False
+        inner = self.rect.inflate(-24, -12)
+        lines = self._wrapped_lines(self.text, self._font, inner.width)
+        limit = max(0, len(lines) * self._font.get_linesize() - inner.height)
+        value = self.scrollbar.handle_event(event, self.rect.inflate(-4, -12), self.scroll_y, limit)
+        if value is None:
+            return False
+        self.scroll_y = value
+        self._show_cursor = False
+        return True
+
     def handle_event(self, event):
         """Enter submits single-line fields or inserts a multiline newline."""
+        if self.handle_scroll_event(event):
+            return False
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             self.active = self.rect.collidepoint(event.pos)
             self.selected_all = False
@@ -282,8 +301,7 @@ class TextInput:
             pygame.draw.line(surface, INK, (caret_x + 1, caret_y), (caret_x + 1, caret_y + caret_height), 2)
         surface.set_clip(previous_clip)
         if self.multiline and len(lines) * line_height > inner.height:
-            track = pygame.Rect(self.rect.right - 7, inner.y, 3, inner.height)
-            height = max(12, round(track.height * inner.height / (len(lines) * line_height)))
-            top = track.y + round((track.height - height) * self.scroll_y / (len(lines) * line_height - inner.height))
+            track, thumb = scrollbar_rects(self.rect.inflate(-4, -12), self.scroll_y,
+                                           len(lines) * line_height - inner.height)
             pygame.draw.rect(surface, (181, 191, 174), track)
-            pygame.draw.rect(surface, ACCENT, (track.x, top, track.width, height))
+            pygame.draw.rect(surface, ACCENT, thumb)

@@ -10,7 +10,7 @@ from constants import (INVENTORY_RECT, INVENTORY_ROW_HEIGHT, INVENTORY_PREVIEW_S
                       INVENTORY_APPLES_POSITION)
 from .button import Button
 from .creations import CreationsGallery
-from .text import draw_wrapped_text, scrollbar_rects
+from .text import draw_wrapped_text, scrollbar_rects, ScrollbarDrag
 
 
 class InventoryPanel:
@@ -21,6 +21,7 @@ class InventoryPanel:
         self.close_button = Button(INVENTORY_CLOSE_RECT, "Close")
         self.list_rect = pygame.Rect(INVENTORY_LIST_RECT)
         self.recipient_rect = pygame.Rect(INVENTORY_RECIPIENT_RECT)
+        self.scrollbars = {pane: ScrollbarDrag() for pane in ("scroll", "recipient_scroll")}
         self.filters = {name: Button(rect, name) for name, rect in zip(("All", "Food", "Art", "Music"), INVENTORY_FILTER_RECTS)}
         self.minus = Button(INVENTORY_MINUS_RECT, "-")
         self.plus = Button(INVENTORY_PLUS_RECT, "+")
@@ -41,6 +42,8 @@ class InventoryPanel:
 
     def close(self):
         self.visible = False
+        for scrollbar in self.scrollbars.values():
+            scrollbar.cancel()
         self.media.close()
 
     def entries(self, world):
@@ -61,11 +64,20 @@ class InventoryPanel:
                 and not n.busy and not n.interaction_blocked and not n.selected and not n.unread_player_reply]
 
     def handle_event(self, app, event):
+        rows = self.entries(app.simulation)
+        panes = [("scroll", self.list_rect, len(rows))]
+        if self.choosing:
+            panes.append(("recipient_scroll", self.recipient_rect, len(self.recipients(app))))
+        for pane, rect, count in panes:
+            limit = max(0, count * INVENTORY_ROW_HEIGHT - rect.height)
+            value = self.scrollbars[pane].handle_event(event, rect, getattr(self, pane), limit)
+            if value is not None:
+                setattr(self, pane, value)
+                return
         if self.close_button.clicked(event):
             self.close()
             return
         pos = getattr(event, "pos", pygame.mouse.get_pos())
-        rows = self.entries(app.simulation)
         if event.type == pygame.MOUSEWHEEL:
             if self.list_rect.collidepoint(pos):
                 self.scroll = max(0, min(max(0, len(rows) * INVENTORY_ROW_HEIGHT - self.list_rect.height),
