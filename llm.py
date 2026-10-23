@@ -38,7 +38,7 @@ from model_debug import admitted_provider, provider_wait_seconds, check_cancelle
 from conversation_history import rewrite_validation_error, usable_rewrite
 from social import (information_from_dict, listener_stances, phase_index, validate_agreements, validate_information)
 from purgatory import Attitudes
-from dialogue_context import (NAME_TAG_INSTRUCTION, account_references, account_speech_context,
+from dialogue_context import (NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION, account_references, account_speech_context,
                               name_forms, actor_id, forms, own_name, orientation_speech, validate_orientation)
 
 
@@ -594,12 +594,12 @@ an invented venue or a vanished tree just because earlier dialogue mentioned it.
 """
 
 
-SPEAKING_BRIEF = NAME_TAG_INSTRUCTION + f"""Write all dialogue in English. Name the tree's guard {SNAKE_NAME} consistently;
+SPEAKING_BRIEF = NAME_TAG_INSTRUCTION + NPC_ARRIVAL_INSTRUCTION + f"""Write all dialogue in English. Name the tree's guard {SNAKE_NAME} consistently;
 use I/my for the speaker and you/your for the listener in direct conversation.
 Write base speech and all opinion/attitude reasons in ordinary capitalization and plain prose.
 Personality controls behavior; presentation is applied separately. Never imitate historical delivery.
 Write people experiencing this place as real. Residents remember their own
-authored lives but not how they arrived; the cause and way home remain unknown.
+authored lives and their elevator arrival; the cause and way home remain unknown.
 {SNAKE_NAME} asserts divine authority; this theology is not established truth, and a
 resident knows it only after an actual encounter or sourced account.
 Address the other person, answer their latest point, and pursue one concern.
@@ -646,7 +646,7 @@ match each part's emotion to its speaker.
 
 """
 
-ORIENTATION_SPEAKING_BRIEF = NAME_TAG_INSTRUCTION + """Write direct English dialogue in ordinary capitalization.
+ORIENTATION_SPEAKING_BRIEF = NAME_TAG_INSTRUCTION + NPC_ARRIVAL_INSTRUCTION + """Write direct English dialogue in ordinary capitalization.
 Use I/my for yourself and you/your for the listener. Give only this speaker's
 words, without narration, speaker labels or the listener's answer. Reply to
 what they actually just said before pursuing another concern.
@@ -2942,6 +2942,8 @@ def _request_payload(message, snapshot, correction):
                     "Do not imitate casing, accents or verbal tics from previous speech.")
     if NAME_TAG_INSTRUCTION not in instruction:
         instruction += "\n" + NAME_TAG_INSTRUCTION
+    if NPC_ARRIVAL_INSTRUCTION not in instruction:
+        instruction += "\n" + NPC_ARRIVAL_INSTRUCTION
     if snapshot.get("_name_actors"):
         context["engine_identities"] = _catalog_for_prompt(snapshot["_name_actors"])
     if snapshot.get("request_kind") in ("resident_turn", "snake_turn", "conversation_closing"):
@@ -3789,7 +3791,7 @@ def _snake_turn_snapshot(snapshot, decision, turns):
 
     if snapshot["purpose"] == "introduction":
         task += (" Help the resident find their bearings before routine activities. Address the unfamiliar "
-                 "surroundings, missing arrival memory, or where to find help and safety, responding to "
+                 "surroundings, remembered elevator arrival, or where to find help and safety, responding to "
                  "the preceding speaker. The python's explanation is its own claim, not established truth. "
                  "Do not initiate an apple bargain or ask for payment or private information.")
     if snapshot["purpose"] == "judgment" and role == "recipient":

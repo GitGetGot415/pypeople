@@ -25,7 +25,7 @@ from constants import (
 )
 from interactions import (company_point, conversation_points, dialogue_finished, face_each_other, face_toward,
                           finish_generated_dialogue, move_toward, record_failed_dialogue, record_generated_turns)
-from dialogue_context import actor_catalog, name_forms, orientation_context, validate_orientation
+from dialogue_context import NPC_ARRIVAL_MEMORY, actor_catalog, name_forms, orientation_context, validate_orientation
 
 
 ACTIVITY_FIELDS = (
@@ -459,7 +459,7 @@ class NPC:
             state["private_context"]["situation"] = {
                 **orientation_context(self),
                 "arrival_day": self.arrival_day,
-                "transition_memory": "absent", "explanation": "unknown", "way_home": "unknown",
+                "transition_memory": NPC_ARRIVAL_MEMORY, "explanation": "unknown", "way_home": "unknown",
                 "prior_conversations": len(encounters),
                 "prior_snake_encounters": (sum(self.world.snake.name in record.participants for record in encounters)
                                            + int(starting_encounter(self.world, self.id) is not None)),

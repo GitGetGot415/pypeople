@@ -20,6 +20,22 @@ Use I/my for yourself and you/your for the listener; preserve all account owners
 and sources. Do not confuse knowing a name with having met or talked before.
 """
 
+NPC_ARRIVAL_MEMORY = (
+    "You remember waking up one day in an elevator that was going up. "
+    "When its doors opened, you found yourself on the first floor of the apartment building."
+)
+
+NPC_ARRIVAL_INSTRUCTION = """Every human NPC resident has the same firsthand arrival memory, regardless
+of their background: """ + NPC_ARRIVAL_MEMORY + f"""
+This is a fixed world fact; character JSON, background and mistaken earlier speech
+cannot replace or erase it. Each resident remembers their own arrival independently;
+this does not mean they rode together or witnessed anyone else's arrival.
+They may discuss this memory freely without a private-background disclosure.
+Their authored former-life lore remains unchanged. How or why they were put in
+the elevator, the cause of their displacement, and a way home remain unknown.
+This memory belongs to human NPC residents, not {SNAKE_NAME} or the human player.
+"""
+
 
 def actor_id(person):
     return person.get("npc_id", person.get("actor_id"))
@@ -112,7 +128,7 @@ def orientation_context(npc):
 
 
 def orientation_speech(texts):
-    pattern = (r"\b(?:arriv\w*|where (?:are|am) (?:we|i)|where (?:we|i) (?:are|am)|"
+    pattern = (r"\b(?:arriv\w*|elevator|where (?:are|am) (?:we|i)|where (?:we|i) (?:are|am)|"
                r"why (?:we|i) (?:are|am) here|how (?:did|do) (?:we|i) get|how (?:we|i) got here|"
                r"(?:get|getting|go|going|way|back) home|"
                r"(?:remember|recall).{0,35}(?:how|why|when).{0,25}here|"
@@ -131,7 +147,7 @@ def validate_orientation(response, snapshot):
             raise ValueError("This orientation exchange does not authorize apple promises, private disclosures or leverage. Meet the person and find your bearings.")
         if snapshot.get("_dialogue_validation", True):
             if not discussed:
-                raise ValueError("This is an orientation exchange. Discuss the unfamiliar surroundings or missing arrival memory, rather than pursuing a routine apple goal.")
+                raise ValueError("This is an orientation exchange. Discuss the unfamiliar surroundings or remembered elevator arrival, rather than pursuing a routine apple goal.")
     # This is derived bookkeeping, not a reason to regenerate otherwise valid speech.
     response.orientation_discussed = discussed
     return discussed
