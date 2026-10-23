@@ -10,8 +10,13 @@ INTRODUCTION_REASON = (
     "We have not met before; their floating tag already shows their name."
 )
 JUDY_OPENING = (
-    "Hi, I'm {name}. I arrived here yesterday, and you're the first other person "
-    "I've seen here."
+    "Oh! Hi, I'm {name}. Sorry, I wasn't expecting anyone else to come up in the elevator. "
+    "I arrived here yesterday, and you're the first other person I've seen here, aside from the snake. "
+    "It called this place purgatory. I don't know what to make of that, but after a whole day "
+    "on my own, I started wondering whether it was just for me. My own private purgatory. "
+    "Though I suppose all those empty rooms should have been a clue that someone else might turn up. "
+    "I feel a little silly now. Mostly relieved, honestly. It's good to have someone else here. "
+    "How are you holding up?"
 )
 
 
