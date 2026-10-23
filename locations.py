@@ -1,6 +1,6 @@
 """The garden and rectangular apartment maps; no scene or pathfinding framework."""
 
-from constants import (GARDEN_LOCATION, WORLD_WIDTH, WORLD_HEIGHT, HALLWAY_SIZE, ROOM_SIZE, FOOT_MARGIN,
+from constants import (GARDEN_LOCATION, GARDEN_FLOOR_SIZE, WORLD_WIDTH, WORLD_HEIGHT, HALLWAY_SIZE, ROOM_SIZE, FOOT_MARGIN,
                       INDOOR_FLOOR_TOP, ROOMS_PER_FLOOR, HALLWAY_DOOR_ORIGINS, HALLWAY_ELEVATOR_ORIGIN,
                       APARTMENT_OVERLAY_SIZE, APARTMENT_OVERLAY_SCALE, HALLWAY_ARRIVAL_Y, ROOM_ARRIVAL,
                       ELEVATOR_ARRIVAL, HALLWAY_EXIT, ROOM_EXIT, HALLWAY_ENTRY, HALLWAY_EXIT_RECT, ROOM_EXIT_RECT,
@@ -64,7 +64,7 @@ def valid_location(world, location):
 
 def map_size(location):
     if location == GARDEN_LOCATION:
-        return WORLD_WIDTH, WORLD_HEIGHT
+        return GARDEN_FLOOR_SIZE
     width, height = HALLWAY_SIZE if location.startswith("hallway:") else ROOM_SIZE
     exit_rect = HALLWAY_EXIT_RECT if location.startswith("hallway:") else ROOM_EXIT_RECT
     return width, max(height, exit_rect[1] + exit_rect[3])

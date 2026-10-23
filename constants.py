@@ -17,6 +17,7 @@ PLAYER_NAME_TAG = "Player"
 WORLD_WIDTH = 960
 WORLD_HEIGHT = 460
 GARDEN_FLOOR_ART = "assets/Garden Floor.png"
+GARDEN_FLOOR_SIZE = (WORLD_WIDTH, 520)
 # Physical maps use feet positions and a small footprint, including indoors.
 GARDEN_LOCATION = "garden"
 HALLWAY_SIZE = (840, 240)
@@ -301,8 +302,8 @@ FPS = 60
 GRASS = (172, 199, 137)
 WALKABLE_GRASS = (183, 207, 150)
 WORLD_COLORS = {
-    "day": (GRASS, WALKABLE_GRASS),
-    "night": ((64, 77, 98), (77, 92, 111)),
+    "day": ((135, 206, 235), WALKABLE_GRASS),
+    "night": ((20, 40, 80), (77, 92, 111)),
 }
 SHADOW_COLOR = (0, 0, 0, 55)
 CHARACTER_SHADOW_HEIGHT = 12
@@ -343,8 +344,8 @@ LLM_SLOT_HEIGHT = 84
 
 # Apartments use the camera's surrounding space; the garden stays unchanged.
 APARTMENT_ID = "apartments"
-APARTMENT_RECT = (-32, FOOT_MARGIN - HALLWAY_SIZE[1], *HALLWAY_SIZE)
-APARTMENT_DOOR_RECT = (20, FOOT_MARGIN - 84, 56, 84)
+APARTMENT_RECT = (-32, -HALLWAY_SIZE[1], *HALLWAY_SIZE)
+APARTMENT_DOOR_RECT = (20, -84, 56, 84)
 APARTMENT_APPROACH = GARDEN_BUILDING_POINT
 HOME_ARRIVAL_TOLERANCE = 2.0
 STARTING_FATIGUE_RANGE = (0.0, 10.0)
