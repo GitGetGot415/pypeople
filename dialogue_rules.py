@@ -394,6 +394,16 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
             actual.clear()
         if firsthand:
             validate_claim_source(spoken, names=names, speaker=speaker, listener=listener, actor_references=actor_references)
+        # Accounts of different residents hearing the same doctrine are different
+        # events. Shared theological words cannot substitute for the actual hearer.
+        participant_forms = {form for actor in (speaker, listener, SNAKE_NAME) if actor for form in (actor, *actor.split())}
+        for name in names:
+            if name and name not in participant_forms and re.search(
+                    rf"\b{name_pattern(name)}\s+heard\b", assertion, re.I):
+                references = [name.split()[0], *(actor_references or {}).get(name, [])]
+                if not any(re.search(name_pattern(ref), spoken, re.I) for ref in references):
+                    raise DialogueValidationError("The selected account is not actually told in this turn. "
+                        f"Preserve who heard the guard: {name}. Expected snake_claim: {assertion}", RecoveryKind.UNMATCHED_ACCOUNT)
     missing_actor = speaker is not None and any(
         name not in (speaker, listener) and any(is_name_reference(match, assertion)
             for match in re.finditer(name_pattern(name), assertion, re.I))

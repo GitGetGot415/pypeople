@@ -569,6 +569,7 @@ class Simulation:
         if decision not in encounter.request_context["permitted_decisions"]:
             raise ValueError("That decision is unavailable.")
         player_encounter = npc is self.player
+        answer_turn = 1 if player_encounter else response.outcome_turn - 1
         if decision == "give_apple":
             if (not encounter.reserved or self.tree.fruit < 1
                     or math.dist((npc.x, npc.y), self.tree.interaction_point) > 8
@@ -577,7 +578,7 @@ class Simulation:
             if player_encounter:
                 if not response.disclosure_evidence or response.disclosure_evidence not in encounter.request_context["_player_message"]:
                     raise ValueError("The player must actually supply information now.")
-            elif not response.account_id and (not response.evidence.strip() or response.evidence not in response.turns[1].text):
+            elif not response.account_id and (not response.evidence.strip() or response.evidence not in response.turns[answer_turn].text):
                 raise ValueError("An apple requires an actual disclosure or quoted present report.")
         if not player_encounter and response.account_id:
             allowed = {a["claim_id"] for a in encounter.request_context["offering_accounts"]}
@@ -593,17 +594,17 @@ class Simulation:
         encounter.committed, encounter.outcome, encounter.reserved = True, decision, False
         # Disclosures survive refusal of a reward. They never become verified truth.
         if not player_encounter and response.account_id:
-            learn_account(self, npc, snake, response.account_id, encounter.record, 1, "uncertain", private=True)
+            learn_account(self, npc, snake, response.account_id, encounter.record, answer_turn, "uncertain", private=True)
         if response.snake_account_id and not player_encounter:
             known = next(a for a in encounter.request_context["snake"]["known_accounts"] if a["claim_id"] == response.snake_account_id)
             # Preserve the reply as testimony about a report, never rewrite the original fact.
             add_fact(self, "report", npc, snake, encounter.id + ":answer", encounter.record,
                      f"{npc.name} answered about this account: {known['assertion']} "
-                     f"Their response: {response.turns[1].text} This response is not independently verified.", [npc, snake])
+                     f"Their response: {response.turns[answer_turn].text} This response is not independently verified.", [npc, snake])
             learn_account(self, snake, npc, response.snake_account_id, encounter.record, 0, "uncertain")
         if not player_encounter and decision == "give_apple" and not response.account_id:
             add_fact(self, "report", npc, snake, encounter.id + ":report", encounter.record,
-                     f"{npc.name} reported: {response.turns[1].text} This is their account, not independently verified.", [npc, snake])
+                     f"{npc.name} reported: {response.turns[answer_turn].text} This is their account, not independently verified.", [npc, snake])
         if player_encounter and response.disclosure_evidence:
             current = encounter.request_context["current_claim"]
             add_fact(self, "report", npc, snake, current["id"], encounter.record,
