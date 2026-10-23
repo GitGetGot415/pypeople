@@ -1,7 +1,7 @@
 """Small, local activity choices. Autonomous activities never call a model."""
 
 import math
-from dialogue_context import orientation_context
+from social import orientation_context
 from activity import Behavior
 from conversation_history import memory_bias
 from constants import (APPLE_SATISFACTION, DECISION_SECONDS, MOVEMENT_SPEED, SOCIAL_PARTNER_RANDOMNESS,
@@ -91,7 +91,7 @@ def reconsider(npc, world, *, pressing_only=False):
     from player import owns_resident
     if awaiting_arrival_greeting(npc, world):
         return
-    if owns_resident(world, npc) or world.tree_has_actor(npc.id) or npc.journey or world.visit and world.visit["host_id"] == npc.id:
+    if owns_resident(world, npc) or world.tree_has_actor(npc.id) or npc.journey or world.visit and world.visit.host_id == npc.id:
         return
     if (world.phase_pending or npc.interaction is not None or npc.resume_pending or npc.player_call or npc.behavior in HOME_BEHAVIORS
             or npc.home_reason == "night"):

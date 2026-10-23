@@ -1,5 +1,6 @@
 """Session records of dialogue and its outcomes."""
 
+from player_records import PlayerPromiseOffer
 from dataclasses import dataclass, field
 from typing import Annotated, Literal
 from typing_extensions import TypedDict, NotRequired
@@ -58,7 +59,7 @@ class ConversationRecord:
     accepted_player_turns: list[Annotated[int, Field(strict=True, ge=0)]] = field(default_factory=list)
     authorization_id: str | None = None
     transfer_intent: dict | None = None
-    player_promise_offers: list[dict] = field(default_factory=list)
+    player_promise_offers: list[PlayerPromiseOffer] = field(default_factory=list)
 
     @property
     def transcript(self):

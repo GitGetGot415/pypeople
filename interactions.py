@@ -10,6 +10,58 @@ from constants import (CONVERSATION_CLEARANCE, CONVERSATION_SPOT_STEP, CONVERSAT
                       DIALOGUE_TIMEOUT_SECONDS, MAX_SIMULATION_STEP_SECONDS)
 
 
+@dataclass(frozen=True)
+class ParticipantReservation:
+    kind: str
+    owner: object
+    parent: object | None = None
+
+
+class ParticipantReservations:
+    """Transient participant ownership; progress stays in the owning domains.
+
+    Visits, meetings and tree service may contain an exchange. Acquisition does
+    not decide availability: each entry point retains its purpose-specific rules.
+    Releasing a parent never silently commits or interrupts its child.
+    """
+    def __init__(self):
+        self._actors = {}
+
+    def get(self, actor_id, kind):
+        entry = self._actors.get(actor_id, {}).get(kind)
+        return entry.owner if entry else None
+
+    def acquire(self, kind, owner, *actors):
+        for actor in actors:
+            if actor is None:
+                continue
+            entries = self._actors.setdefault(actor.id, {})
+            parent_kinds = {"conversation": ("visit",), "handoff": ("player", "visit"),
+                            "snake": ("tree",), "player": ("snake", "visit"),
+                            "tree": ("visit",)}.get(kind, ())
+            parent = next((entries[k].owner for k in parent_kinds if k in entries), None)
+            entries[kind] = ParticipantReservation(kind, owner, parent)
+
+    def release(self, kind, owner, *actors):
+        """Release only the expected owner, including late/stale cleanup paths."""
+        released = False
+        for actor_id in ([a.id for a in actors] if actors else list(self._actors)):
+            entries = self._actors.get(actor_id, {})
+            if kind in entries and entries[kind].owner is owner:
+                del entries[kind]
+                released = True
+                if not entries:
+                    del self._actors[actor_id]
+        return released
+
+    def exchange(self, actor_id):
+        return (self.get(actor_id, "conversation") or self.get(actor_id, "handoff")
+                or self.get(actor_id, "snake"))
+
+    def held(self, actor_id, *kinds):
+        return any(self.get(actor_id, kind) is not None for kind in kinds)
+
+
 @dataclass
 class DialogueProgress:
     """Logical generation and completion timing, owned by the exchange.

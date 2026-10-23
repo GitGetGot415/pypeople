@@ -69,7 +69,6 @@ class Snake:
     eaten_today: int = 0
     recovery_remaining: float = 0.0
     decision_remaining: float = STARTING_SNAKE_DECISION_SECONDS
-    encounter: object = field(default=None, repr=False, compare=False)
     world: object = field(default=None, repr=False, compare=False)
     selected: bool = False
     reply: str = ""
@@ -78,6 +77,10 @@ class Snake:
     command_revision: int = 0
     retry_request: dict | None = None
     rng: random.Random = field(default_factory=random.Random, repr=False, compare=False)
+
+    @property
+    def encounter(self):
+        return self.world.reservations.get(self.id, "snake") if self.world else None
 
     @property
     def generation_pending(self):
@@ -136,7 +139,7 @@ class Snake:
 
     def snapshot(self, tree=None):
         from social import account_view, claim_by_id
-        from dialogue_context import actor_catalog
+        from actor_identity import actor_catalog
         # Rehearing an event cannot replace the snake's own firsthand knowledge.
         by_fact = {}
         for belief in self.beliefs:
@@ -214,7 +217,7 @@ class SnakeEncounter(SnakeProgress):
         if world.phase_pending and origin == "autonomous":
             raise ValueError("Waiting for the pending time change before starting another automatic encounter.")
         from player import owns_resident
-        if (not world.tree_current or world.tree_current["actor_id"] != resident.id
+        if (not world.tree_current or world.tree_current.actor_id != resident.id
                 or math.dist((resident.x, resident.y), world.tree.interaction_point) > 8
                 or owns_resident(world, resident)):
             raise ValueError("Tree service requires the present front customer in the shared line.")
@@ -238,8 +241,7 @@ class SnakeEncounter(SnakeProgress):
         self.record.intended_subjects = {world.snake.name: self.topic,
                                         resident.name: concern_description(resident, resident.current_concern)}
         self.saved_state = resident.suspend_activity(f"Meeting {SNAKE_NAME}: {self.topic}")
-        resident.snake_encounter = self
-        world.snake.encounter = self
+        world.reservations.acquire("snake", self, resident, world.snake)
         world.snake.target_id = resident.id
         world.snake.activity = ("judging" if purpose == "judgment" else
                                 "introducing" if purpose == "introduction" else "bargaining")
@@ -273,9 +275,7 @@ class SnakeEncounter(SnakeProgress):
         if self.dialogue.dialogue_state == "pending":
             self.dialogue.retry_after_restore()
             self.request_context = None
-        world.snake.encounter = self
-        if resident is not world.player:
-            resident.snake_encounter = self
+        world.reservations.acquire("snake", self, world.snake, resident)
 
     @property
     def turns(self):
@@ -300,7 +300,7 @@ class SnakeEncounter(SnakeProgress):
 
     def snapshot(self, tree=None, npcs=None):
         from social import account_view, claim_by_id
-        from dialogue_context import actor_catalog
+        from actor_identity import actor_catalog
         npc, snake, world = self.recipient, self.initiator, self.world
         can_give_apple = self.reserved and world.tree.fruit > 0
         accounts = [account_view(world, claim_by_id(world, b.claim_id), b)
@@ -330,7 +330,8 @@ class SnakeEncounter(SnakeProgress):
 
     def set_response(self, response, *, reading=False, rewritten_parts=(), dialogue_validation=True):
         from dialogue_validation import dialogue_validation_errors, validate_snake_response
-        from dialogue_context import name_forms, orientation_speech
+        from actor_identity import name_forms
+        from social import orientation_speech
         from social import claim_by_id
         if not self.accepts_response or not self.request_context:
             return
@@ -386,13 +387,11 @@ class SnakeEncounter(SnakeProgress):
         if error:
             self.record.outcomes.append(error)
         npc = self.recipient
-        if npc.snake_encounter is self:
-            npc.snake_encounter = None
+        if self.world.reservations.release("snake", self, npc):
             if self.world.is_outdoors(npc):
                 npc.restore_after_interaction(self.saved_state, self.initiator.id, self.world.tree.id)
                 npc.pause_after_conversation(self.committed)
-        if self.initiator.encounter is self:
-            self.initiator.encounter = None
+        if self.world.reservations.release("snake", self, self.initiator):
             self.initiator.target_id = None
             self.initiator.destination = None
             self.initiator.activity = "recovering" if self.initiator.recovery_remaining else "guarding"
@@ -477,7 +476,7 @@ class PlayerSnakeEncounter(SnakeEncounter):
             return
         from player import active_player
         if (not active_player(world) or resident is not world.player or not world.tree_current
-                or world.tree_current["actor_id"] != resident.id or world.snake.encounter
+                or world.tree_current.actor_id != resident.id or world.snake.encounter
                 or world.snake.interaction_blocked or world.snake.recovery_remaining):
             raise ValueError("Player tree service is unavailable.")
         self.world, self.initiator, self.recipient = world, world.snake, resident
@@ -492,7 +491,7 @@ class PlayerSnakeEncounter(SnakeEncounter):
         self.committed, self.outcome, self.outcome_event_id = False, "", None
         self.request_context = self.saved_state = None
         self.question_account_id = ""
-        world.snake.encounter = self
+        world.reservations.acquire("snake", self, world.snake, resident)
         world.snake.target_id, world.snake.activity = resident.id, "bargaining"
         world.player_interaction = PlayerInteraction(id=self.id, kind="snake", stage="conversation", npc_id=world.snake.id,
             record_id=self.record.id, location="garden")
@@ -511,7 +510,7 @@ class PlayerSnakeEncounter(SnakeEncounter):
     def player_snapshot(self, message, turn):
         from player import relevant_claims
         from social import account_view, claim_by_id
-        from dialogue_context import actor_catalog
+        from actor_identity import actor_catalog
         world, player, snake = self.world, self.recipient, self.initiator
         can_give = bool(world.tree.fruit > 0)
         permitted = ["talk", "warn"]
@@ -554,7 +553,7 @@ class PlayerSnakeEncounter(SnakeEncounter):
         if current["turn"] in self.record.accepted_player_turns:
             raise ValueError("This player turn was already accepted.")
         claim = record_claim(self.world, self.recipient, self.record, message, current["turn"], self.initiator.id)
-        claim["id"] = current["id"]
+        claim.id = current["id"]
         if current["turn"] not in self.record.accepted_player_turns:
             self.record.accepted_player_turns.append(current["turn"])
         decision = response.decision
@@ -596,7 +595,7 @@ class PlayerSnakeEncounter(SnakeEncounter):
         self.active, self.reserved = False, False
         error = error or self.record.error
         self.record.status, self.record.error = ("Failed", error) if error else ("Finished", "")
-        self.initiator.encounter = None
+        self.world.reservations.release("snake", self, self.initiator, self.recipient)
         self.initiator.target_id = None
         self.initiator.player_reply.complete()
         self.initiator.activity = "recovering" if self.initiator.recovery_remaining else "guarding"

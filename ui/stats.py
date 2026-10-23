@@ -17,7 +17,8 @@ from social import assertion_text, claim_by_id, concern_description, fact_by_id,
 from .creations import CreationsGallery
 from .button import Button
 from .text import paginate_turn, wrap_text, scrollbar_rects
-from .world import snake_artwork
+from .character_sprite import draw_actor_portrait
+from constants import STATS_PORTRAIT_PADDING
 
 
 class StatsScreen:
@@ -316,7 +317,7 @@ class StatsScreen:
             inventory_label = "Inventory at departure" if npc.departure else "Carrying"
             add(f"{inventory_label}: {npc.inventory.get('fruit', 0)} apples (unlimited storage)")
             add(f"Owned works: {len(app.simulation.owned_works(npc.id))} (unlimited storage)")
-            add(f"Opinion of player: {npc.player_opinion['opinion']:+d}. {npc.player_opinion['reason']}")
+            add(f"Opinion of player: {npc.player_opinion.opinion:+d}. {npc.player_opinion.reason}")
             add(f"Sociability: {npc.preferences['sociability']:.0%}; generosity: {npc.preferences['generosity']:.0%}", app.small_font, MUTED)
             gap()
             add("Personal objective", app.heading_font)
@@ -645,14 +646,8 @@ class StatsScreen:
             rect = pygame.Rect(self.detail_rect.x, self.detail_rect.top + top - self.detail_scroll, 88, 88)
             if rect.bottom + 6 + len(labels) * app.small_font.get_linesize() < self.detail_rect.top or rect.top >= self.detail_rect.bottom:
                 continue
-            pygame.draw.rect(surface, GRASS, rect)
-            if actor is app.simulation.snake:
-                art = snake_artwork(4, 1)
-                ratio = min(80 / art.get_width(), 80 / art.get_height())
-                portrait = pygame.transform.scale(art, (round(art.get_width() * ratio), round(art.get_height() * ratio)))
-            else:
-                portrait = app.character.renderer.render_portrait(actor.character, rect.inflate(-8, -8).size, emotion=emotion)
-            surface.blit(portrait, portrait.get_rect(center=rect.center))
+            draw_actor_portrait(surface, actor, rect, app.character.renderer, snake=app.simulation.snake,
+                padding=STATS_PORTRAIT_PADDING, background=GRASS, emotion=emotion)
             for index, label in enumerate(labels):
                 surface.blit(app.small_font.render(label, True, MUTED),
                              (rect.x, rect.bottom + 6 + index * app.small_font.get_linesize()))

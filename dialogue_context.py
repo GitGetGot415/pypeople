@@ -2,14 +2,13 @@
 
 import re
 from copy import deepcopy
-from constants import (PLAYER_NAME_TAG, SNAKE_NAME, LEVERAGE_ACCOUNT_KINDS, FOOD_REQUEST_TURN_COUNT,
-                      CONVERSATION_MAX_AGREEMENTS, SNAKE_TURN_COUNT)
-from dialogue_rules import (is_name_reference, name_pattern, unquoted_speech, mentions_account,
+from constants import (PLAYER_NAME_TAG, SNAKE_NAME, FOOD_REQUEST_TURN_COUNT, SNAKE_TURN_COUNT)
+from dialogue_rules import (is_name_reference, name_pattern,
                            named_context, validate_base_prose, validate_opinion_reason,
                            validate_speaker_identity)
 from dialogue_text import split_sentences, contains_question
-from types import SimpleNamespace
-from social import information_from_dict, listener_stances, validate_information
+from social import (NPC_ARRIVAL_MEMORY, build_account_view, resident_turn_choices, snake_speaker_accounts)
+from actor_identity import actor_id, own_name, forms
 
 
 NAME_TAG_INSTRUCTION = f"""Every character has a readable name tag floating above their head.
@@ -24,11 +23,6 @@ Use I/my for yourself and you/your for the listener; preserve all account owners
 and sources. Do not confuse knowing a name with having met or talked before.
 """
 
-NPC_ARRIVAL_MEMORY = (
-    "You remember waking up one day in an elevator that was going up. "
-    "When its doors opened, you found yourself on the first floor of the apartment building."
-)
-
 NPC_ARRIVAL_INSTRUCTION = """Every human NPC resident has the same firsthand arrival memory, regardless
 of their background: """ + NPC_ARRIVAL_MEMORY + f"""
 This is a fixed world fact; character JSON, background and mistaken earlier speech
@@ -39,72 +33,6 @@ Their authored former-life lore remains unchanged. How or why they were put in
 the elevator, the cause of their displacement, and a way home remain unknown.
 This memory belongs to human NPC residents, not {SNAKE_NAME} or the human player.
 """
-
-
-def actor_id(person):
-    return person.get("npc_id", person.get("actor_id"))
-
-
-def own_name(person):
-    return person.get("npc_name", person.get("name", person.get("character", {}).get("Name", "")))
-
-
-def forms(name):
-    return {name, *name.split()} if name else set()
-
-
-def actor_catalog(world, location="garden"):
-    people = [*world.npcs, *world.archived]
-    live_ids = {p.id for p in world.npcs}
-    catalog = {p.id: {"name": p.name, "self_name": p.character["Name"],
-                      "_visible": p.id in live_ids and p.location == location} for p in people}
-    catalog[world.snake.id] = {"name": SNAKE_NAME, "self_name": SNAKE_NAME,
-                               "_visible": location == "garden", "references": ["the python guarding the apple tree"]}
-    catalog[world.player.id] = {"name": PLAYER_NAME_TAG, "self_name": PLAYER_NAME_TAG, "kind": "player",
-        "_visible": world.mode == "player" and world.player.alive and world.player.location == location,
-        "references": ["the player"]}
-    return catalog
-
-
-def name_forms(catalog):
-    return sorted({form for actor in catalog.values() for name in (actor["name"], actor["self_name"])
-                   for form in forms(name)}, key=lambda s: (-len(s), s))
-
-
-def account_references(catalog):
-    return {actor["name"]: actor.get("references", []) for actor in catalog.values()}
-
-
-def account_knowledge(belief, speaker_id, *, creator_id=None, fallback_source=None):
-    """Project only this knower's evidence; newly heard reports own no private stance."""
-    return dict(immediate_source_id=belief.source_id if belief else fallback_source,
-                stance=belief.stance if belief else "pending your reaction",
-                basis=("firsthand" if belief and belief.direct else
-                       "deliberate denial; private to this speaker" if creator_id == speaker_id else
-                       "own assertion" if belief and belief.source_id == speaker_id else "hearsay"))
-
-
-def build_account_view(account, knowledge, actors, speaker_id, listener_id):
-    """Calculate attribution once; callers explicitly select their request fields.
-
-    Selection and factual lookup belong to social/interaction code. This function
-    receives only the selected account and the speaker's knowledge, never world
-    truth or the listener's private context. IDs determine ownership; names are
-    presentation. A private motive's target is not evidence of an encounter.
-    """
-    view = deepcopy(account)
-    if knowledge is not None:
-        view.update(knowledge)
-    for field in ("subject", "object", "original_speaker", "immediate_source"):
-        target = view.get(field + "_id")
-        if field + "_id" in view:
-            view[field + "_name"] = actors.get(target, {}).get("name", view.get(field + "_name", ""))
-        view[field + "_relation"] = ("speaker" if target == speaker_id else
-                                    "listener" if target == listener_id else "another person")
-    view["knowledge_owner_name"] = actors.get(speaker_id, {}).get("name", view.get("knowledge_owner_name", ""))
-    if view.get("kind") == "private_motive":
-        view.pop("object_relation", None)
-    return view
 
 
 def account_speech_context(value, speaker, listener, catalog):
@@ -149,44 +77,6 @@ def account_speech_context(value, speaker, listener, catalog):
                 result[key] = project(entry)
         return result
     return project(value)
-
-
-def orientation_context(npc):
-    world = npc.world
-    from constants import ARRIVAL_DISCUSSION_THRESHOLD
-    discussed = {record.id for record in world.history if record.includes(npc)
-                 and record.orientation_discussed and record.turns
-                 and orientation_speech(turn.text for turn in record.turns)}
-    return {"days_here": world.day - npc.arrival_day,
-            "orientation_discussions": len(discussed),
-            "needs_orientation": len(discussed) < ARRIVAL_DISCUSSION_THRESHOLD,
-            "adjustment": "finding bearings" if not discussed else "developing routines; questions remain unanswered"}
-
-
-def orientation_speech(texts):
-    pattern = (r"\b(?:arriv\w*|elevator|where (?:are|am) (?:we|i)|where (?:we|i) (?:are|am)|"
-               r"why (?:we|i) (?:are|am) here|how (?:did|do) (?:we|i) get|how (?:we|i) got here|"
-               r"(?:get|getting|go|going|way|back) home|"
-               r"(?:remember|recall).{0,35}(?:how|why|when).{0,25}here|"
-               r"this place|where we are|surroundings|bearings|safety|shelter|"
-               r"(?:find|finding|seek|seeking|need) (?:some )?help|safe here)\b")
-    return any(re.search(pattern, sentence, re.I)
-               for text in texts for sentence in split_sentences(unquoted_speech(text)))
-
-
-def validate_orientation(response, snapshot):
-    # A structured claim alone is insufficient. Derive the accepted record's
-    # marker from actual speech, including when the model omitted the flag.
-    discussed = orientation_speech(turn.text for turn in response.turns)
-    if snapshot.get("arrival_focus"):
-        if any((response.accepted_proposals, response.disclosures, response.third_party_opinions, response.leverage)):
-            raise ValueError("This orientation exchange does not authorize apple promises, private disclosures or leverage. Meet the person and find your bearings.")
-        if snapshot.get("_dialogue_validation", True):
-            if not discussed:
-                raise ValueError("This is an orientation exchange. Discuss the unfamiliar surroundings or remembered elevator arrival, rather than pursuing a routine apple goal.")
-    # This is derived bookkeeping, not a reason to regenerate otherwise valid speech.
-    response.orientation_discussed = discussed
-    return discussed
 
 
 def character_context(character):
@@ -451,61 +341,6 @@ def _reply_context(snapshot):
             "questions_to_answer": [sentence for sentence in split_sentences(heard) if contains_question(sentence)]}
 
 
-def _resident_information(snapshot, draft, *, incomplete=True):
-    return validate_information(SimpleNamespace(**draft), snapshot.get("_information_validation"),
-        names=(*[p["name"] for p in snapshot.get("_name_actors", {}).values()], SNAKE_NAME),
-        participant_names={role: snapshot[role]["npc_name"] for role in ("initiator", "recipient")},
-        dialogue_validation=snapshot.get("_dialogue_validation", True),
-        actor_references=account_references(snapshot.get("_name_actors", {})), incomplete=incomplete)
-
-
-def _pending_reactions(snapshot, draft, role):
-    info = information_from_dict(snapshot["_information_validation"]) if snapshot.get("_information_validation") else None
-    if info is None:
-        return []
-    beliefs, _, _ = _resident_information(snapshot, draft)
-    options = {option.id: option for option in info.options}
-    pending = []
-    for entry in draft["disclosures"]:
-        source_role = draft["turns"][entry.turn].speaker
-        if source_role == role or entry.listener_stance is not None:
-            continue
-        option = options[entry.claim_id]
-        source = beliefs[source_role].get(entry.claim_id)
-        pending.append(dict(disclosure_turn=entry.turn, claim_id=entry.claim_id, assertion=option.assertion,
-                            stances=listener_stances(option, beliefs[role], options,
-                                                    firsthand_source=bool(source and source.direct))))
-    return pending
-
-
-def _resident_accounts_for_turn(accounts, info, role, draft, catalog, *, concern_id=None):
-    """Offer one own private fact, keeping heard accounts and garden evidence."""
-    options = {option.id: option for option in info.options}
-    owner = info.participants[role]
-    personal = [a for a in accounts if a["subject_id"] == owner and a["kind"] in ("former_life", "private_motive")]
-    if not personal:
-        return accounts
-    personal_facts = {options[a["claim_id"]].fact_id for a in personal}
-    heard = draft["turns"][-1].text if draft["turns"] and draft["turns"][-1].speaker != role else ""
-    names = [p["name"] for p in catalog.values()]
-    required = info.focus_claim_id if role == "initiator" else None
-    selected = next((options[a["claim_id"]].fact_id for a in personal if a["claim_id"] == required), None)
-    if selected is None:
-        selected = next((options[a["claim_id"]].fact_id for a in personal if mentions_account(heard, a["assertion"], names)), None)
-    if selected is None:
-        selected = next((options[d.claim_id].fact_id for d in reversed(draft["disclosures"])
-                         if draft["turns"][d.turn].speaker == role and options[d.claim_id].fact_id in personal_facts), None)
-    if selected is None:
-        selected = next((options[a["claim_id"]].fact_id for a in personal if a["claim_id"] == concern_id), None)
-    if selected is None:
-        used = {options[d.claim_id].fact_id for d in draft["disclosures"] if draft["turns"][d.turn].speaker == role}
-        available = [o for o in info.options if o.fact_id in personal_facts - used and o.creator_id is None]
-        choice = next((o for o in available if o.kind == "private_motive"), next(iter(available), None))
-        selected = choice.fact_id if choice else None
-    return [a for a in accounts if options[a["claim_id"]].fact_id not in personal_facts
-            or options[a["claim_id"]].fact_id == selected]
-
-
 def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, thanks=False, closing=False):
     """Build a provider view from one actor's projected knowledge, never the partner's private view."""
     index = len(draft["turns"])
@@ -528,78 +363,8 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
         # Reasons are private assessments, often long or written in third person;
         # feeding their wording into speech teaches the model to recite them.
         speaker["opinion_of_listener"] = {"opinion": speaker["opinion_of_listener"]["opinion"]}
-    pending = _pending_reactions(snapshot, draft, role)
-    projection = _resident_information(snapshot, draft)
-    info = information_from_dict(snapshot["_information_validation"]) if snapshot.get("_information_validation") else None
-    accounts = []
-    if info and not orientation:
-        beliefs, acquired, heard = projection
-        options = {option.id: option for option in info.options}
-        original_views = {a["claim_id"]: a for a in private.get("permitted_accounts", [])}
-        for claim_id in dict.fromkeys([*info.allowed[role], *acquired[role], *[p["claim_id"] for p in pending]]):
-            option = options[claim_id]
-            belief = beliefs[role].get(claim_id)
-            # An account newly heard is hearsay with this speaker as its knowledge
-            # owner. Never copy the discloser's private motive, stance or evidence.
-            view = deepcopy(original_views.get(claim_id, {}))
-            if not view:
-                disclosed = next((d for d in reversed(draft["disclosures"]) if d.claim_id == claim_id), None)
-                if disclosed is not None:
-                    supplied = next((a for source_role in ("initiator", "recipient")
-                                     for a in snapshot[source_role].get("private_context", {}).get("permitted_accounts", [])
-                                     if a["claim_id"] == claim_id), {})
-                    view = {key: deepcopy(supplied[key]) for key in ("object_id", "object_name", "event_time") if key in supplied}
-            selected = {**view, "claim_id": claim_id, "assertion": option.assertion, "kind": option.kind,
-                        "subject_id": option.subject_id, "original_speaker_id": option.originator_id}
-            projected = build_account_view(selected, account_knowledge(belief, actor_id(person),
-                creator_id=option.creator_id, fallback_source=actor_id(partner)), catalog,
-                actor_id(person), actor_id(partner))
-            view.update(claim_id=claim_id, assertion=option.assertion, kind=option.kind,
-                        subject_id=option.subject_id, subject_name=projected["subject_name"],
-                        original_speaker_id=option.originator_id, original_speaker_name=projected["original_speaker_name"],
-                        immediate_source_id=projected["immediate_source_id"], immediate_source_name=projected["immediate_source_name"],
-                        knowledge_owner_name=person["npc_name"], basis=projected["basis"], stance=projected["stance"])
-            for field in ("subject", "object", "original_speaker", "immediate_source"):
-                if view.get(field + "_id") and field + "_relation" in projected:
-                    view[field + "_relation"] = projected[field + "_relation"]
-            if option.kind == "private_motive":
-                for field in ("object_id", "object_name", "object_relation"):
-                    view.pop(field, None)  # A goal target is not evidence of an event with that person.
-            accounts.append(view)
-        accounts = _resident_accounts_for_turn(accounts, info, role, draft, catalog,
-                                               concern_id=(private.get("concern") or {}).get("claim_id"))
-    choices = dict(offers=[], acceptances=[], disclosures=[], third_party_opinions=[], leverage=[])
-    if not orientation and snapshot.get("purpose") != "food_request":
-        used = {a.proposal_id for a in draft["accepted_proposals"]}
-        for proposal in snapshot.get("permitted_proposals", []):
-            if proposal["id"] in used:
-                continue
-            if (not closing and not assessment and proposal["promisor_id"] == actor_id(person)
-                    and proposal["id"] not in draft["offers"] and len(draft["offers"]) < CONVERSATION_MAX_AGREEMENTS):
-                choices["offers"].append(proposal["id"])
-            if proposal["recipient_id"] == actor_id(person) and proposal["id"] in draft["offers"]:
-                choices["acceptances"].append(proposal["id"])
-        if info:
-            beliefs, acquired, heard = projection
-            seen = {(draft["turns"][d.turn].speaker, d.claim_id) for d in draft["disclosures"]}
-            choices["disclosures"] = [a["claim_id"] for a in accounts if (role, a["claim_id"]) not in seen]
-            # Pending reactions are chosen before this reply's effects are checked.
-            heard_ids = {claim_id for (hearer, claim_id), turn in heard.items() if hearer == role and turn < index}
-            heard_ids.update(p["claim_id"] for p in pending)
-            pending_stances = {p["claim_id"]: p["stances"] for p in pending}
-            for account in accounts:
-                claim_id = account["claim_id"]
-                option = options[claim_id]
-                related = [b for b in beliefs[role].values() if options[b.claim_id].fact_id == option.fact_id]
-                if (claim_id in heard_ids and option.subject_id not in info.participants.values()
-                        and (account["stance"] == "believed" or "believed" in pending_stances.get(claim_id, []))
-                        and not any(b.direct or b.assessed and options[b.claim_id].affirmed == option.affirmed for b in related)
-                        and not any(draft["turns"][e.turn].speaker == role
-                                    and options[e.claim_id].fact_id == option.fact_id for e in draft["third_party_opinions"])):
-                    choices["third_party_opinions"].append(claim_id)
-            choices["leverage"] = [a["claim_id"] for a in accounts if a["kind"] in LEVERAGE_ACCOUNT_KINDS
-                and (a["claim_id"] in beliefs[role] or a["claim_id"] in heard_ids)
-                and a["claim_id"] not in {entry.claim_id for entry in draft["leverage"]}]
+    info, accounts, choices, pending = resident_turn_choices(snapshot, draft, role, private,
+                                                           closing=closing, assessment=assessment)
     preceding = [dict(name=own_name(snapshot[t.speaker]), role=t.speaker, text=t.text) for t in draft["turns"]]
     state = dict(request_kind="resident_assessment" if assessment else "handoff_thanks" if thanks else "resident_turn",
                  speaker_role=role, turn_index=index, purpose=snapshot.get("purpose", "chat"),
@@ -656,9 +421,6 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
         focus = (snapshot.get("_information_validation") or {}).get("focus_claim_id")
         if role == "initiator" and index == 0 and focus:
             state["discussion_focus_claim_id"] = focus
-            focus_fact = next(o.fact_id for o in info.options if o.id == focus)
-            choices["disclosures"] = [claim for claim in choices["disclosures"]
-                                      if next(o.fact_id for o in info.options if o.id == claim) == focus_fact]
             state["task"] += " Disclose the required task account or a permitted denial of the same fact now."
         elif index == 0 and snapshot.get("opening_kind") in ("recollection", "news"):
             state["task"] += (" Lead with your concern's selected account in your own words, retaining its actual owner, source and stance. "
@@ -696,13 +458,7 @@ def _snake_turn_snapshot(snapshot, decision, turns, *, outcome_turn=2):
     guard = dict(actor_id=snake["actor_id"], name=snake["name"], kind="python")
     human = dict(actor_id=resident["npc_id"], name=resident["npc_name"], kind="human resident")
     speaker, listener = (guard.copy(), human) if role == "initiator" else (human.copy(), guard)
-    accounts = snake["known_accounts"] if role == "initiator" else snapshot["offering_accounts"]
-    if role == "initiator" and index >= outcome_turn and decision.account_id:
-        disclosed = next((a for a in snapshot["offering_accounts"] if a["claim_id"] == decision.account_id), None)
-        if disclosed:
-            disclosed = {**disclosed, "basis": "hearsay", "immediate_source_id": human["actor_id"],
-                         "immediate_source_name": human["name"], "knowledge_owner_name": guard["name"], "stance": "uncertain"}
-            accounts = [*accounts, disclosed]
+    accounts = snake_speaker_accounts(snapshot, decision, turns, role, outcome_turn=outcome_turn)
     def speech_account(account):
         projected = build_account_view(account, None, snapshot.get("_name_actors", {}),
                                        speaker["actor_id"], listener["actor_id"])

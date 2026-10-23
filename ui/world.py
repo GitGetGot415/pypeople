@@ -8,6 +8,7 @@ from constants import (GARDEN_LOCATION, INK, PAPER, SHADOW_COLOR, WORLD_COLORS, 
 from activity import Behavior
 from npc import NPC
 from .fonts import UnicodeFont
+from .character_sprite import snake_artwork
 
 
 CHARACTER_SCALE = 0.5
@@ -85,14 +86,6 @@ def tree_artwork():
         _tree_artwork = tuple(pygame.image.load(str(asset_dir / name)).convert_alpha()
                               for name in ("Tree.png", "Apple.png"))
     return _tree_artwork
-
-
-@lru_cache(maxsize=16)
-def snake_artwork(facing, frame):
-    direction = ("N", "NE", "E", "SE", "S", "SE", "E", "NE")[facing]
-    path = Path(__file__).resolve().parent.parent / "assets" / "snake" / f"{direction}{frame}.png"
-    artwork = pygame.image.load(str(path)).convert_alpha()
-    return pygame.transform.flip(artwork, True, False) if facing > 4 else artwork
 
 
 def _draw_shadow(surface, rect):

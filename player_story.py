@@ -1,5 +1,6 @@
 """Authored events for new Player games; ordinary simulation dialogue stays generated."""
 
+from player_records import PlayerCallReason
 from constants import SNAKE_NAME, STARTING_DAY, STARTING_PHASE, STARTING_PLAYER_DAY
 
 
@@ -72,12 +73,12 @@ def start_player_introduction(world):
     from player import start_call
 
     judy = world.npcs[0]
-    start_call(world, judy, dict(key=f"introduction:{judy.id}", kind="introduction",
+    start_call(world, judy, PlayerCallReason(key=f"introduction:{judy.id}", kind="introduction",
                                reference=world.player.id, reason=INTRODUCTION_REASON))
 
 
 def valid_introduction_call(world, npc, call, *, interaction):
-    return (call["reference"] == world.player.id and call["key"] == f"introduction:{npc.id}"
+    return (call.reference == world.player.id and call.key == f"introduction:{npc.id}"
             and starting_encounter(world, npc.id) is not None
             and bool(interaction and interaction.kind == "resident"
                      and interaction.npc_id == npc.id and interaction.incoming))
@@ -86,7 +87,8 @@ def valid_introduction_call(world, npc, call, *, interaction):
 def scripted_player_opening(world, npc):
     """Record the first greeting once, before submitting any player reply to the model."""
     from conversation_history import ConversationRecord
-    from dialogue_context import actor_catalog, name_forms, orientation_speech
+    from actor_identity import (actor_catalog, name_forms)
+    from social import orientation_speech
     from player import active_player, clear_call, owns_resident
 
     if (not active_player(world) or not owns_resident(world, npc)

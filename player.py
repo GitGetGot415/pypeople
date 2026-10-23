@@ -11,6 +11,8 @@ from constants import (PLAYER_ID, STARTING_PLAYER_FRUIT, PLAYER_CALL_COOLDOWN, P
                       PLAYER_DEFAULT_APPEARANCE, MOVEMENT_SPEED, PLAYER_APPROACH_MULTIPLIER,
                       PLAYER_RUN_MULTIPLIER, PLAYER_APPROACH_TIMEOUT, PLAYER_EVIDENCE_LIMIT)
 from conversation_history import remember
+from locations import Journey
+from player_records import (PlayerCall, PlayerCallReason, PlayerPromiseOffer, PlayerReport)
 from dialogue_text import contains_question
 
 
@@ -60,15 +62,15 @@ class PlayerInteraction:
 @dataclass
 class Player:
     sprite_size = None
-    id: str = PLAYER_ID
-    inventory: dict = field(default_factory=lambda: {"fruit": STARTING_PLAYER_FRUIT})
+    id: Literal[PLAYER_ID] = PLAYER_ID
+    inventory: dict[Literal["fruit"], Annotated[int, Field(strict=True, ge=0)]] = field(default_factory=lambda: {"fruit": STARTING_PLAYER_FRUIT})
     x: float = STARTING_PLAYER_POSITION[0]
     y: float = STARTING_PLAYER_POSITION[1]
-    facing: int = STARTING_FACING
+    facing: Annotated[int, Field(ge=0, le=7)] = STARTING_FACING
     location: str = ARRIVAL_LOCATION
     alive: bool = True
     appearance: dict = field(default_factory=lambda: PLAYER_DEFAULT_APPEARANCE.copy())
-    journey: dict | None = None
+    journey: Journey | None = None
 
     @property
     def name(self):
@@ -89,7 +91,8 @@ def active_player(world):
 
 
 def owns_resident(world, npc):
-    return bool(world.player_interaction and world.player_interaction.npc_id == npc.id)
+    interaction = world.reservations.get(npc.id, "player")
+    return bool(interaction and interaction.npc_id == npc.id)
 
 
 def owns_conversation(world, npc, *, stages=("conversation",)):
@@ -101,7 +104,7 @@ def owns_conversation(world, npc, *, stages=("conversation",)):
 def can_claim(world):
     return active_player(world) and not (world.player_interaction or world.player.journey
         or world.tree_has_actor(world.player.id) or world.player_menu_blocked
-        or world.visit and world.visit["stage"] == "travel")
+        or world.visit and world.visit.stage == "travel")
 
 
 def start_approach(world, npc, *, incoming=False, gift=None, knock_room=None):
@@ -138,8 +141,8 @@ def end_interaction(world, reason="Conversation ended."):
     record = next((r for r in world.history if r.id == interaction.record_id), None)
     if record:
         for offer in record.player_promise_offers:
-            if offer["status"] == "offered":
-                offer["status"] = "closed"
+            if offer.status == "offered":
+                offer.status = "closed"
         if record.status in ("Waiting for reply", "Reply pending when saved"):
             record.status, record.error = "Cancelled", reason
     if npc:
@@ -152,8 +155,8 @@ def end_interaction(world, reason="Conversation ended."):
         if interaction.saved_state:
             npc.restore_after_interaction(interaction.saved_state, world.player.id, preserve_facing=True)
     for invitation in world.player_invitations:
-        if invitation["status"] == "offered" and invitation["interaction_id"] == interaction.id:
-            invitation["status"] = "withdrawn"
+        if invitation.status == "offered" and invitation.interaction_id == interaction.id:
+            invitation.status = "withdrawn"
 
 
 def update_interaction(world, dt):
@@ -196,12 +199,12 @@ def move_player(world, dx, dy, dt, *, running=False):
 
 def record_claim(world, speaker, record, text, turn, listener_id):
     """Durable original reports, independently retrievable from trimmed chat context."""
-    prior = next((c for c in world.player_claims if c["conversation_id"] == record.id and c["turn"] == turn), None)
+    prior = next((c for c in world.player_claims if c.conversation_id == record.id and c.turn == turn), None)
     if prior:
-        if listener_id not in prior["listener_ids"]:
-            prior["listener_ids"].append(listener_id)
+        if listener_id not in prior.listener_ids:
+            prior.listener_ids.append(listener_id)
         return prior
-    claim = dict(id=uuid4().hex, speaker_id=speaker.id, conversation_id=record.id, turn=turn,
+    claim = PlayerReport(id=uuid4().hex, speaker_id=speaker.id, conversation_id=record.id, turn=turn,
                  day=world.day, phase=world.phase, text=text, kind="report", listener_ids=[listener_id])
     world.player_claims.append(claim)
     return claim
@@ -209,9 +212,9 @@ def record_claim(world, speaker, record, text, turn, listener_id):
 
 def relevant_claims(world, listener_id, message=""):
     words = set(message.casefold().split())
-    claims = [c for c in world.player_claims if listener_id in c["listener_ids"]]
-    ordered = sorted(enumerate(claims), key=lambda row: (len(words & set(row[1]["text"].casefold().split())), row[0]), reverse=True)
-    return [c.copy() for _, c in ordered[:PLAYER_EVIDENCE_LIMIT]]
+    claims = [c for c in world.player_claims if listener_id in c.listener_ids]
+    ordered = sorted(enumerate(claims), key=lambda row: (len(words & set(row[1].text.casefold().split())), row[0]), reverse=True)
+    return [asdict(c) for _, c in ordered[:PLAYER_EVIDENCE_LIMIT]]
 
 
 def owned_works(world, owner_id):
@@ -248,13 +251,13 @@ def requested_work_id(world, owner_id, message):
 def update_player_opinion(npc, delta, reason):
     """Keep mixed evidence, and scale a bounded change by this resident's personality."""
     entry = npc.player_opinion
-    if reason in entry["reason"]:
+    if reason in entry.reason:
         return
     step = round(max(-PLAYER_OPINION_STEP, min(PLAYER_OPINION_STEP, delta))
                  * (0.5 + npc.preferences["sociability"] / 2))
-    entry["opinion"] = max(-100, min(100, entry["opinion"] + step))
-    combined = (entry["reason"] + " " + reason).strip()
-    entry["reason"] = combined if len(combined) <= 400 else entry["reason"][:180] + " ... " + reason[:215]
+    entry.opinion = max(-100, min(100, entry.opinion + step))
+    combined = (entry.reason + " " + reason).strip()
+    entry.reason = combined if len(combined) <= 400 else entry.reason[:180] + " ... " + reason[:215]
 
 
 def player_reply_closes(closing, reply, rewritten=()):
@@ -287,37 +290,37 @@ def accept_player_promises(world, npc, record, response, message, *, opening=Fal
     from social import Promise, phase_label
     from dialogue_rules import validate_apple_promise
     for pending in record.player_promise_offers:
-        if pending["status"] != "offered":
+        if pending.status != "offered":
             continue
-        if pending["deadline"] < world.phase_index:
-            pending["status"] = "expired"
+        if pending.deadline < world.phase_index:
+            pending.status = "expired"
             continue
         if not message:
             continue
         from dialogue_rules import unquoted_speech
         if re.search(r"\b(?:no thanks|no thank you|decline|don't want|do not want)\b", unquoted_speech(message), re.I):
-            pending["status"] = "declined"
+            pending.status = "declined"
             continue
         try:
-            validate_apple_promise(record.turns[pending["offer_turn"]].text, message,
-                                   pending["deadline"], current_phase=world.phase_index)
+            validate_apple_promise(record.turns[pending.offer_turn].text, message,
+                                   pending.deadline, current_phase=world.phase_index)
         except ValueError:
             continue
-        pending["accept_turn"] = len(record.turns) - 1
-        pending["status"] = "accepted"
+        pending.accept_turn = len(record.turns) - 1
+        pending.status = "accepted"
     offer = response.apple_promise
     if offer:
         player_giving = offer.giver_id == world.player.id
-        record.player_promise_offers.append(dict(id=uuid4().hex, giver_id=offer.giver_id,
+        record.player_promise_offers.append(PlayerPromiseOffer(id=uuid4().hex, giver_id=offer.giver_id,
             recipient_id=npc.id if player_giving else world.player.id, deadline=offer.deadline,
             offer_turn=len(record.turns) - 1 if player_giving else len(record.turns),
             accept_turn=len(record.turns) if player_giving else None, created_phase=world.phase_index,
             status="accepted" if player_giving else "offered"))
     for pending in record.player_promise_offers:
-        if pending["accept_turn"] is None or any(p.id == pending["id"] for p in world.promises):
+        if pending.accept_turn is None or any(p.id == pending.id for p in world.promises):
             continue
-        promise = Promise(pending["id"], pending["giver_id"], pending["recipient_id"], record.id,
-                          world.phase_index, pending["deadline"])
+        promise = Promise(pending.id, pending.giver_id, pending.recipient_id, record.id,
+                          world.phase_index, pending.deadline)
         world.promises.append(promise)
         text = f'One apple promised by {phase_label(promise.deadline)}; delivery is still pending.'
         event = world.publish("promise_created", (world.player, npc), text, record)
@@ -331,25 +334,25 @@ def call_reason(world, npc):
                 and {p.promisor_id, p.recipient_id} == {npc.id, world.player.id}]
     if promises:
         p = promises[0]
-        return dict(key=f"promise:{p.id}", kind="followup", reference=p.id,
+        return PlayerCallReason(key=f"promise:{p.id}", kind="followup", reference=p.id,
                     reason="Follow up on our accepted apple commitment.")
-    if npc.preferences["generosity"] > PLAYER_CALL_GIFT_GENEROSITY and npc.player_opinion["opinion"] >= 0:
+    if npc.preferences["generosity"] > PLAYER_CALL_GIFT_GENEROSITY and npc.player_opinion.opinion >= 0:
         works = owned_works(world, npc.id)
         if works:
             work = works[-1]
-            return dict(key=f"gift:{work.id}", kind="gift", reference=work.id,
+            return PlayerCallReason(key=f"gift:{work.id}", kind="gift", reference=work.id,
                         reason=f'Consider offering my {work.kind} "{work.title}" to the player. I may also keep it.')
         if npc.inventory["fruit"] > 1:
-            return dict(key=f"apples:{world.day}:{world.phase}", kind="gift", reference="fruit",
+            return PlayerCallReason(key=f"apples:{world.day}:{world.phase}", kind="gift", reference="fruit",
                         reason="Consider offering one of my actual apples to the player.")
     concern = npc.current_concern
     if concern and concern.claim_id and concern.kind == "news":
-        return dict(key=f"news:{concern.claim_id}", kind="news", reference=concern.claim_id,
+        return PlayerCallReason(key=f"news:{concern.claim_id}", kind="news", reference=concern.claim_id,
                     reason="Share the known news account in my current concern, retaining its source and uncertainty.")
     memories = [m for m in npc.memories if m.partner_id == world.player.id and m.kind == "conversation"]
     if memories and npc.preferences["sociability"] > PLAYER_CALL_SOCIABILITY:
         memory = memories[-1]
-        return dict(key=f"memory:{memory.id}", kind="followup", reference=memory.id,
+        return PlayerCallReason(key=f"memory:{memory.id}", kind="followup", reference=memory.id,
                     reason=f"Follow up on our accepted earlier encounter: {memory.summary}")
     return None
 
@@ -358,17 +361,17 @@ def call_valid(world, npc, call):
     from locations import available, colocated
     if not active_player(world) or not available(npc) or not colocated(world.player, npc):
         return False
-    ref = call["reference"]
-    if call["kind"] == "introduction":
+    ref = call.reference
+    if call.kind == "introduction":
         from player_story import valid_introduction_call
         return valid_introduction_call(world, npc, call, interaction=world.player_interaction)
-    if call["kind"] == "reply":
+    if call.kind == "reply":
         return any(r.id == ref and {world.player.id, npc.id} == set(r.participant_ids)
                    and r.turns and r.turns[-1].speaker == npc.name and not r.error for r in world.history)
-    if call["kind"] == "gift":
+    if call.kind == "gift":
         return (npc.inventory["fruit"] > 0 if ref == "fruit"
                 else any(w.id == ref and w.owner_id == npc.id for w in world.creations))
-    if call["kind"] == "news":
+    if call.kind == "news":
         return any(b.claim_id == ref for b in npc.beliefs)
     return (any(m.id == ref for m in npc.memories)
             or any(p.id == ref and p.status == "pending" for p in world.promises))
@@ -377,7 +380,7 @@ def call_valid(world, npc, call):
 def clear_call(npc):
     if npc.player_call:
         if not npc.unread_player_reply:
-            npc.resolved_player_calls.append(npc.player_call["key"])
+            npc.resolved_player_calls.append(npc.player_call.key)
         npc.player_call = None
     npc.player_call_cooldown = PLAYER_CALL_COOLDOWN
 
@@ -385,9 +388,9 @@ def clear_call(npc):
 def start_call(world, npc, reason):
     """Claim an incoming meeting before normal activities can reserve its actors."""
     start_approach(world, npc, incoming=True)
-    npc.player_call = reason.copy()
+    npc.player_call = PlayerCall(**asdict(reason), event_id="")
     event = world.publish("player_call", (npc,), f"{npc.name} would like to talk to you.")
-    npc.player_call["event_id"] = event.id
+    npc.player_call.event_id = event.id
 
 
 def update_calls(world, dt):
@@ -402,11 +405,11 @@ def update_calls(world, dt):
         return
     world.player_call_check = PLAYER_CALL_CHECK_SECONDS
     from locations import colocated
-    for npc in sorted(world.npcs, key=lambda n: n.player_opinion["opinion"] + n.preferences["sociability"], reverse=True):
+    for npc in sorted(world.npcs, key=lambda n: n.player_opinion.opinion + n.preferences["sociability"], reverse=True):
         if npc.player_call or npc.player_call_cooldown or not world.company_available(npc) or not colocated(world.player, npc):
             continue
         reason = call_reason(world, npc)
-        if reason and reason["key"] not in npc.resolved_player_calls:
+        if reason and reason.key not in npc.resolved_player_calls:
             try:
                 start_call(world, npc, reason)
             except ValueError:

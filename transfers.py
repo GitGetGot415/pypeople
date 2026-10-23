@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Annotated
 from pydantic import Field
+from player_records import PlayerAcknowledgment
 from dialogue import ConversationPart
 from uuid import uuid4
 from constants import (GIFT_GIVE_SECONDS, GIFT_SECONDS, PLAYER_TALK_DISTANCE, PLAYER_LABEL,
@@ -11,7 +12,7 @@ from constants import (GIFT_GIVE_SECONDS, GIFT_SECONDS, PLAYER_TALK_DISTANCE, PL
 from conversation_history import ConversationRecord, remember
 from interactions import company_point, face_each_other
 from dialogue_rules import unquoted_speech
-from dialogue_context import actor_id
+from actor_identity import actor_id
 
 
 def validate_transfer(world, giver, recipient, item, quantity, *, interaction=None, player_authorization=None):
@@ -38,7 +39,7 @@ def validate_transfer(world, giver, recipient, item, quantity, *, interaction=No
             and player_authorization == world.player_interaction.id and owns_resident(world, giver))
         if world.player not in (giver, recipient) and owns_resident(world, person) and not authorized:
             raise ValueError("The resident is meeting the player.")
-        if world.player not in (giver, recipient) and world.visit and world.visit["host_id"] == person.id:
+        if world.player not in (giver, recipient) and world.visit and world.visit.host_id == person.id:
             raise ValueError("The resident is hosting the player.")
         if (interaction is None and giver is not world.player and recipient is not world.player
                 and (person.player_call or person is recipient and person.selected)):
@@ -101,7 +102,7 @@ def commit_transfer(world, interaction):
     record.outcomes[0:1] = [f"Gave {description} to {recipient.name}."]
     if giver is world.player or recipient is world.player:
         resident = recipient if giver is world.player else giver
-        world.player_acknowledgments.append(dict(npc_id=resident.id, record_id=record.id, transfer_id=transfer["id"]))
+        world.player_acknowledgments.append(PlayerAcknowledgment(npc_id=resident.id, record_id=record.id, transfer_id=transfer["id"]))
 
 
 @dataclass(eq=False)
@@ -157,7 +158,7 @@ class Handoff(HandoffProgress):
             self.saved_states[npc.id] = npc.suspend_activity(
                 "Exchanging a gift with the player" if player_exchange else
                 "Giving items" if npc is initiator else "Receiving items")
-            npc.gift = self
+            self.world.reservations.acquire("handoff", self, npc)
         if saved_states is not None:
             self.saved_states = dict(zip((npc.id for npc in self.residents), saved_states))
         if initiator is not self.world.player:
@@ -173,7 +174,7 @@ class Handoff(HandoffProgress):
         self.initiator, self.recipient, self.record = initiator, recipient, record
         self.world, self.active, self.saved_states = initiator.world, True, restored["saved_states"]
         for npc in self.residents:
-            npc.gift = self
+            self.world.reservations.acquire("handoff", self, npc)
 
     @property
     def residents(self):
@@ -232,9 +233,8 @@ class Handoff(HandoffProgress):
         for npc in self.residents:
             state = self.saved_states[npc.id]
             other = self.recipient if npc is self.initiator else self.initiator
-            if npc.gift is not self:
+            if not self.world.reservations.release("handoff", self, npc):
                 continue
-            npc.gift = None
             if npc.world.npc_by_id(npc.id) is not npc:
                 continue
             npc.restore_after_interaction(state, other.id, preserve_facing=True)

@@ -6,6 +6,26 @@ from constants import (GARDEN_LOCATION, WORLD_WIDTH, WORLD_HEIGHT, HALLWAY_SIZE,
                       ELEVATOR_ARRIVAL, HALLWAY_EXIT, GARDEN_BUILDING_POINT, GARDEN_BUILDING_ARRIVAL,
                       MOVEMENT_SPEED, TRAVEL_STEP_TIMEOUT, PLAYER_APPROACH_MULTIPLIER, PLAYER_ROOM_NUMBER)
 from interactions import move_toward
+from dataclasses import dataclass, field
+from typing import Annotated
+from pydantic import Field
+
+
+@dataclass
+class RouteStep:
+    point: tuple[float, float]
+    destination: str
+    arrival: tuple[float, float] | None
+
+
+@dataclass
+class Journey:
+    destination: str
+    point: tuple[float, float]
+    purpose: str
+    fast: bool = False
+    elapsed: Annotated[float, Field(ge=0, le=TRAVEL_STEP_TIMEOUT)] = 0.0
+    steps: list[RouteStep] = field(default_factory=list)
 
 
 def room_location(number):
@@ -101,24 +121,24 @@ def route(source, destination, point):
     if current.startswith("room:") and current != destination:
         room = int(current.split(":")[1])
         current = hallway_location(floor_for_room(room))
-        steps.append(dict(point=ROOM_ARRIVAL, destination=current, arrival=door_point(room)))
+        steps.append(RouteStep(point=ROOM_ARRIVAL, destination=current, arrival=door_point(room)))
     target_hall = (hallway_location(floor_for_room(int(destination.split(":")[1])))
                    if destination.startswith("room:") else destination)
     if current == GARDEN_LOCATION and target_hall != GARDEN_LOCATION:
         current = hallway_location(1)
-        steps.append(dict(point=GARDEN_BUILDING_POINT, destination=current, arrival=HALLWAY_EXIT))
+        steps.append(RouteStep(point=GARDEN_BUILDING_POINT, destination=current, arrival=HALLWAY_EXIT))
     if current.startswith("hallway:") and target_hall == GARDEN_LOCATION:
         if current != hallway_location(1):
-            steps.append(dict(point=ELEVATOR_ARRIVAL, destination=hallway_location(1), arrival=ELEVATOR_ARRIVAL))
+            steps.append(RouteStep(point=ELEVATOR_ARRIVAL, destination=hallway_location(1), arrival=ELEVATOR_ARRIVAL))
         current = GARDEN_LOCATION
-        steps.append(dict(point=HALLWAY_EXIT, destination=current, arrival=GARDEN_BUILDING_ARRIVAL))
+        steps.append(RouteStep(point=HALLWAY_EXIT, destination=current, arrival=GARDEN_BUILDING_ARRIVAL))
     elif current.startswith("hallway:") and current != target_hall:
-        steps.append(dict(point=ELEVATOR_ARRIVAL, destination=target_hall, arrival=ELEVATOR_ARRIVAL))
+        steps.append(RouteStep(point=ELEVATOR_ARRIVAL, destination=target_hall, arrival=ELEVATOR_ARRIVAL))
         current = target_hall
     if destination.startswith("room:") and current != destination:
         room = int(destination.split(":")[1])
-        steps.append(dict(point=door_point(room), destination=destination, arrival=ROOM_ARRIVAL))
-    steps.append(dict(point=clamp_point(destination, point), destination=destination, arrival=None))
+        steps.append(RouteStep(point=door_point(room), destination=destination, arrival=ROOM_ARRIVAL))
+    steps.append(RouteStep(point=clamp_point(destination, point), destination=destination, arrival=None))
     return steps
 
 
@@ -126,7 +146,7 @@ def start_journey(actor, destination, point, *, purpose="travel", fast=False):
     if not valid_location(actor.world, destination):
         raise ValueError("That destination is unavailable.")
     actor.destination = None
-    actor.journey = dict(destination=destination, point=tuple(point), purpose=purpose, fast=fast,
+    actor.journey = Journey(destination=destination, point=tuple(point), purpose=purpose, fast=fast,
                          elapsed=0.0, steps=route(actor.location, destination, point))
 
 
@@ -134,23 +154,23 @@ def update_journey(actor, dt):
     journey = actor.journey
     if journey is None:
         return False
-    journey["elapsed"] += dt
-    if journey["elapsed"] > TRAVEL_STEP_TIMEOUT:
+    journey.elapsed += dt
+    if journey.elapsed > TRAVEL_STEP_TIMEOUT:
         actor.journey = None
         actor.world.publish("travel_failed", (actor,), "The journey could not reach its destination.")
         if actor is actor.world.player:
             from player import end_interaction
             end_interaction(actor.world, "The journey could not reach its destination.")
         return False
-    step = journey["steps"][0]
-    speed = MOVEMENT_SPEED * (PLAYER_APPROACH_MULTIPLIER if journey["fast"] else 1)
-    if move_toward(actor, clamp_point(actor.location, step["point"]), dt, speed):
-        if step["arrival"] is not None:
-            actor.location = step["destination"]
-            actor.x, actor.y = clamp_point(actor.location, step["arrival"])
-        journey["steps"].pop(0)
-        journey["elapsed"] = 0.0
-        if not journey["steps"]:
+    step = journey.steps[0]
+    speed = MOVEMENT_SPEED * (PLAYER_APPROACH_MULTIPLIER if journey.fast else 1)
+    if move_toward(actor, clamp_point(actor.location, step.point), dt, speed):
+        if step.arrival is not None:
+            actor.location = step.destination
+            actor.x, actor.y = clamp_point(actor.location, step.arrival)
+        journey.steps.pop(0)
+        journey.elapsed = 0.0
+        if not journey.steps:
             actor.journey = None
             return True
     return False

@@ -317,7 +317,7 @@ class Application:
         if target["kind"] == "room" and target["room"] != PLAYER_ROOM_NUMBER:
             room = target["room"]
             host = next((n for n in world.npcs if n.room_number == room), None)
-            permitted = bool(world.visit and world.visit["host_id"] == (host.id if host else None))
+            permitted = bool(world.visit and world.visit.host_id == (host.id if host else None))
             if not permitted:
                 if not host or host.location != target["destination"]:
                     self.game.show_save_message("This room is vacant." if not host else "The resident is absent.")

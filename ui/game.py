@@ -15,13 +15,15 @@ from constants import (DIALOGUE_PANEL_HEIGHT, FAILED_CONVERSATION_SELECTED_COLOR
                       BED_CANCEL_RECT)
 from emotions import portrait_expression
 from conversation_history import display_parts, uses_original_dialogue
-from dialogue_context import actor_catalog, name_forms
+from actor_identity import actor_catalog, name_forms
 from .button import Button
 from .event_feed import EventFeed
 from .request_status import RequestStatus
 from .text import draw_centered_text, draw_wrapped_text, paginate_turn, wrap_text
 from .text_input import TextInput
-from .world import draw_world, snake_artwork
+from .world import draw_world
+from .character_sprite import draw_actor_portrait
+from constants import GAME_PORTRAIT_BACKGROUND, GAME_PORTRAIT_PADDING, GAME_PORTRAIT_BORDER_WIDTH
 from .inventory import InventoryPanel
 
 
@@ -200,7 +202,7 @@ class GameScreen:
             offer = self.pending_invitation(world)
             if offer:
                 app._sync_conversation_view()
-                app.conversations.accept_player_invitation(offer["id"])
+                app.conversations.accept_player_invitation(offer.id)
                 app._present_conversation_events()
                 return
         if self.call_choice:
@@ -384,7 +386,7 @@ class GameScreen:
         return (active_player(world) and self.location == world.player.location == PLAYER_ROOM_LOCATION
                 and not world.player_interaction and not world.player.journey
                 and not world.tree_has_actor(world.player.id)
-                and not (world.visit and world.visit["stage"] == "travel"))
+                and not (world.visit and world.visit.stage == "travel"))
 
     def can_advance_from_bed(self, world):
         return (self.can_use_bed(world) and not world.paused
@@ -511,7 +513,7 @@ class GameScreen:
         from locations import targets
         world = app.simulation
         if active_player(world) and (world.player_interaction or world.player.journey
-                                     or world.visit and world.visit["stage"] == "travel"):
+                                     or world.visit and world.visit.stage == "travel"):
             return
         point = self.screen_to_world(screen_pos)
         if self.can_use_bed(world) and pygame.Rect(ROOM_BED_RECT).collidepoint(point):
@@ -741,17 +743,9 @@ class GameScreen:
         self.original_toggle.draw(app.window, app.small_font)
 
     def draw_portrait(self, app, npc, emotion=None):
-        pygame.draw.rect(app.window, (255, 254, 248), self.portrait_rect)
-        pygame.draw.rect(app.window, INK, self.portrait_rect, width=2)
-        if npc is app.simulation.snake:
-            art = snake_artwork(4, 1)
-            ratio = min(136 / art.get_width(), 136 / art.get_height())
-            portrait = pygame.transform.scale(art, (round(art.get_width() * ratio), round(art.get_height() * ratio)))
-        else:
-            portrait = app.character.renderer.render_portrait(
-                npc.character, self.portrait_rect.inflate(-12, -12).size, emotion=emotion
-            )
-        app.window.blit(portrait, portrait.get_rect(center=self.portrait_rect.center))
+        draw_actor_portrait(app.window, npc, self.portrait_rect, app.character.renderer,
+            snake=app.simulation.snake, padding=GAME_PORTRAIT_PADDING, background=GAME_PORTRAIT_BACKGROUND,
+            emotion=emotion, border_color=INK, border_width=GAME_PORTRAIT_BORDER_WIDTH)
 
     def draw_conversation(self, app):
         conversation = self.viewed_conversation

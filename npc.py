@@ -29,9 +29,11 @@ from constants import (APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS
                       STARTING_NPC_GENEROSITY_RANGE, STARTING_NPC_POSITION, STARTING_NPC_SATISFACTION_RANGE,
                       STARTING_NPC_SOCIABILITY_RANGE, STARTING_TREE_POSITION, STARTING_FATIGUE_RANGE,
                       EXCHANGE_FATIGUE)
-from dialogue_context import (NPC_ARRIVAL_MEMORY, actor_catalog, name_forms, orientation_context,
-                             validate_orientation)
+from social import (NPC_ARRIVAL_MEMORY, orientation_context, validate_orientation)
+from actor_identity import (actor_catalog, name_forms)
 from transfers import Handoff
+from locations import Journey
+from player_records import PlayerOpinion, PlayerCall, PlayerReplyCall
 
 
 @dataclass
@@ -100,8 +102,6 @@ class NPC:
     selected: bool = False
     reply: str = ""
     rewritten_reply: str = ""
-    conversation: "Conversation | None" = field(default=None, repr=False, compare=False)
-    gift: "Handoff | None" = field(default=None, repr=False, compare=False)
     display_name: str | None = None
     emotion: str = "neutral"
     emotion_intensity: int = 0
@@ -120,8 +120,8 @@ class NPC:
     current_concern: ConversationConcern | None = None
     conversation_pause_remaining: float = 0.0
     conversation_return_remaining: float = 0.0
-    player_opinion: dict = field(default_factory=lambda: {"opinion": 0, "reason": ""})
-    player_call: dict | None = None
+    player_opinion: PlayerOpinion = field(default_factory=PlayerOpinion)
+    player_call: PlayerCall | PlayerReplyCall | None = None
     player_call_cooldown: float = 0.0
     resolved_player_calls: list = field(default_factory=list)
     owner: str = "autonomous"
@@ -137,7 +137,6 @@ class NPC:
     attitudes: dict = field(default_factory=initial_attitudes)
     arrival_day: int = STARTING_DAY
     departure: dict | None = None
-    snake_encounter: object = field(default=None, repr=False, compare=False)
 
     room_number: int = 0
     social_fatigue: float = field(default_factory=lambda: random.uniform(*STARTING_FATIGUE_RANGE))
@@ -149,15 +148,27 @@ class NPC:
     last_creative_day: int = 0
     creative_job: CreativeJob | None = field(default=None, repr=False, compare=False)
     location: str = "garden"
-    journey: dict | None = None
+    journey: Journey | None = None
 
     @property
     def indoors(self):
         return self.location != "garden"
 
     @property
+    def conversation(self):
+        return self.world.reservations.get(self.id, "conversation") if self.world else None
+
+    @property
+    def gift(self):
+        return self.world.reservations.get(self.id, "handoff") if self.world else None
+
+    @property
+    def snake_encounter(self):
+        return self.world.reservations.get(self.id, "snake") if self.world else None
+
+    @property
     def interaction(self):
-        return self.conversation or self.gift or self.snake_encounter
+        return self.world.reservations.exchange(self.id) if self.world else None
 
     @property
     def busy(self):
@@ -166,7 +177,7 @@ class NPC:
     @property
     def unread_player_reply(self):
         call = self.player_call
-        return call if call and call["kind"] == "reply" else None
+        return call if call and call.kind == "reply" else None
 
     @property
     def generation_pending(self):
@@ -346,11 +357,11 @@ class NPC:
             from dialogue_rules import named_references
             return f"Departed on day {self.departure['day']} ({named_references(self.departure['cause'])})"
         if self.journey:
-            return f"Travelling to {self.journey['destination']}"
+            return f"Travelling to {self.journey.destination}"
         if self.world and self.world.tree_has_actor(self.id) and self.snake_encounter is None:
-            if self.world.tree_current and self.world.tree_current["actor_id"] == self.id:
+            if self.world.tree_current and self.world.tree_current.actor_id == self.id:
                 return "Approaching the front of the tree line"
-            position = next(i for i, e in enumerate(self.world.tree_queue, 1) if e["actor_id"] == self.id)
+            position = next(i for i, e in enumerate(self.world.tree_queue, 1) if e.actor_id == self.id)
             return f"Waiting in the tree line ({position})"
         if self.snake_encounter is not None:
             return f"With {SNAKE_NAME}: {self.snake_encounter.record.status}"
@@ -434,7 +445,7 @@ class NPC:
             from player_story import starting_encounter, starting_dialogue_context
             state["owned_works"] = work_choices(self.world, self.id)
             state["player_relationship"] = {"actor_id": self.world.player.id,
-                "opinion": self.player_opinion.copy()}
+                "opinion": asdict(self.player_opinion)}
             state["memories"] = [{"partner_id": memory.partner_id, "kind": memory.kind,
                           "summary": memory.summary, "day": memory.day, "phase": memory.phase}
                                  for memory in relevant_memories(self, partner_id)]
@@ -540,7 +551,7 @@ class NPC:
             raise ValueError("This NPC is already in an interaction.")
         if action == "EAT" and self.inventory.get("fruit", 0) < 1:
             raise ValueError("I don't have an apple to eat.")
-        if self.world.visit and self.world.visit["host_id"] == self.id:
+        if self.world.visit and self.world.visit.host_id == self.id:
             from apartments import finish_visit
             finish_visit(self.world)
         self.journey = None
@@ -750,7 +761,7 @@ class Conversation(ResidentProgress):
         from player import owns_resident
         if (initiator is recipient or initiator.busy or recipient.busy
                 or owns_resident(initiator.world, initiator) or owns_resident(initiator.world, recipient)
-                or initiator.world.visit and initiator.world.visit["host_id"] in (initiator.id, recipient.id)
+                or initiator.world.visit and initiator.world.visit.host_id in (initiator.id, recipient.id)
                 or initiator.player_call or recipient.player_call or recipient.selected or recipient.interaction_blocked
                 or not available_outdoors(initiator) or not available_outdoors(recipient)
                 or not colocated(initiator, recipient)):
@@ -806,7 +817,7 @@ class Conversation(ResidentProgress):
             else:
                 reason = "Having an automatic chat" if origin == "autonomous" else "In a player-initiated conversation"
             self.saved_states.append(npc.suspend_activity(reason))
-            npc.conversation = self
+            npc.world.reservations.acquire("conversation", self, npc)
         initiator.destination, recipient.destination = destinations
 
     @classmethod
@@ -823,7 +834,7 @@ class Conversation(ResidentProgress):
         self.proposals, self.information_context = restored["proposals"], restored["information_context"]
         self.concerns, self.name_actors, self.active = restored["concerns"], {}, True
         self.dialogue.retry_after_restore()
-        initiator.conversation = recipient.conversation = self
+        initiator.world.reservations.acquire("conversation", self, initiator, recipient)
 
     def other(self, npc):
         return self.recipient if npc is self.initiator else self.initiator
@@ -1078,9 +1089,8 @@ class Conversation(ResidentProgress):
     def release_participants(self, completed, *, revise=False):
         """Restore each suspended activity only while this meeting still owns it."""
         for npc, state in zip((self.initiator, self.recipient), self.saved_states):
-            if npc.conversation is not self:
+            if not npc.world.reservations.release("conversation", self, npc):
                 continue
-            npc.conversation = None
             if npc.world.npc_by_id(npc.id) is not npc:
                 continue
             npc.restore_after_interaction(state, self.other(npc).id)
@@ -1098,7 +1108,7 @@ class Conversation(ResidentProgress):
         requester = self.other(donor)
         states = self.saved_states if donor is self.initiator else self.saved_states[::-1]
         self.active = False
-        requester.conversation = donor.conversation = None
+        donor.world.reservations.release("conversation", self, requester, donor)
         Handoff(donor, requester, gift.item if gift else "fruit", gift.quantity if gift else 1, self.record,
              saved_states=states, already_met=True,
              thanks=self.handoff_thanks, rewritten_thanks=self.rewritten_handoff_thanks)

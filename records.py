@@ -15,3 +15,8 @@ def saved_record(record):
     annotations = get_type_hints(record, include_extras=True)
     return create_model(record.__name__ + "State", __base__=SaveModel,
                         **{field.name: (annotations[field.name], ...) for field in fields(record)})
+
+
+def restore_record(record, source):
+    """Project a validated save onto a domain value, excluding enclosing records."""
+    return record(**{field.name: getattr(source, field.name) for field in fields(record)})

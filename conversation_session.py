@@ -1,5 +1,6 @@
 """Main-thread conversation orchestration independent of screens and rendering."""
 
+from dataclasses import asdict
 from interactions import player_request_pending
 from uuid import uuid4
 from constants import PLAYER_CONTEXT_TRANSFER_LIMIT, PLAYER_PROMISE_DEADLINE_STEPS
@@ -76,8 +77,8 @@ class ConversationSession:
         record = self.record
         if record:
             for offer in record.player_promise_offers:
-                if offer["status"] == "offered":
-                    offer["status"] = "closed"
+                if offer.status == "offered":
+                    offer.status = "closed"
         if self.view_actor is not None:
             self.view_actor.set_selected(False)
         self.view_open = False
@@ -199,7 +200,8 @@ class ConversationSession:
         snapshot = npc.snapshot(self.tree, self.simulation.player.id)
         from apartments import invitation_choices, pending_invitation
         snapshot["invitation_choices"] = invitation_choices(self.simulation, npc)
-        snapshot["pending_invitation"] = pending_invitation(self.simulation)
+        invitation = pending_invitation(self.simulation)
+        snapshot["pending_invitation"] = asdict(invitation) if invitation else None
         interaction = self.simulation.player_interaction
         snapshot["closed_door_knock"] = interaction.knock_room if interaction else None
         from player import relevant_claims
@@ -214,7 +216,7 @@ class ConversationSession:
         record = self.record
         offers = record.player_promise_offers if record and npc.id in record.participant_ids else []
         snapshot["player_apple_offer_count"] = len(offers)
-        snapshot["pending_apple_promise"] = next((o.copy() for o in offers if o["status"] == "offered"), None)
+        snapshot["pending_apple_promise"] = next((asdict(o) for o in offers if o.status == "offered"), None)
         snapshot["known_player_transfers"] = sorted([t for r in self.conversation_history for t in r.transfers
             if {t["giver_id"], t["recipient_id"]} == {self.simulation.player.id, npc.id}], key=lambda t: t["sequence"])[-PLAYER_CONTEXT_TRANSFER_LIMIT:]
         return snapshot
@@ -228,7 +230,7 @@ class ConversationSession:
                 or not npc.player_call or not call_valid(self.simulation, npc, npc.player_call)
                 or not self.player_owns(npc, stages=("prompt",))):
             return "This call is unavailable while you or the resident are occupied."
-        call = npc.player_call.copy()
+        call = asdict(npc.player_call)
         self.close_view()
         self.simulation.player_interaction.stage = "conversation"
         self.open_view(npc)
@@ -469,15 +471,15 @@ class ConversationSession:
         for acknowledgment in list(self.simulation.player_acknowledgments) if self.simulation else []:
             if self.requests.busy or paused or not simulation_active:
                 break
-            npc = self.simulation.npc_by_id(acknowledgment["npc_id"])
+            npc = self.simulation.npc_by_id(acknowledgment.npc_id)
             if npc and (npc.busy or npc.interaction_blocked or npc.unread_player_reply
                         or self.view_open and self.view_actor is not npc):
                 continue
-            record = next(r for r in self.conversation_history if r.id == acknowledgment["record_id"])
+            record = next(r for r in self.conversation_history if r.id == acknowledgment.record_id)
             if npc and self.player_owns(npc):
                 snapshot = self.player_snapshot(npc)
                 snapshot.update(request_kind="player_acknowledgment", player_interaction={
-                    "committed_transfer": next(t for t in record.transfers if t["id"] == acknowledgment["transfer_id"])})
+                    "committed_transfer": next(t for t in record.transfers if t["id"] == acknowledgment.transfer_id)})
                 self.select_record(record)
                 self._submit_player_message(npc, "", snapshot)
                 if not npc.interaction_blocked:
@@ -490,17 +492,17 @@ class ConversationSession:
         if not call or not call_valid(self.simulation, npc, call):
             clear_call(npc)
             return
-        record = self.simulation.record_by_id(call["reference"])
+        record = self.simulation.record_by_id(call.reference)
         self.select_record(record)
         self.open_view(npc)
         self.emit("clear_call")
         npc.set_selected(True)
-        npc.player_reply.closing = call["closing"]
+        npc.player_reply.closing = call.closing
         if not npc.interaction_blocked:
             npc.player_reply.closing = player_reply_closes(npc.player_reply.closing, npc.reply,
                 (npc.rewritten_reply,) if npc.rewritten_reply else ())
-        self.pending_offer = ({**call["gift_offer"], "npc_id": npc.id,
-            "revision": npc.command_revision, "record_id": record.id} if call["gift_offer"] else None)
+        self.pending_offer = ({**call.gift_offer.model_dump(), "npc_id": npc.id,
+            "revision": npc.command_revision, "record_id": record.id} if call.gift_offer else None)
         clear_call(npc)
         record.status = "Waiting for Done" if npc.waiting_for_done else "Completed"
         self.emit("clear_input")

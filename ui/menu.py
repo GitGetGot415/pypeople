@@ -1,5 +1,5 @@
 import pygame
-from llm import MODEL
+from model_transport import MODEL
 from ollama_manager import check_ollama
 from .button import Button
 from .text import draw_centered_text, draw_wrapped_text

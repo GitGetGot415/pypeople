@@ -1,10 +1,35 @@
 """Shared directional sprites for the character creator and the world."""
 
 from pathlib import Path
+from functools import lru_cache
 
 import pygame
 
 from character_data import DEFAULT_COLORS, EYE_STYLES, HAIR_STYLES, parse_color
+
+
+@lru_cache(maxsize=16)
+def snake_artwork(facing, frame):
+    direction = ("N", "NE", "E", "SE", "S", "SE", "E", "NE")[facing]
+    path = Path(__file__).resolve().parent.parent / "assets" / "snake" / f"{direction}{frame}.png"
+    artwork = pygame.image.load(str(path)).convert_alpha()
+    return pygame.transform.flip(artwork, True, False) if facing > 4 else artwork
+
+
+def draw_actor_portrait(surface, actor, rect, renderer, *, snake, padding, background, emotion=None,
+                        border_color=None, border_width=0):
+    """Share artwork selection and pixel fitting while screens own their layout."""
+    pygame.draw.rect(surface, background, rect)
+    if border_width:
+        pygame.draw.rect(surface, border_color, rect, width=border_width)
+    size = rect.inflate(-padding, -padding).size
+    if actor is snake:
+        art = snake_artwork(4, 1)
+        ratio = min(size[0] / art.get_width(), size[1] / art.get_height())
+        portrait = pygame.transform.scale(art, (round(art.get_width() * ratio), round(art.get_height() * ratio)))
+    else:
+        portrait = renderer.render_portrait(actor.character, size, emotion=emotion)
+    surface.blit(portrait, portrait.get_rect(center=rect.center))
 
 
 class CharacterRenderer:

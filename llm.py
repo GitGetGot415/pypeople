@@ -1,17 +1,14 @@
 import dialogue_context
+from social import resident_information
 import dialogue_rules
 import dialogue_validation
 import validation_errors
 import json
 import logging
 import re
-import unicodedata
-import httpx
 from copy import deepcopy
 from dataclasses import dataclass
 from time import monotonic
-from google import genai
-from google.genai import errors, types
 from pydantic import ValidationError
 from validation_errors import RecoveryKind
 from dialogue import (ActionResponse, ConversationResponse, ConversationTurn, DialoguePartsResponse,
@@ -21,9 +18,6 @@ from dialogue import (ActionResponse, ConversationResponse, ConversationTurn, Di
 from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_CHARACTERS,
                       DIALOGUE_PART_TARGET_CHARACTERS, DIALOGUE_PARTS_PER_TURN, DIALOGUE_REPAIR_WORD_LIMIT,
                       DIALOGUE_TIMEOUT_SECONDS, EMOTION_THRESHOLD, FURIOUS_THRESHOLD,
-                      MODEL_STREAM_REPEAT_CHECK_CHARACTERS, MODEL_STREAM_REPEAT_COUNT,
-                      MODEL_STREAM_REPEAT_MAX_BLOCK_CHARACTERS, MODEL_STREAM_REPEAT_MIN_CHARACTERS,
-                      MODEL_STREAM_REPEAT_PUNCTUATION_CHARACTERS, MODEL_STREAM_REPEAT_SYMBOL_CHARACTERS,
                       MODEL_DEFAULT_CONTEXT_TOKENS, MODEL_DIALOGUE_CONTEXT_TOKENS, RESIDENT_TURN_COUNT,
                       FOOD_REQUEST_TURN_COUNT, CONVERSATION_MAX_TURNS, DIALOGUE_STAGE_ATTEMPTS,
                       DIALOGUE_REPEAT_PHRASE_WORDS, CONVERSATION_MAX_AGREEMENTS,
@@ -35,15 +29,14 @@ from dialogue_code import DELIVERY_INSTRUCTION
 from dialogue_rules import (is_name_reference, mentions_private_recollection, named_references, name_pattern,
                            validate_account_speech)
 from ollama_manager import DEFAULT_OLLAMA_MODEL, mark_ollama_ready
-from model_debug import (admitted_provider, provider_wait_seconds, check_cancelled, cancellable_stream,
-                        disconnect_response, record_output, streaming_output, watch_response)
+from model_debug import admitted_provider, provider_wait_seconds, check_cancelled, record_output
 from conversation_history import rewrite_validation_error, usable_rewrite
-from dialogue_context import (NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION, account_references,
-                             account_speech_context, name_forms, actor_id, forms, own_name)
+from dialogue_context import (NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION, account_speech_context)
+from actor_identity import (account_references, name_forms, actor_id, forms, own_name)
 
 
-MODEL = "gemini-2.5-flash"
-OLLAMA_URL = "http://localhost:11434/api/chat"
+from generation_errors import RequestError, InvalidResponseError, StreamRepetitionError
+from model_transport import TransportSettings, provider_errors, request_gemini, request_ollama
 logger = logging.getLogger(__name__)
 
 
@@ -795,7 +788,7 @@ def _resident_contract(snapshot, *, correction=False):
                     item["properties"]["claim_id"] = {"type": "string", "enum": choices[field]}
                     if field == "third_party_opinions":
                         options = {o["id"]: o for o in snapshot["_baseline"]["_information_validation"]["options"]}
-                        beliefs, _, _ = dialogue_context._resident_information(snapshot["_baseline"], draft)
+                        beliefs, _, _ = resident_information(snapshot["_baseline"], draft)
                         branches = []
                         for claim_id in choices[field]:
                             branch = deepcopy(item)
@@ -1265,106 +1258,6 @@ accepts that actual offer. Never promise a creative commission or arbitrary task
 """
 
 
-class RequestError(Exception):
-    """An application-authored failure reason and optional generated draft for inspection."""
-
-    def __init__(self, message, *, failed_turns=()):
-        super().__init__(message)
-        self.failed_turns = list(failed_turns)
-
-
-class InvalidResponseError(ValueError):
-    """An application-authored validation reason that can be sent back for correction."""
-
-    def __init__(self, message, *, kind=RecoveryKind.GENERAL, response=None, repeated_turns=(), repair_turns=(), failed_turns=()):
-        super().__init__(message)
-        self.kind = kind
-        self.response = response
-        self.repeated_turns = tuple(repeated_turns)
-        self.repair_turns = tuple(repair_turns or repeated_turns)
-        self.failed_turns = list(failed_turns)
-
-
-class StreamRepetitionError(InvalidResponseError):
-    """A still-generating response loop, before usable JSON or speech exists."""
-
-
-class _StreamRepetitionGuard:
-    """Bounded, request-local checks, independent of provider chunk boundaries."""
-
-    def __init__(self):
-        self.tails = {}
-        self.unchecked = {}
-
-    def add(self, kind, text):
-        window = max(MODEL_STREAM_REPEAT_MIN_CHARACTERS,
-                     MODEL_STREAM_REPEAT_COUNT * MODEL_STREAM_REPEAT_MAX_BLOCK_CHARACTERS)
-        tail = self.tails.get(kind, "")
-        unchecked = self.unchecked.get(kind, 0)
-        for offset in range(0, len(text), MODEL_STREAM_REPEAT_CHECK_CHARACTERS):
-            piece = text[offset:offset + MODEL_STREAM_REPEAT_CHECK_CHARACTERS].casefold()
-            tail = (tail + piece)[-window:]
-            unchecked += len(piece)
-            # A short punctuation loop can crash a constrained decoder before
-            # the general repeated-prose threshold is reached.
-            punctuation = tail[-MODEL_STREAM_REPEAT_PUNCTUATION_CHARACTERS:]
-            if (len(punctuation) == MODEL_STREAM_REPEAT_PUNCTUATION_CHARACTERS
-                    and re.fullmatch(r"([.!?,;:\u2026])(?:\s*\1)+\s*", punctuation.strip())):
-                reason = ("Generation stopped: the stream kept repeating punctuation. "
-                          "Start fresh, follow the requested Voice and return complete finite JSON strings.")
-                record_output("validation", reason)
-                raise StreamRepetitionError(reason)
-            symbols = tail[-MODEL_STREAM_REPEAT_SYMBOL_CHARACTERS:]
-            if len(symbols) == MODEL_STREAM_REPEAT_SYMBOL_CHARACTERS and not re.search(r"\w", symbols):
-                for size in range(1, len(symbols) // MODEL_STREAM_REPEAT_COUNT + 1):
-                    block = symbols[-size:]
-                    if (any(unicodedata.category(char).startswith(("S", "M")) for char in block)
-                            and symbols[:-size] == symbols[size:]):
-                        reason = (f"Generation stopped: the {kind} stream kept repeating the same symbol sequence. "
-                                  "Start fresh; use a finite sequence representing each original sentence, "
-                                  "then close every JSON string. Do not loop on emoji or modifiers.")
-                        record_output("validation", reason)
-                        raise StreamRepetitionError(reason)
-            if unchecked < MODEL_STREAM_REPEAT_CHECK_CHARACTERS:
-                continue
-            unchecked = 0
-            if len(tail) < MODEL_STREAM_REPEAT_MIN_CHARACTERS:
-                continue
-            for size in range(1, min(MODEL_STREAM_REPEAT_MAX_BLOCK_CHARACTERS,
-                                     len(tail) // MODEL_STREAM_REPEAT_COUNT) + 1):
-                if tail[-size:] != tail[-2 * size:-size]:
-                    continue
-                length = max(MODEL_STREAM_REPEAT_MIN_CHARACTERS, MODEL_STREAM_REPEAT_COUNT * size)
-                sample = tail[-length:]
-                if sample[:-size] == sample[size:]:
-                    reason = (f"Generation stopped: the {kind} stream kept repeating the same text. "
-                              "Start fresh and return one finite JSON response for the current task. "
-                              "Do not repeat phrases, paragraphs, or reasoning in a loop; finish the response.")
-                    record_output("validation", reason)
-                    raise StreamRepetitionError(reason)
-        self.tails[kind], self.unchecked[kind] = tail, unchecked
-
-
-def _api_error_message(exc):
-    # Inspect provider text only to classify it; never display or log it.
-    message = (exc.message or "").lower()
-    if exc.code == 429:
-        return "Gemini quota reached. Try again later or check your Google AI Studio limits."
-    if "api key" in message or "api_key" in message or exc.code == 401:
-        return "Gemini rejected your API key. Check it in Settings."
-    if exc.code == 404 or (
-        exc.code in (400, 403) and "model" in message
-    ):
-        return f"Model {MODEL} is unavailable for this key. Check Gemini model access."
-    if exc.code == 403:
-        return "Gemini access denied. Check your API key and Google AI Studio access."
-    if exc.code in (408, 504):
-        return "Gemini timed out. Check your connection and try again."
-    if exc.code >= 500:
-        return "Gemini is temporarily unavailable. Try again later."
-    return "Gemini could not process this request. Check model access or try another message."
-
-
 def _tree_stock_instruction(context):
     tree = context.get("environment", {}).get("tree")
     if tree is None:
@@ -1624,218 +1517,6 @@ def prepare_request(message, snapshot, *, correction=""):
                            response_model(snapshot))
 
 
-def _transport_messages(request):
-    """Serialize structured context only at the provider boundary."""
-    messages = []
-    for message in request.messages:
-        content = message["content"]
-        if not isinstance(content, str):
-            # Retain the existing presentation of player assistant examples and
-            # engine reminders; compact world and resident speech objects.
-            compact = "world_state" in content or "parts" in content or "author" in content
-            content = json.dumps(content, ensure_ascii=False,
-                                 separators=(",", ":") if compact else None)
-        messages.append({"role": message["role"], "content": content})
-    return messages
-
-
-def _gemini_contents(messages):
-    if len(messages) == 1:
-        return messages[0]["content"]
-    contents = []
-    for message in messages:
-        role = "model" if message["role"] == "assistant" else "user"
-        part = types.Part.from_text(text=message["content"])
-        if contents and contents[-1].role == role:
-            contents[-1].parts.append(part)
-        else:
-            contents.append(types.Content(role=role, parts=[part]))
-    return contents
-
-
-def _request_timeout(snapshot):
-    return min(DIALOGUE_TIMEOUT_SECONDS, snapshot.get("_timeout", DIALOGUE_TIMEOUT_SECONDS))
-
-
-@admitted_provider
-def _request_gemini(api_key, message, snapshot, *, correction=""):
-    prepared = prepare_request(message, snapshot, correction=correction)
-    contents = _gemini_contents(_transport_messages(prepared))
-    record_output("call", snapshot.get("request_kind", "reply"))
-    if correction:
-        record_output("validation", correction)
-    try:
-        with genai.Client(
-            api_key=api_key,
-            vertexai=False,
-            http_options=types.HttpOptions(
-                timeout=max(1, int(_request_timeout(snapshot) * 1000)),
-                retry_options=types.HttpRetryOptions(attempts=1),
-                client_args={"event_hooks": {"response": [watch_response]}},
-            ),
-        ) as client, cancellable_stream(client.close):
-            config = types.GenerateContentConfig(
-                system_instruction=prepared.system_instruction,
-                temperature=VOICE_REWRITE_TEMPERATURE if snapshot.get("request_kind") == "voice_rewrite" else 0 if (snapshot.get("request_kind") == "intent"
-                                  or snapshot.get("transaction", {}).get("apple_handoff_now")) else None,
-                response_mime_type="application/json",
-                response_schema=prepared.response_schema,
-                candidate_count=1,
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-            )
-            live = streaming_output()
-            if live:
-                config.thinking_config = types.ThinkingConfig(include_thoughts=True)
-                responses = client.models.generate_content_stream(model=MODEL, contents=contents, config=config)
-            else:
-                responses = [client.models.generate_content(model=MODEL, contents=contents, config=config)]
-            chunks, reason = [], None
-            repetition = _StreamRepetitionGuard()
-            deadline = monotonic() + _request_timeout(snapshot)
-            for response in responses:
-                if monotonic() > deadline:
-                    raise RequestError("Gemini timed out. Check your connection and try again.")
-                feedback = response.prompt_feedback
-                if (feedback and feedback.block_reason
-                        and feedback.block_reason != types.BlockedReason.BLOCKED_REASON_UNSPECIFIED):
-                    raise RequestError("Gemini blocked this request. Try another message.")
-                if not response.candidates:
-                    continue
-                candidate = response.candidates[0]
-                if candidate.finish_reason is not None:
-                    reason = candidate.finish_reason
-                if live:
-                    for part in (candidate.content.parts if candidate.content else ()) or ():
-                        if part.text:
-                            kind = "reasoning" if part.thought else "output"
-                            record_output(kind, part.text)
-                            repetition.add(kind, part.text)
-                            if not part.thought:
-                                chunks.append(part.text)
-                elif response.text:
-                    chunks.append(response.text)
-            if reason == types.FinishReason.MAX_TOKENS:
-                raise RequestError("Gemini returned an incomplete reply. Try again.")
-            if reason != types.FinishReason.STOP:
-                raise RequestError("Gemini could not finish a reply. Try another message.")
-            text = "".join(chunks)
-            if not text or not text.strip():
-                raise RequestError("Gemini returned an empty reply. Try again.")
-            return validate_response(text, snapshot)
-    except (RequestError, InvalidResponseError):
-        raise
-    except (ValidationError, ValueError):
-        raise RequestError("Gemini returned an invalid action or reply. Try again.") from None
-    except errors.APIError as exc:
-        raise RequestError(_api_error_message(exc)) from None
-    except (TimeoutError, httpx.TimeoutException):
-        raise RequestError("Gemini timed out. Check your connection and try again.") from None
-    except (OSError, httpx.HTTPError):
-        raise RequestError("Cannot reach Gemini. Check your connection and try again.") from None
-    except Exception:
-        raise RequestError("Could not get a reply from Gemini. Check your connection or try again.") from None
-
-
-@admitted_provider
-def _request_ollama(message, snapshot, model=DEFAULT_OLLAMA_MODEL, *, correction=""):
-    prepared = prepare_request(message, snapshot, correction=correction)
-    record_output("call", snapshot.get("request_kind", "reply"))
-    if correction:
-        record_output("validation", correction)
-    options = {
-        "num_ctx": MODEL_DIALOGUE_CONTEXT_TOKENS if snapshot.get("player_id") or snapshot.get("request_kind") in (
-            "resident_turn", "resident_assessment", "handoff_thanks", "snake_decision") else MODEL_DEFAULT_CONTEXT_TOKENS,
-        "num_predict": -1,
-    }
-    if snapshot.get("request_kind") == "voice_rewrite":
-        options["temperature"] = VOICE_REWRITE_TEMPERATURE
-    elif snapshot.get("transaction", {}).get("apple_handoff_now"):
-        options["temperature"] = 0
-    elif snapshot.get("request_kind") in ("resident_turn", "resident_assessment", "handoff_thanks", "snake_decision", "snake_turn", "snake_player", "conversation_closing"):
-        # Greedy decoding encouraged small models to replay the supplied history.
-        # Corrections need fresh wording too; intent routing stays deterministic.
-        options["temperature"] = 0.7
-    elif correction or snapshot.get("request_kind") == "intent":
-        options["temperature"] = 0
-    try:
-        payload = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": prepared.system_instruction + "\nReturn only JSON matching this schema: "
-                    + json.dumps(prepared.response_schema, ensure_ascii=False, separators=(",", ":")),
-                },
-                *_transport_messages(prepared),
-            ],
-            "format": prepared.response_schema,
-            "stream": streaming_output(),
-            "keep_alive": "15m",
-            # The profiles, rules, schema, and dialogue exceed Ollama's
-            # default context. Truncation can remove the speaker rules.
-            "options": options,
-        }
-
-        def check_response(response):
-            if response.status_code == 404:
-                raise RequestError(f"Ollama could not find {model}. Run: ollama pull {model}")
-            if response.is_error:
-                raise RequestError(f"Ollama could not process this request. Check that {model} is available.")
-
-        # Each call (including rewrites and repairs) may wait in Ollama again.
-        # The chat API confirms generation only once it streams actual tokens.
-        record_output("status", "waiting_for_ollama")
-        if streaming_output():
-            deadline = monotonic() + _request_timeout(snapshot)
-            chunks, data = [], {}
-            repetition = _StreamRepetitionGuard()
-            receiving = False
-            with httpx.stream("POST", OLLAMA_URL, json=payload, timeout=_request_timeout(snapshot)) as response, cancellable_stream(lambda: disconnect_response(response)):
-                check_response(response)
-                for line in response.iter_lines():
-                    if monotonic() > deadline:
-                        raise RequestError(f"Ollama timed out. Try again after {model} finishes loading.")
-                    if not line.strip():
-                        continue
-                    data = json.loads(line)
-                    if data.get("error"):
-                        raise RequestError(f"Ollama could not process this request. Check that {model} is available.")
-                    part = data.get("message", {})
-                    if not receiving and (part.get("thinking") or part.get("content")):
-                        receiving = True
-                        record_output("status", "running")
-                    record_output("reasoning", part.get("thinking", ""))
-                    repetition.add("reasoning", part.get("thinking", ""))
-                    text = part.get("content", "")
-                    record_output("output", text)
-                    repetition.add("output", text)
-                    chunks.append(text)
-                    if data.get("done"):
-                        break
-            content = "".join(chunks)
-        else:
-            response = httpx.post(OLLAMA_URL, json=payload, timeout=_request_timeout(snapshot))
-            check_response(response)
-            data = response.json()
-            content = data["message"]["content"]
-            record_output("status", "running")
-        if not data.get("done", False) or data.get("done_reason") not in (None, "stop"):
-            raise RequestError("Ollama returned an incomplete reply. Try again.")
-        result = validate_response(content, snapshot)
-        mark_ollama_ready()
-        return result
-    except (RequestError, InvalidResponseError):
-        raise
-    except httpx.TimeoutException:
-        raise RequestError(f"Ollama timed out. Try again after {model} finishes loading.") from None
-    except httpx.ConnectError:
-        raise RequestError("Cannot reach Ollama. Start Ollama and try again.") from None
-    except httpx.HTTPError:
-        raise RequestError("Cannot reach Ollama. Check that it is running and try again.") from None
-    except (ValidationError, ValueError, KeyError, TypeError, AttributeError):
-        raise RequestError("Ollama returned an invalid action or reply. Try again.") from None
-
-
 def _deduplicate_dialogue_parts(turn):
     """Keep generated words while dropping exact repeated parts or long sentences."""
     parts, seen_parts, seen_sentences = [], set(), set()
@@ -1864,7 +1545,7 @@ def _resident_draft():
 
 
 def _assemble_resident(snapshot, draft, thanks):
-    dialogue_context._resident_information(snapshot, draft, incomplete=False)
+    resident_information(snapshot, draft, incomplete=False)
     return ConversationResponse(turns=draft["turns"],
         gift=draft.get("gift"),
         initiator_opinion=draft["opinions"]["initiator"], recipient_opinion=draft["opinions"]["recipient"],
@@ -1896,12 +1577,267 @@ def _speech_retry_snapshot(snapshot):
     return state
 
 
+def transport_settings(snapshot, *, correction=""):
+    options = {
+        "num_ctx": MODEL_DIALOGUE_CONTEXT_TOKENS if snapshot.get("player_id") or snapshot.get("request_kind") in (
+            "resident_turn", "resident_assessment", "handoff_thanks", "snake_decision") else MODEL_DEFAULT_CONTEXT_TOKENS,
+        "num_predict": -1,
+    }
+    if snapshot.get("request_kind") == "voice_rewrite":
+        options["temperature"] = VOICE_REWRITE_TEMPERATURE
+    elif snapshot.get("transaction", {}).get("apple_handoff_now"):
+        options["temperature"] = 0
+    elif snapshot.get("request_kind") in ("resident_turn", "resident_assessment", "handoff_thanks", "snake_decision", "snake_turn", "snake_player", "conversation_closing"):
+        # Greedy decoding encouraged small models to replay the supplied history.
+        # Corrections need fresh wording too; intent routing stays deterministic.
+        options["temperature"] = 0.7
+    elif correction or snapshot.get("request_kind") == "intent":
+        options["temperature"] = 0
+    return TransportSettings(
+        min(DIALOGUE_TIMEOUT_SECONDS, snapshot.get("_timeout", DIALOGUE_TIMEOUT_SECONDS)),
+        VOICE_REWRITE_TEMPERATURE if snapshot.get("request_kind") == "voice_rewrite" else
+        0 if (snapshot.get("request_kind") == "intent" or snapshot.get("transaction", {}).get("apple_handoff_now")) else None,
+        options)
+
+
+@admitted_provider
 def _provider_request(provider, api_key, message, snapshot, ollama_model, *, correction=""):
-    if provider == "gemini":
-        return _request_gemini(api_key, message, snapshot, correction=correction)
-    if provider == "ollama":
-        return _request_ollama(message, snapshot, ollama_model, correction=correction)
-    raise RequestError("Choose an AI provider in Settings.")
+    if provider not in ("gemini", "ollama"):
+        raise RequestError("Choose an AI provider in Settings.")
+    prepared = prepare_request(message, snapshot, correction=correction)
+    settings = transport_settings(snapshot, correction=correction)
+    record_output("call", snapshot.get("request_kind", "reply"))
+    if correction:
+        record_output("validation", correction)
+    with provider_errors(provider, ollama_model):
+        raw = (request_gemini(api_key, prepared, settings) if provider == "gemini" else
+               request_ollama(prepared, settings, ollama_model))
+        result = validate_response(raw, snapshot)
+        if provider == "ollama":
+            mark_ollama_ready()
+        return result
+
+
+def _corrected_request(state, request, report):
+    kind = state.get("request_kind")
+    activity = (f"turn {state['turn_index'] + 1} for {state['speaker']['name']}" if kind in ("snake_turn", "resident_turn") else
+                f"assessment for {state['speaker']['name']}" if kind == "resident_assessment" else
+                {"snake_decision": "encounter outcome", "conversation_closing": "closing answer",
+                 "handoff_thanks": "reserved handoff thanks", "intent": "player intent"}.get(kind, "reply"))
+    correction = ""
+    corrections = []
+    last_error = None
+    disclosure_repair = None
+    disclosure_choices = None
+    effect_repairs = {}
+    snake_disclosure_choices = None
+    for attempt in range(DIALOGUE_STAGE_ATTEMPTS):
+        report(("Generating " if attempt == 0 else "Correcting " if attempt == 1 else "Recovery: rewriting ") + activity)
+        retry_state = (_speech_retry_snapshot(state) if attempt == DIALOGUE_STAGE_ATTEMPTS - 1
+                       and kind in ("snake_turn", "conversation_closing", "resident_turn", "handoff_thanks") else state)
+        if snake_disclosure_choices is not None:
+            retry_state = {**retry_state, "_disclosure_choices": snake_disclosure_choices}
+        if disclosure_repair:
+            account = next(a for a in state["speaker"]["permitted_accounts"] if a["claim_id"] == disclosure_repair)
+            retry_state = {**retry_state, "_disclosure_repair": disclosure_repair,
+                           "speaker": {**retry_state["speaker"], "account_focus": account}}
+        if disclosure_choices is not None:
+            retry_state = {**retry_state, "choices": {**retry_state["choices"], "disclosures": disclosure_choices}}
+        if effect_repairs:
+            retry_state = {**retry_state, "choices": {**retry_state["choices"], **effect_repairs}}
+        try:
+            result = request(retry_state, correction)
+            if kind == "intent":
+                # Transport validation reduces PlayerIntent to ActionIntent;
+                # that accepted value intentionally has no message_type field.
+                return result
+            # A compact retry retains the complete prefix and original rules.
+            return validate_response(result.model_dump_json(), state)
+        except InvalidResponseError as exc:
+            last_error = exc
+            # A chosen, concrete own memory needs speech and metadata together.
+            # Constrain only its regenerated reply; infer no live disclosure.
+            if kind == "resident_turn" and exc.kind == RecoveryKind.MISSING_DISCLOSURE:
+                speech = " ".join(p.text for p in getattr(exc.response, "parts", []))
+                memories = [account for account in state["speaker"].get("permitted_accounts", [])
+                            if account["kind"] == "former_life" and account["subject_id"] == actor_id(state["speaker"])
+                            and account.get("basis") == "firsthand" and account["claim_id"] in state["choices"]["disclosures"]
+                            and mentions_private_recollection(speech, account["assertion"], ())]
+                if len(memories) == 1:
+                    disclosure_repair = memories[0]["claim_id"]
+                    disclosure_choices = None
+            if exc.repeated_turns and isinstance(exc.response, DialoguePartsResponse):
+                candidate = exc.response.model_copy(deep=True)
+                candidate.parts = _deduplicate_dialogue_parts(candidate)
+                try:
+                    return validate_response(candidate.model_dump_json(), state)
+                except InvalidResponseError:
+                    pass
+            # No accepted prefix, decision, stance or offer can be rewritten.
+            # Resident errors can originate in a full-prefix check. Only send
+            # current-speaker errors; those checks never quote private accounts.
+            correction = (f"The previous response was rejected: {exc} Return fresh complete JSON for only this stage. "
+                          "Correct the error using your supplied choices and own knowledge. "
+                          "Keep accepted preceding speech and effects unchanged. Write shorter complete sentences. "
+                          "Do not read internal records aloud or write the listener's answer.")
+            if kind == "resident_assessment":
+                owner, target = state["speaker"]["name"], state["opinion_target"]
+                correction = (f"You are {owner}. Assess only {target}, your conversation partner. "
+                    f"Write one short first-person reason beginning with I about how {target}'s words affected your view. "
+                    f"Do not describe {owner}'s personality or write {target}'s opinion of you. "
+                    "Use the fixed transcript as evidence; keep the target and pending reaction choices unchanged. "
+                    f"The previous assessment failed: {exc}. Return only the corrected assessment JSON.")
+            if (kind == "snake_turn" and state["turn_index"] == state["transaction"].get("outcome_turn", 2)
+                    and state["transaction"]["selected_outcome"] == "give_apple"):
+                correction += ("\nThe apple reward is settled. Begin this reply by explicitly handing the listener "
+                    "one apple in the present tense, then briefly acknowledge the information they supplied. "
+                    "Do not merely offer, promise, discuss fruit or answer a question. Write the actual handoff, "
+                    "without reading these directions aloud.")
+            if exc.repeated_turns and kind in ("snake_turn", "resident_turn", "conversation_closing"):
+                earlier = [t["text"] for t in state.get("_preceding_turns", []) if t["role"] == state["speaker_role"]]
+                correction += ("\nYour own accepted earlier speech, supplied only to avoid repeating it: "
+                    + json.dumps(earlier, ensure_ascii=False)
+                    + " Respond to the listener's latest point with a new answer, decision or specific follow-up. "
+                    "Do not repeat your earlier question, even in a shortened form.")
+            if (isinstance(exc.response, ActionResponse) and exc.kind == RecoveryKind.KNOWN_ENCOUNTER
+                    and state.get("private_context", {}).get("starting_experience")):
+                correction = ("Your reply denied an established conversation. Regenerate this reply from these facts: "
+                              + state["private_context"]["starting_experience"]
+                              + " Correct any earlier mistaken denial and answer the player's latest question. "
+                              "Write your own speech, not these instructions. Keep accepted history and effects unchanged.")
+            if kind == "resident_turn" and exc.kind == RecoveryKind.MISSING_PROMISE:
+                effect_repairs["offers"] = []
+                correction = ("Your speech made no supported apple commitment. Regenerate this reply without offers; "
+                              "the schema now provides no new offer for this stage. Respond naturally using your own knowledge. "
+                              "Keep earlier accepted speech, agreements and other permitted effects unchanged.")
+            if kind == "resident_turn" and exc.kind == RecoveryKind.MISSING_ACCEPTANCE:
+                effect_repairs["acceptances"] = []
+                correction = ("Your speech did not accept an apple commitment. Regenerate this reply without acceptances; "
+                              "the schema now provides none for this stage. Keep earlier accepted speech and effects unchanged.")
+            if (kind == "resident_turn" and exc.kind == RecoveryKind.UNMATCHED_ACCOUNT
+                    and not state.get("discussion_focus_claim_id")):
+                disclosure_repair = None  # An optional memory may be withdrawn on an unaccepted retry.
+                speech = " ".join(p.text for p in getattr(exc.response, "parts", []))
+                disclosure_choices = []
+                for account in state["speaker"].get("permitted_accounts", []):
+                    if account["claim_id"] not in state["choices"]["disclosures"]:
+                        continue
+                    try:
+                        validate_account_speech(speech, account["assertion"],
+                            names=name_forms(state.get("_name_actors", {})), speaker=state["speaker"]["name"],
+                            listener=state.get("_listener_identity"), kind=account["kind"],
+                            firsthand=account.get("basis") == "firsthand",
+                            actor_references=account_references(state.get("_name_actors", {})))
+                    except ValueError:
+                        continue
+                    disclosure_choices.append(account["claim_id"])
+                correction = ("Your disclosure metadata did not match what you said. Regenerate only this reply. "
+                              "For an ordinary reaction with no account, omit disclosures and introduce no new story. "
+                              "If your reply actually reports an available account, use only its matching claim ID. "
+                              "Keep accepted speech and the listener's reaction unchanged; never invent events to justify a tag.")
+            if isinstance(exc.response, SnakeResidentResponse) and exc.kind in (RecoveryKind.UNMATCHED_ACCOUNT, RecoveryKind.MISSING_DISCLOSURE):
+                text = " ".join(p.text for p in exc.response.parts)
+                matches = []
+                for account in state["speaker"]["permitted_accounts"]:
+                    try:
+                        validate_account_speech(text, account["assertion"], speaker=state["speaker"]["name"],
+                            listener=state["listener"]["name"], kind=account["kind"],
+                            names=name_forms(state.get("_name_actors", {})))
+                    except ValueError:
+                        continue
+                    matches.append(account["claim_id"])
+                snake_disclosure_choices = matches or [""]
+                correction = ("Your account_id did not match your spoken answer. Reply naturally to the guard. "
+                    "A question, refusal or ordinary reaction uses empty account_id. If you actually disclose "
+                    "a supplied account, use its matching ID and preserve its content and source. "
+                    "No private disclosure or later payment is required for continuing the conversation.")
+            if correction not in corrections:
+                corrections.append(correction)
+            correction = "\n".join(corrections)
+    raise RequestError(f"The model's reply failed validation after bounded correction: {last_error}")
+
+def _resident_exchange(snapshot, request, retain, report):
+    draft = _resident_draft()
+    budget = FOOD_REQUEST_TURN_COUNT if snapshot.get("purpose") == "food_request" else RESIDENT_TURN_COUNT
+    limit = FOOD_REQUEST_TURN_COUNT + 1 if snapshot.get("purpose") == "food_request" else CONVERSATION_MAX_TURNS
+    for index in range(limit):
+        if index >= budget and (not snapshot.get("_dialogue_validation", True)
+                                or not contains_question(draft["turns"][-1].text)):
+            break
+        check_cancelled()
+        state = dialogue_context._resident_turn_snapshot(snapshot, draft, closing=index == limit - 1)
+        speech = request(state)
+        draft = dialogue_validation._apply_resident_candidate(snapshot, draft, speech, state)
+        retain(draft["turns"], snapshot)
+    for role in ("initiator", "recipient"):
+        state = dialogue_context._resident_turn_snapshot(snapshot, draft, role=role, assessment=True)
+        assessment = request(state)
+        draft = dialogue_validation._apply_resident_candidate(snapshot, draft, assessment, state)
+    thanks = []
+    if snapshot.get("purpose") == "food_request" and snapshot["food_request"]["outcome"] == "accepted":
+        state = dialogue_context._resident_turn_snapshot(snapshot, draft, role="initiator", thanks=True)
+        thanks = request(state).parts
+    elif draft.get("gift") and draft["gift"].accept_turn is not None:
+        role = "recipient" if draft["gift"].recipient_id == actor_id(snapshot["recipient"]) else "initiator"
+        state = dialogue_context._resident_turn_snapshot(snapshot, draft, role=role, thanks=True)
+        state["task"] = "Generate a brief acknowledgment reserved for AFTER the accepted possession is actually handed over. Preserve giver, recipient and creator roles."
+        thanks = request(state).parts
+    result = _assemble_resident(snapshot, draft, thanks)
+    report("Validating completed conversation")
+    return validate_response(result.model_dump_json(), snapshot)
+
+
+def _snake_exchange(snapshot, request, retain, report):
+    draft = {"turns": []}
+    decision = request({**snapshot, "request_kind": "snake_decision",
+        "permitted_decisions": ["talk"], "heard_turns": [], "opening": True})
+    outcome_turn = 2
+    followup_pending = False
+    for index in range(CONVERSATION_MAX_TURNS):
+        if (index >= SNAKE_TURN_COUNT and not (index == outcome_turn and followup_pending)
+                and (not snapshot.get("_dialogue_validation", True) or not contains_question(draft["turns"][-1].text))):
+            break
+        closing = index == CONVERSATION_MAX_TURNS - 1
+        check_cancelled()
+        if index == 2 or index == outcome_turn and followup_pending:
+            assessment = {**snapshot, "request_kind": "snake_decision",
+                "heard_turns": [dict(role=t.speaker, text=t.text) for t in draft["turns"]],
+                "question_account_id": decision.snake_account_id,
+                "disclosed_account": next((a for a in snapshot["offering_accounts"] if a["claim_id"] == decision.account_id), None)}
+            outcome = request(assessment)
+            outcome.account_id = decision.account_id
+            outcome.attitudes = decision.attitudes
+            outcome.snake_account_id = decision.snake_account_id
+            decision = outcome
+            followup_pending = False
+        state = dialogue_context._snake_turn_snapshot(snapshot, decision, draft["turns"], outcome_turn=outcome_turn)
+        if closing:
+            state["request_kind"] = "conversation_closing"
+            state["task"] = "Answer question_to_answer using only settled facts, then finish without another question."
+        speech = request(state)
+        if isinstance(speech, SnakeResidentResponse):
+            decision.account_id = speech.account_id
+            if speech.attitudes is not None:
+                decision.attitudes = speech.attitudes
+            if index == 3:
+                outcome_turn = index + 1
+                followup_pending = True
+        draft["turns"].append(ConversationTurn(speaker=state["speaker_role"], parts=speech.parts))
+        retain(draft["turns"], snapshot)
+    result = SnakeResponse(**decision.model_dump(), turns=draft["turns"], outcome_turn=outcome_turn)
+    report("Validating completed conversation")
+    return validate_response(result.model_dump_json(), snapshot)
+
+
+def _individual_reply(snapshot, request):
+    kind = snapshot.get("request_kind")
+    if kind not in ("intent", "snake_player", "conversation_closing", "player_opening", "player_gift", "player_acknowledgment",
+                    "resident_turn", "resident_assessment", "handoff_thanks"):
+        intent = request(intent_snapshot(snapshot))
+        snapshot["request_intent"] = intent.model_dump()
+        if intent._clarification:
+            snapshot["intent_clarification"] = intent._clarification
+    return request(snapshot)
 
 
 def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAULT_OLLAMA_MODEL, progress=None):
@@ -1959,222 +1895,15 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
         return result
 
     def validated_request(state):
-        kind = state.get("request_kind")
-        activity = (f"turn {state['turn_index'] + 1} for {state['speaker']['name']}" if kind in ("snake_turn", "resident_turn") else
-                    f"assessment for {state['speaker']['name']}" if kind == "resident_assessment" else
-                    {"snake_decision": "encounter outcome", "conversation_closing": "closing answer",
-                     "handoff_thanks": "reserved handoff thanks", "intent": "player intent"}.get(kind, "reply"))
-        correction = ""
-        corrections = []
-        last_error = None
-        disclosure_repair = None
-        disclosure_choices = None
-        effect_repairs = {}
-        snake_disclosure_choices = None
-        for attempt in range(DIALOGUE_STAGE_ATTEMPTS):
-            report(("Generating " if attempt == 0 else "Correcting " if attempt == 1 else "Recovery: rewriting ") + activity)
-            retry_state = (_speech_retry_snapshot(state) if attempt == DIALOGUE_STAGE_ATTEMPTS - 1
-                           and kind in ("snake_turn", "conversation_closing", "resident_turn", "handoff_thanks") else state)
-            if snake_disclosure_choices is not None:
-                retry_state = {**retry_state, "_disclosure_choices": snake_disclosure_choices}
-            if disclosure_repair:
-                account = next(a for a in state["speaker"]["permitted_accounts"] if a["claim_id"] == disclosure_repair)
-                retry_state = {**retry_state, "_disclosure_repair": disclosure_repair,
-                               "speaker": {**retry_state["speaker"], "account_focus": account}}
-            if disclosure_choices is not None:
-                retry_state = {**retry_state, "choices": {**retry_state["choices"], "disclosures": disclosure_choices}}
-            if effect_repairs:
-                retry_state = {**retry_state, "choices": {**retry_state["choices"], **effect_repairs}}
-            try:
-                result = request(retry_state, correction)
-                if kind == "intent":
-                    # Transport validation reduces PlayerIntent to ActionIntent;
-                    # that accepted value intentionally has no message_type field.
-                    return result
-                # A compact retry retains the complete prefix and original rules.
-                return validate_response(result.model_dump_json(), state)
-            except InvalidResponseError as exc:
-                last_error = exc
-                # A chosen, concrete own memory needs speech and metadata together.
-                # Constrain only its regenerated reply; infer no live disclosure.
-                if kind == "resident_turn" and exc.kind == RecoveryKind.MISSING_DISCLOSURE:
-                    speech = " ".join(p.text for p in getattr(exc.response, "parts", []))
-                    memories = [account for account in state["speaker"].get("permitted_accounts", [])
-                                if account["kind"] == "former_life" and account["subject_id"] == actor_id(state["speaker"])
-                                and account.get("basis") == "firsthand" and account["claim_id"] in state["choices"]["disclosures"]
-                                and mentions_private_recollection(speech, account["assertion"], ())]
-                    if len(memories) == 1:
-                        disclosure_repair = memories[0]["claim_id"]
-                        disclosure_choices = None
-                if exc.repeated_turns and isinstance(exc.response, DialoguePartsResponse):
-                    candidate = exc.response.model_copy(deep=True)
-                    candidate.parts = _deduplicate_dialogue_parts(candidate)
-                    try:
-                        return validate_response(candidate.model_dump_json(), state)
-                    except InvalidResponseError:
-                        pass
-                # No accepted prefix, decision, stance or offer can be rewritten.
-                # Resident errors can originate in a full-prefix check. Only send
-                # current-speaker errors; those checks never quote private accounts.
-                correction = (f"The previous response was rejected: {exc} Return fresh complete JSON for only this stage. "
-                              "Correct the error using your supplied choices and own knowledge. "
-                              "Keep accepted preceding speech and effects unchanged. Write shorter complete sentences. "
-                              "Do not read internal records aloud or write the listener's answer.")
-                if kind == "resident_assessment":
-                    owner, target = state["speaker"]["name"], state["opinion_target"]
-                    correction = (f"You are {owner}. Assess only {target}, your conversation partner. "
-                        f"Write one short first-person reason beginning with I about how {target}'s words affected your view. "
-                        f"Do not describe {owner}'s personality or write {target}'s opinion of you. "
-                        "Use the fixed transcript as evidence; keep the target and pending reaction choices unchanged. "
-                        f"The previous assessment failed: {exc}. Return only the corrected assessment JSON.")
-                if (kind == "snake_turn" and state["turn_index"] == state["transaction"].get("outcome_turn", 2)
-                        and state["transaction"]["selected_outcome"] == "give_apple"):
-                    correction += ("\nThe apple reward is settled. Begin this reply by explicitly handing the listener "
-                        "one apple in the present tense, then briefly acknowledge the information they supplied. "
-                        "Do not merely offer, promise, discuss fruit or answer a question. Write the actual handoff, "
-                        "without reading these directions aloud.")
-                if exc.repeated_turns and kind in ("snake_turn", "resident_turn", "conversation_closing"):
-                    earlier = [t["text"] for t in state.get("_preceding_turns", []) if t["role"] == state["speaker_role"]]
-                    correction += ("\nYour own accepted earlier speech, supplied only to avoid repeating it: "
-                        + json.dumps(earlier, ensure_ascii=False)
-                        + " Respond to the listener's latest point with a new answer, decision or specific follow-up. "
-                        "Do not repeat your earlier question, even in a shortened form.")
-                if (isinstance(exc.response, ActionResponse) and exc.kind == RecoveryKind.KNOWN_ENCOUNTER
-                        and state.get("private_context", {}).get("starting_experience")):
-                    correction = ("Your reply denied an established conversation. Regenerate this reply from these facts: "
-                                  + state["private_context"]["starting_experience"]
-                                  + " Correct any earlier mistaken denial and answer the player's latest question. "
-                                  "Write your own speech, not these instructions. Keep accepted history and effects unchanged.")
-                if kind == "resident_turn" and exc.kind == RecoveryKind.MISSING_PROMISE:
-                    effect_repairs["offers"] = []
-                    correction = ("Your speech made no supported apple commitment. Regenerate this reply without offers; "
-                                  "the schema now provides no new offer for this stage. Respond naturally using your own knowledge. "
-                                  "Keep earlier accepted speech, agreements and other permitted effects unchanged.")
-                if kind == "resident_turn" and exc.kind == RecoveryKind.MISSING_ACCEPTANCE:
-                    effect_repairs["acceptances"] = []
-                    correction = ("Your speech did not accept an apple commitment. Regenerate this reply without acceptances; "
-                                  "the schema now provides none for this stage. Keep earlier accepted speech and effects unchanged.")
-                if (kind == "resident_turn" and exc.kind == RecoveryKind.UNMATCHED_ACCOUNT
-                        and not state.get("discussion_focus_claim_id")):
-                    disclosure_repair = None  # An optional memory may be withdrawn on an unaccepted retry.
-                    speech = " ".join(p.text for p in getattr(exc.response, "parts", []))
-                    disclosure_choices = []
-                    for account in state["speaker"].get("permitted_accounts", []):
-                        if account["claim_id"] not in state["choices"]["disclosures"]:
-                            continue
-                        try:
-                            validate_account_speech(speech, account["assertion"],
-                                names=name_forms(state.get("_name_actors", {})), speaker=state["speaker"]["name"],
-                                listener=state.get("_listener_identity"), kind=account["kind"],
-                                firsthand=account.get("basis") == "firsthand",
-                                actor_references=account_references(state.get("_name_actors", {})))
-                        except ValueError:
-                            continue
-                        disclosure_choices.append(account["claim_id"])
-                    correction = ("Your disclosure metadata did not match what you said. Regenerate only this reply. "
-                                  "For an ordinary reaction with no account, omit disclosures and introduce no new story. "
-                                  "If your reply actually reports an available account, use only its matching claim ID. "
-                                  "Keep accepted speech and the listener's reaction unchanged; never invent events to justify a tag.")
-                if isinstance(exc.response, SnakeResidentResponse) and exc.kind in (RecoveryKind.UNMATCHED_ACCOUNT, RecoveryKind.MISSING_DISCLOSURE):
-                    text = " ".join(p.text for p in exc.response.parts)
-                    matches = []
-                    for account in state["speaker"]["permitted_accounts"]:
-                        try:
-                            validate_account_speech(text, account["assertion"], speaker=state["speaker"]["name"],
-                                listener=state["listener"]["name"], kind=account["kind"],
-                                names=name_forms(state.get("_name_actors", {})))
-                        except ValueError:
-                            continue
-                        matches.append(account["claim_id"])
-                    snake_disclosure_choices = matches or [""]
-                    correction = ("Your account_id did not match your spoken answer. Reply naturally to the guard. "
-                        "A question, refusal or ordinary reaction uses empty account_id. If you actually disclose "
-                        "a supplied account, use its matching ID and preserve its content and source. "
-                        "No private disclosure or later payment is required for continuing the conversation.")
-                if correction not in corrections:
-                    corrections.append(correction)
-                correction = "\n".join(corrections)
-        raise RequestError(f"The model's reply failed validation after bounded correction: {last_error}")
+        return _corrected_request(state, request, report)
 
     try:
         kind = snapshot.get("request_kind")
-        if kind in ("conversation", "snake_encounter"):
-            resident = kind == "conversation"
-            draft = _resident_draft() if resident else {"turns": []}
-            decision = None if resident else validated_request({**snapshot, "request_kind": "snake_decision",
-                "permitted_decisions": ["talk"], "heard_turns": [], "opening": True})
-            outcome_turn = 2
-            followup_pending = False
-            budget = (FOOD_REQUEST_TURN_COUNT if snapshot.get("purpose") == "food_request" else RESIDENT_TURN_COUNT) if resident else SNAKE_TURN_COUNT
-            limit = FOOD_REQUEST_TURN_COUNT + 1 if resident and snapshot.get("purpose") == "food_request" else CONVERSATION_MAX_TURNS
-            # Continue unanswered questions after the base exchange, closing at the cap.
-            for index in range(limit):
-                if index >= budget and not (not resident and index == outcome_turn and followup_pending) and (not snapshot.get("_dialogue_validation", True)
-                                        or not contains_question(draft["turns"][-1].text)):
-                    break
-                closing = index == limit - 1
-                check_cancelled()
-                if resident:
-                    state = dialogue_context._resident_turn_snapshot(snapshot, draft, closing=closing)
-                else:
-                    if index == 2 or index == outcome_turn and followup_pending:
-                        assessment = {**snapshot, "request_kind": "snake_decision",
-                            "heard_turns": [dict(role=t.speaker, text=t.text) for t in draft["turns"]],
-                            "question_account_id": decision.snake_account_id,
-                            "disclosed_account": next((a for a in snapshot["offering_accounts"] if a["claim_id"] == decision.account_id), None)}
-                        outcome = validated_request(assessment)
-                        outcome.account_id = decision.account_id
-                        outcome.attitudes = decision.attitudes
-                        # Opening disclosure is the one the resident has actually heard.
-                        outcome.snake_account_id = decision.snake_account_id
-                        decision = outcome
-                        followup_pending = False
-                    state = dialogue_context._snake_turn_snapshot(snapshot, decision, draft["turns"], outcome_turn=outcome_turn)
-                    if closing:
-                        state["request_kind"] = "conversation_closing"
-                        state["task"] = "Answer question_to_answer using only settled facts, then finish without another question."
-                speech = validated_request(state)
-                if resident:
-                    draft = dialogue_validation._apply_resident_candidate(snapshot, draft, speech, state)
-                else:
-                    if isinstance(speech, SnakeResidentResponse):
-                        decision.account_id = speech.account_id
-                        if speech.attitudes is not None:
-                            decision.attitudes = speech.attitudes
-                        if index == 3:
-                            outcome_turn = index + 1
-                            followup_pending = True
-                    draft["turns"].append(ConversationTurn(speaker=state["speaker_role"], parts=speech.parts))
-                retain(draft["turns"], snapshot)
-            if resident:
-                for role in ("initiator", "recipient"):
-                    state = dialogue_context._resident_turn_snapshot(snapshot, draft, role=role, assessment=True)
-                    assessment = validated_request(state)
-                    draft = dialogue_validation._apply_resident_candidate(snapshot, draft, assessment, state)
-                thanks = []
-                if snapshot.get("purpose") == "food_request" and snapshot["food_request"]["outcome"] == "accepted":
-                    state = dialogue_context._resident_turn_snapshot(snapshot, draft, role="initiator", thanks=True)
-                    thanks = validated_request(state).parts
-                elif draft.get("gift") and draft["gift"].accept_turn is not None:
-                    role = "recipient" if draft["gift"].recipient_id == actor_id(snapshot["recipient"]) else "initiator"
-                    state = dialogue_context._resident_turn_snapshot(snapshot, draft, role=role, thanks=True)
-                    state["task"] = "Generate a brief acknowledgment reserved for AFTER the accepted possession is actually handed over. Preserve giver, recipient and creator roles."
-                    thanks = validated_request(state).parts
-                result = _assemble_resident(snapshot, draft, thanks)
-            else:
-                result = SnakeResponse(**decision.model_dump(), turns=draft["turns"], outcome_turn=outcome_turn)
-            report("Validating completed conversation")
-            # Final inconsistencies fail the draft; they never regenerate a transcript.
-            return validate_response(result.model_dump_json(), snapshot)
-        if kind not in ("intent", "snake_player", "conversation_closing", "player_opening", "player_gift", "player_acknowledgment",
-                        "resident_turn", "resident_assessment", "handoff_thanks"):
-            intent = validated_request(intent_snapshot(snapshot))
-            snapshot["request_intent"] = intent.model_dump()
-            if intent._clarification:
-                snapshot["intent_clarification"] = intent._clarification
-        if kind == "snake_player":
-            return validated_request(snapshot)
-        return validated_request(snapshot)
+        if kind == "conversation":
+            return _resident_exchange(snapshot, validated_request, retain, report)
+        if kind == "snake_encounter":
+            return _snake_exchange(snapshot, validated_request, retain, report)
+        return _individual_reply(snapshot, validated_request)
     except (RequestError, ValueError) as exc:
         if not isinstance(exc, RequestError):
             exc = RequestError(f"The completed conversation failed validation: {exc}")

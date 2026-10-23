@@ -4,12 +4,14 @@ The UI supplies only whether a reply and its original offer are still open.
 Outcome-specific commits remain in resident, snake and transfer code.
 """
 
+from player_records import PlayerCall, PlayerReplyCall
 from dataclasses import dataclass
 from apartments import offer_invitation, pending_invitation
 from conversation_history import describe_opinion_change
 from dialogue import ConversationTurn, ConversationPart
 from interactions import record_failed_dialogue
-from dialogue_context import actor_catalog, name_forms, orientation_speech
+from actor_identity import (actor_catalog, name_forms)
+from social import orientation_speech
 from activity import Behavior
 from player import owns_conversation
 from simulation import PendingAction
@@ -96,7 +98,7 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
             from transfers import validate_transfer
             validate_player_transfer(result, snapshot)
             context = snapshot.get("player_interaction", {})
-            if context.get("call") and not call_valid(world, npc, context["call"]):
+            if context.get("call") and not call_valid(world, npc, PlayerCall(**context["call"])):
                 raise ValueError("The reason for this call is no longer available.")
             if context.get("incoming_gift"):
                 if not record_open:
@@ -122,7 +124,7 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
                 raise ValueError("The invitation is not supported by the original reply.")
             if result.invitation_acceptance:
                 offer = pending_invitation(world)
-                if not offer or offer["id"] != result.invitation_acceptance or not message:
+                if not offer or offer.id != result.invitation_acceptance or not message:
                     raise ValueError("This invitation acceptance has no current offer.")
         except ValueError as exc:
             error = str(exc)
@@ -184,8 +186,8 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
             pending_offer = ({**result.gift_offer.model_dump(), "npc_id": npc.id,
                 "revision": npc.command_revision, "record_id": record.id} if result.gift_offer else None)
         elif snapshot.get("request_kind") != "player_acknowledgment":
-            npc.player_call = dict(kind="reply", reference=record.id, closing=closes_dialogue,
-                gift_offer=result.gift_offer.model_dump() if result.gift_offer else None)
+            npc.player_call = PlayerReplyCall(kind="reply", reference=record.id, closing=closes_dialogue,
+                gift_offer=result.gift_offer)
             npc.release_claims(world)
             npc.resume_pending = True
     npc.reply = f"Request failed: {error}" if error else result.reply
@@ -227,7 +229,7 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
     if not error and result.invitation_resolution:
         offer = pending_invitation(world)
         if offer:
-            offer["status"] = result.invitation_resolution
+            offer.status = result.invitation_resolution
     return AcceptedReply(error, pending_offer, result.invitation_acceptance if not error else "")
 
 

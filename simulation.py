@@ -23,6 +23,15 @@ class PendingAction:
     quantity: Annotated[int, Field(ge=0)] = 0
 
 
+@dataclass
+class TreeCustomer:
+    actor_id: str
+    purpose: Literal["bargain", "judgment", "introduction"]
+    reason: str
+    saved_state: dict | None
+    elapsed: float = 0.0
+
+
 class Simulation:
     def action_for(self, actor_id):
         """The queue is the sole authority for accepted, deferred commands."""
@@ -32,6 +41,8 @@ class Simulation:
         from npc import Tree
         from snake import Snake
 
+        from interactions import ParticipantReservations
+        self.reservations = ParticipantReservations()
         self.npcs = npcs
         self.npc_trait_mode = npc_trait_mode
         self.snake = Snake()
@@ -95,6 +106,31 @@ class Simulation:
         if player_start and mode == "player":
             from player_story import start_player_introduction
             start_player_introduction(self)
+
+    @property
+    def player_interaction(self):
+        return self.reservations.get(self.player.id, "player")
+
+    @player_interaction.setter
+    def player_interaction(self, interaction):
+        previous = self.player_interaction
+        if previous is not None:
+            self.reservations.release("player", previous)
+        if interaction is not None:
+            partner = self.participant_by_id(interaction.npc_id)
+            self.reservations.acquire("player", interaction, self.player, partner)
+
+    @property
+    def visit(self):
+        return self.reservations.get(self.player.id, "visit")
+
+    @visit.setter
+    def visit(self, visit):
+        previous = self.visit
+        if previous is not None:
+            self.reservations.release("visit", previous)
+        if visit is not None:
+            self.reservations.acquire("visit", visit, self.player, self.npc_by_id(visit.host_id))
 
     def record_by_id(self, record_id):
         return next((record for record in self.history if record.id == record_id), None)
@@ -230,8 +266,8 @@ class Simulation:
     def is_creative_job(self, npc, job):
         from activity import Behavior
         behavior = npc.behavior
-        if self.visit and self.visit["host_id"] == npc.id:
-            behavior = self.visit["saved_state"]["behavior"]
+        if self.visit and self.visit.host_id == npc.id:
+            behavior = self.visit.saved_state["behavior"]
         elif self.player_interaction and self.player_interaction.npc_id == npc.id:
             behavior = (self.player_interaction.saved_state or {}).get("behavior", behavior)
         elif npc.conversation:
@@ -260,13 +296,11 @@ class Simulation:
         from activity import Behavior
 
         from locations import available as available_outdoors
-        from player import owns_resident
         from autonomy import awaiting_arrival_greeting
         return (self.npc_by_id(npc.id) is npc and available_outdoors(npc)
                 and (allow_arrival or not awaiting_arrival_greeting(npc, self))
-                and not owns_resident(self, npc) and not self.tree_has_actor(npc.id)
-                and not (self.visit and self.visit["host_id"] == npc.id)
-                and npc.interaction is None and not npc.selected and not npc.interaction_blocked
+                and not self.reservations.held(npc.id, "player", "tree", "visit", "conversation", "handoff", "snake")
+                and not npc.selected and not npc.interaction_blocked
                 and (allow_player_call or not npc.player_call)
                 and npc.owner == "autonomous" and not npc.resume_pending
                 and not any(npc.id in (action.npc_id, action.target_id) for action in self.pending_actions)
@@ -393,8 +427,7 @@ class Simulation:
         return max(0, self.tree.fruit - int(bool(encounter and encounter.active and encounter.reserved)))
 
     def tree_has_actor(self, actor_id):
-        return (bool(self.tree_current and self.tree_current["actor_id"] == actor_id)
-                or any(entry["actor_id"] == actor_id for entry in self.tree_queue))
+        return self.reservations.held(actor_id, "tree")
 
     def can_leave_tree(self, actor_id):
         return self.tree_has_actor(actor_id) and not (self.snake.encounter and self.snake.encounter.recipient.id == actor_id)
@@ -419,24 +452,26 @@ class Simulation:
         saved = None if actor is self.player else actor.suspend_activity("Waiting in the tree line")
         if saved:
             saved.update(behavior=Behavior.WAIT, target_id=None, destination=None, owner="autonomous")
-        self.tree_queue.append(dict(actor_id=actor.id, purpose=purpose, reason=reason,
-                                    saved_state=saved, elapsed=0.0))
+        entry = TreeCustomer(actor_id=actor.id, purpose=purpose, reason=reason, saved_state=saved, elapsed=0.0)
+        self.tree_queue.append(entry)
+        self.reservations.acquire("tree", entry, actor)
         return True
 
     def leave_tree(self, actor_id, reason="Left the tree line."):
-        entry = next((e for e in self.tree_queue if e["actor_id"] == actor_id), None)
+        entry = next((e for e in self.tree_queue if e.actor_id == actor_id), None)
         if entry:
             self.tree_queue.remove(entry)
-        elif self.tree_current and self.tree_current["actor_id"] == actor_id:
+        elif self.tree_current and self.tree_current.actor_id == actor_id:
             entry, self.tree_current = self.tree_current, None
         if not entry:
             return
+        self.reservations.release("tree", entry)
         actor = self.participant_by_id(actor_id)
         if actor is None:
             return
         self.tree.release(actor)
-        if actor is not self.player and entry["saved_state"]:
-            actor.restore_after_interaction(entry["saved_state"], self.tree.id, self.snake.id)
+        if actor is not self.player and entry.saved_state:
+            actor.restore_after_interaction(entry.saved_state, self.tree.id, self.snake.id)
         self.publish("tree_queue", (actor,), reason)
 
     def update_tree_queue(self, dt):
@@ -445,12 +480,12 @@ class Simulation:
         from locations import clamp_point
         from player import owns_resident
         for entry in [*self.tree_queue, *([self.tree_current] if self.tree_current else [])]:
-            actor = self.participant_by_id(entry["actor_id"])
+            actor = self.participant_by_id(entry.actor_id)
             unavailable = (actor is None or not self.is_outdoors(actor)
-                or entry["purpose"] == "bargain"
+                or entry.purpose == "bargain"
                 and self.available_fruit < 1 and not (self.snake.encounter and self.snake.encounter.recipient is actor))
             if unavailable:
-                self.leave_tree(entry["actor_id"], "Tree service became unavailable.")
+                self.leave_tree(entry.actor_id, "Tree service became unavailable.")
         if self.tree_current is None and self.tree_queue and self.snake.encounter is None and not self.snake.recovery_remaining:
             self.tree_current = self.tree_queue.pop(0)
         ordered = ([self.tree_current] if self.tree_current else []) + self.tree_queue
@@ -459,11 +494,11 @@ class Simulation:
             return set()
         points = [clamp_point("garden", (self.tree.interaction_point[0] - index * TREE_QUEUE_SPACING,
                                          self.tree.interaction_point[1])) for index in range(len(ordered))]
-        customers = [self.participant_by_id(entry["actor_id"]) for entry in ordered]
+        customers = [self.participant_by_id(entry.actor_id) for entry in ordered]
         neighbors = self.outdoor_npcs
         if self.is_outdoors(self.player):
             neighbors.append(self.player)
-        queue_positions = {entry["actor_id"]: index for index, entry in enumerate(ordered)}
+        queue_positions = {entry.actor_id: index for index, entry in enumerate(ordered)}
         clearing_ids = set()
         self._tree_exit_targets = {key: point for key, point in self._tree_exit_targets.items()
                                    if any(actor.id == key for actor in neighbors)}
@@ -510,8 +545,8 @@ class Simulation:
                 actor.facing = TREE_QUEUE_FACING
             if index != 0 or self.tree_current is not entry:
                 continue
-            entry["elapsed"] += dt
-            if entry["elapsed"] > PLAYER_APPROACH_TIMEOUT:
+            entry.elapsed += dt
+            if entry.elapsed > PLAYER_APPROACH_TIMEOUT:
                 self.leave_tree(actor.id, "The tree approach timed out.")
             elif arrived:
                 try:
@@ -519,7 +554,7 @@ class Simulation:
                     cls = PlayerSnakeEncounter if actor is self.player else SnakeEncounter
                     if actor is not self.player:
                         actor.resume_pending = False
-                    encounter = cls(self, actor, entry["purpose"], entry["reason"],
+                    encounter = cls(self, actor, entry.purpose, entry.reason,
                                     origin="player" if actor is self.player else "autonomous")
                     self.tree.reserved_by = actor
                 except ValueError as exc:
@@ -657,7 +692,7 @@ class Simulation:
         from player import owns_resident, end_interaction
         if owns_resident(self, target):
             end_interaction(self, reason)
-        if self.visit and self.visit["host_id"] == target.id:
+        if self.visit and self.visit.host_id == target.id:
             from apartments import finish_visit
             finish_visit(self)
         self.leave_tree(target.id, reason)
@@ -665,7 +700,7 @@ class Simulation:
         from player import clear_call
         from transfers import Handoff
         clear_call(target)
-        self.player_acknowledgments = [a for a in self.player_acknowledgments if a["npc_id"] != target.id]
+        self.player_acknowledgments = [a for a in self.player_acknowledgments if a.npc_id != target.id]
         if isinstance(interaction, Handoff):
             interaction.finish(reason)
             interaction = None
@@ -733,7 +768,7 @@ class Simulation:
         target.departure = {"day": self.day, "phase": self.phase, "cause": "eaten by the snake", "event_id": ""}
         reason = f"Cancelled because {target.name} was eaten; this is not a deliberate betrayal."
         # The eating encounter is the preserved source, not an abandoned bargain.
-        target.snake_encounter = None
+        self.reservations.release("snake", encounter, target)
         for promise in self.promises:
             if promise.status == "pending" and target.id in (promise.promisor_id, promise.recipient_id):
                 promise.status, promise.resolved_phase, promise.outcome = "cancelled", self.phase_index, reason

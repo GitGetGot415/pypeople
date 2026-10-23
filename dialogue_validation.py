@@ -23,10 +23,10 @@ from dialogue_rules import (is_name_reference, mentions_account, mentions_privat
                            validate_continuity, validate_base_prose, validate_claim_source, validate_english,
                            validate_opinion_reason, validate_environment_speech, validate_speaker_identity,
                            _personal_apple_request, _short_player_answer, validate_snake_perspective)
-from social import phase_index, validate_agreements
-from dialogue_context import (account_references, name_forms, actor_id, forms, own_name, orientation_speech,
-                             validate_orientation, _actor_name, _resident_information, _snake_turn_snapshot,
-                             _validate_speaker)
+from social import phase_index, validate_agreements, resident_information
+from actor_identity import (account_references, name_forms, actor_id, forms, own_name)
+from social import (orientation_speech, validate_orientation)
+from dialogue_context import (_actor_name, _snake_turn_snapshot, _validate_speaker)
 from transfers import validate_player_transfer, validate_resident_gift
 
 
@@ -594,7 +594,7 @@ def _validate_response(raw, snapshot, model):
         validate_resident_gift(result.gift, result.turns, snapshot)
         people = [snapshot[role]["npc_name"] for role in ("initiator", "recipient")]
         people.extend(n["npc_name"] for n in snapshot.get("nearby_npcs", []))
-        _resident_information(snapshot, vars(result), incomplete=False)
+        resident_information(snapshot, vars(result), incomplete=False)
         validate_agreements(result.accepted_proposals, snapshot.get("permitted_proposals", []),
                             result.turns, snapshot["initiator"]["npc_id"], snapshot["recipient"]["npc_id"],
                             current_phase=phase_index(snapshot["initiator"].get("day", 1),
@@ -664,7 +664,7 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
             validate_base_prose(candidate.opinion.reason, (own_name(snapshot[role]), own_name(snapshot[other])))
             validate_opinion_reason(candidate.opinion.reason, snapshot[role]["npc_name"], snapshot[other]["npc_name"])
         projected["opinions"][role] = candidate.opinion
-        _resident_information(snapshot, projected)
+        resident_information(snapshot, projected)
         return projected
 
     turn = ConversationTurn(speaker=role, parts=candidate.parts)
@@ -727,7 +727,7 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
             raise ValueError(f"The complete conversation exceeds its {field} limit.")
     if len(projected["offers"]) > CONVERSATION_MAX_AGREEMENTS:
         raise ValueError("The complete conversation exceeds its offer limit.")
-    _resident_information(snapshot, projected)
+    resident_information(snapshot, projected)
     validate_agreements(projected["accepted_proposals"], snapshot.get("permitted_proposals", []), projected["turns"],
                         snapshot["initiator"]["npc_id"], snapshot["recipient"]["npc_id"],
                         current_phase=phase_index(snapshot[role].get("day", 1), snapshot[role].get("time_of_day", "day")),
