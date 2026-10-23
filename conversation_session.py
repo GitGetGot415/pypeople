@@ -9,6 +9,7 @@ from conversation_results import accept_generated_dialogue, accept_resident_repl
 from npc import NPC
 from snake import SnakeEncounter
 from social import concern_description
+from transfer_records import transfer_payload
 
 
 class ConversationSession:
@@ -217,8 +218,8 @@ class ConversationSession:
         offers = record.player_promise_offers if record and npc.id in record.participant_ids else []
         snapshot["player_apple_offer_count"] = len(offers)
         snapshot["pending_apple_promise"] = next((asdict(o) for o in offers if o.status == "offered"), None)
-        snapshot["known_player_transfers"] = sorted([t for r in self.conversation_history for t in r.transfers
-            if {t["giver_id"], t["recipient_id"]} == {self.simulation.player.id, npc.id}], key=lambda t: t["sequence"])[-PLAYER_CONTEXT_TRANSFER_LIMIT:]
+        snapshot["known_player_transfers"] = sorted([transfer_payload(t) for r in self.conversation_history for t in r.transfers
+            if {t.giver_id, t.recipient_id} == {self.simulation.player.id, npc.id}], key=lambda t: t["sequence"])[-PLAYER_CONTEXT_TRANSFER_LIMIT:]
         return snapshot
 
     def talk_to_call(self, npc):
@@ -479,7 +480,7 @@ class ConversationSession:
             if npc and self.player_owns(npc):
                 snapshot = self.player_snapshot(npc)
                 snapshot.update(request_kind="player_acknowledgment", player_interaction={
-                    "committed_transfer": next(t for t in record.transfers if t["id"] == acknowledgment.transfer_id)})
+                    "committed_transfer": transfer_payload(next(t for t in record.transfers if t.id == acknowledgment.transfer_id))})
                 self.select_record(record)
                 self._submit_player_message(npc, "", snapshot)
                 if not npc.interaction_blocked:

@@ -1,5 +1,7 @@
 """Local home decisions and transitions; no transport, drawing, or remote actions."""
 
+from activity import ActivitySnapshot
+
 from uuid import uuid4
 from dataclasses import dataclass
 from typing import Literal
@@ -33,7 +35,7 @@ class Invitation:
 @dataclass
 class HostedVisit:
     host_id: str
-    saved_state: dict
+    saved_state: ActivitySnapshot
     offer_id: str
     location: str
     stage: Literal["travel", "hosting"]
@@ -350,3 +352,110 @@ def update_visit(world, dt):
             world.join_tree(world.player, "introduction")
     elif world.player.location != visit.location or host.location != visit.location:
         finish_visit(world)
+
+
+def validate_saved_visit(visit, invitations, player, by_id, layout, interaction, entries, reserved_ids):
+    from locations import valid_location, validate_feet
+    from activity import ActivitySnapshot
+    if visit:
+        host = by_id.get(visit.host_id)
+        if host is None or host is player or not valid_location(layout, visit.location):
+            raise ValueError("A visit needs its actual living host and destination.")
+        ActivitySnapshot.validate(visit.saved_state)
+        offer = next((o for o in invitations if o.id == visit.offer_id), None)
+        if (not offer or offer.status != "accepted" or offer.speaker_id != host.id
+                or offer.location != visit.location or offer.destination != visit.destination
+                or visit.stage not in ("travel", "hosting")):
+            raise ValueError("A hosted visit requires its actual accepted invitation.")
+        if visit.stage == "travel" and (interaction or player.id in {e.actor_id for e in entries}):
+            raise ValueError("An accepted visit's travel cannot own another player interaction.")
+        if visit.stage == "travel":
+            for actor, purpose in ((host, "host_visit"), (player, "invitation")):
+                if actor.journey:
+                    if actor.journey.destination != visit.location or actor.journey.purpose != purpose:
+                        raise ValueError("Host and visitor must travel to their accepted destination.")
+                elif actor.location != visit.location:
+                    raise ValueError("An unfinished visit needs its actual remaining journey.")
+        if visit.stage == "hosting" and (host.location != visit.location or player.location != visit.location):
+            raise ValueError("A host and visitor must be present together.")
+        if not valid_location(layout, visit.return_location):
+            raise ValueError("A host's return destination must remain valid.")
+        validate_feet(visit.return_location, visit.return_point)
+        if host.id in {e.actor_id for e in entries} or host.id in reserved_ids:
+            raise ValueError("A host must stay available for the player.")
+
+
+def validate_saved_invitations(invitations, records, residents, player_id, interaction, tree_point):
+    from constants import GARDEN_VISIT_POINT, ROOM_ARRIVAL
+    invitation_ids = set()
+    for offer in invitations:
+        record = records.get(offer.conversation_id)
+        speaker = next((n for n in residents if n.id == offer.speaker_id), None)
+        if (offer.id in invitation_ids or not record or not speaker or offer.status not in ("offered", "accepted", "withdrawn", "declined")
+                or offer.destination not in ("garden", "tree", "home")
+                or not 0 <= offer.turn < len(record.turns)
+                or (record.turns[offer.turn].speaker_id, record.turns[offer.turn].text) != (speaker.id, offer.speech)
+                or offer.location != (f"room:{speaker.room_number}" if offer.destination == "home" else "garden")):
+            raise ValueError("Invitations must retain their real speaker, speech and destination.")
+        expected_point = {"garden": GARDEN_VISIT_POINT, "home": ROOM_ARRIVAL,
+                          "tree": tree_point}[offer.destination]
+        if (tuple(offer.point) != tuple(expected_point)
+                or set(record.participant_ids) != {speaker.id, player_id}):
+            raise ValueError("An invitation needs its actual meeting point and conversation participants.")
+        invitation_ids.add(offer.id)
+        if offer.status == "offered" and (not interaction or interaction.kind != "resident"
+                or offer.interaction_id != interaction.id or offer.speaker_id != interaction.npc_id):
+            raise ValueError("A live invitation must belong to the current physical conversation.")
+    if sum(o.status == "offered" for o in invitations) > 1:
+        raise ValueError("Only the current speaker can keep a live invitation.")
+
+
+def validate_saved_home(residents, creations, player, mode, day, phase, live_ids, owner_ids, visit, interaction, conversations):
+    from types import SimpleNamespace
+    from locations import player_has_room
+    from social import phase_index
+    layout = SimpleNamespace(residents=residents, mode=mode, player=player)
+    if len({n.room_number for n in residents}) != len(residents):
+        raise ValueError("Apartment rooms must be unique, including departed assignments.")
+    creation_ids, job_ids = set(), set()
+    for work in creations:
+        if (work.id in creation_ids or work.job_id in job_ids or work.creator_id not in {n.id for n in residents}
+                or work.owner_id not in owner_ids or phase_index(work.day, work.phase) > phase_index(day, phase)):
+            raise ValueError("Invalid creation identity, credit, or completion time.")
+        creation_ids.add(work.id)
+        job_ids.add(work.job_id)
+    for n in residents:
+        if n.last_creative_day > day or n.sprite_size is not None and any(size <= 0 for size in n.sprite_size):
+            raise ValueError("Invalid resident home state.")
+        if n.departure and (n.creative_job or n.behavior in HOME_BEHAVIORS):
+            raise ValueError("Departed residents cannot keep active home work.")
+        if n.room_number == PLAYER_ROOM_NUMBER and player_has_room(layout):
+            raise ValueError(f"Room {PLAYER_ROOM_NUMBER} is reserved for the player.")
+        if n.behavior == Behavior.GO_HOME and not n.journey and n.location != f"room:{n.room_number}":
+            raise ValueError("A home trip needs a journey to the owned room.")
+        if n.behavior in INDOOR_BEHAVIORS and n.location != f"room:{n.room_number}" and not n.journey:
+            raise ValueError("Home routines require the resident's real room.")
+        job = n.creative_job
+        effective_behavior = n.behavior
+        frozen = (visit.saved_state if visit and visit.host_id == n.id else
+                  interaction.saved_state if interaction and interaction.npc_id == n.id else None)
+        for conversation in conversations:
+            for index, activity in zip((conversation.initiator, conversation.recipient), conversation.saved_states):
+                if index == n.id:
+                    frozen = activity
+        if frozen:
+            effective_behavior = frozen.behavior
+        if (effective_behavior in INDOOR_BEHAVIORS and n.location != f"room:{n.room_number}"
+                and not n.journey and not (visit and visit.host_id == n.id)):
+            raise ValueError("Suspended home work must retain its actual room or accepted visit.")
+        if (job is None) != (effective_behavior not in (Behavior.PAINT, Behavior.COMPOSE)):
+            raise ValueError("An active hobby needs exactly one creative job.")
+        if job:
+            if (job.id in job_ids or job.creator_id != n.id or n.id not in live_ids
+                    or n.command_revision != job.revision or job.started_day != n.last_creative_day
+                    or phase_index(job.started_day, job.started_phase) > phase_index(day, phase)
+                    or job.remaining > CREATION_WORK_SECONDS_RANGE[1] or job.queue_remaining > CREATIVE_QUEUE_SECONDS
+                    or effective_behavior != (Behavior.PAINT if job.kind == "art" else Behavior.COMPOSE)):
+                raise ValueError("Invalid active creative job or completed job reuse.")
+            job_ids.add(job.id)
+    return creation_ids

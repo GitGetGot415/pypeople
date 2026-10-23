@@ -7,7 +7,9 @@ from typing import Annotated, Literal
 from uuid import uuid4
 from pydantic import Field
 from constants import (SNAKE_NAME, CONVERSATION_MAX_AGREEMENTS, CONCERN_LIFETIME_RANGE, CONCERN_WEIGHTS, CONVERSATION_MAX_TURNS, FAILURE_COOLDOWN,
-                      GOAL_IMPROVEMENT, LEVERAGE_ACCOUNT_KINDS, MAX_DIALOGUE_FAILURE_COOLDOWN, PHASES)
+                      GOAL_IMPROVEMENT, LEVERAGE_ACCOUNT_KINDS, MAX_DIALOGUE_FAILURE_COOLDOWN, PHASES,
+                      CONVERSATION_MAX_DISCLOSURES, CONVERSATION_MAX_REPUTATION_EFFECTS,
+                      CONVERSATION_MAX_LEVERAGE, REPUTATION_FACT_LIMIT)
 from conversation_history import remember
 from dialogue_text import split_sentences
 from dialogue_rules import unquoted_speech, mentions_account
@@ -39,8 +41,12 @@ def valid_concern(npc, concern):
     if belief is None or claim is None:
         return False
     fact = fact_by_id(npc.world, claim.fact_id)
-    return concern.kind == "news" or (belief.direct and claim.affirmed and not claim.deliberate
-                                     and fact.kind == "former_life" and fact.subject_id == npc.id)
+    return concern.kind == "news" or owns_recollection(npc.id, belief, claim, fact)
+
+
+def owns_recollection(owner_id, belief, claim, fact):
+    return (belief.direct and claim.affirmed and not claim.deliberate
+            and fact.kind == "former_life" and fact.subject_id == owner_id)
 
 
 def concern_key(npc, concern):
@@ -289,7 +295,7 @@ class Belief:
     direct: bool
     phase: Annotated[int, Field(ge=0)]
     assessed: bool = False
-    opinion_delta: Annotated[int, Field(ge=-6, le=6)] = 0
+    opinion_delta: Annotated[int, Field(ge=-REPUTATION_FACT_LIMIT, le=REPUTATION_FACT_LIMIT)] = 0
 
 
 @dataclass
@@ -562,9 +568,55 @@ def information_views(context, world):
     return result
 
 
+def related_beliefs(option, beliefs, options):
+    return [b for b in beliefs if options[b.claim_id].fact_id == option.fact_id]
+
+
+def reputation_assessment_available(option, related, options, *, believed, heard, participants, assessed=False):
+    """Stance is actual during validation, possible before a pending reaction."""
+    return (heard and believed and option.subject_id not in participants and not assessed
+            and not any(b.direct or b.assessed and options[b.claim_id].affirmed == option.affirmed
+                        for b in related))
+
+
+def reputation_deltas(related):
+    influence = sum(b.opinion_delta for b in related)
+    return [delta for delta in range(-REPUTATION_FACT_LIMIT, REPUTATION_FACT_LIMIT + 1)
+            if delta and abs(influence + delta) <= REPUTATION_FACT_LIMIT]
+
+
+def resident_effect_limits():
+    return dict(offers=CONVERSATION_MAX_AGREEMENTS, accepted_proposals=CONVERSATION_MAX_AGREEMENTS,
+                disclosures=CONVERSATION_MAX_DISCLOSURES,
+                third_party_opinions=CONVERSATION_MAX_REPUTATION_EFFECTS, leverage=CONVERSATION_MAX_LEVERAGE)
+
+
+def resident_effect_capacity(draft):
+    return {("acceptances" if field == "accepted_proposals" else field): max(0, limit - len(draft[field]))
+            for field, limit in resident_effect_limits().items()}
+
+
+def demote_contrary_beliefs(option, related, options, listener_id):
+    for belief in related:
+        if (options[belief.claim_id].affirmed != option.affirmed and not belief.direct
+                and belief.source_id != listener_id):
+            belief.stance = "uncertain"
+
+
+def receive_belief(prior, *, listener_id, claim_id, stance, source_id, disclosure_id, phase, update_source=True):
+    """Only hearsay may change stance; exact repeats keep assessment bookkeeping."""
+    if prior is None:
+        return Belief(listener_id, claim_id, stance, source_id, disclosure_id, False, phase)
+    if not prior.direct:
+        prior.stance = stance
+        if update_source:
+            prior.source_id, prior.disclosure_id = source_id, disclosure_id
+    return prior
+
+
 def listener_stances(option, beliefs, options, *, firsthand_source=False):
     """The same belief constraints govern a pending reaction and the final record."""
-    related = [b for b in beliefs.values() if options[b.claim_id].fact_id == option.fact_id]
+    related = related_beliefs(option, beliefs.values(), options)
     firsthand = next((b for b in related if b.direct), None)
     prior = beliefs.get(option.id)
     if firsthand:
@@ -618,12 +670,11 @@ def validate_information(response, context, *, names=(), participant_names=None,
                     or heard[role, entry.claim_id] >= turn):
                 raise ValueError(f"A third-party opinion on turn {turn} ({role}) must cite an account this speaker heard "
                                  "in an earlier turn, with its actual absent subject and exact disclosed claim ID.")
-            related = [b for b in beliefs[role].values() if options[b.claim_id].fact_id == option.fact_id]
-            if (belief.stance != "believed" or entry.delta == 0
-                    or any(b.direct for b in related)
-                    or any(b.assessed and options[b.claim_id].affirmed == option.affirmed for b in related)
-                    or abs(sum(b.opinion_delta for b in related) + entry.delta) > 6
-                    or (role, option.fact_id) in seen_opinions):
+            related = related_beliefs(option, beliefs[role].values(), options)
+            if (not reputation_assessment_available(option, related, options,
+                    believed=belief.stance == "believed", heard=True, participants=context.participants.values(),
+                    assessed=(role, option.fact_id) in seen_opinions)
+                    or entry.delta not in reputation_deltas(related)):
                 raise ValueError("A repeated or disbelieved account cannot cause another reputation penalty.")
             seen_opinions.add((role, option.fact_id))
             belief.assessed, belief.opinion_delta = True, belief.opinion_delta + entry.delta
@@ -662,7 +713,7 @@ def validate_information(response, context, *, names=(), participant_names=None,
                 if (not agrees and entry.intent == "share") or (agrees and entry.intent == "lie"):
                     raise ValueError("The disclosure intent must respect the speaker's firsthand knowledge of this event.")
             prior = beliefs[listener].get(option.id)
-            related = [b for b in beliefs[listener].values() if options[b.claim_id].fact_id == option.fact_id]
+            related = related_beliefs(option, beliefs[listener].values(), options)
             if incomplete and entry.listener_stance is None:
                 # The assertion has been spoken, but only its listener can choose
                 # a stance. Do not authorize downstream effects until they do.
@@ -674,15 +725,10 @@ def validate_information(response, context, *, names=(), participant_names=None,
                                  "repeated hearsay is not independent confirmation. "
                                  f"Permitted stances: {', '.join(stances)}.")
             if entry.listener_stance == "believed":
-                for other in related:
-                    if (options[other.claim_id].affirmed != option.affirmed and not other.direct
-                            and other.source_id != context.participants[listener]):
-                        other.stance = "uncertain"
-            if prior is None:
-                beliefs[listener][option.id] = Belief(context.participants[listener], option.id,
-                                                     entry.listener_stance, npc_id, None, False, 0)
-            elif not prior.direct:
-                prior.stance = entry.listener_stance
+                demote_contrary_beliefs(option, related, options, context.participants[listener])
+            beliefs[listener][option.id] = receive_belief(prior,
+                listener_id=context.participants[listener], claim_id=option.id, stance=entry.listener_stance,
+                source_id=npc_id, disclosure_id=None, phase=0, update_source=False)
             acquired[listener].add(option.id)
             heard[listener, option.id] = turn
     if context.focus_claim_id and not incomplete:
@@ -709,6 +755,7 @@ def commit_information(conversation):
     options = {option.id: option for option in context.options}
     people = {"initiator": conversation.initiator, "recipient": conversation.recipient}
     heard = {}
+    claims = {claim.id: claim for claim in world.claims}
     for turn, speech in enumerate(conversation.turns):
         speaker = people[speech.speaker]
         listener = conversation.other(speaker)
@@ -742,6 +789,7 @@ def commit_information(conversation):
                 world.claims.append(Claim(option.id, option.fact_id, option.subject_id, speaker.id,
                                           option.affirmed, option.parent_claim_id, True,
                                           world.phase_index, conversation.record.id))
+                claims[option.id] = world.claims[-1]
                 speaker.beliefs.append(Belief(speaker.id, option.id, "disbelieved", speaker.id, None,
                                               False, world.phase_index))
             text = f"{speaker.name} {'questioned an account with' if entry.intent == 'challenge' else 'alleged to'} {listener.name}: {option.assertion}"
@@ -752,18 +800,11 @@ def commit_information(conversation):
             world.disclosures.append(disclosure)
             prior = next((b for b in listener.beliefs if b.claim_id == option.id), None)
             if entry.listener_stance == "believed":
-                for belief in listener.beliefs:
-                    other = claim_by_id(world, belief.claim_id)
-                    if (other.fact_id == option.fact_id and other.affirmed != option.affirmed and not belief.direct
-                            and belief.source_id != listener.id):
-                        belief.stance = "uncertain"
+                demote_contrary_beliefs(option, related_beliefs(option, listener.beliefs, claims), claims, listener.id)
+            learned = receive_belief(prior, listener_id=listener.id, claim_id=option.id,
+                stance=entry.listener_stance, source_id=speaker.id, disclosure_id=disclosure.id, phase=world.phase_index)
             if prior is None:
-                prior = Belief(listener.id, option.id, entry.listener_stance, speaker.id,
-                               disclosure.id, False, world.phase_index)
-                listener.beliefs.append(prior)
-            elif not prior.direct:
-                prior.source_id, prior.disclosure_id = speaker.id, disclosure.id
-                prior.stance = entry.listener_stance
+                listener.beliefs.append(learned)
             heard[listener.id, option.id] = speaker
             originator = world.participant_by_id(option.originator_id)
             remember(speaker, listener, event, "claim_shared", f"I discussed an account with {listener.name}: {option.assertion}", 0)
@@ -983,10 +1024,16 @@ def permitted_proposals(conversation):
     return proposals
 
 
+def proposals_from_snapshot(snapshot):
+    """Project proposal boundary data, leaving prompt-only labels at the boundary."""
+    return [Proposal(row["id"], row["promisor_id"], row["recipient_id"], row["deadline"])
+            for row in snapshot.get("permitted_proposals", [])]
+
+
 def validate_agreements(agreements, proposals, turns, initiator_id, recipient_id, *, current_phase=None,
                         dialogue_validation=True):
     """Bound offers and acceptances to ordered speech by the correct participants."""
-    permitted = {proposal["id"]: proposal for proposal in proposals}
+    permitted = {proposal.id: proposal for proposal in proposals}
     seen = set()
     for agreement in agreements:
         proposal = permitted.get(agreement.proposal_id)
@@ -1001,11 +1048,11 @@ def validate_agreements(agreements, proposals, turns, initiator_id, recipient_id
                 "or use accepted_proposals=[] if no agreement was made."
             )
         speakers = {"initiator": initiator_id, "recipient": recipient_id}
-        if (speakers[turns[agreement.offer_turn].speaker] != proposal["promisor_id"]
-                or speakers[turns[agreement.accept_turn].speaker] != proposal["recipient_id"]):
+        if (speakers[turns[agreement.offer_turn].speaker] != proposal.promisor_id
+                or speakers[turns[agreement.accept_turn].speaker] != proposal.recipient_id):
             raise ValueError("Only the apple's giver can offer and its recipient can accept.")
         if dialogue_validation:
-            validate_apple_promise(turns[agreement.offer_turn].text, turns[agreement.accept_turn].text, proposal["deadline"],
+            validate_apple_promise(turns[agreement.offer_turn].text, turns[agreement.accept_turn].text, proposal.deadline,
                                    current_phase=current_phase)
 
 
@@ -1035,7 +1082,7 @@ def validate_live_agreements(conversation, response, *, dialogue_validation=True
     validate_information(response, context, names=[actor.name for actor in world.actors],
                          participant_names={"initiator": pair[0].name, "recipient": pair[1].name},
                          dialogue_validation=dialogue_validation, actor_references=account_references(conversation.name_actors))
-    validate_agreements(response.accepted_proposals, [asdict(p) for p in conversation.proposals],
+    validate_agreements(response.accepted_proposals, conversation.proposals,
                         response.turns, pair[0].id, pair[1].id, current_phase=world.phase_index,
                         dialogue_validation=dialogue_validation)
     pending = [(p.promisor_id, p.recipient_id) for p in pending_promises(world)]
@@ -1233,10 +1280,10 @@ def learn_account(world, speaker, listener, claim_id, record, turn, stance, *, p
                             "share", stance, source.disclosure_id, world.phase_index, event.id)
     world.disclosures.append(disclosure)
     existing = next((b for b in listener.beliefs if b.claim_id == claim_id), None)
+    learned = receive_belief(existing, listener_id=listener.id, claim_id=claim_id, stance=stance,
+                             source_id=speaker.id, disclosure_id=disclosure.id, phase=world.phase_index)
     if existing is None:
-        listener.beliefs.append(Belief(listener.id, claim_id, stance, speaker.id, disclosure.id, False, world.phase_index))
-    elif not existing.direct:
-        existing.source_id, existing.disclosure_id, existing.stance = speaker.id, disclosure.id, stance
+        listener.beliefs.append(learned)
     if listener is not world.snake:
         remember(listener, speaker, event, "heard_claim",
                  f"{speaker.name}'s account, originally from {world.participant_by_id(claim.originator_id).name}: {account_content(world, fact, claim.affirmed)}", 0)
@@ -1429,7 +1476,7 @@ def resident_turn_choices(snapshot, draft, role, private, *, closing=False, asse
             if proposal["id"] in used:
                 continue
             if (not closing and not assessment and proposal["promisor_id"] == actor_id(person)
-                    and proposal["id"] not in draft["offers"] and len(draft["offers"]) < CONVERSATION_MAX_AGREEMENTS):
+                    and proposal["id"] not in draft["offers"] and resident_effect_capacity(draft)["offers"] > 0):
                 choices["offers"].append(proposal["id"])
             if proposal["recipient_id"] == actor_id(person) and proposal["id"] in draft["offers"]:
                 choices["acceptances"].append(proposal["id"])
@@ -1444,12 +1491,12 @@ def resident_turn_choices(snapshot, draft, role, private, *, closing=False, asse
             for account in accounts:
                 claim_id = account["claim_id"]
                 option = options[claim_id]
-                related = [b for b in beliefs[role].values() if options[b.claim_id].fact_id == option.fact_id]
-                if (claim_id in heard_ids and option.subject_id not in info.participants.values()
-                        and (account["stance"] == "believed" or "believed" in pending_stances.get(claim_id, []))
-                        and not any(b.direct or b.assessed and options[b.claim_id].affirmed == option.affirmed for b in related)
-                        and not any(draft["turns"][e.turn].speaker == role
-                                    and options[e.claim_id].fact_id == option.fact_id for e in draft["third_party_opinions"])):
+                related = related_beliefs(option, beliefs[role].values(), options)
+                if reputation_assessment_available(option, related, options,
+                        heard=claim_id in heard_ids, participants=info.participants.values(),
+                        believed=account["stance"] == "believed" or "believed" in pending_stances.get(claim_id, []),
+                        assessed=any(draft["turns"][e.turn].speaker == role
+                                     and options[e.claim_id].fact_id == option.fact_id for e in draft["third_party_opinions"])):
                     choices["third_party_opinions"].append(claim_id)
             choices["leverage"] = [a["claim_id"] for a in accounts if a["kind"] in LEVERAGE_ACCOUNT_KINDS
                 and (a["claim_id"] in beliefs[role] or a["claim_id"] in heard_ids)
@@ -1476,3 +1523,145 @@ def snake_speaker_accounts(snapshot, decision, turns, role, *, outcome_turn=2):
                          "immediate_source_name": human["name"], "knowledge_owner_name": guard["name"], "stance": "uncertain"}
             accounts = [*accounts, disclosed]
     return accounts
+
+
+def validate_player_promise_offers(record, promises, owner_ids, player_id, now, player_offer_ids):
+    if len(record.player_promise_offers) > CONVERSATION_MAX_AGREEMENTS:
+        raise ValueError("Too many player apple offers in one conversation.")
+    for offer in record.player_promise_offers:
+        if (offer.id in player_offer_ids
+                or offer.giver_id not in owner_ids or offer.recipient_id not in owner_ids
+                or offer.giver_id == offer.recipient_id
+                or player_id not in (offer.giver_id, offer.recipient_id)
+                or offer.status not in ("offered", "accepted", "declined", "expired", "closed")
+                or not 0 <= offer.created_phase <= now or offer.deadline < offer.created_phase
+                or not 0 <= offer.offer_turn < len(record.turns)
+                or record.turns[offer.offer_turn].speaker_id != offer.giver_id):
+            raise ValueError("Invalid player apple offer authority or source.")
+        player_offer_ids.add(offer.id)
+        from dialogue_rules import validate_apple_offer, validate_apple_promise
+        validate_apple_offer(record.turns[offer.offer_turn].text, offer.deadline, current_phase=offer.created_phase)
+        if offer.status == "accepted":
+            turn = offer.accept_turn
+            if (type(turn) is not int or not offer.offer_turn < turn < len(record.turns)
+                    or record.turns[turn].speaker_id != offer.recipient_id
+                    or not any(p.id == offer.id and p.conversation_id == record.id
+                               and p.promisor_id == offer.giver_id and p.recipient_id == offer.recipient_id
+                               and p.deadline == offer.deadline for p in promises)):
+                raise ValueError("An accepted player apple promise needs its actual ordered acceptance.")
+            validate_apple_promise(record.turns[offer.offer_turn].text, record.turns[turn].text,
+                                   offer.deadline, current_phase=offer.created_phase)
+        elif offer.accept_turn is not None:
+            raise ValueError("An unaccepted apple offer cannot retain an acceptance.")
+
+
+def validate_saved_concern(concern, owner, claims, facts):
+    if concern is None:
+        return
+    if concern.claim_id:
+        claim = claims.get(concern.claim_id)
+        belief = next((b for b in owner.beliefs if b.claim_id == concern.claim_id), None)
+        if claim is None or belief is None:
+            raise ValueError("A concern requires its owner's existing knowledge.")
+        fact = facts[claim.fact_id]
+        if concern.kind == "recollection" and not owns_recollection(owner.id, belief, claim, fact):
+            raise ValueError("A recollection concern requires the owner's direct former-life account.")
+
+
+def validate_social_records(facts, claims, disclosures, events, history, residents, snake, ids, live_ids, day, now):
+    from conversation_history import source_record
+    for fact in facts.values():
+        if (fact.subject_id not in ids or fact.object_id not in ids or fact.subject_id == fact.object_id
+                or fact.phase > now or not set(fact.witness_ids) <= ids
+                or len(set(fact.witness_ids)) != len(fact.witness_ids)):
+            raise ValueError("Invalid fact participants or witnesses.")
+        if fact.kind in ("private_motive", "former_life"):
+            if fact.witness_ids != [fact.subject_id] or fact.conversation_id is not None:
+                raise ValueError("A private recollection or motive cannot be public.")
+        elif fact.conversation_id is not None:
+            source_record(history, fact.conversation_id)
+        if fact.source_id in events:
+            event = events[fact.source_id]
+            expected = {"apple_given": "fruit_shared", "work_given": "work_shared", "apple_refused": "food_refused", "promise_kept": "promise_fulfilled"}.get(fact.kind, fact.kind)
+            if event.kind != expected or fact.phase != phase_index(event.day, event.phase):
+                raise ValueError("A fact must match its actual source event.")
+    for claim in claims.values():
+        fact = facts.get(claim.fact_id)
+        if fact is None or claim.subject_id != fact.subject_id or claim.originator_id not in ids or not fact.phase <= claim.phase <= now:
+            raise ValueError("Invalid claim references.")
+        if claim.parent_claim_id is None:
+            if not claim.affirmed or claim.deliberate or claim.originator_id not in fact.witness_ids:
+                raise ValueError("Firsthand accounts require an actual witnessed source.")
+        else:
+            parent = claims.get(claim.parent_claim_id)
+            if parent is None or parent.fact_id != fact.id or not parent.affirmed or claim.affirmed or not claim.deliberate or parent.phase > claim.phase:
+                raise ValueError("A denial must trace to an existing account.")
+    seen = set()
+    for disclosure in disclosures.values():
+        record = source_record(history, disclosure.conversation_id)
+        if (disclosure.claim_id not in claims or disclosure.speaker_id == disclosure.listener_id
+                or not (disclosure.speaker_id in ids and disclosure.speaker_id in record.participant_ids) or disclosure.listener_id not in ids
+                or disclosure.turn >= len(record.turns) or record.turns[disclosure.turn].speaker_id != disclosure.speaker_id
+                or disclosure.phase > now):
+            raise ValueError("Invalid disclosure actor, speech or account.")
+        if disclosure.source_disclosure_id:
+            source = disclosures.get(disclosure.source_disclosure_id)
+            claim = claims[disclosure.claim_id]
+            if source is None or source.id not in seen or source.listener_id != disclosure.speaker_id or source.claim_id not in (claim.id, claim.parent_claim_id):
+                raise ValueError("Disclosure provenance must follow an earlier source.")
+        elif disclosure.speaker_id != claims[disclosure.claim_id].originator_id:
+            fact = facts[claims[disclosure.claim_id].fact_id]
+            if disclosure.speaker_id not in fact.witness_ids:
+                raise ValueError("A repeated account requires its actual source.")
+        seen.add(disclosure.id)
+    for actor in [*residents, snake]:
+        if len({b.claim_id for b in actor.beliefs}) != len(actor.beliefs):
+            raise ValueError("Duplicate owned account.")
+        for belief in actor.beliefs:
+            claim = claims.get(belief.claim_id)
+            if claim is None or belief.npc_id != actor.id or belief.source_id not in ids or belief.phase > now:
+                raise ValueError("Invalid owned knowledge.")
+            if belief.direct:
+                if actor.id not in facts[claim.fact_id].witness_ids or belief.disclosure_id is not None:
+                    raise ValueError("Firsthand knowledge requires witnessing.")
+            elif belief.disclosure_id:
+                source = disclosures.get(belief.disclosure_id)
+                if source is None or source.listener_id != actor.id or source.claim_id != claim.id or source.speaker_id != belief.source_id:
+                    raise ValueError("Hearsay requires its actual disclosure source.")
+    goal_ids = set()
+    for npc in residents:
+        if npc.id in live_ids and npc.current_concern is None:
+            raise ValueError("A living resident must have a concern.")
+        validate_saved_concern(npc.current_concern, npc, claims, facts)
+        if npc.arrival_day > day or any(m.partner_id not in ids or phase_index(m.day, m.phase) > now for m in npc.memories):
+            raise ValueError("Invalid arrival day or personal memory.")
+        if npc.departure and (phase_index(npc.departure.day, npc.departure.phase) > now or not any(f.source_id == npc.departure.event_id and f.kind == "eating" and f.object_id == npc.id for f in facts.values())):
+            raise ValueError("An archived resident needs its actual departure record.")
+        goal = npc.goal
+        if goal:
+            if goal.id in goal_ids or goal.target_id not in ids or goal.third_npc_id is not None and goal.third_npc_id not in ids or goal.created_phase > now or goal.deadline < goal.created_phase:
+                raise ValueError("Invalid goal references.")
+            goal_ids.add(goal.id)
+            if goal.status == "active" and (npc.id not in live_ids or goal.target_id not in live_ids or goal.third_npc_id is not None and goal.third_npc_id not in live_ids):
+                raise ValueError("An active goal can target only living residents.")
+            if (goal.status == "active") != (goal.resolved_phase is None):
+                raise ValueError("Invalid goal resolution.")
+            if goal.claim_id is not None and goal.claim_id not in claims:
+                raise ValueError("Unknown goal account.")
+        for effect in npc.pending_social_opinions:
+            if effect.target_id not in ids or effect.claim_id is not None and effect.claim_id not in claims:
+                raise ValueError("Invalid queued social effect.")
+
+
+def validate_saved_promises(promises, history, ids, live_ids, player_id, now):
+    from conversation_history import source_record
+    promise_ids = set()
+    for promise in promises:
+        record = source_record(history, promise.conversation_id)
+        if promise.id in promise_ids or promise.promisor_id == promise.recipient_id or not all(i in ids and i in record.participant_ids for i in (promise.promisor_id, promise.recipient_id)):
+            raise ValueError("Invalid promise participants.")
+        promise_ids.add(promise.id)
+        if promise.status == "pending" and not {promise.promisor_id, promise.recipient_id} <= live_ids | {player_id}:
+            raise ValueError("Impossible obligations must be cancelled.")
+        if promise.deadline < promise.created_phase or promise.created_phase > now or (promise.status == "pending") != (promise.resolved_phase is None):
+            raise ValueError("Invalid promise resolution.")

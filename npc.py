@@ -1,5 +1,6 @@
 import math
 import random
+from copy import deepcopy
 from typing import Annotated, Literal
 from pydantic import Field
 from dialogue import (AcceptedProposal, ConversationPart, DisclosureChoice, LeverageUse, ResidentGift,
@@ -317,8 +318,8 @@ class NPC:
         if interaction is not None:
             suspended = (self.gift.saved_states[self.id] if self.gift else
                          interaction.saved_states[0 if interaction.initiator is self else 1])
-            suspended["decision_remaining"] = max(0.0, suspended["decision_remaining"] - dt)
-            suspended["cooldowns"] = {key: value - dt for key, value in suspended["cooldowns"].items() if value > dt}
+            suspended.decision_remaining = max(0.0, suspended.decision_remaining - dt)
+            suspended.cooldowns = {key: value - dt for key, value in suspended.cooldowns.items() if value > dt}
 
     @property
     def portrait_emotion(self):
@@ -775,7 +776,7 @@ class Conversation(ResidentProgress):
         self.topic = topic
         self.id = uuid4().hex
         self.origin, self.purpose = origin, purpose
-        self.concerns = {role: ConversationConcern(**asdict(npc.current_concern)) if npc.current_concern else None
+        self.concerns = {role: deepcopy(npc.current_concern)
                          for role, npc in (("initiator", initiator), ("recipient", recipient))}
         self.opening_kind = opening_kind
         self.focus_claim_id = focus_claim_id  # Required task account; an ordinary concern is optional.
@@ -1112,3 +1113,66 @@ class Conversation(ResidentProgress):
         Handoff(donor, requester, gift.item if gift else "fruit", gift.quantity if gift else 1, self.record,
              saved_states=states, already_met=True,
              thanks=self.handoff_thanks, rewritten_thanks=self.rewritten_handoff_thanks)
+
+
+def validate_saved_conversations(conversations, history, live, live_ids, facts, claims, creations, reserved, tree_id):
+    from constants import CONVERSATION_MAX_TURNS
+    from activity import validate_activity_target
+    from social import validate_saved_concern, validate_agreements, validate_information
+    from types import SimpleNamespace
+    for interaction in conversations:
+        pair = (interaction.initiator, interaction.recipient)
+        if pair[0] == pair[1] or any(i not in live or i in reserved for i in pair) or interaction.record not in history:
+            raise ValueError("Invalid live interaction participants.")
+        for index, activity in zip(pair, interaction.saved_states):
+            if live[pair[0]].location != live[pair[1]].location:
+                raise ValueError("Conversation participants must share a location.")
+            validate_activity_target(activity, live[index], tree_id, live_ids)
+        record = history[interaction.record]
+        if set(record.participant_ids) != set(pair):
+            raise ValueError("An interaction must match its record.")
+        reserved.update(pair)
+        thanks = interaction.handoff_thanks
+        rewritten = interaction.rewritten_handoff_thanks
+        if rewritten and (len(rewritten) != len(thanks) or any(not text.strip() for text in rewritten)):
+            raise ValueError("Rewritten thanks must match the original parts.")
+        if set(interaction.concerns) != {"initiator", "recipient"}:
+            raise ValueError("A meeting must retain both frozen concerns.")
+        for role, index in zip(("initiator", "recipient"), pair):
+            validate_saved_concern(interaction.concerns[role], live[index], claims, facts)
+        if interaction.goal_id and (live[pair[0]].goal is None or interaction.goal_id != live[pair[0]].goal.id):
+            raise ValueError("A meeting goal must belong to its initiator.")
+        if interaction.focus_claim_id and not any(b.claim_id == interaction.focus_claim_id for b in live[pair[0]].beliefs):
+            raise ValueError("A required meeting account must be known to its initiator.")
+        if len(record.turns) > CONVERSATION_MAX_TURNS:
+            raise ValueError("A resident conversation exceeds its accepted turn budget.")
+        ready = interaction.dialogue_state == "ready"
+        if record.id != interaction.id or ready != bool(record.generated_turns()) or ready != interaction.social_effects_applied:
+            raise ValueError("Invalid conversation commit progress.")
+        if interaction.information_context:
+            context = interaction.information_context
+            if context.participants != {"initiator": live[pair[0]].id, "recipient": live[pair[1]].id}:
+                raise ValueError("Invalid information speakers.")
+            if context.focus_claim_id != interaction.focus_claim_id:
+                raise ValueError("The required meeting account must match its information snapshot.")
+            if any(o.fact_id not in facts for o in context.options):
+                raise ValueError("Missing snapshot facts.")
+        validate_agreements(interaction.accepted_proposals, interaction.proposals, record.generated_turns(), live[pair[0]].id, live[pair[1]].id)
+        if ready:
+            try:
+                validate_information(SimpleNamespace(turns=record.generated_turns(), disclosures=interaction.accepted_disclosures,
+                    third_party_opinions=interaction.third_party_opinions, leverage=interaction.leverage_uses),
+                    interaction.information_context)
+            except (KeyError, TypeError, AttributeError, IndexError) as exc:
+                raise ValueError("Invalid information snapshot references.") from exc
+        if interaction.accepted_gift:
+            from transfers import validate_resident_gift
+            validate_resident_gift(interaction.accepted_gift, record.generated_turns(), {
+                "purpose": interaction.purpose, "arrival_focus": interaction.opening_kind == "orientation",
+                **{
+                role: {"npc_id": live[index].id, "inventory": live[index].inventory,
+                       "owned_works": [{"id": w.id, "title": w.title} for w in creations
+                                       if w.owner_id == live[index].id]}
+                for role, index in zip(("initiator", "recipient"), pair)}})
+            if interaction.accepted_gift.accept_turn is None:
+                raise ValueError("A pending gift handoff needs an accepted offer.")

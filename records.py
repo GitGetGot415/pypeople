@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, create_model
 
 
 class SaveModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, from_attributes=True)
 
 
 def saved_record(record):

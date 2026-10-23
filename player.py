@@ -1,5 +1,7 @@
 """Physical player and exclusive social ownership; possessions remain engine owned."""
 
+from activity import ActivitySnapshot
+
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Annotated, Literal
@@ -29,7 +31,7 @@ class PlayerInteraction:
     mover_id: str | None = None
     point: tuple[float, float] | None = None
     elapsed: Annotated[float, Field(ge=0, le=PLAYER_APPROACH_TIMEOUT)] = 0.0
-    saved_state: dict | None = None
+    saved_state: ActivitySnapshot | None = None
     gift: dict | None = None
     knock_room: int | None = None
     target: dict | None = None
@@ -415,3 +417,104 @@ def update_calls(world, dt):
             except ValueError:
                 continue
             break
+
+
+def validate_saved_calls(residents, npcs, player, facts, history, creations, promises, pending_actions, interaction, live_ids, reserved, creation_ids):
+    from activity import Behavior
+    from constants import PLAYER_CALL_LIMIT
+    from conversation_history import source_record
+    from player_story import valid_introduction_call
+    from types import SimpleNamespace
+    layout = SimpleNamespace(player=player, facts=facts)
+    player_id = player.id
+    physical = interaction
+    reserved_ids = reserved
+    for npc in residents:
+        call = npc.player_call
+        if call and call.kind == "reply":
+            record = source_record(history, call.reference)
+            actions = [a for a in pending_actions if a.npc_id == npc.id]
+            if (npc.id not in live_ids or npc.id in reserved_ids
+                    or set(record.participant_ids) != {npc.id, player_id} or record.error
+                    or not record.turns or (record.turns[-1].speaker_id, record.turns[-1].text) != (npc.id, npc.reply)
+                    or (actions and (not call.closing or any(a.record is None or history[a.record].id != record.id for a in actions)))):
+                raise ValueError("A waiting reply needs its resident's accepted player conversation and matching queued task.")
+            offer = call.gift_offer
+            if offer and (offer.recipient_id != player_id
+                          or offer.item != "fruit" and offer.item not in creation_ids):
+                raise ValueError("A waiting reply's gift offer needs the player and a real item.")
+            continue
+        if call and (npc.id not in live_ids
+                or npc.behavior not in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY)
+                or npc.owner != "autonomous"
+                or npc.id in reserved_ids
+                or any(npc.id in (a.npc_id, a.target_id) for a in pending_actions)
+                or call.kind not in ("gift", "news", "followup", "introduction")
+                or call.key in npc.resolved_player_calls):
+            raise ValueError("Invalid waiting player call.")
+        if call:
+            ref = call.reference
+            valid = (valid_introduction_call(layout, npc, call,
+                         interaction=physical)
+                     if call.kind == "introduction" else
+                     npc.inventory["fruit"] > 0
+                     if call.kind == "gift" and ref == "fruit" else
+                     any(w.id == ref and w.owner_id == npc.id for w in creations) if call.kind == "gift" else
+                     any(b.claim_id == ref for b in npc.beliefs) if call.kind == "news" else
+                     any(m.id == ref and m.partner_id == player_id for m in npc.memories)
+                     or any(p.id == ref and p.status == "pending" and {p.promisor_id, p.recipient_id} == {npc.id, player_id} for p in promises))
+            if not valid or not call.reason.strip():
+                raise ValueError("A player call needs its resident's actual unresolved source.")
+    if sum(n.player_call is not None and n.player_call.kind != "reply" for n in npcs) > PLAYER_CALL_LIMIT:
+        raise ValueError("Too many simultaneous player calls.")
+
+
+def validate_saved_interaction(interaction, player, by_id, records, player_encounter, layout):
+    import json
+    from locations import validate_feet, floor_for_room, targets
+    from activity import ActivitySnapshot
+    exclusive = set()
+    if interaction:
+        if interaction.kind not in ("resident", "door", "snake") or not interaction.id:
+            raise ValueError("Invalid player interaction owner.")
+        if interaction.location != player.location:
+            raise ValueError("Player ownership must follow its current location.")
+        if interaction.kind == "resident":
+            if player.journey:
+                raise ValueError("A player cannot travel during a resident interaction.")
+            npc = by_id.get(interaction.npc_id)
+            if not npc or npc is player or npc.journey:
+                raise ValueError("The player needs one present resident.")
+            room = interaction.knock_room
+            if room:
+                if npc.room_number != room or npc.location != f"room:{room}" or player.location != f"hallway:{floor_for_room(room)}":
+                    raise ValueError("A knock must address the present owner of that door.")
+            elif npc.location != player.location:
+                raise ValueError("Player conversation participants must be together.")
+            if interaction.stage not in ("approach", "prompt", "conversation", "handoff") or not 0 <= interaction.elapsed <= PLAYER_APPROACH_TIMEOUT:
+                raise ValueError("Invalid player approach progress.")
+            ActivitySnapshot.validate(interaction.saved_state)
+            validate_feet(npc.location if interaction.incoming else player.location, interaction.point)
+            if interaction.stage == "prompt" and (not interaction.incoming or not npc.player_call):
+                raise ValueError("An incoming prompt needs its physical call.")
+            if interaction.record_id and (interaction.record_id not in records
+                    or set(records[interaction.record_id].participant_ids) != {player.id, npc.id}):
+                raise ValueError("Player conversation ownership needs its actual source record.")
+            exclusive.add(npc.id)
+        elif interaction.kind == "snake" and not player_encounter:
+            raise ValueError("Player snake ownership needs a service encounter.")
+        elif interaction.kind == "door":
+            normalize = lambda value: json.loads(json.dumps(value))
+            if normalize(interaction.target) not in [normalize(t) for t in targets(layout, player.location)]:
+                raise ValueError("Door travel must retain an actual target in its map.")
+    return exclusive
+
+
+def validate_saved_player_mode(mode, player, interaction, visit, player_encounter, npcs, tree_queue, tree_current):
+    live_player = mode == "player" and player.alive
+    if not player.alive and mode != "spectator":
+        raise ValueError("A dead player must remain in spectator mode.")
+    if not live_player and (interaction or player.journey or visit or player_encounter
+            or any(n.player_call for n in npcs) or any(e.actor_id == player.id for e in tree_queue)
+            or tree_current and tree_current.actor_id == player.id):
+        raise ValueError("Spectator mode cannot own physical player interactions.")

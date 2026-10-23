@@ -63,3 +63,18 @@ class PlayerAcknowledgment:
     npc_id: Annotated[str, Field(min_length=1)]
     record_id: Annotated[str, Field(min_length=1)]
     transfer_id: Annotated[str, Field(min_length=1)]
+
+
+def validate_player_reports(reports, records, player_id, now):
+    from social import phase_index
+    claim_ids = set()
+    for claim in reports:
+        record = records.get(claim.conversation_id)
+        turn = claim.turn
+        if (claim.id in claim_ids or claim.speaker_id != player_id or claim.kind != "report"
+                or not record or type(turn) is not int or turn not in record.accepted_player_turns
+                or (record.turns[turn].speaker_id, record.turns[turn].text) != (player_id, claim.text)
+                or set(claim.listener_ids) != set(record.participant_ids) - {player_id}
+                or phase_index(claim.day, claim.phase) > now):
+            raise ValueError("Player claims require their actual accepted original speech and listener.")
+        claim_ids.add(claim.id)

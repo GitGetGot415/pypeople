@@ -1,5 +1,7 @@
 """A small world with player-controlled day phases."""
 
+from activity import ActivitySnapshot
+
 import math
 from dataclasses import dataclass
 from typing import Annotated, Literal
@@ -28,7 +30,7 @@ class TreeCustomer:
     actor_id: str
     purpose: Literal["bargain", "judgment", "introduction"]
     reason: str
-    saved_state: dict | None
+    saved_state: ActivitySnapshot | None
     elapsed: float = 0.0
 
 
@@ -267,11 +269,12 @@ class Simulation:
         from activity import Behavior
         behavior = npc.behavior
         if self.visit and self.visit.host_id == npc.id:
-            behavior = self.visit.saved_state["behavior"]
+            behavior = self.visit.saved_state.behavior
         elif self.player_interaction and self.player_interaction.npc_id == npc.id:
-            behavior = (self.player_interaction.saved_state or {}).get("behavior", behavior)
+            if self.player_interaction.saved_state:
+                behavior = self.player_interaction.saved_state.behavior
         elif npc.conversation:
-            behavior = npc.conversation.saved_states[0 if npc.conversation.initiator is npc else 1]["behavior"]
+            behavior = npc.conversation.saved_states[0 if npc.conversation.initiator is npc else 1].behavior
         return (self.npc_by_id(npc.id) is npc and npc.creative_job is job
                 and behavior == (Behavior.PAINT if job.kind == "art" else Behavior.COMPOSE)
                 and npc.command_revision == job.revision and job.creator_id == npc.id)
@@ -451,7 +454,7 @@ class Simulation:
         from activity import Behavior
         saved = None if actor is self.player else actor.suspend_activity("Waiting in the tree line")
         if saved:
-            saved.update(behavior=Behavior.WAIT, target_id=None, destination=None, owner="autonomous")
+            saved.behavior, saved.target_id, saved.destination, saved.owner = Behavior.WAIT, None, None, "autonomous"
         entry = TreeCustomer(actor_id=actor.id, purpose=purpose, reason=reason, saved_state=saved, elapsed=0.0)
         self.tree_queue.append(entry)
         self.reservations.acquire("tree", entry, actor)
@@ -725,11 +728,11 @@ class Simulation:
         if self.snake.encounter is not None and self.snake.encounter.saved_state is not None:
             states.append(self.snake.encounter.saved_state)
         for state in states:
-            state["cooldowns"].pop(target.id, None)
-            if state["target_id"] == target.id:
-                state.update(behavior=Behavior.WAIT, owner="autonomous", target_id=None,
-                             destination=None, activity_elapsed=0.0, resume_pending=False,
-                             reason=reason, decision_remaining=0.0)
+            state.cooldowns.pop(target.id, None)
+            if state.target_id == target.id:
+                state.behavior, state.owner, state.target_id = Behavior.WAIT, "autonomous", None
+                state.destination, state.activity_elapsed, state.resume_pending = None, 0.0, False
+                state.reason, state.decision_remaining = reason, 0.0
         remaining = []
         for action in self.pending_actions:
             if target.id in (action.npc_id, action.target_id):
@@ -880,3 +883,58 @@ class Simulation:
             observers.append(self.snake)
         self.observed_event("arrival", npc, self.snake, f"{npc.name} arrived for dawn on day {day}, remembering a former life.", witnesses=observers)
         return npc
+
+
+def validate_saved_tree_queue(entries, player, interaction, by_id, pending_actions, exclusive):
+    from activity import ActivitySnapshot
+    from constants import PLAYER_APPROACH_TIMEOUT
+    if len({e.actor_id for e in entries}) != len(entries):
+        raise ValueError("Tree customers must be unique and ordered.")
+    for entry in entries:
+        actor = by_id.get(entry.actor_id)
+        if not actor or actor.location != "garden" or actor.journey or actor.id in exclusive or entry.purpose not in ("bargain", "judgment", "introduction"):
+            raise ValueError("A tree customer must be available in the garden.")
+        if not isinstance(entry.elapsed, (int, float)) or not math.isfinite(entry.elapsed) or not 0 <= entry.elapsed <= PLAYER_APPROACH_TIMEOUT:
+            raise ValueError("Invalid front-customer approach progress.")
+        if actor is player and interaction and interaction.kind != "snake":
+            raise ValueError("A queued player cannot own another interaction.")
+        if any(a.npc_id == actor.id for a in pending_actions):
+            raise ValueError("A queued customer cannot have another pending action.")
+        if actor is not player:
+            ActivitySnapshot.validate(entry.saved_state)
+        exclusive.add(actor.id)
+
+
+def validate_saved_actions(npcs, player, mode, tree, pending_actions, live_ids, indoor_ids, reserved, history, creation_ids):
+    from activity import Behavior, validate_activity_target
+    from transfers import transfer_matches
+    for index, npc in enumerate(npcs):
+        if npc.id not in reserved:
+            validate_activity_target(npc, npc, tree.id, live_ids)
+        if npc.id in reserved and npc.behavior != Behavior.WAIT:
+            raise ValueError("Encounter participants must wait.")
+    for reference in (tree.reserved_by, tree.shaker):
+        if reference is not None and (reference not in live_ids | ({player.id} if player.alive and mode == "player" else set()) or reference in indoor_ids):
+            raise ValueError("A tree reservation requires a living owner.")
+    if bool(tree.shaker) != (tree.shake_elapsed is not None):
+        raise ValueError("Invalid tree shake owner.")
+    pending_owners = set()
+    for action in pending_actions:
+        if action.target_id == player.id and action.action != "GIVE_ITEM":
+            raise ValueError("Only a gift can use the player as a queued action recipient.")
+        if action.npc_id not in live_ids or action.npc_id in pending_owners or action.target_id is not None and action.target_id not in live_ids | {player.id}:
+            raise ValueError("Queued actions need living actors.")
+        if action.target_id and action.action in ("TALK_TO_NPC", "GIVE_ITEM"):
+            positions = {n.id: n.location for n in npcs}
+            positions[player.id] = player.location
+            if positions[action.npc_id] != positions[action.target_id]:
+                raise ValueError("A queued interaction must share a location.")
+        pending_owners.add(action.npc_id)
+        if action.record is not None and action.record not in history:
+            raise ValueError("Invalid queued history record.")
+        if action.action == "GIVE_ITEM":
+            if (action.target_id is None or action.quantity < 1
+                    or action.item != "fruit" and (action.item not in creation_ids or action.quantity != 1)
+                    or action.record is None or not transfer_matches(history[action.record].transfer_intent,
+                        action.npc_id, action.target_id, action.item, action.quantity)):
+                raise ValueError("A queued gift needs its real item and accepted matching authorization.")

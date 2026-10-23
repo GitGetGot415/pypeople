@@ -1,6 +1,7 @@
 """Session records of dialogue and its outcomes."""
 
 from player_records import PlayerPromiseOffer
+from transfer_records import TransferIntent, TransferReceipt
 from dataclasses import dataclass, field
 from typing import Annotated, Literal
 from typing_extensions import TypedDict, NotRequired
@@ -55,10 +56,10 @@ class ConversationRecord:
     dialogue_errors: list[str] = field(default_factory=list)
     intended_subjects: dict[str, str] = field(default_factory=dict)
     participant_ids: list[str] = field(default_factory=list)
-    transfers: list[dict] = field(default_factory=list)
+    transfers: list[TransferReceipt] = field(default_factory=list)
     accepted_player_turns: list[Annotated[int, Field(strict=True, ge=0)]] = field(default_factory=list)
     authorization_id: str | None = None
-    transfer_intent: dict | None = None
+    transfer_intent: TransferIntent | None = None
     player_promise_offers: list[PlayerPromiseOffer] = field(default_factory=list)
 
     @property
@@ -273,3 +274,53 @@ def describe_opinion_change(person, target, previous, opinion, reason):
     before = "Not recorded" if previous is None else f"{previous:+d}"
     change = "" if previous is None else f" ({opinion - previous:+d})"
     return f"{person}'s opinion of {target}: {before} -> {opinion:+d}{change}\nReason: {reason}"
+
+
+def validate_history_record(record, history, ids, player_id):
+    if record.authorization_id is not None and record.authorization_id not in history:
+        raise ValueError("Missing transfer authorization conversation.")
+    if (len(record.participant_ids) != 2 or len(set(record.participants)) != 2
+            or any(not label.strip() for label in record.participants) or not set(record.participant_ids) <= ids
+            or len(set(record.participant_ids)) != 2):
+        raise ValueError("Historical participant identities do not match the speakers.")
+    if (len(set(record.accepted_player_turns)) != len(record.accepted_player_turns)
+            or any(i >= len(record.turns) or record.turns[i].speaker_id != player_id for i in record.accepted_player_turns)):
+        raise ValueError("Player encounter effects need unique accepted player turns.")
+    if (not set(record.intended_subjects) <= set(record.participants)
+            or any(not subject.strip() for subject in record.intended_subjects.values())):
+        raise ValueError("Intended subjects must describe participants in their recorded conversation.")
+    if any(turn.speaker_id not in record.participant_ids
+           or turn.speaker != record.participants[record.participant_ids.index(turn.speaker_id)]
+           for turn in record.turns):
+        raise ValueError("Historical speech must retain its participant identity and recorded label.")
+
+
+def source_record(history, record_id):
+    record = history.get(record_id)
+    if record is None:
+        raise ValueError("Missing source conversation.")
+    return record
+
+
+def validate_history_turns(turns):
+    from constants import PLAYER_ID
+    from dialogue import EmotionReaction
+    for turn in turns:
+        if not turn.parts:
+            raise ValueError("Historical turns need their original words.")
+        for part in turn.parts:
+            if set(part) - {"text", "emotion"} or not part["text"].strip():
+                raise ValueError("Invalid historical speech part.")
+            if "emotion" in part:
+                EmotionReaction.model_validate(part["emotion"])
+        if turn.rewritten and (turn.speaker_id == PLAYER_ID or not usable_rewrite(turn.parts, turn.rewritten)):
+            raise ValueError("A rewrite must match the original NPC dialogue parts.")
+
+
+def validate_history_events(events, history, ids, now):
+    from social import phase_index
+    for event in events:
+        if not set(event.participants) <= ids or phase_index(event.day, event.phase) > now:
+            raise ValueError("Invalid event actors or date.")
+        if event.history is not None and event.history not in history:
+            raise ValueError("Invalid event history link.")

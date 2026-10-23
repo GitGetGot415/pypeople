@@ -4,6 +4,8 @@ The UI supplies only whether a reply and its original offer are still open.
 Outcome-specific commits remain in resident, snake and transfer code.
 """
 
+from transfer_records import TransferIntent
+
 from player_records import PlayerCall, PlayerReplyCall
 from dataclasses import dataclass
 from apartments import offer_invitation, pending_invitation
@@ -162,7 +164,7 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
         error = remember_response_opinions(world, npc, result, snapshot)
     if not error and planned_action is not None:
         if planned_action.action == "GIVE_ITEM" and record is not None:
-            record.transfer_intent = dict(giver_id=npc.id, recipient_id=planned_action.target_id,
+            record.transfer_intent = TransferIntent(giver_id=npc.id, recipient_id=planned_action.target_id,
                                           item=planned_action.item, quantity=planned_action.quantity)
         world.pending_actions.append(planned_action)
     closes_dialogue = bool(not error and result.end_conversation)

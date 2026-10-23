@@ -13,8 +13,7 @@ from dialogue import (AcceptedProposal, ActionIntent, ActionResponse, Conversati
                      SnakeResidentResponse, SnakeResponse, ThirdPartyOpinion)
 from constants import (RESIDENT_TURN_COUNT, CONVERSATION_MAX_TURNS, DIALOGUE_REPEAT_PHRASE_WORDS,
                       DIALOGUE_REPEAT_SENTENCE_WORDS, DIALOGUE_REPEAT_TURN_WORDS,
-                      CONVERSATION_MAX_AGREEMENTS, CONVERSATION_MAX_DISCLOSURES,
-                      CONVERSATION_MAX_REPUTATION_EFFECTS, CONVERSATION_MAX_LEVERAGE, PLAYER_LABEL,
+                      PLAYER_LABEL,
                       PLAYER_NAME_TAG, SNAKE_NAME)
 from dialogue_text import (contains_question, contains_serialized_dialogue, contains_speaker_label,
                           speech_is_complete, split_sentences)
@@ -23,7 +22,7 @@ from dialogue_rules import (is_name_reference, mentions_account, mentions_privat
                            validate_continuity, validate_base_prose, validate_claim_source, validate_english,
                            validate_opinion_reason, validate_environment_speech, validate_speaker_identity,
                            _personal_apple_request, _short_player_answer, validate_snake_perspective)
-from social import phase_index, validate_agreements, resident_information
+from social import phase_index, validate_agreements, resident_information, resident_effect_limits, proposals_from_snapshot
 from actor_identity import (account_references, name_forms, actor_id, forms, own_name)
 from social import (orientation_speech, validate_orientation)
 from dialogue_context import (_actor_name, _snake_turn_snapshot, _validate_speaker)
@@ -595,7 +594,7 @@ def _validate_response(raw, snapshot, model):
         people = [snapshot[role]["npc_name"] for role in ("initiator", "recipient")]
         people.extend(n["npc_name"] for n in snapshot.get("nearby_npcs", []))
         resident_information(snapshot, vars(result), incomplete=False)
-        validate_agreements(result.accepted_proposals, snapshot.get("permitted_proposals", []),
+        validate_agreements(result.accepted_proposals, proposals_from_snapshot(snapshot),
                             result.turns, snapshot["initiator"]["npc_id"], snapshot["recipient"]["npc_id"],
                             current_phase=phase_index(snapshot["initiator"].get("day", 1),
                                                       snapshot["initiator"].get("time_of_day", "day")),
@@ -719,16 +718,15 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
         if entry.claim_id not in choices["leverage"]:
             raise ValueError("Leverage requires a permitted account known before this turn.")
         projected["leverage"].append(LeverageUse(turn=index, **entry.model_dump()))
-    for field, limit in (("accepted_proposals", CONVERSATION_MAX_AGREEMENTS),
-                         ("disclosures", CONVERSATION_MAX_DISCLOSURES),
-                         ("third_party_opinions", CONVERSATION_MAX_REPUTATION_EFFECTS),
-                         ("leverage", CONVERSATION_MAX_LEVERAGE)):
+    limits = resident_effect_limits()
+    for field in ("accepted_proposals", "disclosures", "third_party_opinions", "leverage"):
+        limit = limits[field]
         if len(projected[field]) > limit:
             raise ValueError(f"The complete conversation exceeds its {field} limit.")
-    if len(projected["offers"]) > CONVERSATION_MAX_AGREEMENTS:
+    if len(projected["offers"]) > limits["offers"]:
         raise ValueError("The complete conversation exceeds its offer limit.")
     resident_information(snapshot, projected)
-    validate_agreements(projected["accepted_proposals"], snapshot.get("permitted_proposals", []), projected["turns"],
+    validate_agreements(projected["accepted_proposals"], proposals_from_snapshot(snapshot), projected["turns"],
                         snapshot["initiator"]["npc_id"], snapshot["recipient"]["npc_id"],
                         current_phase=phase_index(snapshot[role].get("day", 1), snapshot[role].get("time_of_day", "day")),
                         dialogue_validation=snapshot.get("_dialogue_validation", True))

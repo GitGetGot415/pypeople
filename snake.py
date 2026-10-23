@@ -601,3 +601,50 @@ class PlayerSnakeEncounter(SnakeEncounter):
         self.initiator.activity = "recovering" if self.initiator.recovery_remaining else "guarding"
         self.world.player_interaction = None
         self.world.leave_tree(self.recipient.id, error or "Finished tree service.")
+
+
+def validate_saved_snake(encounter, player_encounter, snake, npcs, player, tree, history, facts, live_ids, indoor_ids, reserved):
+    from constants import CONVERSATION_MAX_TURNS
+    from activity import validate_activity_target
+    from apartments import HOME_BEHAVIORS
+    if encounter:
+        if (encounter.resident_id not in live_ids or encounter.resident_id in indoor_ids
+                or encounter.saved_state.behavior in HOME_BEHAVIORS or encounter.record not in history):
+            raise ValueError("A snake encounter needs a living resident.")
+        resident_index = next(i for i, n in enumerate(npcs) if n.id == encounter.resident_id)
+        if encounter.resident_id in reserved or history[encounter.record].id != encounter.id or snake.target_id != encounter.resident_id:
+            raise ValueError("Conflicting snake encounter reservation.")
+        reserved.add(encounter.resident_id)
+        if len(history[encounter.record].turns) > CONVERSATION_MAX_TURNS:
+            raise ValueError("A snake conversation exceeds its accepted turn budget.")
+        if encounter.committed != bool(history[encounter.record].turns) or encounter.committed != (encounter.dialogue_state == "ready") or encounter.committed != bool(encounter.outcome):
+            raise ValueError("Invalid snake encounter commit progress.")
+        if encounter.reserved and (encounter.committed or encounter.purpose == "introduction" or tree.fruit < 1):
+            raise ValueError("Invalid apple reservation.")
+        if encounter.stage in ("condemned_approach", "eating") and encounter.outcome != "eat":
+            raise ValueError("Eating requires a resolved condemnation.")
+        validate_activity_target(encounter.saved_state, npcs[resident_index], tree.id, live_ids)
+    elif snake.target_id is not None and not player_encounter:
+        raise ValueError("A snake target requires an encounter.")
+    if (not set(snake.offenses) <= live_ids | ({player.id} if player.alive else set())
+            or any(f not in facts for f in snake.offenses.values())):
+        raise ValueError("Invalid snake warning sources.")
+    if snake.retry_request and snake.retry_request.resident_id not in live_ids:
+        raise ValueError("Invalid snake retry target.")
+
+
+def validate_saved_tree_service(encounter, current, tree_owner, saved, player_id, snake, records):
+    if encounter and (not current or current.actor_id != encounter.resident_id):
+        raise ValueError("A resident tree encounter must own the current FIFO turn.")
+    if tree_owner is not None and (not current or tree_owner != current.actor_id):
+        raise ValueError("Physical tree ownership must match the current customer.")
+
+    if saved:
+        if not current or current.actor_id != player_id:
+            raise ValueError("Player tree service needs its current FIFO association.")
+        if saved.record not in records or saved.record != saved.id or snake.target_id != player_id:
+            raise ValueError("Player tree service must match its original encounter.")
+        if saved.stage not in ("player", "dialogue", "condemned_approach", "eating") or saved.stage != "player" and (not saved.committed or saved.outcome != "eat"):
+            raise ValueError("Invalid player eating progress.")
+        if saved.question_account_id and not any(b.claim_id == saved.question_account_id for b in snake.beliefs):
+            raise ValueError("The current guard question must reference its actual knowledge.")

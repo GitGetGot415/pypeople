@@ -1,5 +1,5 @@
 import dialogue_context
-from social import resident_information
+from social import resident_information, related_beliefs, reputation_deltas, resident_effect_capacity, information_from_dict
 import dialogue_rules
 import dialogue_validation
 import validation_errors
@@ -20,9 +20,7 @@ from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_C
                       DIALOGUE_TIMEOUT_SECONDS, EMOTION_THRESHOLD, FURIOUS_THRESHOLD,
                       MODEL_DEFAULT_CONTEXT_TOKENS, MODEL_DIALOGUE_CONTEXT_TOKENS, RESIDENT_TURN_COUNT,
                       FOOD_REQUEST_TURN_COUNT, CONVERSATION_MAX_TURNS, DIALOGUE_STAGE_ATTEMPTS,
-                      DIALOGUE_REPEAT_PHRASE_WORDS, CONVERSATION_MAX_AGREEMENTS,
-                      CONVERSATION_MAX_DISCLOSURES, CONVERSATION_MAX_REPUTATION_EFFECTS,
-                      CONVERSATION_MAX_LEVERAGE, PLAYER_NAME_TAG, SNAKE_NAME, SNAKE_TURN_COUNT,
+                      DIALOGUE_REPEAT_PHRASE_WORDS, PLAYER_NAME_TAG, SNAKE_NAME, SNAKE_TURN_COUNT,
                       VOICE_REWRITE_TEMPERATURE)
 from dialogue_text import contains_question, split_sentences
 from dialogue_code import DELIVERY_INSTRUCTION
@@ -772,11 +770,9 @@ def _resident_contract(snapshot, *, correction=False):
         if snapshot.get("arrival_focus") or snapshot.get("purpose") == "food_request":
             properties.pop("gift_offer", None)
             properties.pop("accept_gift", None)
-        for field, limit in (("offers", CONVERSATION_MAX_AGREEMENTS - len(draft["offers"])),
-                             ("acceptances", CONVERSATION_MAX_AGREEMENTS - len(draft["accepted_proposals"])),
-                             ("disclosures", min(1, CONVERSATION_MAX_DISCLOSURES - len(draft["disclosures"]))),
-                             ("third_party_opinions", CONVERSATION_MAX_REPUTATION_EFFECTS - len(draft["third_party_opinions"])),
-                             ("leverage", CONVERSATION_MAX_LEVERAGE - len(draft["leverage"]))):
+        for field, limit in resident_effect_capacity(draft).items():
+            if field == "disclosures":
+                limit = min(1, limit)
             properties[field]["maxItems"] = max(0, limit) if choices[field] else 0
             if field in ("offers", "acceptances"):
                 properties[field]["maxItems"] = min(properties[field]["maxItems"], len(choices[field]))
@@ -787,17 +783,15 @@ def _resident_contract(snapshot, *, correction=False):
                 else:
                     item["properties"]["claim_id"] = {"type": "string", "enum": choices[field]}
                     if field == "third_party_opinions":
-                        options = {o["id"]: o for o in snapshot["_baseline"]["_information_validation"]["options"]}
+                        options = {o.id: o for o in information_from_dict(snapshot["_baseline"]["_information_validation"]).options}
                         beliefs, _, _ = resident_information(snapshot["_baseline"], draft)
                         branches = []
                         for claim_id in choices[field]:
                             branch = deepcopy(item)
                             branch["properties"]["claim_id"]["enum"] = [claim_id]
-                            branch["properties"]["subject_id"] = {"type": "string", "enum": [options[claim_id]["subject_id"]]}
-                            influence = sum(b.opinion_delta for b in beliefs[snapshot["speaker_role"]].values()
-                                            if options[b.claim_id]["fact_id"] == options[claim_id]["fact_id"])
-                            branch["properties"]["delta"] = {"type": "integer", "enum": [delta for delta in range(-6, 7)
-                                                                                         if delta and abs(influence + delta) <= 6]}
+                            branch["properties"]["subject_id"] = {"type": "string", "enum": [options[claim_id].subject_id]}
+                            related = related_beliefs(options[claim_id], beliefs[snapshot["speaker_role"]].values(), options)
+                            branch["properties"]["delta"] = {"type": "integer", "enum": reputation_deltas(related)}
                             branches.append(branch)
                         properties[field]["items"] = branches[0] if len(branches) == 1 else {"anyOf": branches}
         if snapshot.get("_disclosure_repair"):

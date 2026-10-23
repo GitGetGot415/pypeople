@@ -1,11 +1,11 @@
 """Resident activity values shared by suspension and persistence."""
 
 from copy import deepcopy
-from dataclasses import asdict, dataclass, fields
+from dataclasses import dataclass, fields
 from enum import Enum
 from typing import Annotated, Literal
 from pydantic import Field
-from constants import EAT_SECONDS, WORLD_HEIGHT, WORLD_WIDTH
+from constants import APARTMENT_ID, EAT_SECONDS, WORLD_HEIGHT, WORLD_WIDTH
 
 
 class Behavior(str, Enum):
@@ -41,12 +41,12 @@ class ActivitySnapshot:
 
     @classmethod
     def capture(cls, actor):
-        return asdict(cls(**{field.name: getattr(actor, field.name) for field in fields(cls)}))
+        return cls(**{field.name: deepcopy(getattr(actor, field.name)) for field in fields(cls)})
 
     @classmethod
     def restore(cls, actor, values):
         for field in fields(cls):
-            setattr(actor, field.name, deepcopy(values[field.name]))
+            setattr(actor, field.name, deepcopy(getattr(values, field.name)))
 
     def validate(self):
         if any(value < 0 for value in self.cooldowns.values()):
@@ -61,3 +61,18 @@ class ActivitySnapshot:
         if self.behavior == Behavior.EAT and (self.destination is not None or self.activity_elapsed >= EAT_SECONDS):
             raise ValueError("Invalid eating progress.")
         return self
+
+
+def validate_activity_target(activity, owner, tree_id, live_ids):
+    target = activity.target_id
+    if activity.behavior in (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING, Behavior.HARVEST):
+        if target != tree_id:
+            raise ValueError("Invalid tree task target.")
+    elif activity.behavior == Behavior.GO_HOME:
+        if target != APARTMENT_ID:
+            raise ValueError("Invalid apartment target.")
+    elif activity.behavior == Behavior.COMPANY:
+        if target not in live_ids or target == owner.id:
+            raise ValueError("A company target must be living.")
+    elif target is not None:
+        raise ValueError("Unexpected action target.")

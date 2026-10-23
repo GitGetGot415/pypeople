@@ -171,11 +171,11 @@ class InventoryPanel:
             credit = "Composer" if work.kind == "music" else "Creator"
             draw_wrapped_text(surface, f'{work.title} [{work.id[:8]}]\n{credit}: {creator.name} / Owner: {self.owner.name}',
                               app.font, INK, (x, y, INVENTORY_DETAIL_WIDTH, 64))
-            transfers = [t for r in app.conversation_history for t in r.transfers if t["item"] == work.id]
+            transfers = [t for r in app.conversation_history for t in r.transfers if t.item == work.id]
             if transfers:
-                last = max(transfers, key=lambda t: t["sequence"])
-                giver = app.simulation.participant_by_id(last["giver_id"])
-                draw_wrapped_text(surface, f'Latest giver: {giver.name}, day {last["day"]} / {last["phase"]}',
+                last = max(transfers, key=lambda t: t.sequence)
+                giver = app.simulation.participant_by_id(last.giver_id)
+                draw_wrapped_text(surface, f'Latest giver: {giver.name}, day {last.day} / {last.phase}',
                                   app.small_font, MUTED, (x + 220, y + 78, 350, 90))
             if work.kind == "art":
                 surface.blit(self.media.painting_preview(work, INVENTORY_PREVIEW_SCALE), (x, y + 70))

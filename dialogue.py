@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 from constants import (DIALOGUE_MAX_PARTS, CONVERSATION_MAX_TURNS, CONVERSATION_MAX_AGREEMENTS,
                        CONVERSATION_MAX_DISCLOSURES, CONVERSATION_MAX_REPUTATION_EFFECTS,
-                       CONVERSATION_MAX_LEVERAGE, SNAKE_TURN_COUNT, FOOD_REQUEST_TURN_COUNT)
+                       CONVERSATION_MAX_LEVERAGE, SNAKE_TURN_COUNT, FOOD_REQUEST_TURN_COUNT, REPUTATION_FACT_LIMIT)
 from dialogue_text import contains_question
 from purgatory import Attitudes
 
@@ -146,7 +146,7 @@ class ThirdPartyOpinion(StrictResponse):
     turn: int = Field(ge=0, le=CONVERSATION_MAX_TURNS - 1)
     claim_id: str = Field(min_length=1)
     subject_id: str = Field(min_length=1)
-    delta: int = Field(ge=-6, le=6)
+    delta: int = Field(ge=-REPUTATION_FACT_LIMIT, le=REPUTATION_FACT_LIMIT)
     reason: str = Field(min_length=1, max_length=400)
 
 
@@ -169,7 +169,7 @@ class AccountReaction(StrictResponse):
 class ReputationChoice(StrictResponse):
     claim_id: str
     subject_id: str
-    delta: int = Field(ge=-6, le=6)
+    delta: int = Field(ge=-REPUTATION_FACT_LIMIT, le=REPUTATION_FACT_LIMIT)
     reason: str = Field(min_length=1, max_length=400)
 
 

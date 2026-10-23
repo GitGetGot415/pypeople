@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Annotated
 from pydantic import Field
 from player_records import PlayerAcknowledgment
+from transfer_records import TransferIntent, TransferReceipt
 from dialogue import ConversationPart
 from uuid import uuid4
 from constants import (GIFT_GIVE_SECONDS, GIFT_SECONDS, PLAYER_TALK_DISTANCE, PLAYER_LABEL,
@@ -82,7 +83,7 @@ def commit_transfer(world, interaction):
         work.owner_id = recipient.id
         description = f'{work.kind}: {work.title} [{work.id}]'
     interaction.transferred = True
-    transfer = dict(id=uuid4().hex, giver_id=giver.id, recipient_id=recipient.id,
+    transfer = TransferReceipt.committed(id=uuid4().hex, giver_id=giver.id, recipient_id=recipient.id,
                     item=item, quantity=quantity, day=world.day, phase=world.phase,
                     sequence=sum(len(r.transfers) for r in world.history))
     record.transfers.append(transfer)
@@ -102,7 +103,7 @@ def commit_transfer(world, interaction):
     record.outcomes[0:1] = [f"Gave {description} to {recipient.name}."]
     if giver is world.player or recipient is world.player:
         resident = recipient if giver is world.player else giver
-        world.player_acknowledgments.append(PlayerAcknowledgment(npc_id=resident.id, record_id=record.id, transfer_id=transfer["id"]))
+        world.player_acknowledgments.append(PlayerAcknowledgment(npc_id=resident.id, record_id=record.id, transfer_id=transfer.id))
 
 
 @dataclass(eq=False)
@@ -151,7 +152,7 @@ class Handoff(HandoffProgress):
             initiator.world.history.append(self.record)
         if player_exchange:
             self.world.player_interaction.record_id = self.record.id
-        self.record.transfer_intent = dict(giver_id=initiator.id, recipient_id=recipient.id, item=item, quantity=quantity)
+        self.record.transfer_intent = TransferIntent(giver_id=initiator.id, recipient_id=recipient.id, item=item, quantity=quantity)
         self.saved_states = {}
         self.record.status = "Giving items" if already_met else "Walking to give"
         for npc in self.residents:
@@ -247,6 +248,20 @@ class Handoff(HandoffProgress):
                 end_interaction(self.world, error or "The accepted handoff finished.")
 
 
+def gift_possession_error(item, quantity, text, owner):
+    """Equivalent possession and spoken identification checks for generated gifts."""
+    if item == "fruit":
+        if quantity > owner.get("inventory", {}).get("fruit", 0):
+            return "stock"
+        if not re.search(r"\b(?:apple|apples|fruit)\b", unquoted_speech(text).casefold()):
+            return "apples"
+    else:
+        work = next((w for w in owner.get("owned_works", []) if w["id"] == item), None)
+        if work is None or quantity != 1 or work["title"].casefold() not in text.casefold():
+            return "work"
+    return None
+
+
 def validate_resident_gift(gift, turns, snapshot):
     if gift is None:
         return
@@ -259,16 +274,13 @@ def validate_resident_gift(gift, turns, snapshot):
     giver = snapshot[roles[gift.giver_id]]
     if gift.offer_turn >= len(turns) or turns[gift.offer_turn].speaker != roles[gift.giver_id]:
         raise ValueError("A gift offer needs its giver's actual speech.")
-    speech = unquoted_speech(turns[gift.offer_turn].text).casefold()
     validate_gift_offer_speech(turns[gift.offer_turn].text, gift.item, gift.quantity,
                                giver.get("inventory", {}).get("fruit", 0))
-    if gift.item == "fruit":
-        if gift.quantity > giver.get("inventory", {}).get("fruit", 0) or not re.search(r"\b(?:apple|apples|fruit)\b", speech):
-            raise ValueError("The giver must own and offer the actual apples.")
-    else:
-        work = next((w for w in giver.get("owned_works", []) if w["id"] == gift.item), None)
-        if work is None or gift.quantity != 1 or work["title"].casefold() not in turns[gift.offer_turn].text.casefold():
-            raise ValueError("A creative offer must identify one owned work and its spoken title.")
+    possession_error = gift_possession_error(gift.item, gift.quantity, turns[gift.offer_turn].text, giver)
+    if possession_error in ("stock", "apples"):
+        raise ValueError("The giver must own and offer the actual apples.")
+    if possession_error == "work":
+        raise ValueError("A creative offer must identify one owned work and its spoken title.")
     if gift.accept_turn is not None:
         index = gift.accept_turn
         if index <= gift.offer_turn or index >= len(turns) or turns[index].speaker != roles[gift.recipient_id]:
@@ -348,15 +360,13 @@ def validate_player_transfer(result, snapshot):
                 or offer.recipient_id != snapshot.get("player_id")):
             raise ValueError("Only a SAY reply can offer one gift to the current player.")
         validate_gift_offer_speech(result.reply, offer.item, offer.quantity, snapshot.get("inventory", {}).get("fruit", 0))
-        if offer.item == "fruit":
-            if offer.quantity > snapshot.get("inventory", {}).get("fruit", 0):
-                raise ValueError("An offer cannot spend unavailable apples.")
-            if not re.search(r"\b(?:apple|apples|fruit)\b", speech):
-                raise ValueError("Identify the offered apples in speech.")
-        else:
-            work = next((w for w in snapshot.get("owned_works", []) if w["id"] == offer.item), None)
-            if work is None or offer.quantity != 1 or work["title"].casefold() not in result.reply.casefold():
-                raise ValueError("Identify one actual owned work by ID and its title in the offer.")
+        possession_error = gift_possession_error(offer.item, offer.quantity, result.reply, snapshot)
+        if possession_error == "stock":
+            raise ValueError("An offer cannot spend unavailable apples.")
+        if possession_error == "apples":
+            raise ValueError("Identify the offered apples in speech.")
+        if possession_error == "work":
+            raise ValueError("Identify one actual owned work by ID and its title in the offer.")
     if result.action == "GIVE_ITEM":
         if (snapshot.get("request_intent") or result._authorized_intent).get("action") != "GIVE_ITEM":
             raise ValueError("A directed gift requires explicit player-command authorization.")
@@ -368,3 +378,87 @@ def validate_player_transfer(result, snapshot):
             raise ValueError("SAY cannot claim an unperformed transfer.")
         if re.search(r"\bi(?: will|['’]ll| promise to)\b[^.!?]{0,35}\b(?:paint|compose|write|make)\b[^.!?]{0,50}\b(?:for you|you a|your commission)\b", speech):
             raise ValueError("A SAY reply cannot promise an unsupported creative commission.")
+
+
+def validate_transfer_history(history, creations, promises, acknowledgments, owner_ids, live_ids, player_id, now, creation_ids, ids):
+    from conversation_history import validate_history_record
+    from social import phase_index, validate_player_promise_offers
+    transfer_ids, transfer_order, player_offer_ids = set(), [], set()
+    for record in history.values():
+        validate_player_promise_offers(record, promises, owner_ids, player_id, now, player_offer_ids)
+        validate_history_record(record, history, ids, player_id)
+        for transfer in record.transfers:
+            if (transfer.id in transfer_ids
+                    or transfer.giver_id not in owner_ids or transfer.recipient_id not in owner_ids
+                    or transfer.giver_id == transfer.recipient_id or transfer.item != "fruit" and (
+                        transfer.item not in creation_ids or transfer.quantity != 1)
+                    or phase_index(transfer.day, transfer.phase) > now):
+                raise ValueError("Invalid committed transfer provenance.")
+            transfer_ids.add(transfer.id)
+            transfer_order.append(transfer)
+    if sorted(t.sequence for t in transfer_order) != list(range(len(transfer_order))):
+        raise ValueError("Transfer history must retain its unique commit order.")
+    owners = {w.id: w.creator_id for w in creations}
+    for transfer in sorted(transfer_order, key=lambda t: t.sequence):
+        if transfer.item != "fruit":
+            if owners[transfer.item] != transfer.giver_id:
+                raise ValueError("Transfer provenance does not follow the actual previous owner.")
+            owners[transfer.item] = transfer.recipient_id
+    if any(owners[w.id] != w.owner_id for w in creations):
+        raise ValueError("Current work ownership must match its committed transfer history.")
+    for ack in acknowledgments:
+        record = history.get(ack.record_id)
+        if (ack.npc_id not in live_ids
+                or record is None or not any(t.id == ack.transfer_id
+                    and {t.giver_id, t.recipient_id} == {player_id, ack.npc_id} for t in record.transfers)):
+            raise ValueError("A pending acknowledgment needs its committed player handoff.")
+    if len({a.transfer_id for a in acknowledgments}) != len(acknowledgments):
+        raise ValueError("Duplicate pending transfer acknowledgment.")
+
+
+def transfer_matches(intent, giver_id, recipient_id, item, quantity):
+    return intent is not None and (intent.giver_id, intent.recipient_id, intent.item, intent.quantity) == (
+        giver_id, recipient_id, item, quantity)
+
+
+def validate_saved_handoffs(handoffs, history, live, live_ids, player, ownership, mode, creation_ids, events, reserved, tree_id):
+    from activity import validate_activity_target
+    from conversation_history import source_record
+    for handoff in handoffs:
+        pair = {handoff.initiator, handoff.recipient}
+        residents_in_pair = pair - {player.id}
+        record = source_record(history, handoff.record)
+        if (len(pair) != 2 or not residents_in_pair <= live_ids
+                or residents_in_pair & reserved or set(record.participant_ids) != pair
+                or set(handoff.saved_states) != residents_in_pair):
+            raise ValueError("Invalid handoff participants, reservation, or source record.")
+        if player.id in pair:
+            resident_id = next(iter(residents_in_pair))
+            if (not ownership or ownership.kind != "resident"
+                    or ownership.npc_id != resident_id or ownership.record_id != record.id
+                    or ownership.stage not in ("conversation", "handoff")
+                    or mode != "player" or not player.alive):
+                raise ValueError("A player handoff requires its actual exclusive physical owner.")
+        locations = {live[i].location if i != player.id else player.location for i in pair}
+        if len(locations) != 1 or player.id in pair and not handoff.arrived:
+            raise ValueError("Handoff participants must share their physical location.")
+        if (handoff.transferred != bool(handoff.outcome_event_id)
+                or handoff.transferred != (handoff.elapsed >= GIFT_GIVE_SECONDS)
+                or not handoff.arrived and handoff.elapsed != 0
+                or handoff.item != "fruit" and (handoff.item not in creation_ids or handoff.quantity != 1)):
+            raise ValueError("Invalid handoff progress or possession.")
+        if not transfer_matches(record.transfer_intent, handoff.initiator, handoff.recipient, handoff.item, handoff.quantity):
+            raise ValueError("A handoff needs matching accepted authorization.")
+        receipts = [t for t in record.transfers
+                    if transfer_matches(t, handoff.initiator, handoff.recipient, handoff.item, handoff.quantity)]
+        if handoff.transferred and (not receipts or handoff.outcome_event_id not in events
+                or events[handoff.outcome_event_id].kind != ("fruit_shared" if handoff.item == "fruit" else "work_shared")
+                or events[handoff.outcome_event_id].history != record.id
+                or set(events[handoff.outcome_event_id].participants) != pair):
+            raise ValueError("A committed handoff needs its receipt and event.")
+        if handoff.rewritten_thanks and (len(handoff.rewritten_thanks) != len(handoff.thanks)
+                or any(not text.strip() for text in handoff.rewritten_thanks)):
+            raise ValueError("Rewritten thanks must match the original parts.")
+        reserved.update(residents_in_pair)
+        for actor_id, activity in handoff.saved_states.items():
+            validate_activity_target(activity, live[actor_id], tree_id, live_ids)
