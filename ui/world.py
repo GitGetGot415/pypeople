@@ -1,7 +1,7 @@
 import pygame
 from functools import lru_cache
 from pathlib import Path
-from constants import (GARDEN_LOCATION, GARDEN_FLOOR_ART, INK, PAPER, SHADOW_COLOR, CHARACTER_SHADOW_HEIGHT,
+from constants import (GARDEN_LOCATION, GARDEN_FLOOR_ART, GARDEN_FLOOR_OFFSET, INK, PAPER, SHADOW_COLOR, CHARACTER_SHADOW_HEIGHT,
                       CHARACTER_SHADOW_OFFSET_Y, WORLD_COLORS,
                       APARTMENT_DOOR_RECT, APARTMENT_RECT, DEFAULT_BUBBLE_SPRITE_SIZE,
                       UI_SMALL_FONT_SIZE, NAME_TAG_FONT_SIZE, NAME_TAG_HEAD_GAP, PLAYER_NAME_TAG,
@@ -137,7 +137,9 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     if zoom != 1.0:
         scene = pygame.transform.scale(scene, (round(size[0] * zoom), round(size[1] * zoom)))
     previous_clip = surface.get_clip()
-    scene_rect = scene.get_rect(topleft=(round(camera_offset[0]), round(camera_offset[1])))
+    floor_offset = GARDEN_FLOOR_OFFSET if location == GARDEN_LOCATION else (0, 0)
+    scene_rect = scene.get_rect(topleft=(round(camera_offset[0] + floor_offset[0] * zoom),
+                                        round(camera_offset[1] + floor_offset[1] * zoom)))
     viewport = surface.get_rect() if viewport is None else viewport
     # Bubbles can extend beyond the ground's rectangle into the surrounding view.
     surface.set_clip(viewport.clip(previous_clip))
@@ -183,9 +185,9 @@ def _draw_scene(surface, tree, phase):
         floor = pygame.transform.scale(floor, surface.get_size())
     surface.blit(floor, (0, 0))
 
-    tree_x = round(tree.x) + tree.offset
+    tree_x = round(tree.x) + tree.offset - GARDEN_FLOOR_OFFSET[0]
     # Shadows lie on the ground beneath every sprite.
-    _draw_shadow(surface, pygame.Rect(tree_x - 43, round(tree.y) + 50, 86, 20))
+    _draw_shadow(surface, pygame.Rect(tree_x - 43, round(tree.y) + 50 - GARDEN_FLOOR_OFFSET[1], 86, 20))
 
 
 def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, phase, zoom, snake=None):
