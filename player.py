@@ -1,17 +1,60 @@
 """Physical player and exclusive social ownership; possessions remain engine owned."""
 
-from dataclasses import dataclass, field
 import re
+from dataclasses import asdict, dataclass, field
+from typing import Annotated, Literal
+from pydantic import Field
 from uuid import uuid4
-
-from constants import (PLAYER_ID, STARTING_PLAYER_FRUIT, PLAYER_CALL_LIMIT, PLAYER_CALL_COOLDOWN,
-                      PLAYER_CALL_CHECK_SECONDS, PLAYER_CONTEXT_WORK_LIMIT, PLAYER_OPINION_STEP,
-                      PLAYER_CALL_GIFT_GENEROSITY, PLAYER_CALL_SOCIABILITY)
-from conversation_history import remember
-from dialogue_text import contains_question
-from constants import (GARDEN_LOCATION, ARRIVAL_LOCATION, STARTING_PLAYER_POSITION, STARTING_FACING,
+from constants import (PLAYER_ID, STARTING_PLAYER_FRUIT, PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS,
+                      PLAYER_CONTEXT_WORK_LIMIT, PLAYER_OPINION_STEP, PLAYER_CALL_GIFT_GENEROSITY,
+                      PLAYER_CALL_SOCIABILITY, ARRIVAL_LOCATION, STARTING_PLAYER_POSITION, STARTING_FACING,
                       PLAYER_DEFAULT_APPEARANCE, MOVEMENT_SPEED, PLAYER_APPROACH_MULTIPLIER,
                       PLAYER_RUN_MULTIPLIER, PLAYER_APPROACH_TIMEOUT, PLAYER_EVIDENCE_LIMIT)
+from conversation_history import remember
+from dialogue_text import contains_question
+
+
+@dataclass
+class PlayerInteraction:
+    """Simulation's physical meeting/travel ownership, independent of any view."""
+    id: Annotated[str, Field(min_length=1)]
+    kind: Literal["resident", "snake", "door"]
+    stage: Literal["approach", "prompt", "conversation", "handoff", "travel"]
+    location: str
+    npc_id: str | None = None
+    record_id: str | None = None
+    incoming: bool = False
+    mover_id: str | None = None
+    point: tuple[float, float] | None = None
+    elapsed: Annotated[float, Field(ge=0, le=PLAYER_APPROACH_TIMEOUT)] = 0.0
+    saved_state: dict | None = None
+    gift: dict | None = None
+    knock_room: int | None = None
+    target: dict | None = None
+    pending_request: dict | None = None
+
+    def capture(self):
+        """Keep each physical interaction's existing, focused save representation.
+
+        Defaults for fields belonging to another kind are runtime conveniences,
+        not extra save fields. The same projection identifies required fields
+        during validation; an absent pending request means no retry is needed.
+        """
+        values = asdict(self)
+        names = ("id", "kind", "npc_id", "location", "stage", "incoming", "mover_id", "point", "elapsed",
+                 "saved_state", "record_id", "gift", "knock_room") if self.kind == "resident" else (
+                 ("id", "kind", "stage", "target", "location", "npc_id", "record_id") if self.kind == "door" else
+                 ("id", "kind", "stage", "npc_id", "record_id", "location"))
+        saved = {name: values[name] for name in names}
+        if self.pending_request is not None:
+            saved["pending_request"] = values["pending_request"]
+        return saved
+
+    def arrive(self):
+        self.stage = "prompt" if self.incoming else "conversation"
+
+    def wait_for_handoff(self):
+        self.stage = "handoff"
 
 
 @dataclass
@@ -46,13 +89,13 @@ def active_player(world):
 
 
 def owns_resident(world, npc):
-    return bool(world.player_interaction and world.player_interaction.get("npc_id") == npc.id)
+    return bool(world.player_interaction and world.player_interaction.npc_id == npc.id)
 
 
 def owns_conversation(world, npc, *, stages=("conversation",)):
     interaction = world.player_interaction if world else None
     return bool(npc and world and active_player(world) and interaction
-                and interaction.get("npc_id") == npc.id and interaction["stage"] in stages)
+                and interaction.npc_id == npc.id and interaction.stage in stages)
 
 
 def can_claim(world):
@@ -66,7 +109,7 @@ def start_approach(world, npc, *, incoming=False, gift=None, knock_room=None):
     from interactions import company_point
     if not can_claim(world) or world.npc_by_id(npc.id) is not npc or not available(npc):
         raise ValueError("The player or resident is unavailable.")
-    if npc.busy or npc.request_pending or world.tree_has_actor(npc.id) or npc.journey:
+    if npc.busy or npc.interaction_blocked or world.tree_has_actor(npc.id) or npc.journey:
         raise ValueError("The resident is occupied.")
     if not colocated(world.player, npc) and knock_room is None:
         raise ValueError("You must be in the same location.")
@@ -75,13 +118,13 @@ def start_approach(world, npc, *, incoming=False, gift=None, knock_room=None):
     if point is None:
         raise ValueError("There is no reachable place to meet.")
     state = npc.suspend_activity("Meeting the player")
-    world.player_interaction = dict(id=uuid4().hex, kind="resident", npc_id=npc.id,
+    world.player_interaction = PlayerInteraction(id=uuid4().hex, kind="resident", npc_id=npc.id,
         location=world.player.location, stage="approach", incoming=incoming, mover_id=mover.id,
-        point=list(point), elapsed=0.0, saved_state=state, record_id=None,
+        point=tuple(point), elapsed=0.0, saved_state=state, record_id=None,
         gift=gift, knock_room=knock_room)
     if knock_room is not None:
         # Talking through a closed door does not admit either actor or an audience.
-        world.player_interaction["stage"] = "conversation"
+        world.player_interaction.stage = "conversation"
     return world.player_interaction
 
 
@@ -91,8 +134,8 @@ def end_interaction(world, reason="Conversation ended."):
     if not interaction:
         return
     world.player.journey = None
-    npc = world.npc_by_id(interaction.get("npc_id"))
-    record = next((r for r in world.history if r.id == interaction.get("record_id")), None)
+    npc = world.npc_by_id(interaction.npc_id)
+    record = next((r for r in world.history if r.id == interaction.record_id), None)
     if record:
         for offer in record.player_promise_offers:
             if offer["status"] == "offered":
@@ -102,15 +145,14 @@ def end_interaction(world, reason="Conversation ended."):
     if npc:
         if npc.gift:
             npc.gift.finish(reason)
-        npc.request_pending = False
+        npc.player_reply.release()
         npc.selected = False
-        npc.end_conversation = False
         npc.journey = None
         clear_call(npc)
-        if interaction.get("saved_state"):
-            npc.restore_after_interaction(interaction["saved_state"], world.player.id, preserve_facing=True)
+        if interaction.saved_state:
+            npc.restore_after_interaction(interaction.saved_state, world.player.id, preserve_facing=True)
     for invitation in world.player_invitations:
-        if invitation["status"] == "offered" and invitation["interaction_id"] == interaction["id"]:
+        if invitation["status"] == "offered" and invitation["interaction_id"] == interaction.id:
             invitation["status"] = "withdrawn"
 
 
@@ -118,24 +160,24 @@ def update_interaction(world, dt):
     from interactions import face_each_other, move_toward
     from locations import colocated
     interaction = world.player_interaction
-    if not interaction or interaction["kind"] != "resident":
+    if not interaction or interaction.kind != "resident":
         return
-    npc = world.npc_by_id(interaction["npc_id"])
+    npc = world.npc_by_id(interaction.npc_id)
     if (not active_player(world) or npc is None or npc.departure
-            or not interaction.get("knock_room") and not colocated(world.player, npc)):
+            or not interaction.knock_room and not colocated(world.player, npc)):
         end_interaction(world, "The participants are no longer available together.")
         return
-    if interaction["stage"] != "approach":
+    if interaction.stage != "approach":
         return
-    interaction["elapsed"] += dt
-    if interaction["elapsed"] > PLAYER_APPROACH_TIMEOUT:
+    interaction.elapsed += dt
+    if interaction.elapsed > PLAYER_APPROACH_TIMEOUT:
         world.publish("interaction_failed", (world.player, npc), "The approach could not reach a meeting point.")
         end_interaction(world, "The approach timed out.")
         return
-    mover = npc if interaction["incoming"] else world.player
-    if move_toward(mover, interaction["point"], dt, MOVEMENT_SPEED * PLAYER_APPROACH_MULTIPLIER):
+    mover = npc if interaction.incoming else world.player
+    if move_toward(mover, interaction.point, dt, MOVEMENT_SPEED * PLAYER_APPROACH_MULTIPLIER):
         face_each_other(world.player, npc)
-        interaction["stage"] = "prompt" if interaction["incoming"] else "conversation"
+        interaction.arrive()
 
 
 def move_player(world, dx, dy, dt, *, running=False):
@@ -319,7 +361,7 @@ def call_valid(world, npc, call):
     ref = call["reference"]
     if call["kind"] == "introduction":
         from player_story import valid_introduction_call
-        return valid_introduction_call(world, npc, call)
+        return valid_introduction_call(world, npc, call, interaction=world.player_interaction)
     if call["kind"] == "reply":
         return any(r.id == ref and {world.player.id, npc.id} == set(r.participant_ids)
                    and r.turns and r.turns[-1].speaker == npc.name and not r.error for r in world.history)

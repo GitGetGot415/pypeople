@@ -1,12 +1,9 @@
 import os
-from dotenv import load_dotenv
-
 import math
+import pygame
+from dotenv import load_dotenv
 from pathlib import Path
 from time import monotonic
-
-import pygame
-
 from app_settings import load_settings
 from character_data import load_character, random_character
 from conversation_session import ConversationSession
@@ -16,7 +13,6 @@ from player import active_player
 from ollama_manager import load_model
 from simulation_data import InvalidSaveName, SaveStore, capture_simulation, restore_simulation
 from simulation import Simulation
-
 from .game import GameScreen
 from .character import CharacterScreen
 from .menu import MenuScreen
@@ -28,10 +24,11 @@ from .setup import SetupScreen
 from .stats import StatsScreen
 from .ollama_setup import OllamaSetupScreen
 from constants import (FPS, INTERACTION_GAP, STARTING_CHARACTER_FILE, STARTING_NPC_POSITION,
-                      STARTING_SPAWN_ORIGIN, STARTING_SPAWN_SIDE_OFFSET, STARTING_SPAWN_SPREAD, WINDOW_SIZE)
+                      STARTING_SPAWN_ORIGIN, STARTING_SPAWN_SIDE_OFFSET, STARTING_SPAWN_SPREAD, WINDOW_SIZE,
+                      UI_TITLE_FONT_SIZE, UI_HEADING_FONT_SIZE, UI_TEXT_FONT_SIZE, UI_SMALL_FONT_SIZE,
+                      NAME_TAG_FONT_SIZE)
 from .world import CHARACTER_SCALE
 from .fonts import UnicodeFont
-from constants import UI_TITLE_FONT_SIZE, UI_HEADING_FONT_SIZE, UI_TEXT_FONT_SIZE, UI_SMALL_FONT_SIZE, NAME_TAG_FONT_SIZE
 
 
 STARTING_CHARACTER_PATH = Path(__file__).resolve().parent.parent / STARTING_CHARACTER_FILE
@@ -114,8 +111,11 @@ class Application:
         """Switch sessions only after the new world is fully prepared."""
         self.requests.cancel_all()
         if self.simulation:
-            self.end_player_conversation("The session changed.")
+            self._sync_conversation_view()
+            self.conversations.end_player_conversation("The session changed.")
+            self._present_conversation_events()
             self.simulation.cancel_gifts("The session changed before the handoff finished.")
+            self.conversations.shutdown()
         from apartments import discard_work
         for npc in self.npcs:
             if npc.creative_job:
@@ -265,7 +265,9 @@ class Application:
         return True
 
     def leave_game(self):
-        self.end_player_conversation("Left the game.")
+        self._sync_conversation_view()
+        self.conversations.end_player_conversation("Left the game.")
+        self._present_conversation_events()
         self.game.inventory.close()
         self.simulation.cancel_gifts("Left the game before the handoff finished.")
         self.requests.cancel_all()
@@ -276,7 +278,7 @@ class Application:
             if npc.creative_job:
                 relax(npc)
         for npc in self.npcs:
-            npc.request_pending = any(action.npc_id == npc.id for action in self.simulation.pending_actions)
+            npc.player_reply.complete()
         self.conversations.shutdown()
         self.session_id += 1
         self.screen = "menu"
@@ -298,40 +300,6 @@ class Application:
         self.stats.open()
         self.screen = "stats"
 
-    def submit(self):
-        self._sync_conversation_view()
-        self.conversations.submit(self.game.selected_npc, self.game.prompt_input.text, active=self.screen == "game")
-        self._present_conversation_events()
-
-    def player_target(self):
-        self._sync_conversation_view()
-        result = self.conversations.player_target()
-        self._present_conversation_events()
-        return result
-
-    def player_owns(self, npc, *, stages=('conversation',)):
-        self._sync_conversation_view()
-        result = self.conversations.player_owns(npc, stages=stages)
-        self._present_conversation_events()
-        return result
-
-    def end_player_conversation(self, reason='Conversation ended.'):
-        self._sync_conversation_view()
-        result = self.conversations.end_player_conversation(reason)
-        self._present_conversation_events()
-        return result
-
-    def open_player_dialogue(self, npc):
-        self._sync_conversation_view()
-        result = self.conversations.open_player_dialogue(npc)
-        self._present_conversation_events()
-        return result
-
-    def accept_player_invitation(self, offer_id):
-        self._sync_conversation_view()
-        result = self.conversations.accept_player_invitation(offer_id)
-        self._present_conversation_events()
-        return result
 
     def use_door(self, target):
         from locations import start_journey, allocated_floors, hallway_location, door_point, valid_location
@@ -357,7 +325,9 @@ class Application:
                 from player import start_approach
                 try:
                     start_approach(world, host, knock_room=room)
-                    self.open_player_dialogue(host)
+                    self._sync_conversation_view()
+                    self.conversations.open_player_dialogue(host)
+                    self._present_conversation_events()
                     self.game.show_save_message("Knocking. Ask the resident for an invitation.")
                 except ValueError as exc:
                     self.game.show_save_message(str(exc))
@@ -368,64 +338,6 @@ class Application:
                  door_point(target["room"]) if target["kind"] == "exit_room" else HALLWAY_EXIT)
         start_journey(player, destination, point, purpose="doorway", fast=True)
 
-    def player_snapshot(self, npc, message=''):
-        self._sync_conversation_view()
-        result = self.conversations.player_snapshot(npc, message)
-        self._present_conversation_events()
-        return result
-
-    def open_unread(self, npc):
-        self._sync_conversation_view()
-        self.conversations.open_unread(npc)
-        self._present_conversation_events()
-
-    def talk_to_call(self, npc):
-        self._sync_conversation_view()
-        result = self.conversations.talk_to_call(npc)
-        self._present_conversation_events()
-        return result
-
-    def offer_player_item(self, recipient, item, quantity):
-        self._sync_conversation_view()
-        result = self.conversations.offer_player_item(recipient, item, quantity)
-        self._present_conversation_events()
-        return result
-
-    def accept_gift_offer(self):
-        self._sync_conversation_view()
-        result = self.conversations.accept_gift_offer()
-        self._present_conversation_events()
-        return result
-
-    def decline_gift_offer(self):
-        self._sync_conversation_view()
-        result = self.conversations.decline_gift_offer()
-        self._present_conversation_events()
-        return result
-
-    def retry_player_dialogue(self):
-        self._sync_conversation_view()
-        result = self.conversations.retry_player_dialogue()
-        self._present_conversation_events()
-        return result
-
-    def player_request(self, npc):
-        self._sync_conversation_view()
-        result = self.conversations.player_request(npc)
-        self._present_conversation_events()
-        return result
-
-    def pending_player_request(self, npc):
-        self._sync_conversation_view()
-        result = self.conversations.pending_player_request(npc)
-        self._present_conversation_events()
-        return result
-
-    def _submit_player_message(self, npc, message, snapshot, *, purpose='chat'):
-        self._sync_conversation_view()
-        result = self.conversations._submit_player_message(npc, message, snapshot, purpose=purpose)
-        self._present_conversation_events()
-        return result
 
     def apply_pending_action(self, action):
         npc, error, meeting = apply_pending_action(self.simulation, action,
@@ -439,25 +351,10 @@ class Application:
         return sum(max(self.name_tag_font.size(word)[0] for word in actor.name.split())
                    for actor in (first, second)) / 2 + INTERACTION_GAP
 
-    def request_conversation_dialogue(self, conversation, *, start=True):
-        self._sync_conversation_view()
-        result = self.conversations.request_conversation_dialogue(conversation, start=start)
-        self._present_conversation_events()
-        return result
-
-    def retry_conversation_dialogue(self, conversation):
-        self._sync_conversation_view()
-        self.conversations.retry_conversation_dialogue(conversation)
-        self._present_conversation_events()
 
     def retry_arrival(self):
         self.simulation.arrival_error = ""
 
-    def submit_snake(self, message):
-        self._sync_conversation_view()
-        result = self.conversations.submit_snake(message)
-        self._present_conversation_events()
-        return result
 
     def cancel_model_request(self, session_id, request_id):
         if not self.requests.cancel(session_id, request_id):
@@ -612,13 +509,15 @@ class Application:
             # leave one slot free and let other conversations use the rest.
             composing = self.screen == "game" and self.game.prompt_input.active and not self.simulation.phase_pending
             for conversation in sorted(conversations, key=lambda interaction: interaction.origin != "player"):
-                self.request_conversation_dialogue(conversation,
+                self._sync_conversation_view()
+                self.conversations.request_conversation_dialogue(conversation,
                     start=not composing or self.requests.available_slots > 1)
+                self._present_conversation_events()
             from constants import MAX_SIMULATION_STEP_SECONDS
             queued_creations = self.schedule_creations(min(MAX_SIMULATION_STEP_SECONDS, max(0.0, dt)), composing=composing)
             self.requests.expire_queued(self.session_id, queued_creations | {
                 conversation.id for conversation in conversations
-                if conversation.accepts_response and conversation.arrived and conversation.dialogue_state == "waiting"
+                if conversation.accepts_response and conversation.arrived and conversation.dialogue.dialogue_state == "waiting"
             })
 
     def draw(self):

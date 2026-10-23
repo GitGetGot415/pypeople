@@ -3,10 +3,9 @@
 import re
 import unicodedata
 from collections import Counter
-
 from validation_errors import DialogueValidationError, RecoveryKind
-from constants import (DIALOGUE_CAPS_MIN_LETTERS, DIALOGUE_CAPS_MIN_WORDS,
-                       DIALOGUE_CAPS_RATIO, PHASES, SNAKE_NAME)
+from constants import (DIALOGUE_CAPS_MIN_LETTERS, DIALOGUE_CAPS_MIN_WORDS, DIALOGUE_CAPS_RATIO, PHASES,
+                      SNAKE_NAME)
 from dialogue_text import split_sentences
 
 
@@ -572,3 +571,44 @@ def validate_apple_roles(text, *, giver, receiver, speaker, owed_offering=False,
                          r"\b(?:i am|you are)\s+entitled to the apple\b|"
                          r"\b(?:obligation|obliged|required|must)\b[^.!?]{0,35}\breturn\s+(?:it|that|(?:the|an?)\s+(?:apple|fruit))\b", sentence, re.I):
                 raise ValueError("The obligation is information or public support for an apple already received, not an apple repayment or return.")
+
+
+def validate_snake_perspective(text, *, snake_role):
+    """Catch detached species references before they become the partner's context."""
+    # Direct quotations may legitimately report someone else's earlier wording.
+    unquoted = unquoted_speech(text)
+    if re.search(name_pattern(SNAKE_NAME) + r"(?:['’]s\b|\s+(?:gave|gives|said|says|offered|offers|received|refused|accepted|decided|thinks|believes|claims|was|has|had)\b)", unquoted, re.I):
+        raise ValueError(f"{SNAKE_NAME} is the {snake_role} in this exchange. Use I/my for yourself and you/your for the listener, retaining the event's ownership.")
+    identity = r"i am|i['’]m|am i" if snake_role == "speaker" else r"you are|you['’]re|are you"
+    pronoun = r"i|my" if snake_role == "speaker" else r"you|your"
+    identifying_prefix = rf"\b(?:{identity})\s+(?:{name_pattern(SNAKE_NAME)}\s*,\s*)?$"
+    for match in re.finditer(r"\bthe\s+(?:snake|python)\b", unquoted, flags=re.IGNORECASE):
+        if " ".join(match[0].casefold().split()) == " ".join(SNAKE_NAME.casefold().split()):
+            continue  # A configured name may itself use these words.
+        prefix, suffix = unquoted[:match.start()], unquoted[match.end():]
+        # Identifying oneself or the listener is different from narrating a third party.
+        if (re.search(identifying_prefix, prefix, re.IGNORECASE)
+                and not re.match(r"['’]s\b", suffix, re.IGNORECASE)):
+            continue
+        if (re.search(r"\bas\s+$", prefix, re.IGNORECASE)
+                and re.match(rf"\s*,\s*(?:{pronoun})\b", suffix, re.IGNORECASE)):
+            continue
+        raise ValueError(
+            f"{SNAKE_NAME} is the {snake_role} in this direct exchange. "
+            "Rewrite the current turn with I/my for the speaker and you/your for the listener. "
+            "Preserve the actual participants, source and ownership of each event; do not narrate "
+            "your partner's actions as though another participant performed them.")
+
+
+def _short_player_answer(message):
+    return bool(re.fullmatch(r"\s*(?:yes(?: please)?|no(?: thanks| thank you| not really)?|yep|yup|nope|nah|sure|"
+                             r"ok(?:ay)?|absolutely|sounds good|thanks|thank you)\s*[.!?]*\s*", message, re.I))
+
+
+def _personal_apple_request(message):
+    """Resolve the recipient of a complete, unambiguous first-person request."""
+    return re.fullmatch(
+        r"\s*(?:please\s+)?(?:(?:can|could|may|might)\s+i\s+(?:please\s+)?(?:have|get|receive)"
+        r"|(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:give|hand|pass)\s+me)\s+"
+        r"(?:(?:an?|some|one|two|three|\d+)\s+)?(?:of\s+your\s+)?(?:apples?|fruit)"
+        r"(?:,?\s+please)?\s*[.!?]*\s*", message, re.I) is not None

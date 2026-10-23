@@ -4,9 +4,7 @@ from dataclasses import dataclass, field
 from typing import Annotated, Literal
 from typing_extensions import TypedDict, NotRequired
 from uuid import uuid4
-
 from pydantic import Field
-
 from dialogue import ConversationTurn
 from dialogue_text import contains_serialized_dialogue, contains_speaker_label
 from dialogue_rules import validate_rewrite_identity
@@ -82,6 +80,19 @@ class ConversationRecord:
         """Project stored speech into the speaker roles used by effect validators."""
         return [ConversationTurn(speaker="initiator" if turn.speaker_id == self.participant_ids[0] else "recipient",
                                  parts=turn.parts) for turn in self.turns]
+
+    def display_turns(self, *, failed=False):
+        """Resolve failed role labels once using this record's identities.
+
+        Accepted turns remain the canonical objects, preserving page anchors and
+        historical labels even after an actor changes their display name.
+        """
+        if not failed:
+            return self.turns
+        return [RecordedTurn(self.participants[index], turn["parts"],
+                             speaker_id=self.participant_ids[index] if self.participant_ids else None)
+                for turn in self.failed_turns
+                for index in [0 if turn["speaker"] == "initiator" else 1]]
 
 
 def usable_rewrite(parts, rewritten, *, speaker="", listener="", names=()):

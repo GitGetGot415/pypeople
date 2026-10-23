@@ -1,73 +1,51 @@
 """Self-contained simulation saves. No character file paths are loaded."""
 
+import re
+from npc import ResidentProgress, Conversation, NPC, Tree
+from transfers import HandoffProgress, Handoff
+from snake import SnakeProgress, PlayerSnakeProgress, Snake, SnakeEncounter
 from dataclasses import asdict, dataclass
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-import re
 from typing import Annotated, Literal
 from types import SimpleNamespace
-
 from pydantic import Field, field_validator, model_validator
 from records import SaveModel, saved_record
-
+from interactions import DialogueProgress
 from character_data import normalize_character, normalize_opinions
 from constants import (CONCERN_LIFETIME_RANGE, CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE,
-                      FAILURE_COOLDOWN, CONVERSATION_MAX_TURNS, CONVERSATION_MAX_AGREEMENTS, DECISION_SECONDS,
-                      DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, GIFT_GIVE_SECONDS, GIFT_SECONDS,
-                      MAX_SIMULATION_STEP_SECONDS, SHAKE_SECONDS, SNAKE_EAT_SECONDS, PLAYER_ROOM_NUMBER,
-                      PLAYER_ROOM_LOCATION, POST_DIALOGUE_SECONDS, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS,
-                      SNAKE_NAME, WORLD_HEIGHT, WORLD_WIDTH)
+                      FAILURE_COOLDOWN, CONVERSATION_MAX_TURNS, CONVERSATION_MAX_AGREEMENTS,
+                      GIFT_GIVE_SECONDS, SHAKE_SECONDS, PLAYER_ROOM_NUMBER, PLAYER_ROOM_LOCATION,
+                      RECOVERY_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME, WORLD_HEIGHT, WORLD_WIDTH,
+                      APARTMENT_ID, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_RANGE, CREATIVE_QUEUE_SECONDS,
+                      OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE, WAKE_DELAY_RANGE, PLAYER_ID,
+                      PLAYER_LABEL, PLAYER_NAME_TAG, PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS,
+                      PLAYER_CALL_LIMIT)
 from creations import Creation, CreativeJob
-from apartments import HOME_BEHAVIORS, INDOOR_BEHAVIORS, entrance
-from constants import (APARTMENT_ID, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_RANGE, CREATIVE_QUEUE_SECONDS,
-                       HOME_ARRIVAL_TOLERANCE, OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE, WAKE_DELAY_RANGE)
+from apartments import HOME_BEHAVIORS, INDOOR_BEHAVIORS
 from conversation_history import RecordedTurn, ConversationRecord, Memory, WorldEvent
-from dialogue import ConversationPart, ConversationTurn, EmotionReaction
-from dialogue import AcceptedProposal, DisclosureChoice, GiftOffer, LeverageUse, ThirdPartyOpinion, ResidentGift
-from npc import ACTIVITY_FIELDS, Behavior, Conversation, NPC, Tree
+from dialogue import ConversationTurn, EmotionReaction, GiftOffer
+from activity import ActivitySnapshot, Behavior
 from simulation import PendingAction, Simulation
-from player import Player
-from transfers import Handoff
-from constants import PLAYER_ID, PLAYER_LABEL, PLAYER_NAME_TAG, PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, PLAYER_CALL_LIMIT
-from snake import Snake, SnakeEncounter
+from player import Player, PlayerInteraction
 from purgatory import Attitudes
-from player_story import (validate_starting_history,
-                          valid_introduction_call, resident_arrival_days)
-from social import (Belief, Claim, ConcernKind, ConversationConcern, Disclosure, Fact, FactKind, Goal, GoalKind, OpinionEffect, Promise, Proposal, ClaimOption,
-                    Stance, information_from_dict, phase_index, validate_agreements, validate_information)
+from player_story import validate_starting_history, valid_introduction_call, resident_arrival_days
+from social import (Belief, Claim, ConcernKind, ConversationConcern, Disclosure, Fact, Goal, OpinionEffect,
+                   Promise, Proposal, ClaimOption, information_from_dict, phase_index, validate_agreements,
+                   validate_information)
+
+
+PlayerInteractionState = saved_record(PlayerInteraction)
 
 SAVE_DIRECTORY = Path(__file__).resolve().parent / "saves"
 
 
-class ActivityState(SaveModel):
-    behavior: Behavior
-    destination: tuple[float, float] | None
-    pause_remaining: float = Field(ge=0)
-    facing: int = Field(ge=0, le=7)
-    owner: Literal["autonomous", "player_task", "player_hold"]
-    target_id: str | None
-    activity_elapsed: float = Field(ge=0)
-    reason: str
-    decision_remaining: float = Field(ge=0)
-    cooldowns: dict[str, float]
-    resume_pending: bool
-
+class ActivityState(saved_record(ActivitySnapshot)):
     @model_validator(mode="after")
     def validate_activity(self):
-        if any(value < 0 for value in self.cooldowns.values()):
-            raise ValueError("Invalid cooldown duration.")
-        if self.destination is not None and not (0 <= self.destination[0] <= WORLD_WIDTH and 0 <= self.destination[1] <= WORLD_HEIGHT):
-            raise ValueError("Invalid destination.")
-        if (self.owner == "player_hold") != (self.behavior == Behavior.STOP):
-            raise ValueError("A player hold must be stopped.")
-        player_behaviors = (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING)
-        if self.behavior != Behavior.EAT and (self.owner == "player_task") != (self.behavior in player_behaviors):
-            raise ValueError("Invalid player task.")
-        if self.behavior == Behavior.EAT and (self.destination is not None or self.activity_elapsed >= EAT_SECONDS):
-            raise ValueError("Invalid eating progress.")
+        ActivitySnapshot.validate(self)
         return self
-
 
 class PreferencesState(SaveModel):
     sociability: float = Field(ge=0, le=1)
@@ -305,51 +283,28 @@ class HistoryState(saved_record(ConversationRecord)):
         return self
 
 
-class ConversationState(SaveModel):
-    accepted_gift: ResidentGift | None
-    id: str = Field(min_length=1)
-    origin: Literal["player", "autonomous"]
-    purpose: Literal["chat", "food_request"]
+class ActiveDialogueState(saved_record(DialogueProgress)):
+    @field_validator("dialogue_state")
+    @classmethod
+    def active_dialogue(cls, value):
+        if value == "failed":
+            raise ValueError("Failed dialogue cannot remain an active interaction.")
+        return value
+
+
+class ConversationState(saved_record(ResidentProgress), ActiveDialogueState):
     concerns: dict[Literal["initiator", "recipient"], ConcernState]
-    opening_kind: ConcernKind | None
-    goal_id: str | None
-    focus_claim_id: str | None
-    dialogue_state: Literal["waiting", "pending", "ready"]
-    wait_elapsed: float = Field(ge=0, le=DIALOGUE_TIMEOUT_SECONDS + MAX_SIMULATION_STEP_SECONDS)
-    talking_remaining: float = Field(ge=0, le=max(POST_DIALOGUE_SECONDS, DECISION_SECONDS))
-    food_outcome: Literal["", "accepted", "need", "refused", "unavailable"]
-    food_reason: str
-    handoff_thanks: list[ConversationPart] = Field(max_length=3)
-    rewritten_handoff_thanks: list[str]
-    outcome_event_id: str | None
-    reactions: list[tuple[str, float]] = Field(max_length=2)
     initiator: str = Field(min_length=1)
     recipient: str = Field(min_length=1)
     record: str = Field(min_length=1)
-    topic: str
-    arrived: bool
     saved_states: tuple[ActivityState, ActivityState]
     proposals: list[ProposalState] = Field(max_length=2)
-    accepted_proposals: list[AcceptedProposal] = Field(max_length=2)
-    social_effects_applied: bool
-    context_references: dict[str, Literal["active", "completed", "failed", "pending", "fulfilled", "broken", "cancelled"]]
     information_context: InformationState | None
-    accepted_disclosures: list[DisclosureChoice] = Field(max_length=4)
-    third_party_opinions: list[ThirdPartyOpinion] = Field(max_length=4)
-    leverage_uses: list[LeverageUse] = Field(max_length=2)
 
-class HandoffState(SaveModel):
+class HandoffState(saved_record(HandoffProgress)):
     initiator: str
     recipient: str
     record: str
-    item: str = Field(min_length=1)
-    quantity: int = Field(strict=True, ge=1)
-    arrived: bool
-    elapsed: float = Field(ge=0, lt=GIFT_SECONDS)
-    transferred: bool
-    outcome_event_id: str | None
-    thanks: list[ConversationPart] = Field(max_length=3)
-    rewritten_thanks: list[str]
     saved_states: dict[str, ActivityState]
 
 
@@ -399,37 +354,21 @@ class SnakeState(SaveModel):
         return value
 
 
-class SnakeEncounterState(SaveModel):
-    id: str
+class SnakeEncounterState(saved_record(SnakeProgress), ActiveDialogueState):
+    @field_validator("stage")
+    @classmethod
+    def resident_stage(cls, value):
+        if value == "player":
+            raise ValueError("Resident encounters cannot use player tree service.")
+        return value
+
     resident_id: str
     record: str = Field(min_length=1)
-    purpose: Literal["bargain", "judgment", "introduction"]
-    origin: Literal["player", "autonomous"]
-    topic: str
-    accusation: str
     saved_state: ActivityState
-    reserved: bool
-    arrived: bool
-    dialogue_state: Literal["waiting", "pending", "ready"]
-    wait_elapsed: float = Field(ge=0, le=DIALOGUE_TIMEOUT_SECONDS + MAX_SIMULATION_STEP_SECONDS)
-    talking_remaining: float = Field(ge=0, le=max(POST_DIALOGUE_SECONDS, DECISION_SECONDS))
-    committed: bool
-    outcome: Literal["", "talk", "give_apple", "warn", "eat"]
-    outcome_event_id: str | None
-    stage: Literal["approach", "waiting", "dialogue", "condemned_approach", "eating"]
-    elapsed: float = Field(ge=0, le=SNAKE_EAT_SECONDS + MAX_SIMULATION_STEP_SECONDS)
     request_context: dict | None
 
 
-class PendingActionState(SaveModel):
-    npc_id: str
-    action: Literal["WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "GIVE_ITEM", "EAT"]
-    revision: int = Field(ge=0)
-    target_id: str | None
-    topic: str
-    record: str | None
-    item: str
-    quantity: int = Field(ge=0)
+PendingActionState = saved_record(PendingAction)
 
 
 class PlayerState(SaveModel):
@@ -873,7 +812,7 @@ class SimulationState(SaveModel):
                     third_party_opinions=interaction.third_party_opinions, leverage=interaction.leverage_uses),
                     interaction.information_context.model_dump() if interaction.information_context else None)
             if interaction.accepted_gift:
-                from llm import validate_resident_gift
+                from transfers import validate_resident_gift
                 validate_resident_gift(interaction.accepted_gift, record.generated_turns(), {
                     "purpose": interaction.purpose, "arrival_focus": interaction.opening_kind == "orientation",
                     **{
@@ -978,7 +917,8 @@ class SimulationState(SaveModel):
                 raise ValueError("Invalid waiting player call.")
             if call:
                 ref = call["reference"]
-                valid = (valid_introduction_call(self, npc, call)
+                valid = (valid_introduction_call(self, npc, call,
+                             interaction=PlayerInteraction(**self.player_interaction) if self.player_interaction else None)
                          if call["kind"] == "introduction" else
                          npc.inventory["fruit"] > 0
                          if call["kind"] == "gift" and ref == "fruit" else
@@ -1120,30 +1060,26 @@ class SaveStore:
         self._path(save_id).unlink()
 
 
-PLAYER_SNAKE_FIELDS = ("id", "purpose", "origin", "topic", "accusation", "reserved", "arrived",
-    "dialogue_state", "stage", "wait_elapsed", "elapsed", "talking_remaining", "committed", "outcome", "outcome_event_id", "question_account_id")
+class PlayerSnakeState(saved_record(PlayerSnakeProgress), ActiveDialogueState):
+    record: str = Field(min_length=1)
 
 
 def capture_player_snake(encounter, records):
     from snake import PlayerSnakeEncounter
     if not isinstance(encounter, PlayerSnakeEncounter):
         return None
-    return {**{name: deepcopy(getattr(encounter, name)) for name in PLAYER_SNAKE_FIELDS},
-            "record": records[id(encounter.record)]}
+    return _capture_fields(PlayerSnakeState, encounter, record=records[id(encounter.record)]).model_dump()
 
 
 def restore_player_snake(world, saved, history):
     if saved is None:
         return
     from snake import PlayerSnakeEncounter
-    encounter = PlayerSnakeEncounter.__new__(PlayerSnakeEncounter)
-    for name in PLAYER_SNAKE_FIELDS:
-        setattr(encounter, name, deepcopy(saved[name]))
-    encounter.record = history[saved["record"]]
-    encounter.world, encounter.initiator, encounter.recipient = world, world.snake, world.player
-    encounter.active = True
-    encounter.request_context = encounter.saved_state = None
-    world.snake.encounter = encounter
+    values = PlayerSnakeState.model_validate(saved)
+    PlayerSnakeEncounter.restore(world, world.player, history[values.record],
+        progress=PlayerSnakeProgress(**{name: getattr(values, name) for name in PlayerSnakeProgress.__dataclass_fields__}),
+        dialogue=DialogueProgress(**{name: getattr(values, name) for name in DialogueProgress.__dataclass_fields__}),
+        saved_state=None)
 
 
 def validate_physical_state(state):
@@ -1193,6 +1129,13 @@ def validate_physical_state(state):
     if interaction:
         if interaction.get("kind") not in ("resident", "door", "snake") or not interaction.get("id"):
             raise ValueError("Invalid player interaction owner.")
+        try:
+            physical = PlayerInteraction(**interaction)
+        except TypeError:
+            raise ValueError("Invalid player interaction fields.") from None
+        if not physical.capture().keys() <= interaction.keys():
+            raise ValueError("Missing required physical interaction fields.")
+        PlayerInteractionState.model_validate(asdict(physical))
         if interaction["location"] != state.player.location:
             raise ValueError("Player ownership must follow its current location.")
         if interaction["kind"] == "resident":
@@ -1314,7 +1257,8 @@ def validate_physical_state(state):
 
     saved = state.player_snake_encounter
     if saved:
-        if set(saved) != {*PLAYER_SNAKE_FIELDS, "record"} or not state.tree_current or state.tree_current["actor_id"] != state.player.id:
+        PlayerSnakeState.model_validate(saved)
+        if not state.tree_current or state.tree_current["actor_id"] != state.player.id:
             raise ValueError("Player tree service needs its current FIFO association.")
         if saved["record"] not in records or saved["record"] != saved["id"] or state.snake.target_id != state.player.id:
             raise ValueError("Player tree service must match its original encounter.")
@@ -1326,14 +1270,8 @@ def validate_physical_state(state):
 
 def _capture_fields(model, source, **overrides):
     """Use the save model's fields; spell out only reference/type conversions."""
-    return model(**{name: overrides[name] if name in overrides else getattr(source, name)
+    return model(**{name: overrides[name] if name in overrides else getattr(source.dialogue if name in DialogueProgress.__dataclass_fields__ else source, name)
                     for name in model.model_fields})
-
-
-def _restore_fields(target, saved, *, exclude=(), **overrides):
-    for name in type(saved).model_fields:
-        if name not in exclude:
-            setattr(target, name, overrides[name] if name in overrides else getattr(saved, name))
 
 
 def capture_resident(npc):
@@ -1363,8 +1301,8 @@ def capture_simulation(world, *, camera_offset, camera_zoom):
             if offer["status"] == "offered" and record["id"] not in unread_records:
                 offer["status"] = "closed"
     interaction = world.player_interaction
-    if interaction and interaction.get("pending_request"):
-        record = next((row for row in history if row["id"] == interaction.get("record_id")), None)
+    if interaction and interaction.pending_request:
+        record = next((row for row in history if row["id"] == interaction.record_id), None)
         if record:
             record["status"] = "Reply pending when saved"
             record["outcomes"].insert(0, "The reply was not saved. Send the request again after loading.")
@@ -1392,7 +1330,7 @@ def capture_simulation(world, *, camera_offset, camera_zoom):
     encounter = world.snake.encounter
     return SimulationState(
         day=world.day, npc_trait_mode=world.npc_trait_mode, phase=world.phase,
-        mode=world.mode, player_interaction=deepcopy(world.player_interaction),
+        mode=world.mode, player_interaction=world.player_interaction.capture() if world.player_interaction else None,
         player_invitations=deepcopy(world.player_invitations), player_claims=deepcopy(world.player_claims),
         visit=deepcopy(world.visit), tree_queue=deepcopy(world.tree_queue), tree_current=deepcopy(world.tree_current),
         player_snake_encounter=capture_player_snake(encounter, records),
@@ -1449,7 +1387,7 @@ def restore_simulation(state):
             attitudes=saved.attitudes.model_dump(),
             arrival_day=saved.arrival_day, departure=saved.departure.model_dump() if saved.departure else None,
         )
-        npc.restore_activity({name: getattr(saved, name) for name in ACTIVITY_FIELDS})
+        npc.restore_activity(ActivitySnapshot.capture(saved))
         all_residents.append(npc)
     npcs = all_residents[:len(state.npcs)]
     by_id = {npc.id: npc for npc in npcs}
@@ -1460,7 +1398,7 @@ def restore_simulation(state):
     world.archived = all_residents[len(state.npcs):]
     world.player = Player(**state.player.model_dump())
     world.player.world = world
-    world.player_interaction = deepcopy(state.player_interaction)
+    world.player_interaction = PlayerInteraction(**deepcopy(state.player_interaction)) if state.player_interaction else None
     world.player_invitations = deepcopy(state.player_invitations)
     world.player_claims = deepcopy(state.player_claims)
     world.visit = deepcopy(state.visit)
@@ -1486,8 +1424,6 @@ def restore_simulation(state):
     world.roster_revision = state.roster_revision
     world.day, world.phase = state.day, state.phase
     world.pending_actions = [PendingAction(**action.model_dump()) for action in state.pending_actions]
-    for action in world.pending_actions:
-        by_id[action.npc_id].request_pending = True
     history = [saved.restore() for saved in state.history]
     world.history = history
     history = {record.id: record for record in history}
@@ -1498,44 +1434,24 @@ def restore_simulation(state):
     world.disclosures = [Disclosure(**disclosure.model_dump()) for disclosure in state.disclosures]
     world.social_rotation = state.social_rotation
     for saved in state.conversations:
-        # Loading bypasses __init__: it would interrupt the saved activities again.
-        conversation = Conversation.__new__(Conversation)
-        _restore_fields(conversation, saved,
-            initiator=by_id[saved.initiator], recipient=by_id[saved.recipient], record=history[saved.record],
+        Conversation.restore(by_id[saved.initiator], by_id[saved.recipient], history[saved.record],
+            progress=ResidentProgress(**{name: getattr(saved, name) for name in ResidentProgress.__dataclass_fields__}),
+            dialogue=DialogueProgress(**{name: getattr(saved, name) for name in DialogueProgress.__dataclass_fields__}),
             proposals=[Proposal(**proposal.model_dump()) for proposal in saved.proposals],
             information_context=information_from_dict(saved.information_context.model_dump()) if saved.information_context else None,
             concerns={role: ConversationConcern(**c.model_dump()) if c else None for role, c in saved.concerns.items()},
             saved_states=[activity.model_dump() for activity in saved.saved_states])
-        conversation.active = True
-        conversation.name_actors = {}  # Pending generation takes a fresh reference snapshot after loading.
-        for npc in (conversation.initiator, conversation.recipient):
-            npc.conversation = conversation
-        if conversation.dialogue_state == "pending":
-            conversation.dialogue_state = "waiting"
-            conversation.wait_elapsed = 0.0
     actor_lookup = {actor.id: actor for actor in [*world.actors, world.player]}
     for saved in state.handoffs:
-        handoff = Handoff.__new__(Handoff)
-        _restore_fields(handoff, saved, initiator=actor_lookup[saved.initiator],
-            recipient=actor_lookup[saved.recipient], record=history[saved.record],
+        Handoff.restore(actor_lookup[saved.initiator], actor_lookup[saved.recipient], history[saved.record],
+            progress=HandoffProgress(**{name: getattr(saved, name) for name in HandoffProgress.__dataclass_fields__}),
             saved_states={actor_id: activity.model_dump() for actor_id, activity in saved.saved_states.items()})
-        handoff.world, handoff.active = world, True
-        for npc in handoff.residents:
-            npc.gift = handoff
     saved = state.snake_encounter
     if saved:
-        encounter = SnakeEncounter.__new__(SnakeEncounter)
-        _restore_fields(encounter, saved, exclude=("resident_id", "turns"),
-                        record=history[saved.record], saved_state=saved.saved_state.model_dump())
-        encounter.world = world
-        encounter.initiator, encounter.recipient = world.snake, by_id[saved.resident_id]
-        encounter.active = True
-        world.snake.encounter = encounter
-        encounter.recipient.snake_encounter = encounter
-        if encounter.dialogue_state == "pending":
-            encounter.dialogue_state = "waiting"
-            encounter.wait_elapsed = 0.0
-            encounter.request_context = None
+        SnakeEncounter.restore(world, by_id[saved.resident_id], history[saved.record],
+            progress=SnakeProgress(**{name: getattr(saved, name) for name in SnakeProgress.__dataclass_fields__}),
+            dialogue=DialogueProgress(**{name: getattr(saved, name) for name in DialogueProgress.__dataclass_fields__}),
+            saved_state=saved.saved_state.model_dump(), request_context=deepcopy(saved.request_context))
     restore_player_snake(world, state.player_snake_encounter, history)
     # Claims are reacquired through the same safe path as interrupted activities.
     tree.reserved_by = None

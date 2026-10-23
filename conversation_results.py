@@ -5,13 +5,12 @@ Outcome-specific commits remain in resident, snake and transfer code.
 """
 
 from dataclasses import dataclass
-
 from apartments import offer_invitation, pending_invitation
 from conversation_history import describe_opinion_change
 from dialogue import ConversationTurn, ConversationPart
 from interactions import record_failed_dialogue
 from dialogue_context import actor_catalog, name_forms, orientation_speech
-from npc import Behavior
+from activity import Behavior
 from player import owns_conversation
 from simulation import PendingAction
 from snake import PlayerSnakeEncounter
@@ -42,7 +41,7 @@ def accept_generated_dialogue(conversation, result, error, failed_turns, rewritt
 def accept_snake_reply(world, request, result, error, failed_turns, rewritten):
     npc, record = request["npc"], request["record"]
     encounter = world.snake.encounter
-    npc.request_pending = False
+    npc.player_reply.complete()
     if not owns_conversation(world, npc) or not isinstance(encounter, PlayerSnakeEncounter):
         error = "This player tree exchange ended before its result arrived."
     if not error:
@@ -52,7 +51,7 @@ def accept_snake_reply(world, request, result, error, failed_turns, rewritten):
         except ValueError as exc:
             error = str(exc)
     npc.reply = f"Request failed: {error}" if error else result.reply
-    npc.end_conversation = bool(not error and encounter.outcome == "eat")
+    npc.player_reply.closing = bool(not error and encounter.outcome == "eat")
     npc.rewritten_reply = rewritten[0][0] if not error and rewritten else ""
     if error:
         if isinstance(encounter, PlayerSnakeEncounter) and encounter.record is record:
@@ -87,12 +86,12 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
     npc, record = request["npc"], request["record"]
     snapshot, message = request["snapshot"], request["message"]
     pending_offer = None
-    npc.request_pending = False
+    npc.player_reply.complete()
     if not error and (not owns_conversation(world, npc) or npc.busy or npc.command_revision != request["revision"] or request["world_revision"] != world.roster_revision):
         error = "That reply arrived after the NPC became busy. Please send the request again."
     if not error:
         try:
-            from llm import validate_player_transfer
+            from transfers import validate_player_transfer
             from player import call_valid
             from transfers import validate_transfer
             validate_player_transfer(result, snapshot)
@@ -137,13 +136,13 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
                 error = "I don't have an apple to eat."
             elif result.action in ("TALK_TO_NPC", "GIVE_ITEM") and target is not world.player and (target is None or target.location != npc.location
                     or target.behavior == Behavior.GO_HOME or target.home_reason == "night"
-                    or target.busy or target.request_pending or target.selected or target.player_call):
+                    or target.busy or target.interaction_blocked or target.selected or target.player_call):
                 error = "That person is busy now. Please try again later."
             else:
                 if result.action == "GIVE_ITEM":
                     try:
                         npc.check_gift(target, result.item, result.quantity,
-                            player_authorization=world.player_interaction["id"])
+                            player_authorization=world.player_interaction.id)
                     except ValueError as exc:
                         error = str(exc)
                 if not error:
@@ -164,7 +163,6 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
             record.transfer_intent = dict(giver_id=npc.id, recipient_id=planned_action.target_id,
                                           item=planned_action.item, quantity=planned_action.quantity)
         world.pending_actions.append(planned_action)
-        npc.request_pending = True
     closes_dialogue = bool(not error and result.end_conversation)
     if closes_dialogue and result.action == "SAY":
         from player import player_reply_closes
@@ -192,7 +190,7 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
             npc.resume_pending = True
     npc.reply = f"Request failed: {error}" if error else result.reply
     npc.rewritten_reply = rewritten[0][0] if not error and rewritten else ""
-    npc.end_conversation = bool(closes_dialogue and npc.selected)
+    npc.player_reply.closing = bool(closes_dialogue and npc.selected)
     if error:
         npc.set_emotion("neutral", 0)
     else:
@@ -206,7 +204,7 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
                 "emotion": {"name": npc.emotion, "intensity": npc.emotion_intensity},
             }], rewritten[0] if rewritten else (), speaker_id=npc.id)
         record.error = error or ""
-        waiting_for_done = npc.request_pending and npc.end_conversation
+        waiting_for_done = npc.waiting_for_done
         if error:
             record.status = "Failed"
             record.outcomes.insert(0, f"The request could not be completed: {error}")
@@ -217,7 +215,7 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
             elif waiting_for_done:
                 record.status = "Waiting for Done"
                 outcome = "Accepted; starts after the player closes the conversation."
-            elif npc.request_pending:
+            elif npc.interaction_blocked:
                 record.status = "Applying player request"
                 outcome = "Accepted; applies on the next simulation tick."
             else:
@@ -238,7 +236,7 @@ def apply_pending_action(world, action, spacing):
     npc = world.npc_by_id(action.npc_id)
     if npc is None:
         return None, "", None
-    npc.request_pending = False
+    npc.player_reply.complete()
     error = ""
     if (world.npc_by_id(npc.id) is not npc or npc.busy or npc.command_revision != action.revision
             or npc.behavior in (Behavior.SLEEP, Behavior.GO_HOME)
@@ -248,7 +246,7 @@ def apply_pending_action(world, action, spacing):
         target = world.npc_by_id(action.target_id)
         if target is None:
             error = "That person is unavailable."
-        elif target.request_pending:
+        elif target.interaction_blocked:
             error = "That person has a pending player request. Try again once it finishes."
         else:
             try:
@@ -288,7 +286,7 @@ def apply_pending_action(world, action, spacing):
             }
             record.outcomes[0:1] = [outcomes[action.action]]
     if error:
-        npc.end_conversation = False
+        npc.player_reply.closing = False
         npc.reply = error
         npc.rewritten_reply = ""
         npc.set_emotion("neutral", 0)

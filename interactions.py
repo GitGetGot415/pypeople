@@ -1,16 +1,63 @@
 """Small pieces of behavior shared by resident and snake interactions."""
 
 import math
-
+from dataclasses import dataclass
+from typing import Annotated, Literal
+from pydantic import Field
 from character_data import DIRECTIONS
 from constants import (CONVERSATION_CLEARANCE, CONVERSATION_SPOT_STEP, CONVERSATION_TREE_CLEARANCE,
-                       INTERACTION_GAP, NPC_RADIUS, POST_DIALOGUE_SECONDS)
+                      INTERACTION_GAP, NPC_RADIUS, POST_DIALOGUE_SECONDS, DECISION_SECONDS,
+                      DIALOGUE_TIMEOUT_SECONDS, MAX_SIMULATION_STEP_SECONDS)
+
+
+@dataclass
+class DialogueProgress:
+    """Logical generation and completion timing, owned by the exchange.
+
+    Transport admission and UI reading state are deliberately outside this value.
+    """
+    dialogue_state: Literal["waiting", "pending", "ready", "failed"] = "waiting"
+    wait_elapsed: Annotated[float, Field(ge=0, le=DIALOGUE_TIMEOUT_SECONDS + MAX_SIMULATION_STEP_SECONDS)] = 0.0
+    talking_remaining: Annotated[float, Field(ge=0, le=max(POST_DIALOGUE_SECONDS, DECISION_SECONDS))] = POST_DIALOGUE_SECONDS
+
+    def retry_after_restore(self):
+        if self.dialogue_state == "pending":
+            self.dialogue_state, self.wait_elapsed = "waiting", 0.0
+
+
+@dataclass
+class PlayerReplyProgress:
+    """Actor-owned reply progress; deferred payloads belong only to Simulation.
+
+    The request identity is transient. A durable retry description belongs to the
+    physical player meeting, so restoring never resurrects a worker.
+    """
+    request_id: str | None = None
+    closing: bool = False
+
+    @property
+    def generating(self):
+        return self.request_id is not None
+
+    def start(self, request_id):
+        self.request_id = request_id
+
+    def complete(self):
+        self.request_id = None
+
+    def release(self):
+        self.request_id, self.closing = None, False
+
+
+def player_request_pending(request):
+    """A session association refers to the actor's authoritative generation."""
+    return request["npc"].player_reply.request_id == request["id"]
 
 
 def finish_generated_dialogue(interaction, *, reading=False):
     """Apply the same completion timing to every generated world conversation."""
-    interaction.dialogue_state = "ready"
-    interaction.talking_remaining = POST_DIALOGUE_SECONDS
+    interaction.dialogue.dialogue_state = "ready"
+    interaction.dialogue.talking_remaining = POST_DIALOGUE_SECONDS
     interaction.update(0.0, reading=reading)
 
 
@@ -18,8 +65,8 @@ def dialogue_finished(interaction, dt, *, reading=False):
     """Hold a viewed exchange until Done, then apply its completion timer."""
     if reading:
         return False
-    interaction.talking_remaining = max(0.0, interaction.talking_remaining - dt)
-    return interaction.talking_remaining <= 0.0
+    interaction.dialogue.talking_remaining = max(0.0, interaction.dialogue.talking_remaining - dt)
+    return interaction.dialogue.talking_remaining <= 0.0
 
 
 def face_each_other(first, second):

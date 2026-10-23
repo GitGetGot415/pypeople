@@ -1,24 +1,22 @@
 import pygame
+from interactions import player_request_pending
 from time import monotonic
-
 from character_data import DEFAULT_COLORS, IDENTITY_FIELDS, PROFILE_FIELDS
 from constants import (ACCENT, FAILED_CONVERSATION_COLOR, FAILED_CONVERSATION_SELECTED_COLOR,
-                       GENERATING_CONVERSATION_COLOR, GENERATING_CONVERSATION_SELECTED_COLOR,
-                       GIFT_CONVERSATION_COLOR, GIFT_CONVERSATION_SELECTED_COLOR,
-                       QUEUED_CONVERSATION_COLOR, QUEUED_CONVERSATION_SELECTED_COLOR,
-                       REWRITE_FAILED_CONVERSATION_COLOR, REWRITE_FAILED_CONVERSATION_SELECTED_COLOR,
-                       GRASS, INK, MODEL_LOG_COLORS, MODEL_LOG_REFRESH_SECONDS, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER, SNAKE_NAME)
-from conversation_history import (display_parts, has_failed_voice_rewrite, usable_rewrite,
-                                  uses_original_dialogue, voice_rewrite_errors)
+                      GENERATING_CONVERSATION_COLOR, GENERATING_CONVERSATION_SELECTED_COLOR,
+                      GIFT_CONVERSATION_COLOR, GIFT_CONVERSATION_SELECTED_COLOR, QUEUED_CONVERSATION_COLOR,
+                      QUEUED_CONVERSATION_SELECTED_COLOR, REWRITE_FAILED_CONVERSATION_COLOR,
+                      REWRITE_FAILED_CONVERSATION_SELECTED_COLOR, GRASS, INK, MODEL_LOG_COLORS,
+                      MODEL_LOG_REFRESH_SECONDS, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER, SNAKE_NAME,
+                      STATS_TAB_RECTS, STATS_FOLLOW_RECT, STATS_INVENTORY_RECT, STATS_INVENTORY_DETAIL_TOP)
+from conversation_history import (has_failed_voice_rewrite, usable_rewrite, uses_original_dialogue,
+                                 voice_rewrite_errors)
 from emotions import portrait_expression
 from npc import NPC
 from social import assertion_text, claim_by_id, concern_description, fact_by_id, phase_label, selected_beliefs
-
-from constants import STATS_TAB_RECTS, STATS_FOLLOW_RECT
 from .creations import CreationsGallery
-from constants import STATS_INVENTORY_RECT, STATS_INVENTORY_DETAIL_TOP
 from .button import Button
-from .text import paginate_parts, wrap_text, scrollbar_rects
+from .text import paginate_turn, wrap_text, scrollbar_rects
 from .world import snake_artwork
 
 
@@ -125,11 +123,14 @@ class StatsScreen:
         def height():
             return sum(font.get_linesize() for _, font, _, _ in lines)
 
-        def message(speaker, parts, *, original=True):
-            npc = next((npc for npc in app.simulation.actors if npc.name == speaker), None)
+        def message(turn, *, original=True):
+            speaker = turn.speaker
+            npc = app.simulation.participant_by_id(turn.speaker_id)
+            if npc is app.simulation.player:
+                npc = None
             indent = 112 if npc is not None else 0
-            for emotion, page in paginate_parts(parts, app.font, self.detail_rect.width - 20 - indent,
-                                                condensed=getattr(app, "condensed_dialogue", False)):
+            for emotion, page in paginate_turn(turn, app.font, self.detail_rect.width - 20 - indent,
+                    original=app.original_dialogue, condensed=getattr(app, "condensed_dialogue", False)):
                 top = height()
                 add(speaker, color=ACCENT, indent=indent)
                 add(page, indent=indent)
@@ -255,16 +256,15 @@ class StatsScreen:
                 gap()
             if not record.turns and not record.failed_turns:
                 add("No generated draft was retained for this failure." if record.error else "No dialogue generated yet.", color=MUTED)
-            for turn in record.turns:
-                message(turn.speaker, turn.display(original=app.original_dialogue),
+            for turn in record.display_turns():
+                message(turn,
                         original=uses_original_dialogue(turn.parts, turn.rewritten, original=app.original_dialogue))
             if record.failed_turns:
                 add("Generated draft (not applied)", app.heading_font)
                 add("Generation failed. These words did not change the simulation.", app.small_font, MUTED)
                 gap()
-                for turn in record.failed_turns:
-                    speaker = record.participants[0 if turn["speaker"] == "initiator" else 1]
-                    message(speaker, [(part["text"], part["emotion"]) for part in turn["parts"]])
+                for turn in record.display_turns(failed=True):
+                    message(turn)
             return lines
 
         npc = self.selected_npc
@@ -309,7 +309,7 @@ class StatsScreen:
                 self.promise_links.append((top, height(), source.conversation_id))
             add(f"Why: {npc.decision_reason}")
             add(f"Control: {npc.owner.replace('_', ' ')}", app.small_font, MUTED)
-            if npc.request_pending:
+            if npc.interaction_blocked:
                 add("Player request pending; new decisions are deferred.", app.small_font, MUTED)
             gap()
             add(f"Satisfaction: {npc.social:.0f}/100")
@@ -586,7 +586,7 @@ class StatsScreen:
                 if session_id == app.session_id and log.status in ("queued", "waiting_for_ollama")
             }
             for request in getattr(app, "player_requests", {}).values():
-                if request["pending"] and request["id"] in queued_ids:
+                if player_request_pending(request) and request["id"] in queued_ids:
                     queued_ids.add(request["record"].id)
             active_requests = {
                 worker.request_id for worker in app.requests.statuses()
@@ -597,7 +597,7 @@ class StatsScreen:
                 if request_id in active_requests
             }
             generating_ids.update(request["record"].id for request in getattr(app, "player_requests", {}).values()
-                                  if request["pending"] and request["id"] in active_requests)
+                                  if player_request_pending(request) and request["id"] in active_requests)
         if not rows and self.tab == "Conversations":
             surface.blit(app.small_font.render("No conversations yet.", True, MUTED), (self.list_rect.x, self.list_rect.y + 12))
         if not rows and self.tab == "Model logs":

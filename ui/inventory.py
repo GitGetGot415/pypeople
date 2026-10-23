@@ -1,14 +1,13 @@
 """Player possessions and read-only resident inventories."""
 
 import pygame
-
-from constants import (INVENTORY_RECT, INVENTORY_ROW_HEIGHT, INVENTORY_PREVIEW_SCALE,
-                       MODAL_OVERLAY_COLOR, PAPER, INK, MUTED, ACCENT, GRASS, INVENTORY_LIST_RECT,
-                       INVENTORY_RECIPIENT_RECT, INVENTORY_CLOSE_RECT, INVENTORY_FILTER_RECTS,
-                       INVENTORY_MINUS_RECT, INVENTORY_PLUS_RECT, INVENTORY_GIVE_RECT, INVENTORY_CONFIRM_RECT,
-                       INVENTORY_PLAY_RECT, INVENTORY_STOP_RECT, INVENTORY_TITLE_POSITION,
-                       INVENTORY_DETAIL_POSITION, INVENTORY_DETAIL_WIDTH, INVENTORY_STATUS_RECT,
-                       INVENTORY_TITLE_WIDTH, INVENTORY_APPLES_POSITION)
+from constants import (INVENTORY_RECT, INVENTORY_ROW_HEIGHT, INVENTORY_PREVIEW_SCALE, MODAL_OVERLAY_COLOR,
+                      PAPER, INK, MUTED, ACCENT, GRASS, INVENTORY_LIST_RECT, INVENTORY_RECIPIENT_RECT,
+                      INVENTORY_CLOSE_RECT, INVENTORY_FILTER_RECTS, INVENTORY_MINUS_RECT,
+                      INVENTORY_PLUS_RECT, INVENTORY_GIVE_RECT, INVENTORY_CONFIRM_RECT, INVENTORY_PLAY_RECT,
+                      INVENTORY_STOP_RECT, INVENTORY_TITLE_POSITION, INVENTORY_DETAIL_POSITION,
+                      INVENTORY_DETAIL_WIDTH, INVENTORY_STATUS_RECT, INVENTORY_TITLE_WIDTH,
+                      INVENTORY_APPLES_POSITION)
 from .button import Button
 from .creations import CreationsGallery
 from .text import draw_wrapped_text, scrollbar_rects
@@ -59,7 +58,7 @@ class InventoryPanel:
         if not active_player(app.simulation):
             return []
         return [n for n in app.npcs if n.location == app.simulation.player.location and available_outdoors(n)
-                and not n.busy and not n.request_pending and not n.selected and not n.unread_player_reply]
+                and not n.busy and not n.interaction_blocked and not n.selected and not n.unread_player_reply]
 
     def handle_event(self, app, event):
         if self.close_button.clicked(event):
@@ -115,7 +114,9 @@ class InventoryPanel:
                 self.status = "Select an available resident; the earlier recipient may now be occupied."
                 return
             try:
-                app.offer_player_item(recipient, self.selected_id, self.quantity if self.selected_id == "fruit" else 1)
+                app._sync_conversation_view()
+                app.conversations.offer_player_item(recipient, self.selected_id, self.quantity if self.selected_id == "fruit" else 1)
+                app._present_conversation_events()
                 self.close()
             except ValueError as exc:
                 self.status = str(exc)

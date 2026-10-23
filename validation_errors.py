@@ -16,3 +16,17 @@ class DialogueValidationError(ValueError):
     def __init__(self, message, kind):
         super().__init__(message)
         self.kind = kind
+
+
+class DialogueTurnError(ValueError):
+    def __init__(self, message, turn_indices):
+        super().__init__(message)
+        self.turn_indices = tuple(turn_indices)
+
+
+class DialogueRepetitionError(DialogueTurnError):
+    pass
+
+
+class DialogueSpeakerError(DialogueTurnError):
+    pass

@@ -1,30 +1,33 @@
 """A small world with player-controlled day phases."""
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
+from typing import Annotated, Literal
+from pydantic import Field
 from uuid import uuid4
-
-from constants import (
-    COMPANY_SOCIAL_RECOVERY, CROWD_LIMIT, DECISION_SECONDS,
-    HEARING_RADIUS, MAX_SIMULATION_STEP_SECONDS, PROTECTED_POPULATION,
-    RECOVERY_SECONDS, SATISFACTION_PHASE_LOSS, SOCIAL_RADIUS, SNAKE_NAME,
-    STARTING_DAY, STARTING_PAUSED, STARTING_PHASE, WITNESS_RADIUS, COMPANY_FATIGUE_PER_SECOND,
-)
+from constants import (COMPANY_SOCIAL_RECOVERY, CROWD_LIMIT, DECISION_SECONDS, HEARING_RADIUS,
+                      MAX_SIMULATION_STEP_SECONDS, PROTECTED_POPULATION, RECOVERY_SECONDS,
+                      SATISFACTION_PHASE_LOSS, SOCIAL_RADIUS, SNAKE_NAME, STARTING_DAY, STARTING_PAUSED,
+                      STARTING_PHASE, WITNESS_RADIUS, COMPANY_FATIGUE_PER_SECOND)
 
 
 @dataclass
 class PendingAction:
     npc_id: str
-    action: str
-    revision: int
+    action: Literal["WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "GIVE_ITEM", "EAT"]
+    revision: Annotated[int, Field(ge=0)]
     target_id: str | None = None
     topic: str = ""
     record: str | None = None
     item: str = ""
-    quantity: int = 0
+    quantity: Annotated[int, Field(ge=0)] = 0
 
 
 class Simulation:
+    def action_for(self, actor_id):
+        """The queue is the sole authority for accepted, deferred commands."""
+        return next((action for action in self.pending_actions if action.npc_id == actor_id), None)
+
     def __init__(self, npcs, tree=None, *, assign_goals=True, npc_trait_mode="normal", mode="player", player_start=False, initialize_opinions=True):
         from npc import Tree
         from snake import Snake
@@ -111,7 +114,7 @@ class Simulation:
 
     @property
     def player_attention_pending(self):
-        return bool(self.player_interaction and self.player_interaction["stage"] == "conversation")
+        return bool(self.player_interaction and self.player_interaction.stage == "conversation")
 
     def next_phase(self):
         if self.paused or self.phase_pending or self.player_attention_pending:
@@ -123,9 +126,9 @@ class Simulation:
         """Commit one clock request only after existing speech and handoffs finish."""
         from social import advance_social_phase
         if (not self.phase_pending or self.paused or self.player_attention_pending or self.snake.encounter is not None
-                or self.snake.request_pending or self.pending_actions
-                or any(npc.interaction is not None or npc.request_pending
-                       or npc.selected and npc.end_conversation for npc in self.npcs)):
+                or self.snake.interaction_blocked or self.pending_actions
+                or any(npc.interaction is not None or npc.interaction_blocked
+                       or npc.selected and npc.player_reply.closing for npc in self.npcs)):
             return
         self.phase_pending = False
         if self.phase == "day":
@@ -196,7 +199,7 @@ class Simulation:
                 continue
             npc = self.npc_by_id(action.npc_id)
             if npc:
-                npc.request_pending = False
+                npc.player_reply.complete()
             if action.record is not None:
                 record = self.record_by_id(action.record)
                 record.status, record.error = "Cancelled", reason
@@ -220,17 +223,17 @@ class Simulation:
             self.creations.append(Creation(id=uuid4().hex, job_id=job.id, creator_id=npc.id, owner_id=npc.id, kind=job.kind,
                 day=self.day, phase=self.phase, **job.accepted))
         npc.creative_job = None
-        from npc import Behavior
+        from activity import Behavior
         npc.behavior = Behavior.REST
         npc.reason = "Finished creating; relaxing in my apartment"
 
     def is_creative_job(self, npc, job):
-        from npc import Behavior
+        from activity import Behavior
         behavior = npc.behavior
         if self.visit and self.visit["host_id"] == npc.id:
             behavior = self.visit["saved_state"]["behavior"]
-        elif self.player_interaction and self.player_interaction.get("npc_id") == npc.id:
-            behavior = self.player_interaction.get("saved_state", {}).get("behavior", behavior)
+        elif self.player_interaction and self.player_interaction.npc_id == npc.id:
+            behavior = (self.player_interaction.saved_state or {}).get("behavior", behavior)
         elif npc.conversation:
             behavior = npc.conversation.saved_states[0 if npc.conversation.initiator is npc else 1]["behavior"]
         return (self.npc_by_id(npc.id) is npc and npc.creative_job is job
@@ -241,19 +244,20 @@ class Simulation:
         if not active or self.paused:
             return
         if action_handler is not None:
-            actions, self.pending_actions = self.pending_actions, []
-            for action in actions:
-                npc = self.npc_by_id(action.npc_id)
-                if npc is not None and (npc.unread_player_reply or npc.selected and npc.end_conversation):
-                    # Keep the closing reply visible until the player dismisses it.
-                    self.pending_actions.append(action)
+            for action in tuple(self.pending_actions):
+                if action not in self.pending_actions:
                     continue
+                npc = self.npc_by_id(action.npc_id)
+                if npc is not None and (npc.unread_player_reply or npc.waiting_for_done):
+                    # Keep the closing reply visible until the player dismisses it.
+                    continue
+                self.pending_actions.remove(action)
                 action_handler(action)
         # Ignore long window stalls; there is no elapsed world time to catch up.
         self.step(min(MAX_SIMULATION_STEP_SECONDS, max(0.0, dt)), viewed_conversation=viewed_conversation)
 
     def company_available(self, npc, *, allow_player_call=False, allow_arrival=False):
-        from npc import Behavior
+        from activity import Behavior
 
         from locations import available as available_outdoors
         from player import owns_resident
@@ -262,7 +266,7 @@ class Simulation:
                 and (allow_arrival or not awaiting_arrival_greeting(npc, self))
                 and not owns_resident(self, npc) and not self.tree_has_actor(npc.id)
                 and not (self.visit and self.visit["host_id"] == npc.id)
-                and npc.interaction is None and not npc.selected and not npc.request_pending
+                and npc.interaction is None and not npc.selected and not npc.interaction_blocked
                 and (allow_player_call or not npc.player_call)
                 and npc.owner == "autonomous" and not npc.resume_pending
                 and not any(npc.id in (action.npc_id, action.target_id) for action in self.pending_actions)
@@ -271,7 +275,7 @@ class Simulation:
     def step(self, dt, *, viewed_conversation=None):
         from autonomy import greet_arrivals, lone_introduction, reconsider, social_pair
         from social import refresh_concern
-        from npc import Behavior
+        from activity import Behavior
 
         self.tree.update(dt)
         from player import update_interaction
@@ -403,7 +407,7 @@ class Simulation:
         if actor is self.player:
             return active_player(self) and not (self.player_interaction or actor.journey)
         return (len(self.tree_queue) + bool(self.tree_current) < TREE_NPC_ADMISSION_LIMIT
-                and not owns_resident(self, actor) and not actor.busy and not actor.request_pending
+                and not owns_resident(self, actor) and not actor.busy and not actor.interaction_blocked
                 and not actor.journey and not actor.player_call)
 
     def join_tree(self, actor, purpose="bargain", reason=""):
@@ -411,7 +415,7 @@ class Simulation:
             return False
         if purpose == "bargain" and self.available_fruit < 1:
             return False
-        from npc import Behavior
+        from activity import Behavior
         saved = None if actor is self.player else actor.suspend_activity("Waiting in the tree line")
         if saved:
             saved.update(behavior=Behavior.WAIT, target_id=None, destination=None, owner="autonomous")
@@ -469,7 +473,7 @@ class Simulation:
             position = queue_positions.get(actor.id)
             eligible = (position is not None if actor is self.player else
                 not (actor.busy or actor.journey or owns_resident(self, actor) or actor.player_call
-                     or actor.request_pending or actor.owner == "player_hold")
+                     or actor.interaction_blocked or actor.owner == "player_hold")
                 and (position is not None or actor.resume_pending))
             if not eligible or position == 0:
                 self._tree_exit_targets.pop(actor.id, None)
@@ -648,7 +652,7 @@ class Simulation:
 
     def interrupt_resident(self, target, reason, *, departing=False):
         """Cancel only unfinished work; preserve every committed handoff and record."""
-        from npc import Behavior
+        from activity import Behavior
         from transfers import Handoff
         from player import owns_resident, end_interaction
         if owns_resident(self, target):
@@ -666,19 +670,7 @@ class Simulation:
             interaction.finish(reason)
             interaction = None
         if interaction:
-            interaction.active = False
-            interaction.record.status = "Cancelled"
-            interaction.record.error = reason
-            interaction.record.outcomes.append(reason)
-            for person, saved in zip((interaction.initiator, interaction.recipient), interaction.saved_states):
-                person.conversation = person.gift = None
-                other = interaction.recipient if person is interaction.initiator else interaction.initiator
-                person.restore_after_interaction(saved, other.id)
-                person.pause_after_conversation(bool(interaction.record.turns))
-                if not interaction.record.turns:
-                    from social import dialogue_failure_cooldown
-                    person.cooldowns[other.id] = dialogue_failure_cooldown(person, other)
-                person.command_revision += 1
+            interaction.cancel(reason)
         encounter = target.snake_encounter
         if encounter:
             encounter.finish(error=reason)
@@ -708,7 +700,7 @@ class Simulation:
             if target.id in (action.npc_id, action.target_id):
                 owner = self.npc_by_id(action.npc_id)
                 if owner:
-                    owner.request_pending = False
+                    owner.player_reply.complete()
                     owner.command_revision += 1
                 if action.record is not None:
                     record = self.record_by_id(action.record)
@@ -723,7 +715,7 @@ class Simulation:
             person.cooldowns.pop(target.id, None)
             if person is target:
                 person.command_revision += 1
-                person.request_pending = False
+                person.player_reply.complete()
                 person.selected = False
                 person.destination = person.target_id = None
                 person.behavior = Behavior.WAIT
@@ -829,7 +821,7 @@ class Simulation:
             self.arrival_error = f"Could not create the next arrival: {exc}"
             return None
         from constants import ARRIVAL_LOCATION, ELEVATOR_ARRIVAL
-        from npc import Behavior
+        from activity import Behavior
         npc = NPC(character=character, arrival_day=day, location=ARRIVAL_LOCATION,
                   x=ELEVATOR_ARRIVAL[0], y=ELEVATOR_ARRIVAL[1], behavior=Behavior.WANDER)
         npc.sprite_size = self.npcs[0].sprite_size if self.npcs else (40, 70)

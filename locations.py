@@ -1,13 +1,10 @@
 """The garden and rectangular apartment maps; no scene or pathfinding framework."""
 
-import math
-
-from constants import (GARDEN_LOCATION, WORLD_WIDTH, WORLD_HEIGHT, HALLWAY_SIZE, ROOM_SIZE,
-                       FOOT_MARGIN, INDOOR_FLOOR_TOP, ROOMS_PER_FLOOR, HALLWAY_DOOR_ORIGINS,
-                       HALLWAY_ELEVATOR_ORIGIN, APARTMENT_OVERLAY_SIZE, ROOM_DOOR_ORIGIN,
-                       HALLWAY_ARRIVAL_Y, ROOM_ARRIVAL, ELEVATOR_ARRIVAL, HALLWAY_EXIT,
-                       GARDEN_BUILDING_POINT, GARDEN_BUILDING_ARRIVAL, MOVEMENT_SPEED,
-                       TRAVEL_STEP_TIMEOUT, PLAYER_APPROACH_MULTIPLIER, PLAYER_ROOM_NUMBER)
+from constants import (GARDEN_LOCATION, WORLD_WIDTH, WORLD_HEIGHT, HALLWAY_SIZE, ROOM_SIZE, FOOT_MARGIN,
+                      INDOOR_FLOOR_TOP, ROOMS_PER_FLOOR, HALLWAY_DOOR_ORIGINS, HALLWAY_ELEVATOR_ORIGIN,
+                      APARTMENT_OVERLAY_SIZE, ROOM_DOOR_ORIGIN, HALLWAY_ARRIVAL_Y, ROOM_ARRIVAL,
+                      ELEVATOR_ARRIVAL, HALLWAY_EXIT, GARDEN_BUILDING_POINT, GARDEN_BUILDING_ARRIVAL,
+                      MOVEMENT_SPEED, TRAVEL_STEP_TIMEOUT, PLAYER_APPROACH_MULTIPLIER, PLAYER_ROOM_NUMBER)
 from interactions import move_toward
 
 
@@ -63,7 +60,7 @@ def colocated(first, second):
 
 
 def available(npc):
-    from npc import Behavior
+    from activity import Behavior
     return (npc.departure is None and npc.behavior not in (Behavior.SLEEP, Behavior.GO_HOME)
             and not npc.journey and npc.home_reason != "night")
 
@@ -129,7 +126,7 @@ def start_journey(actor, destination, point, *, purpose="travel", fast=False):
     if not valid_location(actor.world, destination):
         raise ValueError("That destination is unavailable.")
     actor.destination = None
-    actor.journey = dict(destination=destination, point=list(point), purpose=purpose, fast=fast,
+    actor.journey = dict(destination=destination, point=tuple(point), purpose=purpose, fast=fast,
                          elapsed=0.0, steps=route(actor.location, destination, point))
 
 

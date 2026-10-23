@@ -1,15 +1,13 @@
+import pygame
 from functools import lru_cache
 from pathlib import Path
-
-import pygame
-
-from constants import GARDEN_LOCATION, INK, PAPER, SHADOW_COLOR, WORLD_COLORS
-from constants import APARTMENT_COLOR, APARTMENT_DOOR_COLOR, APARTMENT_DOOR_RECT, APARTMENT_RECT
-from constants import DEFAULT_BUBBLE_SPRITE_SIZE, UI_SMALL_FONT_SIZE, NAME_TAG_FONT_SIZE, NAME_TAG_HEAD_GAP, PLAYER_NAME_TAG
-from constants import ROOM_BED_RECT, SLEEP_FACING, SLEEP_ROTATION, PLAYER_ROOM_NUMBER
-from npc import Behavior
+from constants import (GARDEN_LOCATION, INK, PAPER, SHADOW_COLOR, WORLD_COLORS, APARTMENT_COLOR,
+                      APARTMENT_DOOR_COLOR, APARTMENT_DOOR_RECT, APARTMENT_RECT, DEFAULT_BUBBLE_SPRITE_SIZE,
+                      UI_SMALL_FONT_SIZE, NAME_TAG_FONT_SIZE, NAME_TAG_HEAD_GAP, PLAYER_NAME_TAG,
+                      ROOM_BED_RECT, SLEEP_FACING, SLEEP_ROTATION, PLAYER_ROOM_NUMBER)
+from activity import Behavior
+from npc import NPC
 from .fonts import UnicodeFont
-
 
 
 CHARACTER_SCALE = 0.5
@@ -31,7 +29,7 @@ def interaction_bubble(name):
 
 
 def player_bubble_name(npc):
-    if npc.player_thinking:
+    if npc.generation_pending:
         return "Thinking"
     if npc.player_call and not npc.selected:
         return "Calling Player" if npc.unread_player_reply else "Requesting Player"
@@ -73,7 +71,7 @@ def player_bubble_visible(npc, offset=None, zoom=1.0):
             active = _active_bubble(other)
             if active and rect.colliderect(_bubble_rect(other, active, offset, zoom)):
                 return False
-            if ((other.unread_player_reply or other.player_thinking or other.id < npc.id)
+            if ((other.unread_player_reply or other.generation_pending or other.id < npc.id)
                     and player_bubble_name(other) and not other.busy and not active
                     and rect.colliderect(player_bubble_rect(other, offset, zoom))):
                 return False
@@ -234,7 +232,7 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
         if not sleeping:
             _draw_shadow(surface, shadow)
         surface.blit(sprite, sprite_rect)
-        tag = PLAYER_NAME_TAG if not hasattr(npc, "player_thinking") else npc.name
+        tag = npc.name if isinstance(npc, NPC) else PLAYER_NAME_TAG
         tags.append((tag, sprite, sprite_rect))
     # Tags remain readable above the scene, anchored to the visible artwork's head.
     for name, sprite, rect in tags:
@@ -245,7 +243,7 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
             surface.blit(line, line.get_rect(midtop=(rect.centerx, top)))
             top += line.get_height()
     # Thinking draws above ordinary speech; ready replies have the final priority.
-    for npc in sorted((n for n in npcs if hasattr(n, "player_thinking")), key=lambda person: (bool(person.unread_player_reply), person.player_thinking)):
+    for npc in sorted((n for n in npcs if isinstance(n, NPC)), key=lambda person: (bool(person.unread_player_reply), person.generation_pending)):
         bubble_name = (player_bubble_name(npc) if player_bubble_visible(npc, camera_offset, zoom)
                        else _active_bubble(npc))
         if bubble_name is not None:

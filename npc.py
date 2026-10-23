@@ -1,57 +1,37 @@
-from dataclasses import asdict, dataclass, field
-from enum import Enum
 import math
 import random
+from typing import Annotated, Literal
+from pydantic import Field
+from dialogue import (AcceptedProposal, ConversationPart, DisclosureChoice, LeverageUse, ResidentGift,
+                     ThirdPartyOpinion)
+from social import (ConcernKind, ConversationConcern, Goal, check_relationship_goals, commit_agreements,
+                   commit_concern_use, commit_information, concern_description, concern_topic,
+                   conversation_references, dialogue_failure_cooldown, information_views,
+                   permitted_proposals, phase_label, prepare_information, private_context,
+                   validate_live_agreements)
+from interactions import (DialogueProgress, PlayerReplyProgress, company_point, conversation_points,
+                         dialogue_finished, face_each_other, face_toward, finish_generated_dialogue,
+                         move_toward, record_failed_dialogue, record_generated_turns)
+from dataclasses import asdict, dataclass, field
+from activity import ActivitySnapshot, Behavior
 from uuid import uuid4
-
 from character_data import DIRECTIONS, PROFILE_FIELDS, normalize_opinions
 from creations import CreativeJob
 from emotions import portrait_expression
 from purgatory import initial_attitudes
 from conversation_history import (ConversationRecord, describe_opinion_change, relevant_memories, remember,
-                                  shared_conversation_history)
-from social import (ConversationConcern, Goal, check_relationship_goals, commit_agreements, commit_concern_use, commit_information,
-                    concern_description, concern_topic, conversation_references, dialogue_failure_cooldown,
-                    information_views, on_transfer, permitted_proposals, phase_label, prepare_information,
-                    private_context, validate_live_agreements)
-from constants import (
-    APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DEFAULT_CHARACTER_NAME, DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS,
-    CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, GIFT_SECONDS,
-    MOVEMENT_SPEED, NPC_RADIUS, PARTNER_COOLDOWN,
-    POST_DIALOGUE_SECONDS, SHAKE_SECONDS, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED, WANDER_PAUSE, WORLD_HEIGHT, WORLD_WIDTH,
-    STARTING_DAY, STARTING_FACING, STARTING_NPC_FRUIT, STARTING_NPC_GENEROSITY_RANGE,
-    STARTING_NPC_POSITION, STARTING_NPC_SATISFACTION_RANGE, STARTING_NPC_SOCIABILITY_RANGE,
-    STARTING_TREE_POSITION, STARTING_FATIGUE_RANGE, EXCHANGE_FATIGUE,
-)
-from interactions import (company_point, conversation_points, dialogue_finished, face_each_other, face_toward,
-                          finish_generated_dialogue, move_toward, record_failed_dialogue, record_generated_turns)
-from dialogue_context import NPC_ARRIVAL_MEMORY, actor_catalog, name_forms, orientation_context, validate_orientation
-
-
-ACTIVITY_FIELDS = (
-    "behavior", "destination", "pause_remaining", "facing", "owner", "target_id",
-    "activity_elapsed", "reason", "decision_remaining", "cooldowns", "resume_pending",
-)
-
-
+                                 shared_conversation_history)
+from constants import (APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DEFAULT_CHARACTER_NAME,
+                      DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, CONVERSATION_PAUSE_RANGE,
+                      CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, MOVEMENT_SPEED,
+                      NPC_RADIUS, PARTNER_COOLDOWN, SHAKE_SECONDS, SNAKE_NAME, SOCIAL_RADIUS,
+                      SOCIAL_RECOVERED, WANDER_PAUSE, STARTING_DAY, STARTING_FACING, STARTING_NPC_FRUIT,
+                      STARTING_NPC_GENEROSITY_RANGE, STARTING_NPC_POSITION, STARTING_NPC_SATISFACTION_RANGE,
+                      STARTING_NPC_SOCIABILITY_RANGE, STARTING_TREE_POSITION, STARTING_FATIGUE_RANGE,
+                      EXCHANGE_FATIGUE)
+from dialogue_context import (NPC_ARRIVAL_MEMORY, actor_catalog, name_forms, orientation_context,
+                             validate_orientation)
 from transfers import Handoff
-
-
-class Behavior(str, Enum):
-    WANDER = "WANDER"
-    STOP = "STOP"
-    GO_TO_TREE = "GO_TO_TREE"
-    SHAKE_TREE = "SHAKE_TREE"
-    SHAKING = "SHAKING"
-    HARVEST = "HARVEST"
-    EAT = "EAT"
-    COMPANY = "COMPANY"
-    WAIT = "WAIT"
-    GO_HOME = "GO_HOME"
-    REST = "REST"
-    SLEEP = "SLEEP"
-    PAINT = "PAINT"
-    COMPOSE = "COMPOSE"
 
 
 @dataclass
@@ -120,7 +100,6 @@ class NPC:
     selected: bool = False
     reply: str = ""
     rewritten_reply: str = ""
-    end_conversation: bool = False
     conversation: "Conversation | None" = field(default=None, repr=False, compare=False)
     gift: "Handoff | None" = field(default=None, repr=False, compare=False)
     display_name: str | None = None
@@ -153,7 +132,7 @@ class NPC:
     cooldowns: dict = field(default_factory=dict)
     resume_pending: bool = False
     command_revision: int = 0
-    request_pending: bool = False
+    player_reply: PlayerReplyProgress = field(default_factory=PlayerReplyProgress, repr=False, compare=False)
     world: object = field(default=None, repr=False, compare=False)
     attitudes: dict = field(default_factory=initial_attitudes)
     arrival_day: int = STARTING_DAY
@@ -190,22 +169,30 @@ class NPC:
         return call if call and call["kind"] == "reply" else None
 
     @property
-    def player_thinking(self):
-        return (self.request_pending and self.world is not None
-                and not any(action.npc_id == self.id for action in self.world.pending_actions))
+    def generation_pending(self):
+        return self.player_reply.generating
+
+    @property
+    def action_pending(self):
+        return bool(self.world and self.world.action_for(self.id))
+
+    @property
+    def interaction_blocked(self):
+        return self.generation_pending or self.action_pending
+
+    @property
+    def waiting_for_done(self):
+        return self.action_pending and self.player_reply.closing and self.selected
 
     def can_reach(self, point):
         left, right, top, bottom = self.movement_bounds
         return left <= point[0] <= right and top <= point[1] <= bottom
 
     def activity_state(self):
-        state = {name: getattr(self, name) for name in ACTIVITY_FIELDS}
-        state["cooldowns"] = self.cooldowns.copy()
-        return state
+        return ActivitySnapshot.capture(self)
 
     def restore_activity(self, state):
-        for name in ACTIVITY_FIELDS:
-            setattr(self, name, state[name].copy() if name == "cooldowns" else state[name])
+        ActivitySnapshot.restore(self, state)
 
     def suspend_activity(self, reason):
         """Save progress and release physical claims before an interaction."""
@@ -309,7 +296,7 @@ class NPC:
 
     def update_cooldowns(self, dt):
         self.decision_remaining = max(0.0, self.decision_remaining - dt)
-        if self.interaction is None and not self.request_pending and not self.end_conversation:
+        if self.interaction is None and not self.interaction_blocked and not self.player_reply.closing:
             self.conversation_pause_remaining = max(0.0, self.conversation_pause_remaining - dt)
             self.conversation_return_remaining = max(0.0, self.conversation_return_remaining - dt)
             if self.current_concern:
@@ -342,12 +329,12 @@ class NPC:
 
     @property
     def wandering_paused(self):
-        return (self.selected or self.request_pending) and self.behavior == Behavior.WANDER
+        return (self.selected or self.interaction_blocked) and self.behavior == Behavior.WANDER
 
     @property
     def decision_reason(self):
         if self.conversation is None and self.owner == "autonomous":
-            if self.request_pending:
+            if self.interaction_blocked:
                 return f"{self.reason}. Waiting for the player request."
             if self.selected:
                 return f"{self.reason}. New decisions wait while selected."
@@ -536,7 +523,7 @@ class NPC:
         """Defer new decisions while allowing the current finite activity to finish."""
         self.selected = selected
         if not selected:
-            self.end_conversation = False
+            self.player_reply.closing = False
         if self.conversation is None and self.gift is None and selected and (self.wandering_paused or self.behavior in (Behavior.STOP, Behavior.SHAKING)):
             self._face_when_still()
 
@@ -583,7 +570,7 @@ class NPC:
         from apartments import available_outdoors
         if not available_outdoors(self) or not available_outdoors(recipient):
             raise ValueError("Both residents must be available outdoors to exchange items.")
-        if self.busy or recipient.busy or recipient.request_pending:
+        if self.busy or recipient.busy or recipient.interaction_blocked:
             raise ValueError("That person is busy now. Please try again later.")
         if item != "fruit":
             return
@@ -711,7 +698,6 @@ class NPC:
             self._face_when_still()
 
 
-
 def assign_npc_names(npcs, *, used_names=()):
     """Assign new labels without renaming any existing residents."""
     from constants import PLAYER_LABEL, PLAYER_NAME_TAG
@@ -726,17 +712,46 @@ def assign_npc_names(npcs, *, used_names=()):
         used.add(label.casefold())
 
 
-class Conversation:
+@dataclass(eq=False)
+class ResidentProgress:
+    """Durable domain progress; live actors and suspended activities attach separately."""
+    accepted_gift: ResidentGift | None
+    id: Annotated[str, Field(min_length=1)]
+    origin: Literal['player', 'autonomous']
+    purpose: Literal['chat', 'food_request']
+    opening_kind: ConcernKind | None
+    goal_id: str | None
+    focus_claim_id: str | None
+    food_outcome: Literal['', 'accepted', 'need', 'refused', 'unavailable']
+    food_reason: str
+    handoff_thanks: Annotated[list[ConversationPart], Field(max_length=3)]
+    rewritten_handoff_thanks: list[str]
+    outcome_event_id: str | None
+    reactions: Annotated[list[tuple[str, float]], Field(max_length=2)]
+    topic: str
+    arrived: bool
+    accepted_proposals: Annotated[list[AcceptedProposal], Field(max_length=2)]
+    social_effects_applied: bool
+    context_references: dict[str, Literal['active', 'completed', 'failed', 'pending', 'fulfilled', 'broken', 'cancelled']]
+    accepted_disclosures: Annotated[list[DisclosureChoice], Field(max_length=4)]
+    third_party_opinions: Annotated[list[ThirdPartyOpinion], Field(max_length=4)]
+    leverage_uses: Annotated[list[LeverageUse], Field(max_length=2)]
+
+
+class Conversation(ResidentProgress):
     """Temporarily reserve two NPCs, then restore their interrupted activities."""
 
     def __init__(self, initiator, recipient, topic, tree, spacing=0, *, origin="player", purpose="chat",
-                 opening_kind=None, focus_claim_id=None, goal_id=None):
+                 opening_kind=None, focus_claim_id=None, goal_id=None, _restored=None):
+        if _restored is not None:
+            self._restore(initiator, recipient, _restored)
+            return
         from locations import available as available_outdoors, colocated
         from player import owns_resident
         if (initiator is recipient or initiator.busy or recipient.busy
                 or owns_resident(initiator.world, initiator) or owns_resident(initiator.world, recipient)
                 or initiator.world.visit and initiator.world.visit["host_id"] in (initiator.id, recipient.id)
-                or initiator.player_call or recipient.player_call or recipient.selected or recipient.request_pending
+                or initiator.player_call or recipient.player_call or recipient.selected or recipient.interaction_blocked
                 or not available_outdoors(initiator) or not available_outdoors(recipient)
                 or not colocated(initiator, recipient)):
             raise ValueError("Choose another NPC who is free to talk.")
@@ -754,9 +769,7 @@ class Conversation:
         self.opening_kind = opening_kind
         self.focus_claim_id = focus_claim_id  # Required task account; an ordinary concern is optional.
         self.goal_id = goal_id
-        self.dialogue_state = "waiting"
-        self.wait_elapsed = 0.0
-        self.talking_remaining = POST_DIALOGUE_SECONDS
+        self.dialogue = DialogueProgress()
         self.food_outcome = ""
         self.food_reason = ""
         self.handoff_thanks = []
@@ -796,6 +809,22 @@ class Conversation:
             npc.conversation = self
         initiator.destination, recipient.destination = destinations
 
+    @classmethod
+    def restore(cls, initiator, recipient, record, *, progress, dialogue, saved_states,
+                proposals, information_context, concerns):
+        return cls(initiator, recipient, progress.topic, initiator.world.tree,
+                   _restored=dict(record=record, progress=progress, dialogue=dialogue, saved_states=saved_states,
+                                  proposals=proposals, information_context=information_context, concerns=concerns))
+
+    def _restore(self, initiator, recipient, restored):
+        self.__dict__.update(vars(restored["progress"]))
+        self.initiator, self.recipient, self.record = initiator, recipient, restored["record"]
+        self.dialogue, self.saved_states = restored["dialogue"], restored["saved_states"]
+        self.proposals, self.information_context = restored["proposals"], restored["information_context"]
+        self.concerns, self.name_actors, self.active = restored["concerns"], {}, True
+        self.dialogue.retry_after_restore()
+        initiator.conversation = recipient.conversation = self
+
     def other(self, npc):
         return self.recipient if npc is self.initiator else self.initiator
 
@@ -814,15 +843,14 @@ class Conversation:
     def set_response(self, response, *, reading=False, rewritten_parts=(), dialogue_validation=True):
         if not self.accepts_response:
             return
-        from llm import (dialogue_validation_errors, validate_dialogue_format,
-                         validate_dialogue_speakers, validate_resident_grounding)
+        from dialogue_validation import dialogue_validation_errors, validate_dialogue_format, validate_dialogue_speakers, validate_resident_grounding
         # Reject stale actor snapshots before displaying or committing anything.
         if getattr(self, "request_roster_revision", self.initiator.world.roster_revision) != self.initiator.world.roster_revision:
             raise ValueError("The resident roster changed while dialogue was being prepared. Retry this meeting.")
         if any(n.command_revision != self.request_actor_revisions[n.id] for n in (self.initiator, self.recipient)):
             raise ValueError("The participants changed activities before the reply arrived.")
         validate_live_agreements(self, response, dialogue_validation=dialogue_validation)
-        from llm import validate_resident_gift
+        from transfers import validate_resident_gift
         validate_resident_gift(response.gift, response.turns, {
             "purpose": self.purpose, "arrival_focus": self.opening_kind == "orientation",
             "initiator": self.initiator.snapshot(self.initiator.world.tree),
@@ -886,7 +914,7 @@ class Conversation:
     @property
     def accepts_response(self):
         world = self.initiator.world
-        return (self.active and self.dialogue_state in ("waiting", "pending")
+        return (self.active and self.dialogue.dialogue_state in ("waiting", "pending")
                 and world.npc_by_id(self.initiator.id) is self.initiator
                 and world.npc_by_id(self.recipient.id) is self.recipient
                 and self.initiator.location == self.recipient.location)
@@ -895,7 +923,7 @@ class Conversation:
         if not self.accepts_response:
             return
         record_failed_dialogue(self, failed_turns)
-        self.dialogue_state = "failed"
+        self.dialogue.dialogue_state = "failed"
         self.record.error = reason
         self.finish(self.initiator.world.tree)
 
@@ -933,20 +961,13 @@ class Conversation:
             return
         if self.arrived:
             face_each_other(self.initiator, self.recipient)
-            if self.dialogue_state in ("waiting", "pending"):
-                self.wait_elapsed += dt
-                if self.wait_elapsed >= DIALOGUE_TIMEOUT_SECONDS:
+            if self.dialogue.dialogue_state in ("waiting", "pending"):
+                self.dialogue.wait_elapsed += dt
+                if self.dialogue.wait_elapsed >= DIALOGUE_TIMEOUT_SECONDS:
                     self.fail_dialogue("Dialogue generation timed out. No dialogue was generated.")
             elif dialogue_finished(self, dt, reading=reading):
                 if self.accepted_gift:
-                    gift = self.accepted_gift
-                    giver = self.initiator if gift.giver_id == self.initiator.id else self.recipient
-                    recipient = self.other(giver)
-                    states = self.saved_states if giver is self.initiator else self.saved_states[::-1]
-                    self.active = False
-                    self.initiator.conversation = self.recipient.conversation = None
-                    Handoff(giver, recipient, gift.item, gift.quantity, self.record, saved_states=states,
-                         already_met=True, thanks=self.handoff_thanks, rewritten_thanks=self.rewritten_handoff_thanks)
+                    self.handoff(self.accepted_gift)
                 elif self.purpose == "food_request" and self.food_outcome == "accepted":
                     self.handoff()
                 else:
@@ -975,7 +996,7 @@ class Conversation:
             state.pop("last_reply", None)
             return state
 
-        if self.dialogue_state == "waiting":
+        if self.dialogue.dialogue_state == "waiting":
             self.proposals = permitted_proposals(self)
             self.context_references = conversation_references(self)
             self.information_context = prepare_information(self)
@@ -1032,7 +1053,7 @@ class Conversation:
             event = world.publish("conversation_completed" if self.turns else "interaction_failed",
                                   (self.initiator, self.recipient), text, self.record)
             self.outcome_event_id = event.id
-            if self.dialogue_state == "ready":
+            if self.dialogue.dialogue_state == "ready":
                 for npc, reaction in zip((self.initiator, self.recipient), self.reactions):
                     reason, weight = reaction
                     remember(npc, self.other(npc), event, "conversation", f"Talked about {self.topic}. {reason}", weight)
@@ -1043,6 +1064,19 @@ class Conversation:
             event = self.initiator.world.publish("interaction_failed", (self.initiator, self.recipient),
                                                 self.record.outcomes[0], self.record)
             self.outcome_event_id = event.id
+        self.release_participants(self.social_effects_applied)
+
+    def cancel(self, reason):
+        """Interrupt the meeting without replaying accepted speech or effects."""
+        if not self.active:
+            return
+        self.active = False
+        self.record.status, self.record.error = "Cancelled", reason
+        self.record.outcomes.append(reason)
+        self.release_participants(bool(self.record.turns), revise=True)
+
+    def release_participants(self, completed, *, revise=False):
+        """Restore each suspended activity only while this meeting still owns it."""
         for npc, state in zip((self.initiator, self.recipient), self.saved_states):
             if npc.conversation is not self:
                 continue
@@ -1050,15 +1084,21 @@ class Conversation:
             if npc.world.npc_by_id(npc.id) is not npc:
                 continue
             npc.restore_after_interaction(state, self.other(npc).id)
-            npc.pause_after_conversation(self.social_effects_applied)
-            if not self.social_effects_applied:
+            npc.pause_after_conversation(completed)
+            if not completed:
                 npc.cooldowns[self.other(npc).id] = dialogue_failure_cooldown(npc, self.other(npc))
+            if revise:
+                npc.command_revision += 1
 
-    def handoff(self):
+    def handoff(self, gift=None):
         """Reverse the roles without restoring activities or reacquiring tree claims."""
-        requester, donor = self.initiator, self.recipient
+        if not self.active:
+            return
+        donor = (self.initiator if gift.giver_id == self.initiator.id else self.recipient) if gift else self.recipient
+        requester = self.other(donor)
+        states = self.saved_states if donor is self.initiator else self.saved_states[::-1]
         self.active = False
         requester.conversation = donor.conversation = None
-        Handoff(donor, requester, "fruit", 1, self.record,
-             saved_states=[self.saved_states[1], self.saved_states[0]], already_met=True,
+        Handoff(donor, requester, gift.item if gift else "fruit", gift.quantity if gift else 1, self.record,
+             saved_states=states, already_met=True,
              thanks=self.handoff_thanks, rewritten_thanks=self.rewritten_handoff_thanks)

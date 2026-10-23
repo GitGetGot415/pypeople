@@ -1,0 +1,63 @@
+"""Resident activity values shared by suspension and persistence."""
+
+from copy import deepcopy
+from dataclasses import asdict, dataclass, fields
+from enum import Enum
+from typing import Annotated, Literal
+from pydantic import Field
+from constants import EAT_SECONDS, WORLD_HEIGHT, WORLD_WIDTH
+
+
+class Behavior(str, Enum):
+    WANDER = "WANDER"
+    STOP = "STOP"
+    GO_TO_TREE = "GO_TO_TREE"
+    SHAKE_TREE = "SHAKE_TREE"
+    SHAKING = "SHAKING"
+    HARVEST = "HARVEST"
+    EAT = "EAT"
+    COMPANY = "COMPANY"
+    WAIT = "WAIT"
+    GO_HOME = "GO_HOME"
+    REST = "REST"
+    SLEEP = "SLEEP"
+    PAINT = "PAINT"
+    COMPOSE = "COMPOSE"
+
+
+@dataclass
+class ActivitySnapshot:
+    behavior: Behavior
+    destination: tuple[float, float] | None
+    pause_remaining: Annotated[float, Field(ge=0)]
+    facing: Annotated[int, Field(ge=0, le=7)]
+    owner: Literal["autonomous", "player_task", "player_hold"]
+    target_id: str | None
+    activity_elapsed: Annotated[float, Field(ge=0)]
+    reason: str
+    decision_remaining: Annotated[float, Field(ge=0)]
+    cooldowns: dict[str, float]
+    resume_pending: bool
+
+    @classmethod
+    def capture(cls, actor):
+        return asdict(cls(**{field.name: getattr(actor, field.name) for field in fields(cls)}))
+
+    @classmethod
+    def restore(cls, actor, values):
+        for field in fields(cls):
+            setattr(actor, field.name, deepcopy(values[field.name]))
+
+    def validate(self):
+        if any(value < 0 for value in self.cooldowns.values()):
+            raise ValueError("Invalid cooldown duration.")
+        if self.destination is not None and not (0 <= self.destination[0] <= WORLD_WIDTH and 0 <= self.destination[1] <= WORLD_HEIGHT):
+            raise ValueError("Invalid destination.")
+        if (self.owner == "player_hold") != (self.behavior == Behavior.STOP):
+            raise ValueError("A player hold must be stopped.")
+        player_behaviors = (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING)
+        if self.behavior != Behavior.EAT and (self.owner == "player_task") != (self.behavior in player_behaviors):
+            raise ValueError("Invalid player task.")
+        if self.behavior == Behavior.EAT and (self.destination is not None or self.activity_elapsed >= EAT_SECONDS):
+            raise ValueError("Invalid eating progress.")
+        return self

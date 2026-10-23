@@ -1,5 +1,4 @@
 import pygame
-
 from constants import DIALOGUE_PAGE_LINES, DIALOGUE_PAGE_WIDTH, INK, SCROLLBAR_WIDTH, SCROLLBAR_MIN_THUMB
 from dialogue_text import split_sentences
 from .fonts import text_units
@@ -83,6 +82,11 @@ def paginate_parts(parts, font, width, max_lines=DIALOGUE_PAGE_LINES, *, condens
         for index, sentences in sections
         for page in paginate_text(" ".join(sentences), font, min(width, DIALOGUE_PAGE_WIDTH), max_lines)
     ]
+
+
+def paginate_turn(turn, font, width, *, original=False, condensed=False):
+    """Shared selection, sentence handling and source emotions for both views."""
+    return paginate_parts(turn.display(original=original), font, width, condensed=condensed)
 
 
 def draw_wrapped_text(surface, text, font, color, rect):

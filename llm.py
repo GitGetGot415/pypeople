@@ -1,46 +1,45 @@
+import dialogue_context
+import dialogue_rules
+import dialogue_validation
+import validation_errors
 import json
 import logging
 import re
 import unicodedata
+import httpx
 from copy import deepcopy
 from dataclasses import dataclass
 from time import monotonic
-from types import SimpleNamespace
-
 from google import genai
 from google.genai import errors, types
-import httpx
 from pydantic import ValidationError
-from validation_errors import DialogueValidationError, RecoveryKind
-from dialogue import (AcceptedProposal, ActionIntent, ActionResponse, ConversationPart, ConversationResponse,
-                     ConversationTurn, DialoguePartsResponse, DialogueRepairResponse, DisclosureChoice,
-                     EmotionReaction, LeverageUse, PlayerIntent, ResidentAssessment, ResidentGift,
-                     ResidentTurnResponse, SnakeDecision, SnakePlayerResponse, SnakeResidentResponse,
-                     SnakeResponse, ThirdPartyOpinion, VoiceRewriteResponse)
+from validation_errors import RecoveryKind
+from dialogue import (ActionResponse, ConversationResponse, ConversationTurn, DialoguePartsResponse,
+                     DialogueRepairResponse, DisclosureChoice, EmotionReaction, PlayerIntent,
+                     ResidentAssessment, ResidentTurnResponse, SnakeDecision, SnakePlayerResponse,
+                     SnakeResidentResponse, SnakeResponse, VoiceRewriteResponse)
 from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_CHARACTERS,
                       DIALOGUE_PART_TARGET_CHARACTERS, DIALOGUE_PARTS_PER_TURN, DIALOGUE_REPAIR_WORD_LIMIT,
-                      DIALOGUE_TIMEOUT_SECONDS, EMOTION_THRESHOLD, FURIOUS_THRESHOLD, LEVERAGE_ACCOUNT_KINDS,
+                      DIALOGUE_TIMEOUT_SECONDS, EMOTION_THRESHOLD, FURIOUS_THRESHOLD,
                       MODEL_STREAM_REPEAT_CHECK_CHARACTERS, MODEL_STREAM_REPEAT_COUNT,
                       MODEL_STREAM_REPEAT_MAX_BLOCK_CHARACTERS, MODEL_STREAM_REPEAT_MIN_CHARACTERS,
                       MODEL_STREAM_REPEAT_PUNCTUATION_CHARACTERS, MODEL_STREAM_REPEAT_SYMBOL_CHARACTERS,
                       MODEL_DEFAULT_CONTEXT_TOKENS, MODEL_DIALOGUE_CONTEXT_TOKENS, RESIDENT_TURN_COUNT,
                       FOOD_REQUEST_TURN_COUNT, CONVERSATION_MAX_TURNS, DIALOGUE_STAGE_ATTEMPTS,
-                      DIALOGUE_REPEAT_PHRASE_WORDS, DIALOGUE_REPEAT_SENTENCE_WORDS,
-                      DIALOGUE_REPEAT_TURN_WORDS, CONVERSATION_MAX_AGREEMENTS, CONVERSATION_MAX_DISCLOSURES,
-                      CONVERSATION_MAX_REPUTATION_EFFECTS, CONVERSATION_MAX_LEVERAGE, PLAYER_LABEL,
-                      PLAYER_NAME_TAG, SNAKE_NAME, SNAKE_TURN_COUNT, VOICE_REWRITE_TEMPERATURE)
-from dialogue_text import contains_question, contains_serialized_dialogue, contains_speaker_label, speech_is_complete, split_sentences
+                      DIALOGUE_REPEAT_PHRASE_WORDS, CONVERSATION_MAX_AGREEMENTS,
+                      CONVERSATION_MAX_DISCLOSURES, CONVERSATION_MAX_REPUTATION_EFFECTS,
+                      CONVERSATION_MAX_LEVERAGE, PLAYER_NAME_TAG, SNAKE_NAME, SNAKE_TURN_COUNT,
+                      VOICE_REWRITE_TEMPERATURE)
+from dialogue_text import contains_question, split_sentences
 from dialogue_code import DELIVERY_INSTRUCTION
-from dialogue_rules import (_asserts, is_name_reference, mentions_account, mentions_private_recollection, named_context, named_references, name_pattern, unquoted_speech,
-                           apple_price_mentions, validate_account_speech, validate_apple_roles, validate_continuity,
-                           validate_base_prose, validate_claim_source, validate_english, validate_opinion_reason, validate_environment_speech,
-                           validate_speaker_identity)
+from dialogue_rules import (is_name_reference, mentions_private_recollection, named_references, name_pattern,
+                           validate_account_speech)
 from ollama_manager import DEFAULT_OLLAMA_MODEL, mark_ollama_ready
-from model_debug import admitted_provider, provider_wait_seconds, check_cancelled, cancellable_stream, disconnect_response, record_output, streaming_output, watch_response
+from model_debug import (admitted_provider, provider_wait_seconds, check_cancelled, cancellable_stream,
+                        disconnect_response, record_output, streaming_output, watch_response)
 from conversation_history import rewrite_validation_error, usable_rewrite
-from social import (information_from_dict, listener_stances, phase_index, validate_agreements, validate_information)
-from dialogue_context import (NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION, account_references, account_speech_context,
-                              name_forms, actor_id, forms, own_name, orientation_speech, validate_orientation)
+from dialogue_context import (NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION, account_references,
+                             account_speech_context, name_forms, actor_id, forms, own_name)
 
 
 MODEL = "gemini-2.5-flash"
@@ -661,252 +660,10 @@ instead of repeating the partner's explanation. If nothing remains to discuss,
 end naturally instead of looping."""
 
 
-def character_context(character):
-    """Base-only profile; private Background reaches speech through scoped accounts."""
-    profile = {key: value for key, value in character.items()
-                 if key not in ("Personality", "Voice", "Mannerisms", "Background")}
-    if "Personality" in character:
-        profile["personality"] = character["Personality"]
-    profile["Opinions"] = _base_opinions(character.get("Opinions", {}), character.get("Name", ""))
-    return profile
-
-
-def _base_opinions(opinions, owner):
-    opinions = {name: entry.copy() for name, entry in opinions.items()}
-    for name, entry in opinions.items():
-        try:
-            validate_opinion_reason(entry.get("reason", ""), owner, name)
-            validate_base_prose(entry.get("reason", ""), (owner, name, SNAKE_NAME))
-        except ValueError:
-            entry.pop("reason", None)
-    return opinions
-
-
-def _ordinary_context_prose(text, names=()):
-    try:
-        validate_base_prose(text, names)
-    except ValueError:
-        return False
-    return True
-
-
-def _base_preceding_turns(turns, names=()):
-    """Omit styled examples in provider views; internal transcripts stay intact."""
-    return [turn for turn in turns if _ordinary_context_prose(turn["text"], names)]
-
-
-def garden_environment():
-    return {"place": "One unfamiliar grassy area",
-            "objects": ["One living apple tree", "One apartment building with residents' rooms"],
-            "tree_present": True, "other_venues": []}
-
-
-def local_environment(location="garden"):
-    from locations import environment
-    if location == "garden":
-        return {**garden_environment(), "location": location, "description": environment(location), "indoors": False}
-    kind, number = location.split(":")
-    return {"location": location, "indoors": True,
-            "place": f"Apartment hallway, floor {number}" if kind == "hallway" else f"Private apartment room {number}",
-            "description": environment(location),
-            "objects": ["An elevator", "Five closed room doors"] if kind == "hallway" else ["A bed", "A doorway to the hallway"],
-            "elsewhere": "The garden, apple tree, grass and open sky are outside the apartment building."}
-
-
-def _orientation_world_context(snapshot, *, correction=False):
-    """A present concern must not compete with private goals or a menu of bargains."""
-    context = {"request_kind": "conversation", "purpose": "chat", "arrival_focus": True,
-               "environment": local_environment(snapshot["initiator"].get("location", "garden")),
-               "day": snapshot["initiator"].get("day", 1),
-               "time_of_day": snapshot["initiator"].get("time_of_day", "day")}
-    for role, other in (("initiator", "recipient"), ("recipient", "initiator")):
-        person, partner = snapshot[role], snapshot[other]
-        private = person.get("private_context", {})
-        context[role] = {
-            "npc_id": actor_id(person), "opinion_record_name": person["npc_name"],
-            "location": person.get("location", "garden"),
-            "character": {"Name": own_name(person), "personality": character_context(person["character"])["personality"]},
-            "partner_name_tag": own_name(partner),
-            "opinion_of_partner": _base_opinions(private.get("opinions", {}), person["npc_name"]).get(partner["npc_name"]),
-            "private_context": {"situation": {key: value for key, value in private.get("situation", {}).items()
-                                             if key not in ("known_danger", "apple_bargain")},
-                                "concern": deepcopy(private.get("concern"))},
-        }
-    history = deepcopy(snapshot.get("shared_history", {}))
-    if correction:
-        history.pop("recent_dialogue", None)
-    context["shared_history"] = history
-    return context
-
-
-def _catalog_for_prompt(catalog):
-    return {actor_id: {key: value for key, value in actor.items() if not key.startswith("_")}
-            for actor_id, actor in catalog.items()}
-
-
-def world_context(snapshot, *, correction=False):
-    """Supply relevant state without exposing other NPCs' private knowledge."""
-    if snapshot.get("request_kind") == "conversation" and snapshot.get("arrival_focus", False):
-        return _orientation_world_context(snapshot, correction=correction)
-    if snapshot.get("request_kind") in ("snake_turn", "conversation_closing", "resident_turn", "resident_assessment", "handoff_thanks"):
-        context = {k: v for k, v in snapshot.items() if not k.startswith("_")}
-        context["environment"] = local_environment(snapshot.get("location", "garden"))
-        if snapshot.get("location", "garden") == "garden":
-            context["environment"].update(snapshot.get("environment", {}))
-        names = (_actor_name(snapshot["speaker"]), _actor_name(snapshot["listener"]), SNAKE_NAME)
-        context["preceding_turns"] = _base_preceding_turns(context.get("preceding_turns", []), names)
-        if correction and context.get("shared_history"):
-            context["shared_history"] = {key: value for key, value in context["shared_history"].items()
-                                         if key != "recent_dialogue"}
-        context["engine_identities"] = _catalog_for_prompt(snapshot.get("_name_actors", {}))
-        return named_context(context)
-    conversation = snapshot.get("request_kind") == "conversation"
-    info = snapshot.get("_information_validation") or {}
-    focus = next((option for option in info.get("options", [])
-                  if option["id"] == info.get("focus_claim_id")), None)
-    relevant_ids = {option["id"] for option in info.get("options", [])
-                    if focus and option["fact_id"] == focus["fact_id"]}
-    fact_ids = {option["id"]: option["fact_id"] for option in info.get("options", [])}
-    people = [snapshot, *[snapshot[key] for key in ("initiator", "recipient", "resident", "snake") if key in snapshot],
-              *snapshot.get("nearby_npcs", []), *snapshot.get("other_npcs", [])]
-    actor_names = {person.get("npc_id", person.get("actor_id")): person.get("npc_name", person.get("name"))
-                   for person in people if person.get("npc_id", person.get("actor_id"))}
-
-    def person_context(person, include_reply=False):
-        person = {key: value for key, value in person.items() if not key.startswith("_")}
-        if "character" in person:
-            person["character"] = character_context(person["character"])
-        if not include_reply:
-            person.pop("last_reply", None)
-        elif person.get("last_reply") and not _ordinary_context_prose(person["last_reply"], (person.get("npc_name", ""), SNAKE_NAME)):
-            person.pop("last_reply", None)
-        if "memories" in person:
-            person["memories"] = [memory for memory in person["memories"]
-                                  if _ordinary_context_prose(memory.get("summary", ""), (person.get("npc_name", ""), SNAKE_NAME))]
-        if conversation or snapshot.get("request_kind") in ("snake_encounter", "snake_decision"):
-            # Rendering and movement bookkeeping do not help write a conversation.
-            fields = {"npc_id", "npc_name", "character", "activity", "satisfaction", "inventory",
-                      "memories", "private_context", "arrival_day", "location",
-                      "tree_fruit", "tree_available_fruit", "living_count"}
-            person = {key: value for key, value in person.items() if key in fields}
-            # Private facts already have individually scoped accounts. A second full
-            # biography encourages unrecorded disclosure and borrowing the partner's life.
-            if correction:
-                person.pop("memories", None)
-            if "private_context" in person:
-                private = person["private_context"].copy()
-                if correction:
-                    # Corrections permit only the focus disclosure. Keep its
-                    # evidence and sources, without unrelated accounts or aliases.
-                    accounts, seen = [], set()
-                    for account in private.get("permitted_accounts", []):
-                        if focus and account["claim_id"] not in relevant_ids:
-                            continue
-                        signature = (fact_ids.get(account["claim_id"], account["assertion"]),
-                                     account.get("basis"), account.get("stance"))
-                        if signature in seen:
-                            continue
-                        seen.add(signature)
-                        accounts.append({key: value for key, value in account.items()
-                                         if key not in ("subject_id", "object_id", "already_assessed", "current_reputation_influence")})
-                    private["permitted_accounts"] = accounts if focus else accounts[:3]
-                if private.get("goal"):
-                    private["goal"] = {key: value for key, value in private["goal"].items()
-                                       if key not in {"id", "created_phase", "resolution_event_id",
-                                                      "resolved_phase", "last_attempt_phase"}}
-                person["private_context"] = private
-        if "private_context" in person:
-            private = person["private_context"] = person["private_context"].copy()
-            private["opinions"] = _base_opinions(private.get("opinions", {}), person["npc_name"])
-            if "snake_attitudes" in private:
-                private["snake_attitudes"] = {key: value for key, value in private["snake_attitudes"].items()
-                    if not key.endswith("_reason") or _ordinary_context_prose(value, (person["npc_name"], SNAKE_NAME))}
-            private["promises"] = [
-                {**promise, "giver_name": actor_names.get(promise["promisor_id"], promise["promisor_id"]),
-                 "receiver_name": actor_names.get(promise["recipient_id"], promise["recipient_id"])}
-                for promise in private.get("promises", [])]
-        return person
-
-    snake_request = snapshot.get("request_kind") in ("snake_encounter", "snake_decision", "snake_player")
-    context = snapshot.copy() if conversation or snake_request else person_context(snapshot, include_reply=True)
-    context = {key: value for key, value in context.items() if not key.startswith("_")}
-    context.pop("_information_validation", None)
-    current = snapshot["initiator"] if conversation else snapshot["snake"] if snake_request else snapshot
-    context["environment"] = local_environment(current.get("location", "garden"))
-    if current.get("location", "garden") == "garden":
-        context["environment"]["people"] = f"The listed residents, {SNAKE_NAME}, and the player"
-    if current.get("location", "garden") == "garden" and "tree_fruit" in current:
-        context["environment"]["tree"] = {
-            "fruit": current["tree_fruit"], "available_fruit": current["tree_available_fruit"],
-        }
-    if conversation:
-        current = snapshot["initiator"]
-        context["day"], context["time_of_day"] = current["day"], current["time_of_day"]
-        if "tree" in context["environment"]:
-            context["environment"]["tree"]["shaking"] = current.get("tree_is_shaking", False)
-        if focus:
-            context["discussion_focus"] = {key: focus[key] for key in ("assertion", "kind")}
-            context["discussion_focus"]["subject_name"] = actor_names.get(focus["subject_id"])
-            if "offering remained unpaid" in focus["assertion"].casefold() and focus["affirmed"]:
-                context["discussion_focus"].update(what_was_received="one apple upfront",
-                                                   what_was_refused=refused_offering(focus["assertion"]),
-                                                   remaining_obligation="unpaid")
-        if context.get("shared_history"):
-            history = context["shared_history"] = context["shared_history"].copy()
-            names = {snapshot[role]["npc_name"] for role in ("initiator", "recipient")}
-            recent = []
-            for entry in history.get("recent_dialogue", []):
-                try:
-                    for name, text in entry["excerpts"]:
-                        _validate_speaker(text, name, next(other for other in names if other != name))
-                        validate_base_prose(text, (*names, SNAKE_NAME))
-                except ValueError:
-                    continue  # Keep saved words intact, but do not teach new speech a known role swap.
-                recent.append(entry)
-            history["recent_dialogue"] = recent
-        if correction and context.get("shared_history"):
-            # Keep transcripts for validation, but do not feed replayed lines
-            # back to the model when asking it to write a fresh exchange.
-            context["shared_history"] = {key: value for key, value in context["shared_history"].items()
-                                         if key != "recent_dialogue"}
-    for key in ("initiator", "recipient", "resident"):
-        if key in context:
-            context[key] = person_context(context[key])
-    if snake_request:
-        context["snake"] = {key: value for key, value in context["snake"].items()
-                            if not key.startswith("_") and key != "doctrine"}
-        context["transaction"] = snapshot["transaction"] if "transaction" in snapshot else {
-            "apple_giver": snapshot["snake"]["name"], "apple_receiver": snapshot["resident"]["npc_name"],
-            "can_give_apple": snapshot["can_give_apple"], "immediate_exchange": True}
-        if snapshot.get("request_kind") == "snake_decision":
-            # The guard assesses accepted speech, never the resident's private biography.
-            context.pop("resident", None)
-            context.pop("offering_accounts", None)
-    for key in ("other_npcs", "nearby_npcs"):
-        if key in context:
-            context[key] = [person_context(person) for person in context[key]]
-            for person in context[key]:
-                for field in ("private_context", "memories", "activity_reason", "last_reply"):
-                    person.pop(field, None)
-                person.get("character", {}).pop("Opinions", None)
-                person.get("character", {}).pop("personality", None)
-    if "player_dialogue" in context:
-        dialogue = []
-        for turn in context["player_dialogue"]:
-            speaker, text = (turn["speaker"], turn["text"]) if isinstance(turn, dict) else turn
-            dialogue.append(turn)
-        context["player_dialogue"] = dialogue
-    catalog = snapshot.get("_name_actors", {})
-    if catalog:
-        context["engine_identities"] = _catalog_for_prompt(catalog)
-        context["name_tags"] = "Names are visible on floating tags. Names reveal no private facts or prior meetings."
-    return named_context(context)
-
-
 def build_system_instruction(character):
     """Combine the shared game rules with this NPC's JSON character profile."""
     return (SYSTEM_INSTRUCTION + "\n\n" + EMOTION_INSTRUCTION + "\n\nCharacter profile:\n"
-            + json.dumps(character_context(character), ensure_ascii=False, indent=2)
+            + json.dumps(dialogue_context.character_context(character), ensure_ascii=False, indent=2)
             + "\n\n" + PLAYER_DIALOGUE_INSTRUCTION)
 
 
@@ -921,7 +678,7 @@ def intent_snapshot(snapshot):
         }
 
     previous = ""
-    if _short_player_answer(snapshot.get("_player_message", "")):
+    if dialogue_rules._short_player_answer(snapshot.get("_player_message", "")):
         previous = snapshot.get("last_reply", "")
         for turn in reversed(snapshot.get("player_dialogue", [])):
             speaker, text = (turn["speaker"], turn["text"]) if isinstance(turn, dict) else turn
@@ -943,20 +700,6 @@ def intent_snapshot(snapshot):
     }
 
 
-def _short_player_answer(message):
-    return bool(re.fullmatch(r"\s*(?:yes(?: please)?|no(?: thanks| thank you| not really)?|yep|yup|nope|nah|sure|"
-                             r"ok(?:ay)?|absolutely|sounds good|thanks|thank you)\s*[.!?]*\s*", message, re.I))
-
-
-def _personal_apple_request(message):
-    """Resolve the recipient of a complete, unambiguous first-person request."""
-    return re.fullmatch(
-        r"\s*(?:please\s+)?(?:(?:can|could|may|might)\s+i\s+(?:please\s+)?(?:have|get|receive)"
-        r"|(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:give|hand|pass)\s+me)\s+"
-        r"(?:(?:an?|some|one|two|three|\d+)\s+)?(?:of\s+your\s+)?(?:apples?|fruit)"
-        r"(?:,?\s+please)?\s*[.!?]*\s*", message, re.I) is not None
-
-
 def _dialogue_parts_schema(*, correction=False):
     """Share part counts and soft size guidance without clipping sentences."""
     parts = structured_schema(DialoguePartsResponse)["properties"]["parts"]
@@ -970,67 +713,6 @@ def _dialogue_parts_schema(*, correction=False):
     return parts
 
 
-def snake_disclosure_accounts(snapshot):
-    return snapshot.get("snake", {}).get("known_accounts", [])
-
-
-def validate_snake_decision(result, snapshot):
-    if ((result.interaction_id != snapshot.get("interaction_id", "") and not (isinstance(result, SnakePlayerResponse) and not result.interaction_id))
-            or result.decision not in snapshot.get("permitted_decisions", ["talk"])):
-        raise ValueError("Use this encounter's identity and a locally permitted decision.")
-    if result.decision == "give_apple" and not snapshot["can_give_apple"]:
-        raise ValueError("No apple is available for this exchange.")
-    accounts = {a["claim_id"] for a in snapshot.get("offering_accounts", [])}
-    if snapshot.get("request_kind") == "snake_decision" and result.account_id != (snapshot.get("disclosed_account") or {}).get("claim_id", ""):
-        raise ValueError("Select only the account actually disclosed in this exchange.")
-    if result.account_id and result.account_id not in accounts:
-        raise ValueError("The resident can disclose only an account they actually know.")
-    known = {a["claim_id"] for a in snake_disclosure_accounts(snapshot)}
-    if result.snake_account_id and result.snake_account_id not in known:
-        raise ValueError("The guard can discuss only a supplied known account.")
-    if result.decision in ("warn", "eat"):
-        speech = snapshot.get("_player_message", "") or " ".join(
-            t["text"] for t in snapshot.get("heard_turns", []) if t["role"] == "recipient")
-        if not result.accusation.strip() or not result.evidence.strip() or result.evidence not in speech:
-            raise ValueError("An accusation requires an exact quote from this person's actual response.")
-    if result.decision == "eat" and not snapshot.get("known_warning"):
-        raise ValueError("Condemnation requires an earlier warning and a subsequent response.")
-    if result.decision == "give_apple" and snapshot.get("request_kind") != "snake_player" and not result.account_id:
-        speech = next((t["text"] for t in reversed(snapshot.get("heard_turns", [])) if t["role"] == "recipient"), "")
-        if (not result.evidence.strip() or result.evidence not in speech
-                or contains_question(result.evidence)
-                or (_short_player_answer(result.evidence) and not snapshot.get("question_account_id"))):
-            raise ValueError("An apple for a new present report requires an exact quote from the resident's accepted answer.")
-
-
-def validate_snake_response(result, snapshot, *, dialogue_validation=None):
-    if dialogue_validation is None:
-        dialogue_validation = snapshot.get("_dialogue_validation", True)
-    if result.outcome_turn >= len(result.turns):
-        raise ValueError("The guard must perform the outcome after the resident's actual answer.")
-    validate_snake_decision(result, {**snapshot, "heard_turns": [dict(role=t.speaker, text=t.text) for t in result.turns[:result.outcome_turn]]})
-    if dialogue_validation:
-        _validate_base_presentation(result, snapshot)
-        validate_dialogue_format(result.turns)
-        validate_dialogue_completion(result.turns)
-        if len(result.turns) == CONVERSATION_MAX_TURNS and contains_question(result.turns[-1].text):
-            raise ValueError("At the turn limit, finish with an answer or closing rather than a new question.")
-    for i, turn in enumerate(result.turns):
-        if turn.speaker != ("initiator" if i % 2 == 0 else "recipient"):
-            raise ValueError("Alternate snake and resident speech, beginning with the snake.")
-        if dialogue_validation:
-            validate_snake_perspective(turn.text, snake_role="speaker" if turn.speaker == "initiator" else "listener")
-            state = _snake_turn_snapshot(snapshot, result, result.turns[:i], outcome_turn=result.outcome_turn)
-            if turn.speaker == "recipient" and "permitted_accounts" in state["speaker"]:
-                _validate_response(json.dumps({"parts": [p.model_dump() for p in turn.parts],
-                    "account_id": result.account_id if i == result.outcome_turn - 1 else ""}), state, SnakeResidentResponse)
-            else:
-                validate_speech_grounding(turn.text, state)
-    if dialogue_validation:
-        validate_dialogue_speakers(result.turns, {
-            "initiator": snapshot["snake"]["name"], "recipient": snapshot["resident"]["npc_name"]})
-
-
 def _snake_identity_instruction(snapshot):
     """Bind the narrator's species references to this turn's actual participant."""
     for role in ("speaker", "listener"):
@@ -1042,53 +724,6 @@ def _snake_identity_instruction(snapshot):
                 "Keep each firsthand event with its actual participants.\n"
             )
     return ""
-
-
-def _actor_name(actor):
-    return actor if isinstance(actor, str) else actor.get("name", actor.get("npc_name", ""))
-
-
-def _validate_speaker(text, speaker, listener):
-    validate_speaker_identity(text, _actor_name(speaker), _actor_name(listener))
-
-
-def validate_dialogue_speakers(turns, names, *, start_index=0):
-    errors, indices = [], []
-    for index, turn in enumerate(turns, start_index):
-        try:
-            _validate_speaker(turn.text, names[turn.speaker], names["recipient" if turn.speaker == "initiator" else "initiator"])
-        except ValueError as exc:
-            errors.append(str(exc))
-            indices.append(index)
-    if errors:
-        raise DialogueSpeakerError(" ".join(dict.fromkeys(errors)), indices)
-
-
-def validate_snake_perspective(text, *, snake_role):
-    """Catch detached species references before they become the partner's context."""
-    # Direct quotations may legitimately report someone else's earlier wording.
-    unquoted = unquoted_speech(text)
-    if re.search(name_pattern(SNAKE_NAME) + r"(?:['’]s\b|\s+(?:gave|gives|said|says|offered|offers|received|refused|accepted|decided|thinks|believes|claims|was|has|had)\b)", unquoted, re.I):
-        raise ValueError(f"{SNAKE_NAME} is the {snake_role} in this exchange. Use I/my for yourself and you/your for the listener, retaining the event's ownership.")
-    identity = r"i am|i['’]m|am i" if snake_role == "speaker" else r"you are|you['’]re|are you"
-    pronoun = r"i|my" if snake_role == "speaker" else r"you|your"
-    identifying_prefix = rf"\b(?:{identity})\s+(?:{name_pattern(SNAKE_NAME)}\s*,\s*)?$"
-    for match in re.finditer(r"\bthe\s+(?:snake|python)\b", unquoted, flags=re.IGNORECASE):
-        if " ".join(match[0].casefold().split()) == " ".join(SNAKE_NAME.casefold().split()):
-            continue  # A configured name may itself use these words.
-        prefix, suffix = unquoted[:match.start()], unquoted[match.end():]
-        # Identifying oneself or the listener is different from narrating a third party.
-        if (re.search(identifying_prefix, prefix, re.IGNORECASE)
-                and not re.match(r"['’]s\b", suffix, re.IGNORECASE)):
-            continue
-        if (re.search(r"\bas\s+$", prefix, re.IGNORECASE)
-                and re.match(rf"\s*,\s*(?:{pronoun})\b", suffix, re.IGNORECASE)):
-            continue
-        raise ValueError(
-            f"{SNAKE_NAME} is the {snake_role} in this direct exchange. "
-            "Rewrite the current turn with I/my for the speaker and you/your for the listener. "
-            "Preserve the actual participants, source and ownership of each event; do not narrate "
-            "your partner's actions as though another participant performed them.")
 
 
 def _available_speech_fields(schema):
@@ -1160,7 +795,7 @@ def _resident_contract(snapshot, *, correction=False):
                     item["properties"]["claim_id"] = {"type": "string", "enum": choices[field]}
                     if field == "third_party_opinions":
                         options = {o["id"]: o for o in snapshot["_baseline"]["_information_validation"]["options"]}
-                        beliefs, _, _ = _resident_information(snapshot["_baseline"], draft)
+                        beliefs, _, _ = dialogue_context._resident_information(snapshot["_baseline"], draft)
                         branches = []
                         for claim_id in choices[field]:
                             branch = deepcopy(item)
@@ -1448,14 +1083,14 @@ def response_contract(snapshot, *, correction=False):
         schema["properties"]["decision"] = {"type": "string", "enum": snapshot.get("permitted_decisions", ["talk"])}
         schema["properties"]["interaction_id"] = {"type": "string", "enum": [snapshot.get("interaction_id", "")]}
         schema["properties"]["account_id"] = {"type": "string", "enum": [(snapshot.get("disclosed_account") or {}).get("claim_id", "")]}
-        schema["properties"]["snake_account_id"] = {"type": "string", "enum": ["", *[a["claim_id"] for a in snake_disclosure_accounts(snapshot)]]}
+        schema["properties"]["snake_account_id"] = {"type": "string", "enum": ["", *[a["claim_id"] for a in dialogue_validation.snake_disclosure_accounts(snapshot)]]}
         if kind == "snake_decision" and not snapshot.get("opening"):
             schema["properties"]["snake_account_id"] = {"type": "string", "enum": [snapshot.get("question_account_id", "")]}
         if kind == "snake_decision" and not snapshot.get("opening") and not snapshot.get("disclosed_account"):
             # Make the evidence obligation visible to constrained generation, not just prose.
             answer = next((t["text"] for t in reversed(snapshot.get("heard_turns", [])) if t["role"] == "recipient"), "")
             quotes = [s for s in split_sentences(answer) if s in answer and not contains_question(s)
-                and (not _short_player_answer(s) or snapshot.get("question_account_id"))]
+                and (not dialogue_rules._short_player_answer(s) or snapshot.get("question_account_id"))]
             # Each alternative carries the entire contract: Ollama's grammar
             # compiler does not merge sibling properties into an anyOf branch.
             other = deepcopy(schema)
@@ -1535,136 +1170,6 @@ def response_contract(snapshot, *, correction=False):
     return instruction, schema, ActionResponse
 
 
-def _speech_words(text):
-    text = unicodedata.normalize("NFKC", text).replace("\u2019", "'").casefold()
-    return re.findall(r"\w+(?:'\w+)*", text)
-
-
-def _speech_phrases(text):
-    # Match copied speech despite punctuation, casing, or display part breaks.
-    words = _speech_words(text)
-    size = DIALOGUE_REPEAT_PHRASE_WORDS
-    return (tuple(words[index:index + size]) for index in range(len(words) - size + 1))
-
-
-def _resident_repetition_facts(snapshot, response):
-    """Stage and complete-response checks exempt the same disclosed facts."""
-    disclosed = {entry.claim_id for entry in response.disclosures}
-    facts = [option["assertion"] for option in (snapshot.get("_information_validation") or {}).get("options", [])
-             if option["id"] in disclosed]
-    facts.extend(event["text"] for event in (snapshot.get("shared_history") or {}).get("confirmed_events", []))
-    return facts
-
-
-def _repetition_references(snapshot):
-    return {actor_id: [actor["name"], *forms(actor["self_name"]), *actor.get("references", [])]
-            for actor_id, actor in snapshot.get("_name_actors", {}).items()}
-
-
-def validate_dialogue_repetition(turns, recent_dialogue=(), *, factual_context=(), actor_references=None, participant_ids=None):
-    """Reject copied speech before dialogue or its social effects are committed."""
-    previous = {phrase for entry in recent_dialogue for _, text in entry["excerpts"]
-                for phrase in _speech_phrases(text)}
-    factual = {phrase for text in factual_context for phrase in _speech_phrases(text)}
-    current, signatures, repeated, sentences_by_speaker, own_turns = {}, [], set(), set(), set()
-    factual_sentences = {tuple(_speech_words(sentence)) for text in factual_context for sentence in split_sentences(text)}
-    aliases = {}
-    for actor, names in (actor_references or {}).items():
-        for name in names:
-            if name:
-                name = name.casefold()
-                marker = "actor:" + actor
-                aliases[name] = marker if name not in aliases or aliases[name] == marker else None
-    aliases = {name: marker for name, marker in aliases.items() if marker is not None}
-    reference_pattern = "|".join(name_pattern(name) for name in sorted(aliases, key=len, reverse=True))
-
-    def fact_tokens(text, role=None):
-        text = unicodedata.normalize("NFKC", text).replace("\u2019", "'").casefold()
-        references = [(m.start(), m.end(), aliases[m[0]]) for m in re.finditer(reference_pattern, text, re.I)
-                      if is_name_reference(m, text)] if reference_pattern else []
-        # Collapsing actor references keeps even a window beginning in
-        # the middle of a long positional description aligned with its fact.
-        tokens = []
-        for match in re.finditer(r"\w+(?:'\w+)*", text):
-            reference = next((entry for entry in references if entry[0] <= match.start() and match.end() <= entry[1]), None)
-            word = match[0]
-            if reference:
-                word = reference[2] if match.start() == reference[0] else None
-            elif word in {"i", "me", "my", "you", "your"}:
-                owner = role if word in {"i", "me", "my"} else "recipient" if role == "initiator" else "initiator"
-                known_id = (participant_ids or {}).get(owner) if role else None
-                word = "actor:" + known_id if known_id else "actor"
-            elif word in {"he", "him", "his", "she", "her", "they", "them", "their", "it", "its"}:
-                word = "actor"
-            elif word in {"and", "the", "a", "an"}:
-                word = None
-            tokens.append(word)
-        return tokens
-
-    fact_sequences = [tuple(word for word in fact_tokens(text) if word) for text in factual_context]
-    fact_sentence_sequences = [tuple(word for word in fact_tokens(sentence) if word)
-                               for text in factual_context for sentence in split_sentences(text)]
-
-    def same_fact_words(words, sequence):
-        return bool(words) and len(words) == len(sequence) and all(
-            left == right or left == "actor" and right.startswith("actor:") or right == "actor" and left.startswith("actor:")
-            for left, right in zip(words, sequence))
-
-    def matches_fact(words):
-        return bool(words) and any(same_fact_words(words, sequence[offset:offset + len(words)])
-                                  for sequence in fact_sequences for offset in range(len(sequence) - len(words) + 1))
-
-    copied = False
-    for index, turn in enumerate(turns):
-        # Joining parts catches loops split across multiple display pages too.
-        phrases = list(_speech_phrases(turn.text))
-        normalized = fact_tokens(turn.text, turn.speaker) if factual_context else []
-        signature = tuple(_speech_words(turn.text))
-        if (len(phrases) != len(set(phrases))
-                or len(signature) >= DIALOGUE_REPEAT_PHRASE_WORDS and signature in signatures):
-            repeated.add(index)
-        if (len(signature) >= DIALOGUE_REPEAT_TURN_WORDS and (turn.speaker, signature) in own_turns
-                and signature not in factual_sentences):
-            repeated.add(index)
-        own_turns.add((turn.speaker, signature))
-        current_sentences = set()
-        for sentence in split_sentences(turn.text):
-            words = tuple(_speech_words(unquoted_speech(sentence)))
-            factual_sentence = words in factual_sentences or bool(factual_context and any(
-                same_fact_words(tuple(word for word in fact_tokens(sentence, turn.speaker) if word), sequence)
-                for sequence in fact_sentence_sequences))
-            key = (turn.speaker, words)
-            if ((len(words) >= DIALOGUE_REPEAT_SENTENCE_WORDS and key in sentences_by_speaker
-                    or len(words) >= DIALOGUE_REPEAT_TURN_WORDS and words in current_sentences)
-                    and not factual_sentence):
-                repeated.add(index)
-            sentences_by_speaker.add(key)
-            current_sentences.add(words)
-        for offset, phrase in enumerate(phrases):
-            # Two speakers can refer to the same recorded fact while answering
-            # each other. Repeating their prose or cycling through it is a loop.
-            is_fact = phrase in factual or matches_fact(tuple(word for word in normalized[offset:offset + DIALOGUE_REPEAT_PHRASE_WORDS] if word))
-            if phrase in current and (not is_fact or current[phrase] >= 2):
-                repeated.add(index)
-            if phrase in previous and not is_fact:
-                repeated.add(index)
-                copied = True
-            current[phrase] = current.get(phrase, 0) + 1
-        signatures.append(signature)
-    if sum(map(len, signatures)) >= 2 * DIALOGUE_REPEAT_PHRASE_WORDS and any(
-            tuple(signatures) == tuple(tuple(_speech_words(text)) for _, text in entry["excerpts"])
-            for entry in recent_dialogue):
-        repeated.update(range(len(turns)))
-        copied = True
-    if repeated:
-        reason = ("Dialogue copies a substantial passage from a previous conversation." if copied else
-                  "Dialogue repeats a substantial passage within this exchange.")
-        indices = sorted(repeated)
-        raise DialogueRepetitionError(
-            f"{reason} Rewrite repeated turns {', '.join(map(str, indices))} (zero-based) with distinct replies.", indices,
-        )
-
-
 def validate_response(raw, snapshot):
     if snapshot.get("request_kind") in ("create_art", "create_music"):
         from creations import validate_creation
@@ -1677,9 +1182,9 @@ def validate_response(raw, snapshot):
         return _parse_voice_rewrite(raw, snapshot["turns"], speakers=snapshot["speakers"])
     model = response_model(snapshot)
     try:
-        result = _validate_response(raw, snapshot, model)
+        result = dialogue_validation._validate_response(raw, snapshot, model)
         if not snapshot.get("_dialogue_validation", True):
-            result._dialogue_errors = dialogue_validation_errors(result, snapshot)
+            result._dialogue_errors = dialogue_validation.dialogue_validation_errors(result, snapshot)
             for error in result._dialogue_errors:
                 record_output("validation", f"Base dialogue failed validation; retaining dialogue and effects: {error}")
         if isinstance(result, ActionResponse):
@@ -1690,9 +1195,9 @@ def validate_response(raw, snapshot):
                     raise ValueError("Opinion targets must identify one permitted resident.")
                 result._opinion_targets[entry.person] = matches[0]["npc_id"]
         return result
-    except DialogueTurnError as exc:
+    except validation_errors.DialogueTurnError as exc:
         raise InvalidResponseError(str(exc), kind=getattr(exc, "kind", RecoveryKind.GENERAL), response=model.model_validate_json(raw),
-                                   repeated_turns=exc.turn_indices if isinstance(exc, DialogueRepetitionError) else (),
+                                   repeated_turns=exc.turn_indices if isinstance(exc, validation_errors.DialogueRepetitionError) else (),
                                    repair_turns=exc.turn_indices,
                                    failed_turns=_generated_dialogue(raw, snapshot)) from None
     except ValidationError as exc:
@@ -1706,15 +1211,6 @@ def validate_response(raw, snapshot):
         # These validators supply application-authored reasons, never provider text.
         raise InvalidResponseError(str(exc), kind=getattr(exc, "kind", RecoveryKind.GENERAL), response=model.model_validate_json(raw),
                                    failed_turns=_generated_dialogue(raw, snapshot)) from None
-
-
-def dialogue_validation_errors(response, snapshot):
-    """Diagnose accepted originals without another provider call or any effects."""
-    try:
-        _validate_response(response.model_dump_json(), {**snapshot, "_dialogue_validation": True}, type(response))
-    except ValueError as exc:
-        return [str(exc)]
-    return []
 
 
 def _generated_dialogue(raw, snapshot):
@@ -1743,417 +1239,6 @@ def _generated_dialogue(raw, snapshot):
     return turns
 
 
-def _last_question(text):
-    return next((sentence for sentence in reversed(split_sentences(text)) if contains_question(sentence)), text)
-
-
-def _reply_context(snapshot):
-    role = snapshot.get("speaker_role", "initiator")
-    preceding = snapshot.get("_preceding_turns", snapshot.get("preceding_turns", []))
-    heard = preceding[-1]["text"] if preceding and preceding[-1]["role"] != role else ""
-    return {"last_heard": heard,
-            "questions_to_answer": [sentence for sentence in split_sentences(heard) if contains_question(sentence)]}
-
-
-def validate_dialogue_format(turns):
-    for turn in turns:
-        if contains_serialized_dialogue(turn.text):
-            raise ValueError("The speech reads internal dialogue or account JSON aloud. Return spoken words without serialized records.")
-        if contains_speaker_label(turn.text):
-            raise ValueError("Return only directly spoken words, without narrator or speaker-name prefixes. The interface supplies the speaker label.")
-        speech = unquoted_speech(turn.text)
-        if re.search(r"\b(?:account_to_share|question_to_answer|preceding_turns|zero-based|new[_ ]apple[_ ]count)\b|\bunreserved\s*[:=]|"
-                     r"\bconcrete event from (?:my|the|a supplied) (?:account|assertion)\b|"
-                     r"\b(?:retain|store) this knowledge as\b|\bowner and source of this recollection\b|"
-                     r"\b(?:this|the) (?:account|recollection) (?:is |was )?(?:owned by|sourced from)\b|"
-                     r"\b(?:clos(?:e|ing)|end(?:ing)?|finish(?:ing)?) (?:this|the|our) (?:conversation|exchange) "
-                     r"without (?:any )?(?:further |another |more )?questions\b", speech, re.I):
-            raise ValueError("Keep internal writing instructions and resource field labels out of dialogue. Answer the listener and close naturally in character.")
-        fields = re.findall(r'''["'](assertion|subject_relation|object_relation|knowledge_owner_name|original_speaker_relation|immediate_source_relation)["']\s*:''',
-                            turn.text.replace('\\"', '"'))
-        if len(set(fields)) >= 2:
-            raise ValueError("The speech reads internal account JSON aloud. Tell the account's meaning in natural words, "
-                             "preserving its subject, source and stance; never speak field names, braces or serialized records.")
-
-
-def validate_speech_grounding(text, snapshot):
-    """Check this speech before a partner sees it or its effects are committed."""
-    speaker, listener = snapshot["speaker"], snapshot["listener"]
-    listener_name = snapshot.get("_listener_identity", _actor_name(listener))
-    names = [_actor_name(speaker), listener_name, SNAKE_NAME, *snapshot.get("known_actor_names", [])]
-    validate_english(text, names)
-    situation = speaker.get("situation", {})
-    firsthand = [*speaker.get("firsthand_events_with_listener", []),
-                 *speaker.get("permitted_accounts", []), *speaker.get("known_accounts", [])]
-    knows_claims = bool(situation.get("prior_snake_encounters", 0)) or any(
-        a.get("kind") == "snake_claim" and a.get("basis") == "firsthand" for a in firsthand)
-    validate_continuity(text, day=snapshot.get("day"), situation=situation, knows_claims=knows_claims,
-                        listener_is_guard=listener_name == SNAKE_NAME)
-    if knows_claims:
-        validate_claim_source(text, names=names, speaker=_actor_name(speaker), listener=listener_name,
-                              actor_references=account_references(snapshot.get("_name_actors", {})))
-    transaction = snapshot.get("transaction")
-    if transaction:
-        validate_apple_roles(text, giver=transaction["apple_giver"], receiver=transaction["apple_receiver"],
-                             speaker=_actor_name(speaker), apple_received=transaction.get("apple_already_received", False))
-    account = snapshot.get("account_to_share")
-    if account:
-        account_names = [value for key, value in account.items() if key.endswith("_name") and value]
-        validate_account_speech(text, account["assertion"], names=(*names, *account_names),
-                                speaker=_actor_name(speaker), listener=listener_name, kind=account.get("kind"),
-                                firsthand=account.get("basis") == "firsthand",
-                                actor_references=account_references(snapshot.get("_name_actors", {})),
-                                known_events=[event for event in firsthand if event.get("basis") == "firsthand"])
-    if snapshot.get("request_kind") != "snake_turn":
-        return
-    for report in ([account] if account else []) + speaker.get("heard_accounts", []):
-        validate_snake_account_roles(text, report, speaker, listener)
-    if snapshot["speaker_role"] == "initiator":
-        validate_immediate_snake_speech(text, transaction["selected_outcome"]
-            if snapshot["turn_index"] == transaction.get("outcome_turn", 2) else "talk")
-        for heard in speaker.get("known_accounts", []):
-            if (heard.get("kind") == "former_life" and heard.get("subject_id") != speaker["actor_id"]
-                    and mentions_private_recollection(text, heard["assertion"], names)
-                    and re.search(r"\bi (?:remember|recall|worked|kept|helped|planted|repaired|used to)\b", unquoted_speech(text), re.I)):
-                raise ValueError("The apple giver must not adopt the resident's recollection as its own.")
-
-
-def validate_snake_account_roles(text, report, speaker, listener):
-    if report.get("kind") == "snake_claim":
-        hearer = report.get("object_name", "")
-        if report.get("subject_id") != report.get("object_id") and hearer:
-            reference = name_pattern(hearer)
-            if re.search(rf"\b(?:{reference})(?:['\u2019]s claims?\b| (?:claims?|claimed|made claims?|asserts?|asserted)\b)", unquoted_speech(text), re.I):
-                raise ValueError("The account's listener heard the guard's claims; do not make that listener the claimant.")
-        claimant = report.get("subject_id")
-        if claimant == speaker.get("actor_id") and re.search(
-                r"\byour claims? about (?:authority|the garden)\b|\byour claim to divine authority\b", unquoted_speech(text), re.I):
-            raise ValueError("You made these claims yourself. Use my claims, not your claims about the listener.")
-        if claimant == listener.get("actor_id") and re.search(
-                r"\bmy claims? about (?:authority|the garden)\b|\bmy claim to divine authority\b", unquoted_speech(text), re.I):
-            raise ValueError("The listener made these claims. Address the guard's claims as your claims; do not adopt them as my claims.")
-
-
-def validate_immediate_snake_speech(text, outcome):
-    speech = unquoted_speech(text)
-    if re.search(r"\b(?:you owe me|offering (?:is |still )?owed|pay me later|endorsement owed)\b", speech, re.I):
-        raise ValueError("This is an immediate exchange; no offering or debt remains.")
-    handoff = re.search(r"\b(?:here(?: is|'s) (?:your|an?|one|the) apple|take (?:this|your|the) apple|"
-        r"I (?:give|am giving|hand|am handing) you (?:an?|one|the) apple|"
-        r"I(?: am|'m) (?:giving|handing)(?: over)? (?:an?|one|the) apple to you|"
-        r"I'm (?:giving|handing) you (?:an?|one|the) apple|I hand(?: over)? (?:an?|one|the) apple to you)\b", speech, re.I)
-    if outcome != "give_apple" and handoff:
-        raise ValueError("No apple is transferred by this reply.")
-    if outcome == "give_apple" and not handoff:
-        raise ValueError("Explicitly hand over the apple now in the generated speech.")
-    if outcome == "warn" and not re.search(r"\b(?:warn|eat|eaten|devour|condemn)\b", speech, re.I):
-        raise ValueError("Make the warning and physical danger explicit and allow an answer.")
-    if outcome == "eat" and not re.search(r"\b(?:eat|eaten|devour|condemn)\b", speech, re.I):
-        raise ValueError("Announce the selected condemnation.")
-
-
-def validate_resident_grounding(result, snapshot):
-    _validate_base_presentation(result, snapshot)
-    info = snapshot.get("_information_validation") or {}
-    options = {a["id"]: a for a in info.get("options", [])}
-    names = [snapshot[role]["npc_name"] for role in ("initiator", "recipient")]
-    names.extend(n["npc_name"] for n in snapshot.get("nearby_npcs", []))
-    names.append(SNAKE_NAME)
-    for role in ("initiator", "recipient"):
-        private = snapshot[role].get("private_context", {})
-        names.extend(value for account in private.get("permitted_accounts", private.get("known_accounts", []))
-                     for key, value in account.items() if key.endswith("_name") and isinstance(value, str) and value)
-    known = {role: {options[b["claim_id"]]["fact_id"] for b in info.get("beliefs", {}).get(role, [])
-                     if b["claim_id"] in options} for role in ("initiator", "recipient")}
-    for index, turn in enumerate(result.turns):
-        speaker = snapshot[turn.speaker]
-        validate_environment_speech(turn.text, location=speaker.get("location", "garden"))
-        other_role = "recipient" if turn.speaker == "initiator" else "initiator"
-        private = speaker.get("private_context", {})
-        validate_speech_grounding(turn.text, {
-            "_name_actors": snapshot.get("_name_actors", {}),
-            "speaker": {"name": speaker["npc_name"], "situation": private.get("situation", {}),
-                        "firsthand_events_with_listener": private.get("permitted_accounts", private.get("known_accounts", []))},
-            "listener": snapshot["recipient" if turn.speaker == "initiator" else "initiator"]["npc_name"],
-            "day": speaker.get("day"), "known_actor_names": names})
-        # General beliefs can also be formed in the current discussion. Match
-        # concrete recollections separately, including sentences in older accounts.
-        private_accounts = [{**a, "assertion": sentence} for a in options.values() if a["kind"] == "former_life"
-                            for sentence in split_sentences(a["assertion"])
-                            if not re.search(r"\b(?:believe[sd]?|beliefs|like[sd]? to think)\b", sentence, re.I)
-                            and mentions_private_recollection(turn.text, sentence, names)]
-        own_memories = [a for a in private_accounts if a["subject_id"] == speaker["npc_id"]]
-        disclosed = {options[d.claim_id]["fact_id"] for d in result.disclosures if d.turn == index and d.claim_id in options}
-        for account in private_accounts:
-            own_support = any(mentions_account(a["assertion"], account["assertion"], names) for a in own_memories)
-            if account["fact_id"] not in known[turn.speaker] and not own_support:
-                raise ValueError("The speaker uses another person's private account before learning it. Keep each biography and motive with its owner.")
-            if account["subject_id"] != speaker["npc_id"] and not own_support and re.search(
-                    r"\bi\s+(?:once\s+)?(?:worked|kept|helped|was an?|used to|remember working|recall working)\b", unquoted_speech(turn.text), re.I):
-                raise ValueError("The speaker adopts another person's remembered life as their own. Respond to that person's account without changing its owner.")
-            if (account["subject_id"] == speaker["npc_id"] and account["fact_id"] not in known[other_role]
-                    and account["fact_id"] not in disclosed):
-                raise DialogueValidationError("A new private recollection is spoken without its disclosure entry. Record the actual account on this turn or omit its private details.", RecoveryKind.MISSING_DISCLOSURE)
-        known[other_role].update(disclosed)
-    for role in ("initiator", "recipient"):
-        owner, entry = snapshot[role], getattr(result, role + "_opinion", None)
-        if entry is None:  # Incomplete prefixes have no final assessments yet.
-            continue
-        validate_english(entry.reason, (owner["npc_name"], entry.person))
-        validate_opinion_reason(entry.reason, owner["npc_name"], entry.person)
-    for entry in getattr(result, "third_party_opinions", []):
-        owner = snapshot[result.turns[entry.turn].speaker]["npc_name"]
-        target = snapshot.get("_name_actors", {}).get(entry.subject_id, {}).get("name", "")
-        validate_english(entry.reason, (owner, target))
-        validate_opinion_reason(entry.reason, owner, target)
-
-
-def validate_dialogue_completion(turns, *, start_index=0):
-    incomplete = [index for index, turn in enumerate(turns, start_index) if not speech_is_complete(turn.text)]
-    if incomplete:
-        raise ValueError(
-            f"Speech ends without finishing a sentence in turn(s) {', '.join(map(str, incomplete))}. "
-            "Finish the current speaker's sentence and end with sentence punctuation before the partner replies. "
-            "Rewrite a shorter complete sentence if needed; never clip speech to meet a size target.")
-
-
-def _validate_base_presentation(result, snapshot):
-    names = {SNAKE_NAME}
-    people = [snapshot, *[snapshot[key] for key in ("initiator", "recipient", "resident", "snake", "speaker", "listener")
-                         if isinstance(snapshot.get(key), dict)],
-              *snapshot.get("other_npcs", []), *snapshot.get("nearby_npcs", [])]
-    for person in people:
-        name = person.get("npc_name", person.get("name", person.get("character", {}).get("Name", "")))
-        if name:
-            names.update((name, name.split()[0]))
-    texts = []
-    if isinstance(result, (ConversationResponse, SnakeResponse)):
-        texts.extend(turn.text for turn in result.turns)
-    elif isinstance(result, DialoguePartsResponse):
-        texts.append(" ".join(part.text for part in result.parts))
-    elif isinstance(result, (ActionResponse, SnakePlayerResponse)):
-        texts.append(result.reply)
-    if isinstance(result, ConversationResponse):
-        texts.extend((result.initiator_opinion.reason, result.recipient_opinion.reason))
-        texts.extend(entry.reason for entry in result.third_party_opinions)
-        texts.extend(part.text for part in result.handoff_thanks)
-    elif isinstance(result, ResidentTurnResponse):
-        texts.extend(entry.reason for entry in result.third_party_opinions)
-    elif isinstance(result, ResidentAssessment):
-        texts.append(result.opinion.reason)
-    elif isinstance(result, ActionResponse):
-        texts.extend(entry.reason for entry in result.opinion_updates)
-    if isinstance(result, (SnakeDecision, SnakeResidentResponse)) and result.attitudes is not None:
-        texts.extend(value for key, value in result.attitudes.model_dump().items() if key.endswith("_reason"))
-    for text in texts:
-        validate_base_prose(text, names)
-        validate_environment_speech(text, location=snapshot.get("location", snapshot.get("initiator", {}).get("location", "garden")))
-
-
-def _validate_response(raw, snapshot, model):
-    result = model.model_validate_json(raw)
-    check_dialogue = snapshot.get("_dialogue_validation", True)
-    if check_dialogue:
-        _validate_base_presentation(result, snapshot)
-    if isinstance(result, ResidentAssessment):
-        _apply_resident_candidate(snapshot["_baseline"], snapshot["_draft"], result, snapshot)
-        return result
-    if isinstance(result, SnakeResidentResponse):
-        accounts = snapshot["speaker"]["permitted_accounts"]
-        if result.account_id and result.account_id not in {a["claim_id"] for a in accounts}:
-            raise ValueError("Select only an account this resident actually knows, or leave account_id empty.")
-        snapshot = {**snapshot, "account_to_share": next((a for a in accounts if a["claim_id"] == result.account_id), None)}
-        if check_dialogue:
-            text = " ".join(p.text for p in result.parts)
-            for account in accounts:
-                if (account["kind"] in ("former_life", "private_motive") and account["claim_id"] != result.account_id
-                        and mentions_private_recollection(text, account["assertion"], name_forms(snapshot.get("_name_actors", {})))):
-                    raise DialogueValidationError("The spoken recollection needs its actual account_id, not an unrelated selection or an empty field.", RecoveryKind.MISSING_DISCLOSURE)
-    if isinstance(result, DialoguePartsResponse):
-        current = ConversationTurn(speaker=snapshot.get("speaker_role", "initiator"), parts=result.parts)
-        if not check_dialogue:
-            if isinstance(result, ResidentTurnResponse):
-                _apply_resident_candidate(snapshot["_baseline"], snapshot["_draft"], result, snapshot)
-            return result
-        validate_dialogue_format([current])
-        validate_speech_grounding(current.text, snapshot)
-        if snapshot.get("request_kind") == "handoff_thanks":
-            draft = deepcopy(snapshot["_draft"])
-            draft["turns"].append(current)
-            if not draft.get("gift"):
-                validate_resident_grounding(SimpleNamespace(**draft), snapshot["_baseline"])
-        validate_dialogue_completion([current], start_index=snapshot.get("turn_index", 0))
-        names = {current.speaker: _actor_name(snapshot["speaker"]),
-                 "recipient" if current.speaker == "initiator" else "initiator": snapshot.get("_listener_identity", _actor_name(snapshot["listener"]))}
-        validate_dialogue_speakers([current], names, start_index=snapshot.get("turn_index", 0))
-        for role in ("speaker", "listener"):
-            actor = snapshot.get(role)
-            if isinstance(actor, dict) and actor.get("kind") == "python":
-                validate_snake_perspective(current.text, snake_role=role)
-        if (snapshot.get("request_kind") == "conversation_closing" or snapshot.get("_closing")) and any(
-                contains_question(part.text) for part in result.parts):
-            raise ValueError("Answer the last question and close without asking another question.")
-        if isinstance(result, ResidentTurnResponse):
-            projected = _apply_resident_candidate(snapshot["_baseline"], snapshot["_draft"], result, snapshot)
-            facts = _resident_repetition_facts(snapshot["_baseline"], SimpleNamespace(**projected))
-        else:
-            account = snapshot.get("account_to_share")
-            facts = [account["assertion"]] if account else snapshot.get("_factual_context", [])
-        if snapshot.get("request_kind") in ("snake_turn", "conversation_closing", "resident_turn"):
-            preceding = [ConversationTurn(speaker=turn["role"], parts=[ConversationPart(text=turn["text"])])
-                         for turn in snapshot.get("_preceding_turns", snapshot["preceding_turns"])]
-            validate_dialogue_repetition([*preceding, current], snapshot.get("shared_history", {}).get("recent_dialogue", []),
-                                        factual_context=facts, actor_references=_repetition_references(snapshot),
-                                        participant_ids={role: actor_id(snapshot[who]) for role, who in
-                                            ((current.speaker, "speaker"), ("recipient" if current.speaker == "initiator" else "initiator", "listener"))
-                                            if isinstance(snapshot.get(who), dict)})
-        return result
-    if isinstance(result, SnakeResponse):
-        validate_snake_response(result, snapshot)
-        if check_dialogue:
-            validate_dialogue_repetition(result.turns)
-        return result
-    if isinstance(result, SnakePlayerResponse):
-        from snake import validate_player_snake_decision
-        if "permitted_decisions" in snapshot and "decision" not in result.model_fields_set:
-            raise ValueError("Return the immediate decision and generated reply together.")
-        validate_player_snake_decision(result, snapshot)
-        if check_dialogue:
-            validate_english(result.reply, (SNAKE_NAME,))
-            validate_dialogue_format([ConversationTurn(speaker="initiator", parts=[ConversationPart(text=result.reply)])])
-            validate_snake_perspective(result.reply, snake_role="speaker")
-            _validate_speaker(result.reply, SNAKE_NAME, PLAYER_LABEL)
-            validate_immediate_snake_speech(result.reply, result.decision)
-            if result.snake_account_id:
-                account = next(a for a in snake_disclosure_accounts(snapshot) if a["claim_id"] == result.snake_account_id)
-                validate_account_speech(result.reply, account["assertion"], speaker=SNAKE_NAME, listener=PLAYER_LABEL,
-                                        kind=account["kind"], names=name_forms(snapshot.get("_name_actors", {})))
-                validate_snake_account_roles(result.reply, account, snapshot["snake"], {"actor_id": snapshot["player_id"]})
-        return result
-    if isinstance(result, SnakeDecision):
-        validate_snake_decision(result, snapshot)
-        return result
-    if isinstance(result, PlayerIntent):
-        # Observations and questions cannot issue commands, even if the model
-        # also supplied an action or irrelevant recipient/item fields.
-        result = (ActionIntent(action="SAY") if result.message_type != "COMMAND" or _short_player_answer(snapshot.get("_player_message", "")) else
-                  ActionIntent.model_validate(result.model_dump(exclude={"message_type"})))
-        # A first-person apple request has no third-party recipient. Resolve its
-        # pronoun before the reply is generated or any gift is authorized.
-        if result.action == "GIVE_ITEM" and _personal_apple_request(snapshot.get("_player_message", "")):
-            result.target = PLAYER_LABEL
-        if result.action == "TALK_TO_NPC" and result.target.strip().casefold() == PLAYER_LABEL.casefold():
-            # The player is already here talking. No new trip or task is needed.
-            result = ActionIntent(action="SAY")
-        if result.action not in ("TALK_TO_NPC", "GIVE_ITEM"):
-            result.target = ""
-        if result.action != "GIVE_ITEM":
-            result.item, result.quantity = "", 0
-        if (result.action == "GIVE_ITEM" and result.item != "fruit" and snapshot.get("resolved_work_id") is not None
-                and result.item != snapshot["resolved_work_id"]):
-            result = ActionIntent(action="SAY")
-            result._clarification = "The work reference is ambiguous or does not match an owned work. Ask which exact work is intended."
-    if isinstance(result, ActionIntent):
-        intent = snapshot.get("request_intent")
-        if isinstance(result, ActionResponse) and intent:
-            result._authorized_intent = intent.copy()
-        declined_gift = (isinstance(result, ActionResponse) and intent and intent["action"] == "GIVE_ITEM"
-                         and result.action == "SAY" and not result.target and not result.item and result.quantity == 0)
-        if intent and not declined_gift and (result.action != intent["action"] or result.target.strip().casefold() != intent["target"].casefold()
-                       or result.item != intent["item"] or result.quantity != intent["quantity"]):
-            raise ValueError("The action, recipient, item, or quantity differs from the current request.")
-        if isinstance(result, ActionResponse) and not result.reply.strip():
-            raise ValueError("Empty reply")
-        if isinstance(result, ActionResponse):
-            validate_player_transfer(result, snapshot)
-            if check_dialogue:
-                validate_speaker_identity(result.reply, own_name(snapshot), PLAYER_NAME_TAG)
-        if isinstance(result, ActionResponse) and check_dialogue:
-            validate_speech_grounding(result.reply, {
-                "_name_actors": snapshot.get("_name_actors", {}),
-                "speaker": {"name": snapshot.get("npc_name", ""),
-                            "situation": snapshot.get("private_context", {}).get("situation", {})},
-                "listener": "You", "day": snapshot.get("day"),
-            })
-            validate_dialogue_format([ConversationTurn(speaker="initiator", parts=[ConversationPart(text=result.reply)])])
-            for entry in result.opinion_updates:
-                validate_opinion_reason(entry.reason, snapshot.get("npc_name", snapshot.get("character", {}).get("Name", "")), entry.person)
-        if (check_dialogue and isinstance(result, ActionResponse) and result.end_conversation
-                and contains_question(result.reply)):
-            raise ValueError(
-                "A closing reply cannot ask a question. For SAY, either use end_conversation false so the player "
-                "can answer, or keep it true and finish without questions. Other actions must keep "
-                "end_conversation true and acknowledge the task without questions."
-            )
-        if result.action == "GIVE_ITEM":
-            works = {w["id"] for w in snapshot.get("owned_works", [])}
-            if (result.item != "fruit" and (result.item not in works or result.quantity != 1)) or result.quantity < 1:
-                raise ValueError("Giving requires a supported item and a positive quantity.")
-        elif result.item or result.quantity:
-            raise ValueError("Only giving actions may include items.")
-        if result.action in ("TALK_TO_NPC", "GIVE_ITEM"):
-            target = result.target.strip().casefold()
-            if not target:
-                raise ValueError("Missing recipient")
-            matches = [other for other in snapshot.get("other_npcs", []) if other["npc_name"].casefold() == target]
-            if len(matches) != 1 or not matches[0].get("available_to_talk", True):
-                raise ValueError("The recipient must be another available NPC.")
-            if result.action == "TALK_TO_NPC" and matches[0].get("kind") == "player":
-                raise ValueError("The player has no walking conversation destination; reply with SAY.")
-            result.target = matches[0]["npc_name"]
-        elif result.target:
-            raise ValueError("Only conversation and giving actions may have a target.")
-    elif isinstance(result, ConversationResponse):
-        validate_resident_gift(result.gift, result.turns, snapshot)
-        people = [snapshot[role]["npc_name"] for role in ("initiator", "recipient")]
-        people.extend(n["npc_name"] for n in snapshot.get("nearby_npcs", []))
-        _resident_information(snapshot, vars(result), incomplete=False)
-        validate_agreements(result.accepted_proposals, snapshot.get("permitted_proposals", []),
-                            result.turns, snapshot["initiator"]["npc_id"], snapshot["recipient"]["npc_id"],
-                            current_phase=phase_index(snapshot["initiator"].get("day", 1),
-                                                      snapshot["initiator"].get("time_of_day", "day")),
-                            dialogue_validation=check_dialogue)
-        if check_dialogue:
-            validate_dialogue_format(result.turns)
-            validate_dialogue_completion(result.turns)
-            validate_resident_grounding(result, snapshot)
-        history = snapshot.get("shared_history") or {}
-        if snapshot.get("purpose") == "food_request":
-            outcome = snapshot["food_request"]["outcome"]
-            if (result.accepted_proposals or len(result.turns) not in (2, 3) or result.food_outcome != outcome
-                    or bool(result.handoff_thanks) != (outcome == "accepted")):
-                raise ValueError("Dialogue must respect the food decision and reserve thanks for a successful handoff.")
-            if check_dialogue and len(result.turns) == 3 and (not contains_question(result.turns[-2].text)
-                                          or contains_question(result.turns[-1].text)):
-                raise ValueError("A third food-request turn may only answer a closing question.")
-            if check_dialogue and result.handoff_thanks:
-                thanks = ConversationTurn(speaker="initiator", parts=result.handoff_thanks)
-                validate_dialogue_format([thanks])
-                validate_dialogue_completion([thanks])
-                validate_english(thanks.text, people)
-                validate_resident_grounding(SimpleNamespace(turns=[*result.turns, thanks], disclosures=result.disclosures), snapshot)
-                _validate_speaker(" ".join(part.text for part in result.handoff_thanks),
-                                  snapshot["initiator"]["npc_name"], snapshot["recipient"]["npc_name"])
-        elif len(result.turns) < RESIDENT_TURN_COUNT or result.food_outcome or (result.handoff_thanks and not (result.gift and result.gift.accept_turn is not None)):
-            raise ValueError("Chats need at least four turns and cannot include a food outcome or handoff thanks.")
-        if check_dialogue and len(result.turns) == CONVERSATION_MAX_TURNS and contains_question(result.turns[-1].text):
-            raise ValueError("At the turn limit, finish with an answer or closing rather than a new question.")
-        for entry, partner in (
-            (result.initiator_opinion, snapshot["recipient"]),
-            (result.recipient_opinion, snapshot["initiator"]),
-        ):
-            if entry.person.strip().casefold() != partner["npc_name"].casefold():
-                raise ValueError("Conversation opinions must refer to the other participant.")
-        if check_dialogue:
-            validate_dialogue_speakers(result.turns, {role: snapshot[role]["npc_name"] for role in ("initiator", "recipient")})
-            validate_dialogue_repetition(result.turns, history.get("recent_dialogue", []),
-                                        factual_context=_resident_repetition_facts(snapshot, result),
-                                        actor_references=_repetition_references(snapshot),
-                                        participant_ids={role: actor_id(snapshot[role]) for role in ("initiator", "recipient")})
-        validate_orientation(result, snapshot)
-    return result
-
-
 PLAYER_POSSESSIONS_INSTRUCTION = """
 The player is actor_id player, target You. Only explicit feasible player commands
 authorize GIVE_ITEM. Comments, questions and NPC openings are SAY. Works are unique:
@@ -2178,129 +1263,6 @@ This is only an offer until the player accepts in a later message. A player's
 own explicit apple offer may use their giver_id only when your reply explicitly
 accepts that actual offer. Never promise a creative commission or arbitrary task.
 """
-
-
-def validate_resident_gift(gift, turns, snapshot):
-    if gift is None:
-        return
-    if snapshot.get("purpose") == "food_request" or snapshot.get("arrival_focus"):
-        raise ValueError("This exchange uses its existing food or orientation rules, without a separate gift offer.")
-    from dialogue_rules import unquoted_speech
-    roles = {actor_id(snapshot[role]): role for role in ("initiator", "recipient")}
-    if gift.giver_id not in roles or gift.recipient_id not in roles or gift.giver_id == gift.recipient_id:
-        raise ValueError("A gift must stay between the actual conversation participants.")
-    giver = snapshot[roles[gift.giver_id]]
-    if gift.offer_turn >= len(turns) or turns[gift.offer_turn].speaker != roles[gift.giver_id]:
-        raise ValueError("A gift offer needs its giver's actual speech.")
-    speech = unquoted_speech(turns[gift.offer_turn].text).casefold()
-    validate_gift_offer_speech(turns[gift.offer_turn].text, gift.item, gift.quantity,
-                               giver.get("inventory", {}).get("fruit", 0))
-    if gift.item == "fruit":
-        if gift.quantity > giver.get("inventory", {}).get("fruit", 0) or not re.search(r"\b(?:apple|apples|fruit)\b", speech):
-            raise ValueError("The giver must own and offer the actual apples.")
-    else:
-        work = next((w for w in giver.get("owned_works", []) if w["id"] == gift.item), None)
-        if work is None or gift.quantity != 1 or work["title"].casefold() not in turns[gift.offer_turn].text.casefold():
-            raise ValueError("A creative offer must identify one owned work and its spoken title.")
-    if gift.accept_turn is not None:
-        index = gift.accept_turn
-        if index <= gift.offer_turn or index >= len(turns) or turns[index].speaker != roles[gift.recipient_id]:
-            raise ValueError("The recipient must accept on their own later turn.")
-        acceptance = unquoted_speech(turns[index].text).casefold()
-        if not gift_acceptance_supported(acceptance):
-            raise ValueError("A gift transfer needs explicit generated acceptance.")
-
-
-def gift_acceptance_supported(text):
-    from dialogue_rules import unquoted_speech
-    speech = unquoted_speech(text).casefold()
-    return bool(re.search(r"\b(?:i accept|i['’]ll take|yes|thank you|thanks)\b", speech)
-        and not re.search(r"\b(?:no thanks|decline|cannot accept|can't accept|don't want|do not want|if|unless|maybe|perhaps|not sure)\b", speech))
-
-
-def validate_gift_offer_speech(text, item, quantity, stock):
-    from dialogue_rules import unquoted_speech
-    speech = unquoted_speech(text).casefold()
-    if (not re.search(r"\b(?:offer|would you like|want|give you|for you|have this|take this)\b", speech)
-            or re.search(r"\b(?:not|never|won't|cannot|can't|don't|do not)\b[^.!?]{0,35}\b(?:offer|give|have|take|for you)\b", speech)):
-        raise ValueError("A gift offer needs supporting offer speech.")
-    if item == "fruit":
-        counts = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
-        spoken = re.findall(r"\b(\d+|one|two|three|four|five)\s+(?:of my\s+)?(?:apples?|fruit)\b", speech)
-        values = [int(word) if word.isdigit() else counts[word] for word in spoken]
-        if values and any(value != quantity for value in values):
-            raise ValueError("The spoken apple quantity differs from the offered quantity.")
-        if quantity > 1 and not values and not (quantity == stock and re.search(r"\ball (?:of )?my (?:apples|fruit)\b", speech)):
-            raise ValueError("Identify the offered apple quantity in speech.")
-
-
-def validate_player_transfer(result, snapshot):
-    """Effect authorization is independent of optional dialogue coherence checks."""
-    if result.invitation:
-        if (result.action != "SAY" or result.gift_offer or result.gift_acceptance or result.apple_promise
-                or result.invitation.evidence not in result.reply
-                or result.invitation.destination not in {c["id"] for c in snapshot.get("invitation_choices", [])}):
-            raise ValueError("An invitation needs original speech and a supplied physical destination.")
-    if result.invitation_acceptance:
-        offer = snapshot.get("pending_invitation")
-        if (result.action != "SAY" or not offer or offer["id"] != result.invitation_acceptance
-                or not snapshot.get("_player_message")):
-            raise ValueError("Travel acceptance must identify the actual preceding invitation.")
-    if result.invitation_resolution:
-        source = snapshot.get("_player_message", "") if result.invitation_resolution == "declined" else result.reply
-        if (not snapshot.get("pending_invitation") or result.invitation or result.invitation_acceptance
-                or not result.invitation_resolution_evidence or result.invitation_resolution_evidence not in source):
-            raise ValueError("Invitation resolution requires the actual offer and original refusal or withdrawal.")
-    if snapshot.get("request_kind") in ("player_opening", "player_gift", "player_acknowledgment") and result.action != "SAY":
-        raise ValueError("An engine-initiated player turn cannot authorize a player command.")
-    from dialogue_rules import unquoted_speech
-    speech = unquoted_speech(result.reply).casefold()
-    incoming = snapshot.get("player_interaction", {}).get("incoming_gift")
-    promise = result.apple_promise
-    if promise:
-        if snapshot.get("pending_apple_promise") or snapshot.get("player_apple_offer_count", 0) >= CONVERSATION_MAX_AGREEMENTS:
-            raise ValueError("Keep the existing apple offer unchanged; this conversation has no new promise slot.")
-        from dialogue_rules import validate_apple_offer, validate_apple_promise
-        if result.action != "SAY" or incoming or result.gift_offer:
-            raise ValueError("A future apple promise is separate from a current gift.")
-        if promise.deadline not in [p["deadline"] for p in snapshot.get("apple_promise_choices", [])]:
-            raise ValueError("Use an available apple deadline.")
-        now = snapshot.get("phase_index", 0)
-        if promise.giver_id == snapshot.get("npc_id"):
-            validate_apple_offer(result.reply, promise.deadline, current_phase=now)
-        elif promise.giver_id == snapshot.get("player_id"):
-            validate_apple_promise(snapshot.get("_player_message", ""), result.reply, promise.deadline, current_phase=now)
-        else:
-            raise ValueError("An apple promise must belong to the current participants.")
-    if result.gift_acceptance:
-        if not incoming or not gift_acceptance_supported(result.reply):
-            raise ValueError("Gift acceptance needs a current incoming gift and explicit accepted speech.")
-    offer = result.gift_offer
-    if offer:
-        if (result.action != "SAY" or incoming or snapshot.get("request_kind") == "player_acknowledgment"
-                or offer.recipient_id != snapshot.get("player_id")):
-            raise ValueError("Only a SAY reply can offer one gift to the current player.")
-        validate_gift_offer_speech(result.reply, offer.item, offer.quantity, snapshot.get("inventory", {}).get("fruit", 0))
-        if offer.item == "fruit":
-            if offer.quantity > snapshot.get("inventory", {}).get("fruit", 0):
-                raise ValueError("An offer cannot spend unavailable apples.")
-            if not re.search(r"\b(?:apple|apples|fruit)\b", speech):
-                raise ValueError("Identify the offered apples in speech.")
-        else:
-            work = next((w for w in snapshot.get("owned_works", []) if w["id"] == offer.item), None)
-            if work is None or offer.quantity != 1 or work["title"].casefold() not in result.reply.casefold():
-                raise ValueError("Identify one actual owned work by ID and its title in the offer.")
-    if result.action == "GIVE_ITEM":
-        if (snapshot.get("request_intent") or result._authorized_intent).get("action") != "GIVE_ITEM":
-            raise ValueError("A directed gift requires explicit player-command authorization.")
-    if result.action == "SAY":
-        transfer_claim = re.search(r"\b(?:i (?:have |just |already )?(?:gave|given|transferred|handed)|you now own|it is now yours|it['’]s yours now)\b", speech)
-        evidence = (snapshot.get("known_player_transfers") or snapshot.get("player_interaction", {}).get("committed_transfer")
-                    or any(m.get("kind") in ("gave_fruit", "gave_work") for m in snapshot.get("memories", [])))
-        if transfer_claim and not evidence:
-            raise ValueError("SAY cannot claim an unperformed transfer.")
-        if re.search(r"\bi(?: will|['’]ll| promise to)\b[^.!?]{0,35}\b(?:paint|compose|write|make)\b[^.!?]{0,50}\b(?:for you|you a|your commission)\b", speech):
-            raise ValueError("A SAY reply cannot promise an unsupported creative commission.")
 
 
 class RequestError(Exception):
@@ -2381,20 +1343,6 @@ class _StreamRepetitionGuard:
                     record_output("validation", reason)
                     raise StreamRepetitionError(reason)
         self.tails[kind], self.unchecked[kind] = tail, unchecked
-
-
-class DialogueTurnError(ValueError):
-    def __init__(self, message, turn_indices):
-        super().__init__(message)
-        self.turn_indices = tuple(turn_indices)
-
-
-class DialogueRepetitionError(DialogueTurnError):
-    pass
-
-
-class DialogueSpeakerError(DialogueTurnError):
-    pass
 
 
 def _api_error_message(exc):
@@ -2484,10 +1432,10 @@ def _request_context(message, snapshot, correction):
         return (VOICE_REWRITE_INSTRUCTION + ("\n" + correction if correction else ""), schema,
                 {"parts": parts})
     instruction, schema, _ = response_contract(snapshot, correction=bool(correction))
-    context = world_context(snapshot, correction=bool(correction))
+    context = dialogue_context.world_context(snapshot, correction=bool(correction))
     if snapshot.get("_compact_rewrite") and snapshot.get("request_kind") not in ("resident_turn", "snake_turn"):
         instruction = (
-            f"You are {_actor_name(snapshot['speaker'])}, speaking only to {_actor_name(snapshot['listener'])}. "
+            f"You are {dialogue_context._actor_name(snapshot['speaker'])}, speaking only to {dialogue_context._actor_name(snapshot['listener'])}. "
             "Write fresh speech for this one step. The structured outcome and account selection are fixed. "
             "Use only supplied facts and your own knowledge. Follow transaction for the current stage; "
             "previous events are not a new offer or transfer. Respond to the listener's latest point, "
@@ -2507,7 +1455,7 @@ def _request_context(message, snapshot, correction):
     instruction += stock_instruction
     if snapshot.get("request_kind") in ("snake_turn", "conversation_closing"):
         instruction += (
-            f"\nWrite only {_actor_name(snapshot['speaker'])}'s words to {_actor_name(snapshot['listener'])}. "
+            f"\nWrite only {dialogue_context._actor_name(snapshot['speaker'])}'s words to {dialogue_context._actor_name(snapshot['listener'])}. "
             "Keep that identity in every part. I/my refers to the speaker; you/your refers to the listener. "
             "Do not address yourself by name, answer your own question as the other person, or adopt the listener's "
             "memories, authority, debts, or task. Explicit quotations and correct self-introductions are allowed.")
@@ -2519,9 +1467,9 @@ def _request_context(message, snapshot, correction):
     if NPC_ARRIVAL_INSTRUCTION not in instruction:
         instruction += "\n" + NPC_ARRIVAL_INSTRUCTION
     if snapshot.get("_name_actors"):
-        context["engine_identities"] = _catalog_for_prompt(snapshot["_name_actors"])
+        context["engine_identities"] = dialogue_context._catalog_for_prompt(snapshot["_name_actors"])
     if snapshot.get("request_kind") in ("resident_turn", "snake_turn", "conversation_closing"):
-        focus = context["reply_context"] = _reply_context(snapshot)
+        focus = context["reply_context"] = dialogue_context._reply_context(snapshot)
         instruction += ("\nConversation messages contain actual accepted speech: assistant/model messages are your earlier "
                         "words; user messages after the context are the listener's words. Write your reply to the last "
                         "listener message. Answer their questions before moving the topic forward; do not summarize "
@@ -2555,10 +1503,10 @@ def _request_context(message, snapshot, correction):
         )
     location = snapshot.get("location", snapshot.get("initiator", {}).get("location", "garden"))
     if location == "garden":
-        context.setdefault("environment", local_environment(location))
+        context.setdefault("environment", dialogue_context.local_environment(location))
         instruction += "\n" + GARDEN_INSTRUCTION
     else:
-        context["environment"] = local_environment(location)
+        context["environment"] = dialogue_context.local_environment(location)
         instruction += ("\nYour current surroundings are " + context["environment"]["place"] + ". "
                         "Use environment.description and its visible objects when describing where you are. "
                         "You are inside the apartment building. The garden, grass, apple tree and open sky are outside, "
@@ -2646,7 +1594,7 @@ def _conversation_messages(payload, snapshot):
                     "Answer the listener above from your own perspective in one or two fresh complete sentences. "
                     "Do not copy their speech, adopt their I/my, or recite planning notes. Use only your permitted names "
                     "and effects; quote an unfamiliar name only when asking who was mentioned. Return the required JSON.")
-        focus = _reply_context(snapshot)
+        focus = dialogue_context._reply_context(snapshot)
         if snapshot.get("_closing") or snapshot.get("request_kind") == "conversation_closing":
             reminder += " This is the final answer. End with a statement and ask no question."
         if (snapshot.get("request_kind") == "snake_turn" and snapshot["turn_index"]
@@ -2892,13 +1840,13 @@ def _deduplicate_dialogue_parts(turn):
     """Keep generated words while dropping exact repeated parts or long sentences."""
     parts, seen_parts, seen_sentences = [], set(), set()
     for part in turn.parts:
-        signature = tuple(_speech_words(part.text))
+        signature = tuple(dialogue_validation._speech_words(part.text))
         if signature in seen_parts:
             continue
         seen_parts.add(signature)
         sentences = []
         for sentence in re.split(r"(?<=[.!?])\s+", part.text.strip()):
-            signature = tuple(_speech_words(sentence))
+            signature = tuple(dialogue_validation._speech_words(sentence))
             if len(signature) >= DIALOGUE_REPEAT_PHRASE_WORDS:
                 if signature in seen_sentences:
                     continue
@@ -2915,345 +1863,8 @@ def _resident_draft():
                 third_party_opinions=[], leverage=[], opinions={})
 
 
-def _resident_information(snapshot, draft, *, incomplete=True):
-    return validate_information(SimpleNamespace(**draft), snapshot.get("_information_validation"),
-        names=(*[p["name"] for p in snapshot.get("_name_actors", {}).values()], SNAKE_NAME),
-        participant_names={role: snapshot[role]["npc_name"] for role in ("initiator", "recipient")},
-        dialogue_validation=snapshot.get("_dialogue_validation", True),
-        actor_references=account_references(snapshot.get("_name_actors", {})), incomplete=incomplete)
-
-
-def _pending_reactions(snapshot, draft, role):
-    info = information_from_dict(snapshot["_information_validation"]) if snapshot.get("_information_validation") else None
-    if info is None:
-        return []
-    beliefs, _, _ = _resident_information(snapshot, draft)
-    options = {option.id: option for option in info.options}
-    pending = []
-    for entry in draft["disclosures"]:
-        source_role = draft["turns"][entry.turn].speaker
-        if source_role == role or entry.listener_stance is not None:
-            continue
-        option = options[entry.claim_id]
-        source = beliefs[source_role].get(entry.claim_id)
-        pending.append(dict(disclosure_turn=entry.turn, claim_id=entry.claim_id, assertion=option.assertion,
-                            stances=listener_stances(option, beliefs[role], options,
-                                                    firsthand_source=bool(source and source.direct))))
-    return pending
-
-
-def _resident_accounts_for_turn(accounts, info, role, draft, catalog, *, concern_id=None):
-    """Offer one own private fact, keeping heard accounts and garden evidence."""
-    options = {option.id: option for option in info.options}
-    owner = info.participants[role]
-    personal = [a for a in accounts if a["subject_id"] == owner and a["kind"] in ("former_life", "private_motive")]
-    if not personal:
-        return accounts
-    personal_facts = {options[a["claim_id"]].fact_id for a in personal}
-    heard = draft["turns"][-1].text if draft["turns"] and draft["turns"][-1].speaker != role else ""
-    names = [p["name"] for p in catalog.values()]
-    required = info.focus_claim_id if role == "initiator" else None
-    selected = next((options[a["claim_id"]].fact_id for a in personal if a["claim_id"] == required), None)
-    if selected is None:
-        selected = next((options[a["claim_id"]].fact_id for a in personal if mentions_account(heard, a["assertion"], names)), None)
-    if selected is None:
-        selected = next((options[d.claim_id].fact_id for d in reversed(draft["disclosures"])
-                         if draft["turns"][d.turn].speaker == role and options[d.claim_id].fact_id in personal_facts), None)
-    if selected is None:
-        selected = next((options[a["claim_id"]].fact_id for a in personal if a["claim_id"] == concern_id), None)
-    if selected is None:
-        used = {options[d.claim_id].fact_id for d in draft["disclosures"] if draft["turns"][d.turn].speaker == role}
-        available = [o for o in info.options if o.fact_id in personal_facts - used and o.creator_id is None]
-        choice = next((o for o in available if o.kind == "private_motive"), next(iter(available), None))
-        selected = choice.fact_id if choice else None
-    return [a for a in accounts if options[a["claim_id"]].fact_id not in personal_facts
-            or options[a["claim_id"]].fact_id == selected]
-
-
-def _apply_resident_candidate(snapshot, draft, candidate, state):
-    """Return a validated copy; a rejected attempt cannot alter accepted state."""
-    projected = deepcopy(draft)
-    role, index = state["speaker_role"], state["turn_index"]
-    pending = {entry["disclosure_turn"]: entry for entry in state["pending_reactions"]}
-    if len({r.disclosure_turn for r in candidate.reactions}) != len(candidate.reactions):
-        raise ValueError("React once to each pending disclosure.")
-    if {r.disclosure_turn for r in candidate.reactions} != set(pending):
-        raise ValueError("Supply your own reaction to every pending heard disclosure, and no others.")
-    for reaction in candidate.reactions:
-        if reaction.stance not in pending[reaction.disclosure_turn]["stances"]:
-            raise ValueError("Your stance must respect your firsthand evidence and prior beliefs.")
-        entry = next(d for d in projected["disclosures"] if d.turn == reaction.disclosure_turn)
-        entry.listener_stance = reaction.stance
-    if isinstance(candidate, ResidentAssessment):
-        other = "recipient" if role == "initiator" else "initiator"
-        if candidate.opinion.person != snapshot[other]["npc_name"]:
-            raise ValueError("Assess only your conversation partner using the supplied opinion record name.")
-        if snapshot.get("_dialogue_validation", True):
-            validate_english(candidate.opinion.reason, (own_name(snapshot[role]), own_name(snapshot[other])))
-            validate_base_prose(candidate.opinion.reason, (own_name(snapshot[role]), own_name(snapshot[other])))
-            validate_opinion_reason(candidate.opinion.reason, snapshot[role]["npc_name"], snapshot[other]["npc_name"])
-        projected["opinions"][role] = candidate.opinion
-        _resident_information(snapshot, projected)
-        return projected
-
-    turn = ConversationTurn(speaker=role, parts=candidate.parts)
-    projected["turns"].append(turn)
-    if candidate.gift_offer:
-        if projected["gift"] is not None or snapshot.get("arrival_focus") or snapshot.get("purpose") == "food_request":
-            raise ValueError("Only one gift offer is available in an ordinary conversation.")
-        projected["gift"] = ResidentGift(**candidate.gift_offer.model_dump(), giver_id=actor_id(snapshot[role]), offer_turn=index)
-    if candidate.accept_gift:
-        gift = projected["gift"]
-        if gift is None or gift.recipient_id != actor_id(snapshot[role]) or gift.accept_turn is not None:
-            raise ValueError("Accept only an earlier pending gift addressed to you.")
-        gift.accept_turn = index
-    validate_resident_gift(projected["gift"], projected["turns"], snapshot)
-    choices = state["choices"]
-    for field in ("offers", "acceptances"):
-        entries = getattr(candidate, field)
-        if len(set(entries)) != len(entries) or any(entry not in choices[field] for entry in entries):
-            raise ValueError("Choose only available proposals for your own offer or an earlier giver's offer.")
-    for proposal_id in candidate.offers:
-        if proposal_id in projected["offers"]:
-            raise ValueError("This proposal has already been offered.")
-        if snapshot.get("_dialogue_validation", True):
-            # Validate the giver's authorization now; acceptance must still be
-            # genuinely spoken on a later turn before an agreement is assembled.
-            from dialogue_rules import validate_apple_offer
-            proposal = next(p for p in snapshot["permitted_proposals"] if p["id"] == proposal_id)
-            validate_apple_offer(turn.text, proposal["deadline"], current_phase=phase_index(
-                snapshot[role].get("day", 1), snapshot[role].get("time_of_day", "day")))
-        projected["offers"][proposal_id] = index
-    for proposal_id in candidate.acceptances:
-        projected["accepted_proposals"].append(AcceptedProposal(
-            proposal_id=proposal_id, offer_turn=projected["offers"][proposal_id], accept_turn=index))
-    for entry in candidate.disclosures:
-        if entry.claim_id not in choices["disclosures"]:
-            raise ValueError("Disclose only your own permitted or previously heard accounts.")
-        projected["disclosures"].append(SimpleNamespace(turn=index, claim_id=entry.claim_id,
-                                                        intent=entry.intent, listener_stance=None))
-    if bool((snapshot.get("_information_validation") or {}).get("focus_claim_id")) and index == 0:
-        info = snapshot["_information_validation"]
-        options = {o["id"]: o for o in info["options"]}
-        focus_fact = options[info["focus_claim_id"]]["fact_id"]
-        if not any(options[d.claim_id]["fact_id"] == focus_fact for d in candidate.disclosures):
-            raise ValueError("Disclose the required task account or a permitted denial of that same fact.")
-    for entry in candidate.third_party_opinions:
-        if entry.claim_id not in choices["third_party_opinions"]:
-            raise ValueError("Assess only an eligible account you heard earlier.")
-        projected["third_party_opinions"].append(ThirdPartyOpinion(turn=index, **entry.model_dump()))
-        if snapshot.get("_dialogue_validation", True):
-            validate_base_prose(entry.reason, [p["name"] for p in snapshot.get("_name_actors", {}).values()])
-    for entry in candidate.leverage:
-        if entry.claim_id not in choices["leverage"]:
-            raise ValueError("Leverage requires a permitted account known before this turn.")
-        projected["leverage"].append(LeverageUse(turn=index, **entry.model_dump()))
-    for field, limit in (("accepted_proposals", CONVERSATION_MAX_AGREEMENTS),
-                         ("disclosures", CONVERSATION_MAX_DISCLOSURES),
-                         ("third_party_opinions", CONVERSATION_MAX_REPUTATION_EFFECTS),
-                         ("leverage", CONVERSATION_MAX_LEVERAGE)):
-        if len(projected[field]) > limit:
-            raise ValueError(f"The complete conversation exceeds its {field} limit.")
-    if len(projected["offers"]) > CONVERSATION_MAX_AGREEMENTS:
-        raise ValueError("The complete conversation exceeds its offer limit.")
-    _resident_information(snapshot, projected)
-    validate_agreements(projected["accepted_proposals"], snapshot.get("permitted_proposals", []), projected["turns"],
-                        snapshot["initiator"]["npc_id"], snapshot["recipient"]["npc_id"],
-                        current_phase=phase_index(snapshot[role].get("day", 1), snapshot[role].get("time_of_day", "day")),
-                        dialogue_validation=snapshot.get("_dialogue_validation", True))
-    if snapshot.get("_dialogue_validation", True):
-        validate_resident_grounding(SimpleNamespace(**projected), snapshot)
-        if snapshot.get("arrival_focus", False) and index == 0:
-            if not orientation_speech([turn.text]):
-                raise ValueError("Open this orientation exchange with an arrival or surroundings concern; routine apple goals are deferred.")
-    return projected
-
-
-def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, thanks=False, closing=False):
-    """Build a provider view from one actor's projected knowledge, never the partner's private view."""
-    index = len(draft["turns"])
-    role = role or ("initiator" if index % 2 == 0 else "recipient")
-    other = "recipient" if role == "initiator" else "initiator"
-    person, partner = snapshot[role], snapshot[other]
-    catalog = snapshot.get("_name_actors", {})
-    orientation = snapshot.get("arrival_focus", False)
-    # This helper sanitizes historical reasons and presentation. Select only the
-    # current actor; the other private view never enters the returned state.
-    owned_context = world_context(snapshot)
-    owned = owned_context[role]
-    private = owned.get("private_context", {})
-    speaker = dict(npc_id=actor_id(person), name=own_name(person), kind="human resident", location=person.get("location", "garden"),
-                   opinion_record_name=person["npc_name"], personality=character_context(person["character"]).get("personality", ""),
-                   situation=private.get("situation", {}), concern=deepcopy(private.get("concern")),
-                   opinion_of_listener=private.get("opinions", {}).get(partner["npc_name"]))
-    listener = dict(npc_id=actor_id(partner), name=own_name(partner), kind="human resident", location=partner.get("location", "garden"))
-    if not assessment and speaker["opinion_of_listener"]:
-        # Reasons are private assessments, often long or written in third person;
-        # feeding their wording into speech teaches the model to recite them.
-        speaker["opinion_of_listener"] = {"opinion": speaker["opinion_of_listener"]["opinion"]}
-    pending = _pending_reactions(snapshot, draft, role)
-    projection = _resident_information(snapshot, draft)
-    info = information_from_dict(snapshot["_information_validation"]) if snapshot.get("_information_validation") else None
-    accounts = []
-    if info and not orientation:
-        beliefs, acquired, heard = projection
-        options = {option.id: option for option in info.options}
-        original_views = {a["claim_id"]: a for a in private.get("permitted_accounts", [])}
-        for claim_id in dict.fromkeys([*info.allowed[role], *acquired[role], *[p["claim_id"] for p in pending]]):
-            option = options[claim_id]
-            belief = beliefs[role].get(claim_id)
-            # An account newly heard is hearsay with this speaker as its knowledge
-            # owner. Never copy the discloser's private motive, stance or evidence.
-            view = deepcopy(original_views.get(claim_id, {}))
-            if not view:
-                disclosed = next((d for d in reversed(draft["disclosures"]) if d.claim_id == claim_id), None)
-                if disclosed is not None:
-                    supplied = next((a for source_role in ("initiator", "recipient")
-                                     for a in snapshot[source_role].get("private_context", {}).get("permitted_accounts", [])
-                                     if a["claim_id"] == claim_id), {})
-                    view = {key: deepcopy(supplied[key]) for key in ("object_id", "object_name", "event_time") if key in supplied}
-            source = belief.source_id if belief else actor_id(partner)
-            view.update(claim_id=claim_id, assertion=option.assertion, kind=option.kind,
-                        subject_id=option.subject_id, subject_name=catalog.get(option.subject_id, {}).get("name", ""),
-                        original_speaker_id=option.originator_id,
-                        original_speaker_name=catalog.get(option.originator_id, {}).get("name", ""),
-                        immediate_source_id=source, immediate_source_name=catalog.get(source, {}).get("name", ""),
-                        knowledge_owner_name=person["npc_name"], basis=("firsthand" if belief and belief.direct else
-                            "deliberate denial; private to this speaker" if option.creator_id == actor_id(person) else
-                            "own assertion" if belief and belief.source_id == actor_id(person) else "hearsay"),
-                        stance=belief.stance if belief else "pending your reaction")
-            for field in ("subject", "object", "original_speaker", "immediate_source"):
-                target = view.get(field + "_id")
-                if target:
-                    view[field + "_relation"] = "speaker" if target == actor_id(person) else "listener" if target == actor_id(partner) else "another person"
-            if option.kind == "private_motive":
-                for field in ("object_id", "object_name", "object_relation"):
-                    view.pop(field, None)  # A goal target is not evidence of an event with that person.
-            accounts.append(view)
-        accounts = _resident_accounts_for_turn(accounts, info, role, draft, catalog,
-                                               concern_id=(private.get("concern") or {}).get("claim_id"))
-    choices = dict(offers=[], acceptances=[], disclosures=[], third_party_opinions=[], leverage=[])
-    if not orientation and snapshot.get("purpose") != "food_request":
-        used = {a.proposal_id for a in draft["accepted_proposals"]}
-        for proposal in snapshot.get("permitted_proposals", []):
-            if proposal["id"] in used:
-                continue
-            if (not closing and not assessment and proposal["promisor_id"] == actor_id(person)
-                    and proposal["id"] not in draft["offers"] and len(draft["offers"]) < CONVERSATION_MAX_AGREEMENTS):
-                choices["offers"].append(proposal["id"])
-            if proposal["recipient_id"] == actor_id(person) and proposal["id"] in draft["offers"]:
-                choices["acceptances"].append(proposal["id"])
-        if info:
-            beliefs, acquired, heard = projection
-            seen = {(draft["turns"][d.turn].speaker, d.claim_id) for d in draft["disclosures"]}
-            choices["disclosures"] = [a["claim_id"] for a in accounts if (role, a["claim_id"]) not in seen]
-            # Pending reactions are chosen before this reply's effects are checked.
-            heard_ids = {claim_id for (hearer, claim_id), turn in heard.items() if hearer == role and turn < index}
-            heard_ids.update(p["claim_id"] for p in pending)
-            pending_stances = {p["claim_id"]: p["stances"] for p in pending}
-            for account in accounts:
-                claim_id = account["claim_id"]
-                option = options[claim_id]
-                related = [b for b in beliefs[role].values() if options[b.claim_id].fact_id == option.fact_id]
-                if (claim_id in heard_ids and option.subject_id not in info.participants.values()
-                        and (account["stance"] == "believed" or "believed" in pending_stances.get(claim_id, []))
-                        and not any(b.direct or b.assessed and options[b.claim_id].affirmed == option.affirmed for b in related)
-                        and not any(draft["turns"][e.turn].speaker == role
-                                    and options[e.claim_id].fact_id == option.fact_id for e in draft["third_party_opinions"])):
-                    choices["third_party_opinions"].append(claim_id)
-            choices["leverage"] = [a["claim_id"] for a in accounts if a["kind"] in LEVERAGE_ACCOUNT_KINDS
-                and (a["claim_id"] in beliefs[role] or a["claim_id"] in heard_ids)
-                and a["claim_id"] not in {entry.claim_id for entry in draft["leverage"]}]
-    preceding = [dict(name=own_name(snapshot[t.speaker]), role=t.speaker, text=t.text) for t in draft["turns"]]
-    state = dict(request_kind="resident_assessment" if assessment else "handoff_thanks" if thanks else "resident_turn",
-                 speaker_role=role, turn_index=index, purpose=snapshot.get("purpose", "chat"),
-                 interaction_id=snapshot.get("interaction_id"), arrival_focus=orientation, speaker=speaker, listener=listener,
-                 opinion_target=partner["npc_name"], pending_reactions=pending, choices=choices,
-                 day=person.get("day", 1), time_of_day=person.get("time_of_day", "day"),
-                 environment=local_environment(person.get("location", "garden")), location=person.get("location", "garden"),
-                 preceding_turns=preceding, shared_history=deepcopy(owned_context.get("shared_history", {})),
-                 _preceding_turns=preceding, _name_actors=catalog, _dialogue_validation=snapshot.get("_dialogue_validation", True),
-                 _baseline=snapshot, _draft=draft, _closing=closing,
-                 _listener_identity=own_name(partner),
-                 _speaker_behavior=speaker["personality"])
-    if not orientation:
-        speaker.update(inventory=deepcopy(person.get("inventory", {})), permitted_accounts=accounts)
-        speaker["owned_works"] = deepcopy(person.get("owned_works", []))
-        speaker["player_relationship"] = deepcopy(person.get("player_relationship", {}))
-        state["gift_recipient_id"] = actor_id(partner)
-        state["pending_gift"] = draft["gift"].model_dump() if draft.get("gift") else None
-        focus_id = (info.focus_claim_id if info and role == "initiator" else None) or (private.get("concern") or {}).get("claim_id")
-        focus_account = next((a for a in accounts if a["claim_id"] == focus_id), None)
-        if focus_account:
-            speaker["account_focus"] = deepcopy(focus_account)
-        speaker["firsthand_events_with_listener"] = [a for a in accounts if a.get("basis") == "firsthand"
-            and a["kind"] not in ("former_life", "private_motive")
-            and {a["subject_id"], a.get("object_id")} == {actor_id(person), actor_id(partner)}]
-        for field in ("goal", "promises", "snake_attitudes", "immediate_objective"):
-            if field in private:
-                if field == "goal" and private[field] and private[field].get("status", "active") != "active":
-                    continue
-                speaker[field] = private[field]
-        state["permitted_proposals"] = [p for p in snapshot.get("permitted_proposals", [])
-            if p["id"] in choices["offers"] or p["id"] in choices["acceptances"]]
-        state["pending_offers"] = [dict(proposal_id=p, offer_turn=t) for p, t in draft["offers"].items()]
-        if person.get("location", "garden") == "garden" and "tree_fruit" in person:
-            state["environment"]["tree"] = dict(fruit=person["tree_fruit"], available_fruit=person["tree_available_fruit"])
-    if orientation:
-        state["task"] = ("Find your bearings: raise an arrival or surroundings concern. "
-                         "Suggest or respond to one practical first step without inventing discoveries. "
-                         "Names are already visible on floating name tags. The cause of arrival and way home remain unknown. "
-                         if index == 0 else
-                         "Answer the partner's actual point about arrival or surroundings and respond to their practical suggestion. "
-                         "Use visible name tags without requiring introductions.")
-    elif snapshot.get("purpose") == "food_request":
-        state["food_request"] = deepcopy(snapshot["food_request"])
-        state["task"] = ("Request one carried apple; no handoff has happened." if role == "initiator" else
-                         "Express the fixed food_request.outcome and reason. Acceptance reserves a later handoff, not a future apple promise.")
-    else:
-        state["task"] = ("Begin with your immediate_objective, using your own words to ask or propose something relevant. "
-                         "Your private motives guide behavior; do not quote them or recite your biography."
-                         if index == 0 else
-                         "Reply directly to the listener's actual last message, answering their questions first. "
-                         "Use your own knowledge to move that discussion forward; connect your private concern only when natural. "
-                         "You need not introduce another subject or story.")
-        focus = (snapshot.get("_information_validation") or {}).get("focus_claim_id")
-        if role == "initiator" and index == 0 and focus:
-            state["discussion_focus_claim_id"] = focus
-            focus_fact = next(o.fact_id for o in info.options if o.id == focus)
-            choices["disclosures"] = [claim for claim in choices["disclosures"]
-                                      if next(o.fact_id for o in info.options if o.id == claim) == focus_fact]
-            state["task"] += " Disclose the required task account or a permitted denial of the same fact now."
-        elif index == 0 and snapshot.get("opening_kind") in ("recollection", "news"):
-            state["task"] += (" Lead with your concern's selected account in your own words, retaining its actual owner, source and stance. "
-                              "Discuss the account itself rather than promising a later story. Record a disclosure only if actually spoken.")
-    if assessment:
-        state["task"] = "Assess your partner from the fixed transcript and your own knowledge. Resolve only your pending heard disclosures. Add no speech or other effects."
-    elif thanks:
-        if draft.get("gift"):
-            state["task"] = "Acknowledge the accepted gift briefly after its successful handoff, preserving creator and giver roles. This speech is reserved for the actual handoff."
-        else:
-            state["task"] = "Thank the listener briefly for the one apple just successfully handed to you. This speech is reserved for the actual handoff."
-            state["food_request"]["transferred"] = True
-            speaker["inventory"]["fruit"] = speaker["inventory"].get("fruit", 0) + 1
-        for field in ("permitted_accounts", "account_focus", "goal", "promises", "snake_attitudes", "immediate_objective", "concern"):
-            speaker.pop(field, None)
-    elif closing:
-        state["question_to_answer"] = _last_question(draft["turns"][-1].text)
-        state["task"] += " Answer the last question and finish with a statement. The listener will not reply; make no new offer."
-    elif snapshot.get("purpose") == "food_request" and index == FOOD_REQUEST_TURN_COUNT - 1:
-        state["task"] += " Finish naturally; prefer a statement rather than a new question."
-    # Permit third-party identification only for accounts actually available to
-    # this speaker, rather than the partner's private list or the visible roster.
-    state["_account_names"] = [v for a in accounts for k, v in a.items() if k.endswith("_name") and isinstance(v, str)]
-    if assessment or thanks:
-        for field in ("choices", "permitted_proposals", "pending_offers"):
-            state.pop(field, None)
-    return state
-
-
 def _assemble_resident(snapshot, draft, thanks):
-    _resident_information(snapshot, draft, incomplete=False)
+    dialogue_context._resident_information(snapshot, draft, incomplete=False)
     return ConversationResponse(turns=draft["turns"],
         gift=draft.get("gift"),
         initiator_opinion=draft["opinions"]["initiator"], recipient_opinion=draft["opinions"]["recipient"],
@@ -3262,128 +1873,6 @@ def _assemble_resident(snapshot, draft, thanks):
         third_party_opinions=draft["third_party_opinions"], leverage=draft["leverage"],
         food_outcome=snapshot["food_request"]["outcome"] if snapshot.get("purpose") == "food_request" else "",
         handoff_thanks=thanks)
-
-
-def _snake_turn_snapshot(snapshot, decision, turns, *, outcome_turn=2):
-    """One speaker's knowledge; reward selection happens only after the resident speaks."""
-    snake, resident = snapshot["snake"], snapshot["resident"]
-    index = len(turns)
-    role = "initiator" if index % 2 == 0 else "recipient"
-    guard = dict(actor_id=snake["actor_id"], name=snake["name"], kind="python")
-    human = dict(actor_id=resident["npc_id"], name=resident["npc_name"], kind="human resident")
-    speaker, listener = (guard.copy(), human) if role == "initiator" else (human.copy(), guard)
-    accounts = snake["known_accounts"] if role == "initiator" else snapshot["offering_accounts"]
-    if role == "initiator" and index >= outcome_turn and decision.account_id:
-        disclosed = next((a for a in snapshot["offering_accounts"] if a["claim_id"] == decision.account_id), None)
-        if disclosed:
-            disclosed = {**disclosed, "basis": "hearsay", "immediate_source_id": human["actor_id"],
-                         "immediate_source_name": human["name"], "knowledge_owner_name": guard["name"], "stance": "uncertain"}
-            accounts = [*accounts, disclosed]
-    def speech_account(account):
-        view = {key: value for key, value in account.items() if key in (
-            "claim_id", "assertion", "kind", "subject_id", "subject_name", "object_id", "object_name",
-            "original_speaker_name", "immediate_source_name", "basis", "stance", "event_time")}
-        for field in ("subject", "object", "original_speaker", "immediate_source"):
-            actor = account.get(field + "_id")
-            view[field + "_relation"] = ("speaker" if actor == speaker["actor_id"] else
-                                          "listener" if actor == listener["actor_id"] else "another person")
-        if account["kind"] == "private_motive":
-            view.pop("object_name", None)
-            view.pop("object_relation", None)
-        return view
-
-    pair = {guard["actor_id"], human["actor_id"]}
-    firsthand = [a for a in accounts if a.get("basis") == "firsthand"
-        and a.get("kind") not in ("former_life", "private_motive")
-        and {a.get("subject_id"), a.get("object_id")} == pair]
-    speaker["firsthand_events_with_listener"] = [speech_account(a) for a in firsthand]
-    voluntary_reply = role == "recipient" and (index == 1 or (index == 3
-        and (index < outcome_turn or decision.decision == "talk" and not decision.account_id)
-        and snapshot["can_give_apple"] and snapshot["purpose"] != "introduction"))
-    if voluntary_reply:
-        permitted = accounts if snapshot["purpose"] != "introduction" else []
-        speaker["permitted_accounts"] = [speech_account(a) for a in permitted]
-        # One private menu is enough. Unselected biographies are not a second speech task.
-        speaker["known_accounts"] = [speech_account(a) for a in firsthand]
-    else:
-        public = accounts if role == "initiator" else [a for a in accounts
-            if a["kind"] not in ("former_life", "private_motive") or a["claim_id"] == decision.account_id]
-        speaker["known_accounts"] = [speech_account(a) for a in public]
-    if role == "recipient" and index >= 1 and decision.snake_account_id:
-        heard = next((a for a in snake["known_accounts"] if a["claim_id"] == decision.snake_account_id), None)
-        if heard:
-            speaker["heard_accounts"] = [speech_account({**heard, "basis": "hearsay",
-                "immediate_source_id": guard["actor_id"], "immediate_source_name": guard["name"]})]
-    speaker["first_meeting"] = snapshot["first_meeting"]
-    if role == "recipient":
-        private = resident["private_context"]
-        speaker.update(situation=private.get("situation", {}), inventory=resident["inventory"],
-                       view_of_listener=private["snake_attitudes"])
-    from snake import SNAKE_BEHAVIOR
-    direction = SNAKE_BEHAVIOR if role == "initiator" else character_context(resident["character"])["personality"]
-    selected = decision.snake_account_id if role == "initiator" else (decision.account_id if index == outcome_turn - 1 else "")
-    account = next((a.copy() for a in accounts if a["claim_id"] == selected), None)
-    account = speech_account(account) if account else None
-    if index == 0:
-        task = "Ask what the visitor wishes to discuss. Do not invent their thoughts or a witnessed arrival."
-        if snapshot["can_give_apple"] and snapshot["purpose"] != "introduction":
-            task = ("Explicitly offer one apple in exchange for useful information now, then ask one concrete question "
-                    "about the visitor's own interests, experiences or news. Include the apple offer in your spoken words. "
-                    "An offer is not a handoff or a reward already earned. Do not invent a witnessed arrival.")
-        if decision.snake_account_id:
-            task = ("Discuss only account_to_share in this opening. Tell its concrete content first, preserving "
-                    "who made the claim and who heard it; then ask the visitor for their own view or relevant knowledge. "
-                    "Do not substitute a general greeting, stock report, or question about what to discuss. "
-                    "Your own past claims remain yours; a person who heard you is not their author. "
-                    "State your divine role confidently when relevant, without treating your own authority as hearsay.")
-            if snapshot["can_give_apple"] and snapshot["purpose"] != "introduction":
-                task += " Explicitly offer one apple for useful relevant information in their answer; include the offer in your spoken words."
-        if snapshot.get("known_warning"):
-            task += " Ask the visitor to answer this unresolved warning before judging: " + snapshot["warning_record"]
-    elif voluntary_reply:
-        task = ("Answer the guard's actual words using your own personality and knowledge. "
-                "Choose whether to share an account from speaker.permitted_accounts together with your speech. "
-                "You may instead decline, ask a question, or express uncertainty with empty account_id. "
-                "Do not invent a memory or promise later payment. The listener is the tree guard claiming divine authority; "
-                "do not adopt its role, its first-person statements or its memories as your own.")
-    elif index in (2, outcome_turn):
-        outcome = decision.decision if index >= outcome_turn else "talk"
-        task = {"talk": "Respond to the visitor's actual point and explain what information would interest you. Give no apple now.",
-                "give_apple": "Hand over one apple now for the information just heard; no further payment is owed.",
-                "warn": "State the sourced accusation and explicitly warn of being eaten; invite an answer.",
-                "eat": "Announce condemnation for the supplied accusation after the earlier warning and response."}[outcome]
-        if (index == 2 and outcome == "talk" and not decision.account_id and snapshot["can_give_apple"]
-                and snapshot["purpose"] != "introduction"):
-            task += (" Ask one specific follow-up inviting information about their own interests, experiences or relevant news. "
-                     "Make clear that useful information now can earn one apple. A refusal is safe; do not demand a secret or a future service.")
-        if decision.accusation:
-            task += " Accusation: " + decision.accusation
-    else:
-        task = "Answer the latest point naturally, preserving the recorded outcome; no additional transfer or punishment."
-    if snapshot["purpose"] == "introduction":
-        task += " Help the visitor find their bearings. Do not initiate an apple bargain or demand private information."
-    preceding = [dict(name=snake["name"] if t.speaker == "initiator" else resident["npc_name"],
-                      role=t.speaker, text=t.text) for t in turns]
-    speaker["earlier_speech"] = [t["text"] for t in preceding if t["role"] == role]
-    transaction = dict(apple_giver=snake["name"], apple_receiver=resident["npc_name"],
-                       immediate_exchange=True, can_give_apple=snapshot["can_give_apple"],
-                       selected_outcome=decision.decision if index >= outcome_turn else "talk", outcome_turn=outcome_turn)
-    environment = world_context(snapshot)["environment"]
-    if index > outcome_turn and decision.decision == "give_apple":
-        transaction.update(can_give_apple=False, apple_already_received=True)
-        if role == "recipient":
-            speaker["inventory"] = {**resident["inventory"], "fruit": resident["inventory"].get("fruit", 0) + 1}
-        environment["tree"] = {**environment["tree"], "fruit": environment["tree"]["fruit"] - 1}
-    state = dict(request_kind="snake_turn", turn_index=index, speaker_role=role,
-        interaction_id=snapshot["interaction_id"], _name_actors=snapshot.get("_name_actors", {}),
-        _dialogue_validation=snapshot.get("_dialogue_validation", True), speaker=speaker, listener=listener,
-        day=snake["day"], time_of_day=snake["phase"], environment=environment,
-        transaction=transaction, task=task, accusation=snapshot["accusation"], audience_ids=[],
-        account_to_share=account if index == 0 or index == outcome_turn - 1 else None, preceding_turns=preceding[-1:],
-        _preceding_turns=preceding, _speaker_behavior=direction)
-    if index >= SNAKE_TURN_COUNT and turns:
-        state["question_to_answer"] = _last_question(turns[-1].text)
-    return state
 
 
 def _speech_retry_snapshot(snapshot):
@@ -3626,7 +2115,7 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                 closing = index == limit - 1
                 check_cancelled()
                 if resident:
-                    state = _resident_turn_snapshot(snapshot, draft, closing=closing)
+                    state = dialogue_context._resident_turn_snapshot(snapshot, draft, closing=closing)
                 else:
                     if index == 2 or index == outcome_turn and followup_pending:
                         assessment = {**snapshot, "request_kind": "snake_decision",
@@ -3640,13 +2129,13 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                         outcome.snake_account_id = decision.snake_account_id
                         decision = outcome
                         followup_pending = False
-                    state = _snake_turn_snapshot(snapshot, decision, draft["turns"], outcome_turn=outcome_turn)
+                    state = dialogue_context._snake_turn_snapshot(snapshot, decision, draft["turns"], outcome_turn=outcome_turn)
                     if closing:
                         state["request_kind"] = "conversation_closing"
                         state["task"] = "Answer question_to_answer using only settled facts, then finish without another question."
                 speech = validated_request(state)
                 if resident:
-                    draft = _apply_resident_candidate(snapshot, draft, speech, state)
+                    draft = dialogue_validation._apply_resident_candidate(snapshot, draft, speech, state)
                 else:
                     if isinstance(speech, SnakeResidentResponse):
                         decision.account_id = speech.account_id
@@ -3659,16 +2148,16 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                 retain(draft["turns"], snapshot)
             if resident:
                 for role in ("initiator", "recipient"):
-                    state = _resident_turn_snapshot(snapshot, draft, role=role, assessment=True)
+                    state = dialogue_context._resident_turn_snapshot(snapshot, draft, role=role, assessment=True)
                     assessment = validated_request(state)
-                    draft = _apply_resident_candidate(snapshot, draft, assessment, state)
+                    draft = dialogue_validation._apply_resident_candidate(snapshot, draft, assessment, state)
                 thanks = []
                 if snapshot.get("purpose") == "food_request" and snapshot["food_request"]["outcome"] == "accepted":
-                    state = _resident_turn_snapshot(snapshot, draft, role="initiator", thanks=True)
+                    state = dialogue_context._resident_turn_snapshot(snapshot, draft, role="initiator", thanks=True)
                     thanks = validated_request(state).parts
                 elif draft.get("gift") and draft["gift"].accept_turn is not None:
                     role = "recipient" if draft["gift"].recipient_id == actor_id(snapshot["recipient"]) else "initiator"
-                    state = _resident_turn_snapshot(snapshot, draft, role=role, thanks=True)
+                    state = dialogue_context._resident_turn_snapshot(snapshot, draft, role=role, thanks=True)
                     state["task"] = "Generate a brief acknowledgment reserved for AFTER the accepted possession is actually handed over. Preserve giver, recipient and creator roles."
                     thanks = validated_request(state).parts
                 result = _assemble_resident(snapshot, draft, thanks)
@@ -3691,3 +2180,8 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
             exc = RequestError(f"The completed conversation failed validation: {exc}")
         exc.failed_turns = list(generated)
         raise exc from None
+
+
+def validate_snake_perspective(text, *, snake_role):
+    """Required generation entry point using the canonical domain rule."""
+    dialogue_rules.validate_snake_perspective(text, snake_role=snake_role)

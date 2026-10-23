@@ -2,14 +2,13 @@
 
 import math
 from dialogue_context import orientation_context
-
-from npc import Behavior
+from activity import Behavior
 from conversation_history import memory_bias
-from constants import APPLE_SATISFACTION, DECISION_SECONDS, MOVEMENT_SPEED, SOCIAL_PARTNER_RANDOMNESS, SOCIAL_START, SNAKE_NAME
-from constants import STARTING_DAY, JUDY_ROOM_NUMBER
+from constants import (APPLE_SATISFACTION, DECISION_SECONDS, MOVEMENT_SPEED, SOCIAL_PARTNER_RANDOMNESS,
+                      SOCIAL_START, SNAKE_NAME, STARTING_DAY, JUDY_ROOM_NUMBER)
 from interactions import company_point
 from social import (concern_topic, goal_attempt_cooling_down, last_conversation_partner, pair_objective,
-                    pending_promises, repeat_partner_paused)
+                   pending_promises, repeat_partner_paused)
 
 
 ORIENTATION_TOPIC = (
@@ -81,7 +80,7 @@ def lone_introduction(npc, world):
             or any(r.purpose == "introduction" and r.turns and npc.name in r.participants for r in world.history)):
         return
     snake = world.snake
-    if (snake.encounter or snake.selected or snake.request_pending or snake.recovery_remaining
+    if (snake.encounter or snake.selected or snake.interaction_blocked or snake.recovery_remaining
             or snake.id in npc.cooldowns or not npc.can_reach(world.tree.interaction_point)):
         return
     world.join_tree(npc, "introduction", ORIENTATION_TOPIC)
@@ -99,7 +98,7 @@ def reconsider(npc, world, *, pressing_only=False):
         return
     if not target_valid(npc, world):
         npc.finish_activity(world, failed=True)
-    if npc.owner != "autonomous" or npc.selected or npc.request_pending:
+    if npc.owner != "autonomous" or npc.selected or npc.interaction_blocked:
         return
     if any(npc.id in (action.npc_id, action.target_id) for action in world.pending_actions):
         return

@@ -4,13 +4,12 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass
 from typing import Annotated, Literal
 from uuid import uuid4
-
 from pydantic import Field
-
-from constants import (CONCERN_LIFETIME_RANGE, CONCERN_WEIGHTS, CONVERSATION_MAX_TURNS, FAILURE_COOLDOWN, GOAL_IMPROVEMENT,
-                       LEVERAGE_ACCOUNT_KINDS, MAX_DIALOGUE_FAILURE_COOLDOWN, PHASES)
+from constants import (CONCERN_LIFETIME_RANGE, CONCERN_WEIGHTS, CONVERSATION_MAX_TURNS, FAILURE_COOLDOWN,
+                      GOAL_IMPROVEMENT, LEVERAGE_ACCOUNT_KINDS, MAX_DIALOGUE_FAILURE_COOLDOWN, PHASES)
 from conversation_history import remember
 from dialogue_rules import named_references, validate_account_speech, validate_apple_promise
+
 
 GoalKind = Literal["obtain_apple", "help_with_apple", "repair_relationship", "sabotage_relationship"]
 FactKind = Literal["apple_given", "work_given", "apple_refused", "promise_kept", "promise_broken", "private_motive", "former_life", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "visit", "report"]
@@ -381,17 +380,18 @@ def fact_context(world, fact, affirmed=True):
 
 def account_view(world, claim, belief):
     fact = fact_by_id(world, claim.fact_id)
+    from dialogue_context import account_knowledge, build_account_view
+    catalog = {actor.id: {"name": actor.name} for actor in [*world.actors, world.player]}
+    account = {**fact_context(world, fact, claim.affirmed), "claim_id": claim.id,
+               "subject_id": claim.subject_id, "object_id": fact.object_id,
+               "original_speaker_id": claim.originator_id}
+    projected = build_account_view(account, account_knowledge(belief, belief.npc_id), catalog, belief.npc_id, None)
     return {**fact_context(world, fact, claim.affirmed),
-            "claim_id": claim.id, "subject_id": claim.subject_id,
-            "subject_name": world.participant_by_id(claim.subject_id).name,
-            "object_id": fact.object_id, "object_name": world.participant_by_id(fact.object_id).name,
-            "knowledge_owner_name": world.participant_by_id(belief.npc_id).name,
-            "original_speaker_id": claim.originator_id, "immediate_source_id": belief.source_id,
-            "original_speaker_name": world.participant_by_id(claim.originator_id).name,
-            "immediate_source_name": world.participant_by_id(belief.source_id).name,
-            "source_disclosure_id": belief.disclosure_id, "stance": belief.stance,
+            **{key: projected[key] for key in ("claim_id", "subject_id", "subject_name", "object_id", "object_name",
+                "knowledge_owner_name", "original_speaker_id", "immediate_source_id", "original_speaker_name", "immediate_source_name")},
+            "source_disclosure_id": belief.disclosure_id, "stance": projected["stance"],
             "learned_at": {"day": belief.phase // len(PHASES) + 1, "phase": PHASES[belief.phase % len(PHASES)]},
-            "basis": "firsthand" if belief.direct else "hearsay" if belief.source_id != belief.npc_id else "own assertion"}
+            "basis": projected["basis"]}
 
 
 def add_fact(world, kind, subject, target, source_id, record, summary, witnesses):
@@ -516,6 +516,8 @@ def information_views(context, world):
     """Only speaker-owned knowledge reaches prompts; engine truth stays out of them."""
     if context is None:
         return {}
+    from dialogue_context import account_knowledge, build_account_view
+    catalog = {actor.id: {"name": actor.name} for actor in [*world.actors, world.player]}
     options = {option.id: option for option in context.options}
     result = {}
     for role, npc_id in context.participants.items():
@@ -527,20 +529,21 @@ def information_views(context, world):
             option = options[claim_id]
             belief = beliefs.get(claim_id)
             fact = fact_by_id(world, option.fact_id)
+            selected = {**fact_context(world, fact, option.affirmed),
+                        "claim_id": claim_id, "subject_id": option.subject_id,
+                        "object_id": fact.object_id, "original_speaker_id": option.originator_id}
+            projected = build_account_view(selected, account_knowledge(belief, npc_id) if belief else None,
+                                           catalog, npc_id, context.participants["recipient" if role == "initiator" else "initiator"])
             view = {**fact_context(world, fact, option.affirmed),
-                    "claim_id": claim_id, "subject_id": option.subject_id,
-                    "subject_name": world.participant_by_id(option.subject_id).name,
-                    "object_id": fact.object_id, "object_name": world.participant_by_id(fact.object_id).name,
-                    "knowledge_owner_name": world.participant_by_id(npc_id).name,
-                    "original_speaker_id": option.originator_id,
-                    "original_speaker_name": world.participant_by_id(option.originator_id).name,
+                    **{key: projected[key] for key in ("claim_id", "subject_id", "subject_name", "object_id", "object_name",
+                        "knowledge_owner_name", "original_speaker_id", "original_speaker_name")},
                     "permitted_use": "deliberate denial; private to this speaker" if option.creator_id else "known account"}
             if belief:
-                view.update(stance=belief.stance, immediate_source_id=belief.source_id,
-                            immediate_source_name=world.participant_by_id(belief.source_id).name,
+                view.update(stance=projected["stance"], immediate_source_id=projected["immediate_source_id"],
+                            immediate_source_name=projected["immediate_source_name"],
                             learned_at={"day": belief.phase // len(PHASES) + 1, "phase": PHASES[belief.phase % len(PHASES)]},
                             source_disclosure_id=belief.disclosure_id,
-                            basis="firsthand" if belief.direct else "hearsay" if belief.source_id != npc_id else "own assertion",
+                            basis=projected["basis"],
                             already_assessed=any(b.assessed and options[b.claim_id].fact_id == option.fact_id
                                                  and options[b.claim_id].affirmed == option.affirmed
                                                  for b in context.beliefs[role]),

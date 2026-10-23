@@ -1,15 +1,13 @@
 """Local home decisions and transitions; no transport, drawing, or remote actions."""
 
-import math
 from uuid import uuid4
-
-from constants import (APARTMENT_APPROACH, APARTMENT_ID, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_RANGE,
-                       CREATIVE_QUEUE_SECONDS, HOME_ARRIVAL_TOLERANCE, INDOOR_RECOVERY_PER_SECOND,
-                       MINIMUM_INDOOR_SECONDS, OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE,
-                       RETREAT_SOCIABILITY_WEIGHT, RETREAT_THRESHOLD_BASE, WAKE_DELAY_RANGE,
-                       ROOM_SLEEP_POSITION, SLEEP_FACING, PLAYER_ROOM_NUMBER, JUDY_ROOM_NUMBER, JUDY_WAKE_DELAY)
+from constants import (APARTMENT_ID, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_RANGE,
+                      CREATIVE_QUEUE_SECONDS, INDOOR_RECOVERY_PER_SECOND, MINIMUM_INDOOR_SECONDS,
+                      OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE, RETREAT_SOCIABILITY_WEIGHT,
+                      RETREAT_THRESHOLD_BASE, WAKE_DELAY_RANGE, ROOM_SLEEP_POSITION, SLEEP_FACING,
+                      PLAYER_ROOM_NUMBER, JUDY_ROOM_NUMBER, JUDY_WAKE_DELAY)
 from creations import CreativeJob
-from npc import Behavior
+from activity import Behavior
 
 
 INDOOR_BEHAVIORS = (Behavior.REST, Behavior.SLEEP, Behavior.PAINT, Behavior.COMPOSE)
@@ -133,7 +131,7 @@ def home_priority(npc, world, dt):
         npc.bedtime_remaining = None
         if npc.behavior == Behavior.GO_HOME:
             npc.finish_activity(world)
-    if (npc.interaction or npc.eating or npc.selected or npc.request_pending or npc.player_call or npc.end_conversation
+    if (npc.interaction or npc.eating or npc.selected or npc.interaction_blocked or npc.player_call or npc.player_reply.closing
             or npc.owner != "autonomous" or npc.behavior == Behavior.GO_HOME
             or any(npc.id in (action.npc_id, action.target_id) for action in world.pending_actions)):
         return
@@ -175,7 +173,7 @@ def home_priority(npc, world, dt):
 
 def update_home(npc, world, dt):
     if npc.behavior == Behavior.GO_HOME:
-        if npc.selected or npc.request_pending:
+        if npc.selected or npc.interaction_blocked:
             return
         from locations import room_location
         if npc.journey:
@@ -239,7 +237,7 @@ def invitation_choices(world, npc):
 def pending_invitation(world):
     interaction = world.player_interaction
     return next((offer for offer in reversed(world.player_invitations) if offer["status"] == "offered"
-                 and interaction and offer["interaction_id"] == interaction["id"]), None)
+                 and interaction and offer["interaction_id"] == interaction.id), None)
 
 
 def offer_invitation(world, npc, record, destination, speech):
@@ -251,7 +249,7 @@ def offer_invitation(world, npc, record, destination, speech):
             offer["status"] = "withdrawn"
     choice = choices[destination]
     offer = dict(id=uuid4().hex, speaker_id=npc.id, conversation_id=record.id,
-        turn=len(record.turns) - 1, interaction_id=world.player_interaction["id"], destination=destination,
+        turn=len(record.turns) - 1, interaction_id=world.player_interaction.id, destination=destination,
         location=choice["location"], point=list(choice["point"]), status="offered", speech=speech)
     world.player_invitations.append(offer)
     return offer
@@ -261,12 +259,12 @@ def accept_invitation(world, offer_id):
     from player import active_player, end_interaction
     from locations import start_journey
     offer = next((o for o in world.player_invitations if o["id"] == offer_id and o["status"] == "offered"), None)
-    if not offer or not active_player(world) or not world.player_interaction or offer["interaction_id"] != world.player_interaction["id"]:
+    if not offer or not active_player(world) or not world.player_interaction or offer["interaction_id"] != world.player_interaction.id:
         raise ValueError("This invitation is no longer available.")
     host = world.npc_by_id(offer["speaker_id"])
-    if host is None or host.busy or host.request_pending:
+    if host is None or host.busy or host.interaction_blocked:
         raise ValueError("The host is no longer here.")
-    saved = world.player_interaction["saved_state"]
+    saved = world.player_interaction.saved_state
     offer["status"] = "accepted"
     end_interaction(world, "Invitation accepted; travelling together.")
     host.resume_pending = False

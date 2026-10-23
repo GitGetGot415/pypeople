@@ -76,12 +76,11 @@ def start_player_introduction(world):
                                reference=world.player.id, reason=INTRODUCTION_REASON))
 
 
-def valid_introduction_call(world, npc, call):
-    interaction = world.player_interaction
+def valid_introduction_call(world, npc, call, *, interaction):
     return (call["reference"] == world.player.id and call["key"] == f"introduction:{npc.id}"
             and starting_encounter(world, npc.id) is not None
-            and bool(interaction and interaction.get("kind") == "resident"
-                     and interaction.get("npc_id") == npc.id and interaction.get("incoming")))
+            and bool(interaction and interaction.kind == "resident"
+                     and interaction.npc_id == npc.id and interaction.incoming))
 
 
 def scripted_player_opening(world, npc):
@@ -103,8 +102,8 @@ def scripted_player_opening(world, npc):
     record.orientation_discussed = orientation_speech([text])
     record.add_turn(npc.name, text, [{"text": text, "emotion": {"name": "neutral", "intensity": 0}}], speaker_id=npc.id)
     world.history.append(record)
-    world.player_interaction["record_id"] = record.id
-    npc.reply, npc.rewritten_reply, npc.end_conversation = text, "", False
+    world.player_interaction.record_id = record.id
+    npc.reply, npc.rewritten_reply, npc.player_reply.closing = text, "", False
     npc.set_emotion("neutral", 0)
     clear_call(npc)
     return record
