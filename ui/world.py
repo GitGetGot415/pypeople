@@ -112,19 +112,23 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     else:
         surface.fill(INDOOR_BACKGROUND)
         kind = location.split(":")[0]
+        door_targets = []
         scene.blit(apartment_art(kind), (0, 0))
         if kind == "room":
             scene.blit(apartment_art("bed"), ROOM_BED_RECT[:2])
         if world:
             for target in targets(world, location):
-                if target["kind"] in ("room", "elevator"):
-                    scene.blit(apartment_art("door" if target["kind"] == "room" else "elevator"), target["rect"][:2])
+                if target["kind"] in ("room", "exit_room", "elevator"):
+                    door_targets.append(target)
+                    target_rect = pygame.Rect(target["rect"])
                     if target["kind"] == "room":
                         number = target["room"]
                         owner = next((n for n in world.npcs if n.room_number == number), None)
-                        label = f"{number}: " + ("Your room" if number == PLAYER_ROOM_NUMBER and player_has_room(world)
-                                                  else owner.name if owner else "Vacant")
-                        scene.blit(font.render(label, True, INK), (target["rect"][0], target["rect"][1]))
+                        label = ("Your room" if number == PLAYER_ROOM_NUMBER and player_has_room(world)
+                                 else owner.name if owner else "Vacant")
+                        label_image = font.render(label, True, INK)
+                        scene.blit(label_image, label_image.get_rect(
+                            midbottom=(target_rect.centerx, target_rect.top - 2)))
     if zoom != 1.0:
         scene = pygame.transform.scale(scene, (round(size[0] * zoom), round(size[1] * zoom)))
     previous_clip = surface.get_clip()
@@ -133,6 +137,17 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     # Bubbles can extend beyond the ground's rectangle into the surrounding view.
     surface.set_clip(viewport.clip(previous_clip))
     surface.blit(scene, scene_rect)
+    if location != "garden":
+        for target in door_targets:
+            art_kind = "elevator" if target["kind"] == "elevator" else "door"
+            art = apartment_art(art_kind)
+            x, y, width, height = target["rect"]
+            rect = pygame.Rect(round(x * zoom + camera_offset[0]),
+                               round(y * zoom + camera_offset[1]),
+                               max(1, round(width * zoom)), max(1, round(height * zoom)))
+            # Scale once from the original art, after camera zoom, to match the
+            # NPC render path and preserve crisp nearest-neighbor pixels.
+            surface.blit(pygame.transform.scale(art, rect.size), rect)
     for geometry, color in (((APARTMENT_RECT, APARTMENT_COLOR), (APARTMENT_DOOR_RECT, APARTMENT_DOOR_COLOR)) if location == "garden" else ()):
         x, y, width, height = geometry
         # Draw directly into the clipped camera view so negative coordinates survive.

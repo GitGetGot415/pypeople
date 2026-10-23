@@ -2,7 +2,7 @@
 
 from constants import (GARDEN_LOCATION, WORLD_WIDTH, WORLD_HEIGHT, HALLWAY_SIZE, ROOM_SIZE, FOOT_MARGIN,
                       INDOOR_FLOOR_TOP, ROOMS_PER_FLOOR, HALLWAY_DOOR_ORIGINS, HALLWAY_ELEVATOR_ORIGIN,
-                      APARTMENT_OVERLAY_SIZE, ROOM_DOOR_ORIGIN, HALLWAY_ARRIVAL_Y, ROOM_ARRIVAL,
+                      APARTMENT_OVERLAY_SIZE, APARTMENT_OVERLAY_SCALE, ROOM_DOOR_ORIGIN, HALLWAY_ARRIVAL_Y, ROOM_ARRIVAL,
                       ELEVATOR_ARRIVAL, HALLWAY_EXIT, GARDEN_BUILDING_POINT, GARDEN_BUILDING_ARRIVAL,
                       MOVEMENT_SPEED, TRAVEL_STEP_TIMEOUT, PLAYER_APPROACH_MULTIPLIER, PLAYER_ROOM_NUMBER)
 from interactions import move_toward
@@ -98,6 +98,16 @@ def door_point(number):
     return x + APARTMENT_OVERLAY_SIZE[0] / 2, HALLWAY_ARRIVAL_Y
 
 
+def overlay_rect(origin):
+    """Rendered overlay bounds: horizontally centered and resting on the floor."""
+    width, height = APARTMENT_OVERLAY_SIZE
+    rendered_width = max(1, round(width * APARTMENT_OVERLAY_SCALE))
+    rendered_height = max(1, round(height * APARTMENT_OVERLAY_SCALE))
+    x, y = origin
+    return (x + (width - rendered_width) // 2, y + height - rendered_height,
+            rendered_width, rendered_height)
+
+
 def targets(world, location):
     """UI targets include their floor standing point and destination identity."""
     if location == GARDEN_LOCATION:
@@ -107,14 +117,14 @@ def targets(world, location):
     kind, number = location.split(":")
     number = int(number)
     if kind == "room":
-        return [dict(kind="exit_room", rect=(*ROOM_DOOR_ORIGIN, *APARTMENT_OVERLAY_SIZE),
+        return [dict(kind="exit_room", rect=overlay_rect(ROOM_DOOR_ORIGIN),
                      point=ROOM_ARRIVAL, destination=hallway_location(floor_for_room(number)), room=number)]
     result = []
     for slot, (x, y) in enumerate(HALLWAY_DOOR_ORIGINS):
         room = (number - 1) * ROOMS_PER_FLOOR + slot + 1
-        result.append(dict(kind="room", rect=(x, y, *APARTMENT_OVERLAY_SIZE), point=door_point(room),
+        result.append(dict(kind="room", rect=overlay_rect((x, y)), point=door_point(room),
                            destination=room_location(room), room=room))
-    result.append(dict(kind="elevator", rect=(*HALLWAY_ELEVATOR_ORIGIN, *APARTMENT_OVERLAY_SIZE),
+    result.append(dict(kind="elevator", rect=overlay_rect(HALLWAY_ELEVATOR_ORIGIN),
                        point=ELEVATOR_ARRIVAL))
     if number == 1:
         result.append(dict(kind="garden", rect=(0, INDOOR_FLOOR_TOP, FOOT_MARGIN * 3, HALLWAY_SIZE[1] - INDOOR_FLOOR_TOP),
