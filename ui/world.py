@@ -113,7 +113,7 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
         surface.fill(INDOOR_BACKGROUND)
         kind = location.split(":")[0]
         door_targets = []
-        scene.blit(apartment_art(kind), (0, 0))
+        scene.blit(apartment_art_at_size(kind, size), (0, 0))
         if kind == "room":
             scene.blit(apartment_art("bed"), ROOM_BED_RECT[:2])
         if world:
@@ -268,3 +268,10 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
 def apartment_art(kind):
     from constants import APARTMENT_ART
     return pygame.image.load(str(Path(__file__).resolve().parent.parent / APARTMENT_ART[kind])).convert_alpha()
+
+
+@lru_cache(maxsize=16)
+def apartment_art_at_size(kind, size):
+    """Fit map artwork to its logical pixel size with nearest-neighbor scaling."""
+    image = apartment_art(kind)
+    return image if image.get_size() == size else pygame.transform.scale(image, size)
