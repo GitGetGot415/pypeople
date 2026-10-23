@@ -209,6 +209,8 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
                 "text": npc.reply,
                 "emotion": {"name": npc.emotion, "intensity": npc.emotion_intensity},
             }], rewritten[0] if rewritten else (), speaker_id=npc.id)
+            from interactions import observe_conversation
+            observe_conversation(world, record, world.player, npc, accepted=True)
         record.error = error or ""
         waiting_for_done = npc.waiting_for_done
         if error:

@@ -148,6 +148,7 @@ def end_interaction(world, reason="Conversation ended."):
     npc = world.npc_by_id(interaction.npc_id)
     record = next((r for r in world.history if r.id == interaction.record_id), None)
     if record:
+        record.pending_witness_ids.clear()
         for offer in record.player_promise_offers:
             if offer.status == "offered":
                 offer.status = "closed"
@@ -179,6 +180,9 @@ def update_interaction(world, dt):
         end_interaction(world, "The participants are no longer available together.")
         return
     if interaction.stage != "approach":
+        if interaction.record_id:
+            from interactions import observe_conversation
+            observe_conversation(world, world.record_by_id(interaction.record_id), world.player, npc)
         return
     interaction.elapsed += dt
     if interaction.elapsed > PLAYER_APPROACH_TIMEOUT:

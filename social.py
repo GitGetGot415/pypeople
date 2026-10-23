@@ -19,7 +19,7 @@ from dialogue_rules import named_references, validate_account_speech, validate_a
 
 
 GoalKind = Literal["obtain_apple", "help_with_apple", "repair_relationship", "sabotage_relationship"]
-FactKind = Literal["apple_given", "work_given", "apple_refused", "promise_kept", "promise_broken", "private_motive", "former_life", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "visit", "report"]
+FactKind = Literal["apple_given", "work_given", "apple_refused", "promise_kept", "promise_broken", "private_motive", "former_life", "arrival", "departure", "apple_eaten", "conversation_seen", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "visit", "report"]
 Stance = Literal["uncertain", "believed", "disbelieved"]
 ConcernKind = Literal["orientation", "recollection", "news", "surroundings", "plans"]
 
@@ -269,7 +269,7 @@ class Fact:
     conversation_id: str | None
     phase: Annotated[int, Field(ge=0)]
     summary: Annotated[str, Field(min_length=1)]
-    witness_ids: Annotated[list[str], Field(min_length=1)]
+    witness_ids: list[str]
 
 
 @dataclass
@@ -385,7 +385,7 @@ def fact_context(world, fact, affirmed=True):
     date = {"day": fact.phase // len(PHASES) + 1, "phase": PHASES[fact.phase % len(PHASES)]}
     return {"assertion": account_content(world, fact, affirmed), "kind": fact.kind,
             "recorded_at": date, "event_time": None if fact.kind == "former_life" else date,
-            "time_scope": "remembered former life; event date unknown" if fact.kind == "former_life" else "garden"}
+            "time_scope": "remembered former life; event date unknown" if fact.kind == "former_life" else "life here"}
 
 
 def account_view(world, claim, belief):
@@ -404,15 +404,18 @@ def account_view(world, claim, belief):
 
 
 def add_fact(world, kind, subject, target, source_id, record, summary, witnesses):
-    existing = next((fact for fact in world.facts if fact.source_id == source_id and fact.kind == kind), None)
-    if existing is not None:
-        return existing
-    if kind not in ("private_motive", "former_life"):
-        witnesses = [p for p in witnesses if p is not world.player and p.location == subject.location]
-    fact = Fact(uuid4().hex, kind, subject.id, target.id, source_id,
-                record.id if record else None, world.phase_index, summary, [npc.id for npc in witnesses])
-    world.facts.append(fact)
+    # Callers own audience selection: direct participants can speak through a door,
+    # and an observer may have left before accepted speech establishes the exchange.
+    witnesses = list({p.id: p for p in witnesses if p is not world.player}.values())
+    fact = next((fact for fact in world.facts if fact.source_id == source_id and fact.kind == kind), None)
+    if fact is None:
+        fact = Fact(uuid4().hex, kind, subject.id, target.id if target else subject.id, source_id,
+                    record.id if record else None, world.phase_index, summary, [])
+        world.facts.append(fact)
     for npc in witnesses:
+        if npc.id in fact.witness_ids:
+            continue
+        fact.witness_ids.append(npc.id)
         claim = Claim(uuid4().hex, fact.id, subject.id, npc.id, True, None, False,
                       world.phase_index, record.id if record else None)
         world.claims.append(claim)
@@ -432,21 +435,14 @@ def record_intention(npc, world):
 
 
 def record_event_fact(world, event, record):
-    kinds = {"fruit_shared": "apple_given", "work_shared": "work_given", "food_refused": "apple_refused",
-             "promise_fulfilled": "promise_kept", "promise_broken": "promise_broken"}
+    """Private consequences only; physical commits explicitly record visual facts."""
+    kinds = {"food_refused": "apple_refused", "promise_fulfilled": "promise_kept", "promise_broken": "promise_broken"}
     kind = kinds.get(event.kind)
     if kind is None:
         return
     first, second = [world.participant_by_id(npc_id) for npc_id in event.participants]
     subject, target = (second, first) if kind == "apple_refused" else (first, second)
-    if world.player in (subject, target) or kind == "work_given":
-        add_fact(world, kind, subject, target, event.id, record, event.text,
-                 [p for p in (subject, target) if p is not world.player])
-        return
-    observers = [subject, target, *world.listeners(subject)]
-    if subject.location == "garden" and ((world.snake.x - subject.x) ** 2 + (world.snake.y - subject.y) ** 2) ** 0.5 <= 150:
-        observers.append(world.snake)
-    add_fact(world, kind, subject, target, event.id, record, event.text, list({p.id: p for p in observers}.values()))
+    add_fact(world, kind, subject, target, event.id, record, event.text, [subject, target])
 
 
 def can_deceive(npc):
@@ -574,7 +570,7 @@ def related_beliefs(option, beliefs, options):
 
 def reputation_assessment_available(option, related, options, *, believed, heard, participants, assessed=False):
     """Stance is actual during validation, possible before a pending reaction."""
-    return (heard and believed and option.subject_id not in participants and not assessed
+    return (option.kind != "conversation_seen" and heard and believed and option.subject_id not in participants and not assessed
             and not any(b.direct or b.assessed and options[b.claim_id].affirmed == option.affirmed
                         for b in related))
 
@@ -865,6 +861,13 @@ def trim_information(world):
     event_ids = {event.id for event in world.events}
     disclosure_ids.update(d.id for d in world.disclosures if d.event_id in event_ids)
     fact_ids = {fact.id for fact in world.facts[-100:] if fact.source_id not in current_goals}
+    active_records = {n.conversation.record.id for n in residents if n.conversation}
+    active_records.update(n.gift.record.id for n in residents if n.gift)
+    if world.snake.encounter:
+        active_records.add(world.snake.encounter.record.id)
+    if world.player_interaction and world.player_interaction.record_id:
+        active_records.add(world.player_interaction.record_id)
+    fact_ids.update(f.id for f in world.facts if f.kind == "conversation_seen" and f.conversation_id in active_records)
     fact_ids.update(fact.id for fact in world.facts if fact.source_id in current_goals)
     for npc in residents:
         if npc.conversation and npc.conversation.information_context:
@@ -1270,7 +1273,7 @@ def goal_attempt_cooling_down(npc, other, world):
 
 
 def learn_account(world, speaker, listener, claim_id, record, turn, stance, *, private=False):
-    """Share an existing account with its real source chain, including public listeners."""
+    """Disclose an existing account only to its direct recipient, with its source chain."""
     source = next(b for b in speaker.beliefs if b.claim_id == claim_id)
     claim = claim_by_id(world, claim_id)
     fact = fact_by_id(world, claim.fact_id)
@@ -1570,11 +1573,25 @@ def validate_saved_concern(concern, owner, claims, facts):
 
 def validate_social_records(facts, claims, disclosures, events, history, residents, snake, ids, live_ids, day, now):
     from conversation_history import source_record
+    from constants import PLAYER_ID
+    observed_conversations = set()
     for fact in facts.values():
-        if (fact.subject_id not in ids or fact.object_id not in ids or fact.subject_id == fact.object_id
+        single_actor = fact.kind in ("arrival", "departure", "apple_eaten")
+        if (fact.subject_id not in ids or fact.object_id not in ids
+                or (fact.subject_id == fact.object_id) != single_actor
                 or fact.phase > now or not set(fact.witness_ids) <= ids
-                or len(set(fact.witness_ids)) != len(fact.witness_ids)):
+                or PLAYER_ID in fact.witness_ids
+                or len(set(fact.witness_ids)) != len(fact.witness_ids)
+                or not fact.witness_ids and fact.kind != "conversation_seen"):
             raise ValueError("Invalid fact participants or witnesses.")
+        if fact.kind == "conversation_seen":
+            record = source_record(history, fact.conversation_id)
+            if (not any(t.speaker_id != PLAYER_ID for t in record.turns)
+                    or fact.conversation_id in observed_conversations
+                    or set(record.participant_ids) != {fact.subject_id, fact.object_id}
+                    or set(fact.witness_ids) & set(record.participant_ids)):
+                raise ValueError("A conversation observation requires accepted speech and actual bystanders.")
+            observed_conversations.add(fact.conversation_id)
         if fact.kind in ("private_motive", "former_life"):
             if fact.witness_ids != [fact.subject_id] or fact.conversation_id is not None:
                 raise ValueError("A private recollection or motive cannot be public.")
@@ -1583,7 +1600,9 @@ def validate_social_records(facts, claims, disclosures, events, history, residen
         if fact.source_id in events:
             event = events[fact.source_id]
             expected = {"apple_given": "fruit_shared", "work_given": "work_shared", "apple_refused": "food_refused", "promise_kept": "promise_fulfilled"}.get(fact.kind, fact.kind)
-            if event.kind != expected or fact.phase != phase_index(event.day, event.phase):
+            if (event.kind != expected or fact.phase != phase_index(event.day, event.phase)
+                    or set(event.participants) != {fact.subject_id, fact.object_id}
+                    or event.history != fact.conversation_id):
                 raise ValueError("A fact must match its actual source event.")
     for claim in claims.values():
         fact = facts.get(claim.fact_id)
@@ -1600,7 +1619,8 @@ def validate_social_records(facts, claims, disclosures, events, history, residen
     for disclosure in disclosures.values():
         record = source_record(history, disclosure.conversation_id)
         if (disclosure.claim_id not in claims or disclosure.speaker_id == disclosure.listener_id
-                or not (disclosure.speaker_id in ids and disclosure.speaker_id in record.participant_ids) or disclosure.listener_id not in ids
+                or not {disclosure.speaker_id, disclosure.listener_id} <= ids
+                or {disclosure.speaker_id, disclosure.listener_id} != set(record.participant_ids)
                 or disclosure.turn >= len(record.turns) or record.turns[disclosure.turn].speaker_id != disclosure.speaker_id
                 or disclosure.phase > now):
             raise ValueError("Invalid disclosure actor, speech or account.")

@@ -134,9 +134,64 @@ def release_resident(world, kind, owner, resident, state, *cooldown_ids, preserv
 
 def finish_generated_dialogue(interaction, *, reading=False):
     """Apply the same completion timing to every generated world conversation."""
+    observe_conversation(interaction.initiator.world, interaction.record,
+                         interaction.initiator, interaction.recipient, accepted=True)
     interaction.dialogue.dialogue_state = "ready"
     interaction.dialogue.talking_remaining = POST_DIALOGUE_SECONDS
     interaction.update(0.0, reading=reading)
+
+
+def observe_conversation(world, record, first, second, *, accepted=False):
+    """Collect sight while met; only accepted speech establishes an exchange."""
+    from locations import observers
+    from social import add_fact
+    # Neither side of a closed door can see the hidden conversation partner.
+    if first.location != second.location:
+        return
+    for actor in observers(world, first, second):
+        if actor not in (first, second) and actor.id not in record.pending_witness_ids:
+            record.pending_witness_ids.append(actor.id)
+    fact = next((f for f in world.facts if f.kind == "conversation_seen" and f.conversation_id == record.id), None)
+    if fact is None and not accepted:
+        return
+    if fact is None:
+        text = f"{first.name} and {second.name} were talking."
+        event = world.publish("conversation_seen", (first, second), text, record)
+        fact = add_fact(world, "conversation_seen", first, second, event.id, record, text, [])
+    witnesses = [world.participant_by_id(actor_id) for actor_id in record.pending_witness_ids]
+    add_fact(world, fact.kind, first, second, fact.source_id, record, fact.summary, witnesses)
+    record.pending_witness_ids.clear()
+
+
+def observe_active_conversations(world):
+    """Called at real area transitions as well as the normal interaction ticks."""
+    from apartments import observe_visit
+    observe_visit(world)
+    meetings = {id(n.conversation or n.gift): n.conversation or n.gift for n in world.npcs
+                if n.conversation or n.gift and n.gift.thanks}
+    if world.snake.encounter:
+        meetings[id(world.snake.encounter)] = world.snake.encounter
+    for meeting in meetings.values():
+        if meeting.active and meeting.arrived and getattr(meeting, "stage", "dialogue") not in ("condemned_approach", "eating"):
+            observe_conversation(world, meeting.record, meeting.initiator, meeting.recipient)
+        if meeting.active and getattr(meeting, "stage", None) == "eating":
+            collect_eating_witnesses(world, meeting.recipient, record=meeting.record)
+    for actor in world.npcs:
+        if actor.eating and not actor.resume_pending:
+            collect_eating_witnesses(world, actor)
+    interaction = world.player_interaction
+    if interaction and interaction.kind == "resident" and interaction.stage == "conversation" and interaction.record_id:
+        npc = world.npc_by_id(interaction.npc_id)
+        if npc:
+            observe_conversation(world, world.record_by_id(interaction.record_id), world.player, npc)
+
+
+def collect_eating_witnesses(world, actor, *, record=None):
+    from locations import observers
+    witnesses = record.eating_witness_ids if record else actor.eating_witness_ids
+    for observer in observers(world, actor, *([world.snake] if record else [])):
+        if observer.id not in witnesses:
+            witnesses.append(observer.id)
 
 
 def dialogue_finished(interaction, dt, *, reading=False):

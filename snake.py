@@ -5,7 +5,7 @@ import random
 import re
 from typing import Annotated, Literal
 from pydantic import Field
-from constants import (MAX_SIMULATION_STEP_SECONDS, DIALOGUE_TIMEOUT_SECONDS, HEARING_RADIUS, SNAKE_EAT_SECONDS,
+from constants import (MAX_SIMULATION_STEP_SECONDS, DIALOGUE_TIMEOUT_SECONDS, SNAKE_INTERACTION_DISTANCE, SNAKE_EAT_SECONDS,
                        SNAKE_FRAME_SECONDS, SNAKE_NAME, SNAKE_SPEED, TREE_QUEUE_FACING, TREE_GUARD_FACING,
                        STARTING_FACING, STARTING_SNAKE_ACTIVITY, STARTING_SNAKE_DECISION_SECONDS,
                        STARTING_SNAKE_POSITION, CONVERSATION_APPROACHING_TO_EAT,
@@ -305,6 +305,9 @@ class SnakeEncounter(SnakeProgress):
         from social import account_view, claim_by_id
         from actor_identity import actor_catalog
         npc, snake, world = self.recipient, self.initiator, self.world
+        if self.active and self.arrived:
+            from interactions import observe_conversation
+            observe_conversation(world, self.record, snake, npc)
         can_give_apple = self.reserved and world.tree.fruit > 0
         accounts = [account_view(world, claim_by_id(world, b.claim_id), b)
                     for b in npc.beliefs if b.stance != "disbelieved"]
@@ -323,9 +326,7 @@ class SnakeEncounter(SnakeProgress):
             "warning_record": next((f.summary for f in world.facts if f.id == snake.offenses.get(npc.id)), ""),
             "permitted_decisions": permitted, "offering_accounts": accounts,
             "can_give_apple": bool(can_give_apple), "apple_reserved": self.reserved,
-            "audience_ids": [], "roster_revision": world.roster_revision,
-            "_name_audience": [p.snapshot(world.tree) for p in world.listeners(npc) if p is not npc],
-            "_name_snake_audience": [p.snapshot(world.tree) for p in world.listeners(snake) if p is not npc],
+            "roster_revision": world.roster_revision,
             "resident_revision": npc.command_revision,
             "_resident_knowledge": [(b.claim_id, b.stance, b.source_id, b.disclosure_id) for b in npc.beliefs],
             "_snake_knowledge": [(b.claim_id, b.stance, b.source_id, b.disclosure_id) for b in snake.beliefs]}
@@ -389,6 +390,8 @@ class SnakeEncounter(SnakeProgress):
     def finish(self, tree=None, *, error=""):
         if not self.active:
             return
+        self.record.pending_witness_ids.clear()
+        self.record.eating_witness_ids.clear()
         self.active = False
         self.reserved = False
         self.record.status = CONVERSATION_FAILED if error else CONVERSATION_FINISHED
@@ -413,16 +416,20 @@ class SnakeEncounter(SnakeProgress):
         if not self.world.is_outdoors(npc):
             self.finish(error="The resident is no longer here.")
             return
+        from interactions import observe_conversation, collect_eating_witnesses
+        if self.arrived and self.stage in ("waiting", "dialogue", "player"):
+            observe_conversation(self.world, self.record, snake, npc)
         if self.stage == "waiting" and math.dist((npc.x, npc.y), self.world.tree.interaction_point) > 8:
             self.stage, self.arrived = "approach", False
         if self.stage == "approach":
             npc.destination = self.world.tree.interaction_point
             at_tree = npc._move(dt)
-            if at_tree and math.dist((snake.x, snake.y), (npc.x, npc.y)) <= HEARING_RADIUS:
+            if at_tree and math.dist((snake.x, snake.y), (npc.x, npc.y)) <= SNAKE_INTERACTION_DISTANCE:
                 npc.destination = None
                 self.arrived = True
                 self.stage = "waiting"
                 self.record.status = CONVERSATION_WAITING_FOR_GENERATED_DIALOGUE
+                observe_conversation(self.world, self.record, snake, npc)
             return
         if self.stage == "waiting":
             face_each_other(self.initiator, self.recipient)
@@ -446,7 +453,9 @@ class SnakeEncounter(SnakeProgress):
                 snake.activity = "eating"
                 self.record.status = CONVERSATION_EATING
                 self.elapsed = 0.0
+                collect_eating_witnesses(self.world, npc, record=self.record)
         elif self.stage == "eating":
+            collect_eating_witnesses(self.world, npc, record=self.record)
             self.elapsed += dt
             if self.elapsed >= SNAKE_EAT_SECONDS:
                 if not self.world.depart_resident(npc, self):
@@ -580,6 +589,8 @@ class PlayerSnakeEncounter(SnakeEncounter):
         self.record.dialogue_errors = list(dict.fromkeys([*self.record.dialogue_errors, *response._dialogue_errors]))
         self.record.add_turn(self.initiator.name, response.reply,
             [{"text": response.reply, "emotion": {"name": "neutral", "intensity": 0}}], rewritten, speaker_id=self.initiator.id)
+        from interactions import observe_conversation
+        observe_conversation(self.world, self.record, self.initiator, self.recipient, accepted=True)
         self.question_account_id = response.snake_account_id if contains_question(response.reply) else ""
         self.dialogue.dialogue_state = "ready"
         if decision == "eat":
@@ -601,6 +612,8 @@ class PlayerSnakeEncounter(SnakeEncounter):
     def finish(self, tree=None, *, error=""):
         if not self.active:
             return
+        self.record.pending_witness_ids.clear()
+        self.record.eating_witness_ids.clear()
         self.active, self.reserved = False, False
         error = error or self.record.error
         self.record.status, self.record.error = (CONVERSATION_FAILED, error) if error else (CONVERSATION_FINISHED, "")

@@ -159,7 +159,7 @@ def _orientation_world_context(snapshot, *, correction=False):
 
 def _catalog_for_prompt(catalog):
     return {actor_id: {key: value for key, value in actor.items() if not key.startswith("_")}
-            for actor_id, actor in catalog.items()}
+            for actor_id, actor in catalog.items() if actor.get("_visible", False)}
 
 
 def world_context(snapshot, *, correction=False):
@@ -186,7 +186,7 @@ def world_context(snapshot, *, correction=False):
                     if focus and option["fact_id"] == focus["fact_id"]}
     fact_ids = {option["id"]: option["fact_id"] for option in info.get("options", [])}
     people = [snapshot, *[snapshot[key] for key in ("initiator", "recipient", "resident", "snake") if key in snapshot],
-              *snapshot.get("nearby_npcs", []), *snapshot.get("other_npcs", [])]
+              *snapshot.get("other_npcs", [])]
     actor_names = {person.get("npc_id", person.get("actor_id")): person.get("npc_name", person.get("name"))
                    for person in people if person.get("npc_id", person.get("actor_id"))}
 
@@ -300,7 +300,7 @@ def world_context(snapshot, *, correction=False):
             # The guard assesses accepted speech, never the resident's private biography.
             context.pop("resident", None)
             context.pop("offering_accounts", None)
-    for key in ("other_npcs", "nearby_npcs"):
+    for key in ("other_npcs",):
         if key in context:
             context[key] = [person_context(person) for person in context[key]]
             for person in context[key]:
@@ -558,7 +558,7 @@ def _snake_turn_snapshot(snapshot, decision, turns, *, outcome_turn=2):
         interaction_id=snapshot["interaction_id"], _name_actors=snapshot.get("_name_actors", {}),
         _dialogue_validation=snapshot.get("_dialogue_validation", True), speaker=speaker, listener=listener,
         day=snake["day"], time_of_day=snake["phase"], environment=environment,
-        transaction=transaction, task=task, accusation=snapshot["accusation"], audience_ids=[],
+        transaction=transaction, task=task, accusation=snapshot["accusation"],
         account_to_share=account if index == 0 or index == outcome_turn - 1 else None, preceding_turns=preceding[-1:],
         _preceding_turns=preceding, _speaker_behavior=direction)
     if index >= SNAKE_TURN_COUNT and turns:

@@ -42,6 +42,7 @@ class HostedVisit:
     destination: str
     return_location: str
     return_point: list[float]
+    observation_id: str | None = None
 
 
 def entrance(npc):
@@ -340,16 +341,33 @@ def update_visit(world, dt):
             return
         visit.stage = "hosting"
         record = next(r for r in world.history if r.id == next(o for o in world.player_invitations if o.id == visit.offer_id).conversation_id)
-        world.observed_event("visit", host, world.player,
-            f"{host.name} met the player for their accepted visit {'in the apartment' if visit.location.startswith('room:') else 'in the garden'}.", record)
+        _, fact = world.observed_event("visit", host, world.player,
+            f"{host.name} and {world.player.name} met.", record)
+        visit.observation_id = fact.id
         if visit.destination == "tree":
             finish_visit(world)
             world.join_tree(world.player, "introduction")
     elif world.player.location != visit.location or host.location != visit.location:
         finish_visit(world)
+    else:
+        observe_visit(world)
 
 
-def validate_saved_visit(visit, invitations, player, by_id, layout, interaction, entries, reserved_ids):
+def observe_visit(world):
+    """An entrant can notice the current meeting, without its invitation or terms."""
+    from locations import observers
+    from social import add_fact, fact_by_id
+    visit = world.visit
+    if not visit or visit.stage != "hosting":
+        return
+    host = world.npc_by_id(visit.host_id)
+    if host and host.location == world.player.location == visit.location:
+        fact = fact_by_id(world, visit.observation_id)
+        add_fact(world, fact.kind, host, world.player, fact.source_id, world.record_by_id(fact.conversation_id),
+                 fact.summary, observers(world, host, world.player))
+
+
+def validate_saved_visit(visit, invitations, player, by_id, layout, interaction, entries, reserved_ids, facts):
     from locations import valid_location, validate_feet
     from activity import ActivitySnapshot
     if visit:
@@ -373,6 +391,12 @@ def validate_saved_visit(visit, invitations, player, by_id, layout, interaction,
                     raise ValueError("An unfinished visit needs its actual remaining journey.")
         if visit.stage == "hosting" and (host.location != visit.location or player.location != visit.location):
             raise ValueError("A host and visitor must be present together.")
+        observation = facts.get(visit.observation_id)
+        if (visit.stage == "travel" and visit.observation_id is not None
+                or visit.stage == "hosting" and (observation is None or observation.kind != "visit"
+                    or (observation.subject_id, observation.object_id) != (host.id, player.id)
+                    or observation.conversation_id != offer.conversation_id)):
+            raise ValueError("A hosted meeting requires its own committed visual account.")
         if not valid_location(layout, visit.return_location):
             raise ValueError("A host's return destination must remain valid.")
         validate_feet(visit.return_location, visit.return_point)

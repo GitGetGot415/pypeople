@@ -133,6 +133,7 @@ class NPC:
     owner: str = "autonomous"
     target_id: str | None = None
     activity_elapsed: float = 0.0
+    eating_witness_ids: list[str] = field(default_factory=list)
     reason: str = "Exploring the world"
     decision_remaining: float = field(default_factory=lambda: random.uniform(0, DECISION_SECONDS))
     cooldowns: dict = field(default_factory=dict)
@@ -220,6 +221,7 @@ class NPC:
         self.behavior, self.owner = Behavior.WAIT, "autonomous"
         self.destination = self.target_id = None
         self.activity_elapsed = 0.0
+        self.eating_witness_ids = []
         self.resume_pending = False
         self.reason = reason
         return state
@@ -254,6 +256,7 @@ class NPC:
         self.destination = None
         self.target_id = None
         self.activity_elapsed = 0.0
+        self.eating_witness_ids = []
         self.resume_pending = False
         self.owner = "autonomous"
         self.decision_remaining = 0.0
@@ -268,6 +271,7 @@ class NPC:
         self.owner, self.reason = owner, reason
         self.destination = None
         self.activity_elapsed = self.pause_remaining = 0.0
+        self.eating_witness_ids = []
         self.resume_pending = False
         self.decision_remaining = DECISION_SECONDS
         if behavior == Behavior.EAT:
@@ -480,6 +484,11 @@ class NPC:
                 state["character"].pop(field, None)
             for key in ("last_reply", "activity_reason"):
                 state.pop(key, None)
+            # A visible person is not an invitation to inspect their task, travel
+            # destination, biography, satisfaction, or player control state.
+            state = {key: state[key] for key in ("location", "npc_id", "npc_name", "character", "position", "facing")}
+            state["activity"] = "Moving" if self.journey or self.destination else "Eating an apple" if self.eating else "Present"
+            return state
         state["arrival_day"] = self.arrival_day
         state["tree_guarded"] = True
         if self.indoors:
@@ -692,12 +701,16 @@ class NPC:
                 else:
                     face_toward(self, (partner.x, partner.y))
         elif behavior == Behavior.EAT:
+            from interactions import collect_eating_witnesses
+            collect_eating_witnesses(world, self)
             self.facing = 4
             self.activity_elapsed += dt
             if self.activity_elapsed + 1e-9 >= EAT_SECONDS:
                 if self.inventory.get("fruit", 0) > 0:
                     self.inventory["fruit"] -= 1
                     self.social = min(100.0, self.social + APPLE_SATISFACTION)
+                    world.observed_event("apple_eaten", self, None, f"{self.name} ate an apple.",
+                        witnesses=[world.participant_by_id(actor_id) for actor_id in self.eating_witness_ids])
                     self.finish_activity(world)
                 else:
                     self.finish_activity(world, failed=True)
@@ -982,6 +995,8 @@ class Conversation(ResidentProgress):
             self.fail_dialogue("The participants are no longer in the same location.")
             return
         if self.arrived:
+            from interactions import observe_conversation
+            observe_conversation(self.initiator.world, self.record, self.initiator, self.recipient)
             face_each_other(self.initiator, self.recipient)
             if self.dialogue.dialogue_state in ("waiting", "pending"):
                 self.dialogue.wait_elapsed += dt
@@ -1002,16 +1017,20 @@ class Conversation(ResidentProgress):
                     self.arrived = False
         if self.arrived:
             self.record.status = CONVERSATION_WAITING_FOR_DIALOGUE
+            from interactions import observe_conversation
+            observe_conversation(self.initiator.world, self.record, self.initiator, self.recipient)
             face_each_other(self.initiator, self.recipient)
             if self.purpose == "food_request":
                 self.prepare_food_request()
 
     def snapshot(self, tree, npcs):
+        if self.arrived and self.active:
+            from interactions import observe_conversation
+            observe_conversation(self.initiator.world, self.record, self.initiator, self.recipient)
         self.request_roster_revision = self.initiator.world.roster_revision
         self.request_actor_revisions = {n.id: n.command_revision for n in (self.initiator, self.recipient)}
         def participant(npc):
-            involved = npc is self.initiator or npc is self.recipient
-            state = npc.snapshot(tree, self.other(npc).id) if involved else npc.snapshot(tree, private=False)
+            state = npc.snapshot(tree, self.other(npc).id)
             # These replies were addressed to the player before the NPCs met.
             state.pop("last_reply", None)
             return state
@@ -1055,12 +1074,12 @@ class Conversation(ResidentProgress):
                 offer_speaker="initiator" if p.promisor_id == self.initiator.id else "recipient",
                 acceptance_speaker="initiator" if p.recipient_id == self.initiator.id else "recipient",
             ) for p in self.proposals],
-            "nearby_npcs": [participant(npc) for npc in self.initiator.world.listeners(self.initiator) if npc is not self.initiator and npc is not self.recipient],
         }
 
     def finish(self, tree):
         if not self.active:
             return
+        self.record.pending_witness_ids.clear()
         self.active = False
         self.record.status = CONVERSATION_FINISHED
         if not self.turns:
@@ -1090,6 +1109,7 @@ class Conversation(ResidentProgress):
         """Interrupt the meeting without replaying accepted speech or effects."""
         if not self.active:
             return
+        self.record.pending_witness_ids.clear()
         self.active = False
         self.record.status, self.record.error = CONVERSATION_CANCELLED, reason
         self.record.outcomes.append(reason)

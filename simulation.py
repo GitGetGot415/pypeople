@@ -7,10 +7,10 @@ from dataclasses import dataclass
 from typing import Annotated, Literal
 from pydantic import Field
 from uuid import uuid4
-from constants import (COMPANY_SOCIAL_RECOVERY, CROWD_LIMIT, DECISION_SECONDS, HEARING_RADIUS,
+from constants import (COMPANY_SOCIAL_RECOVERY, CROWD_LIMIT, DECISION_SECONDS, SNAKE_INTERACTION_DISTANCE,
                        MAX_SIMULATION_STEP_SECONDS, PROTECTED_POPULATION, RECOVERY_SECONDS,
                        SATISFACTION_PHASE_LOSS, SOCIAL_RADIUS, SNAKE_NAME, STARTING_DAY, STARTING_PAUSED,
-                       STARTING_PHASE, WITNESS_RADIUS, COMPANY_FATIGUE_PER_SECOND, CONVERSATION_CANCELLED,
+                       STARTING_PHASE, COMPANY_FATIGUE_PER_SECOND, CONVERSATION_CANCELLED,
                        CONVERSATION_EATEN_PLAYER, CONVERSATION_EATEN_RESIDENT,
                        CONVERSATION_PENDING_REPLY_STATUSES)
 
@@ -316,7 +316,9 @@ class Simulation:
         from autonomy import greet_arrivals, lone_introduction, reconsider, social_pair
         from social import refresh_concern
         from activity import Behavior
+        from interactions import observe_active_conversations
 
+        observe_active_conversations(self)
         self.tree.update(dt)
         from player import update_interaction
         from apartments import update_visit
@@ -383,6 +385,7 @@ class Simulation:
                 lone_introduction(npc, self)
             reconsider(npc, self)
             npc.update(dt, self.tree)
+        observe_active_conversations(self)
         # Each person benefits once, regardless of how many neighbors are present.
         socializing = []
         for npc in self.npcs:
@@ -567,34 +570,40 @@ class Simulation:
                     self.leave_tree(actor.id, str(exc))
         return clearing_ids
 
-    def listeners(self, actor, radius=None):
-        radius = HEARING_RADIUS if radius is None else radius
-        return [p for p in self.npcs if p.location == actor.location and math.dist((p.x, p.y), (actor.x, actor.y)) <= radius]
-
-    def endorsement_audience(self, actor):
-        from player import active_player
-        audience = [p for p in self.listeners(actor) if p is not actor]
-        if (active_player(self) and actor is not self.player and self.player.location == actor.location
-                and math.dist((self.player.x, self.player.y), (actor.x, actor.y)) <= HEARING_RADIUS):
-            audience.append(self.player)
-        return audience
-
     def observed_event(self, kind, subject, target, text, record=None, *, witnesses=None):
+        """Explicit visual event, or an explicitly selected private participant account."""
         from social import add_fact
         from conversation_history import remember
+        from locations import observers
         if witnesses is None:
-            witnesses = [subject, target, *self.listeners(subject, WITNESS_RADIUS)]
-            if subject.location == "garden" and math.dist((self.snake.x, self.snake.y), (subject.x, subject.y)) <= WITNESS_RADIUS:
-                witnesses.append(self.snake)
-        witnesses = list({p.id: p for p in witnesses if p is not self.player and p.location == subject.location}.values())
-        event = self.publish(kind, (subject, target), text, record)
-        fact = add_fact(self, kind, subject, target, event.id, record, text, witnesses)
+            witnesses = observers(self, subject, *([target] if target else []))
+        witnesses = list({p.id: p for p in witnesses if p is not self.player}.values())
+        event_kind = {"apple_given": "fruit_shared", "work_given": "work_shared"}.get(kind, kind)
+        event = self.publish(event_kind, (subject, target) if target else (subject,), text, record)
+        fact = add_fact(self, kind, subject, target, event.id, record, text, witnesses) if witnesses else None
         for actor in witnesses:
-            if actor is self.snake:
+            if actor is self.snake or kind in ("apple_given", "work_given", "conversation_seen"):
                 continue
-            partner = target if actor is subject else subject
+            partner = target if actor is subject and target else subject
             remember(actor, partner, event, kind, text, -4 if kind == "eating" else 0)
         return event, fact
+
+    def witness_eating(self, target, encounter):
+        """Commit sight and attitude effects before removing either kind of victim."""
+        from locations import observers
+        witnesses = {p.id: p for p in observers(self, self.snake, target)}
+        witnesses.update({actor_id: self.participant_by_id(actor_id) for actor_id in encounter.record.eating_witness_ids})
+        event, _ = self.observed_event("eating", self.snake, target,
+            f"{SNAKE_NAME} ate {target.name}.", encounter.record, witnesses=list(witnesses.values()))
+        for witness in witnesses.values():
+            if witness in (self.snake, target):
+                continue
+            friend = witness.opinion_score(target.id) if target is not self.player else witness.player_opinion.opinion
+            adjustment = -6 if friend > 0 or witness.attitudes["authority"] == "rejected" else 2 if witness.attitudes["belief"] == "believed" else -3
+            witness.attitudes["trust"] = max(-100, min(100, witness.attitudes["trust"] + adjustment))
+            witness.attitudes["trust_reason"] = f"Witnessed {SNAKE_NAME} eat {target.name} on day {self.day}."
+        encounter.record.eating_witness_ids.clear()
+        return event
 
     def eating_permitted(self, target=None, *, encounter=None, reachable=False):
         if self.population <= PROTECTED_POPULATION or self.snake.recovery_remaining > 0:
@@ -624,7 +633,7 @@ class Simulation:
         if decision == "give_apple":
             if (not encounter.reserved or self.tree.fruit < 1
                     or math.dist((npc.x, npc.y), self.tree.interaction_point) > 8
-                    or math.dist((npc.x, npc.y), (snake.x, snake.y)) > HEARING_RADIUS):
+                    or math.dist((npc.x, npc.y), (snake.x, snake.y)) > SNAKE_INTERACTION_DISTANCE):
                 raise ValueError("An apple requires stock and the present tree customer.")
             if player_encounter:
                 if not response.disclosure_evidence or response.disclosure_evidence not in encounter.request_context["_player_message"]:
@@ -667,17 +676,18 @@ class Simulation:
             self.tree.fruit -= 1
             npc.inventory["fruit"] = npc.inventory.get("fruit", 0) + 1
             text = f"{SNAKE_NAME} gave {npc.name} one apple for information supplied in this conversation. No further payment is owed."
-            event, _ = self.observed_event("bargain", snake, npc, text, encounter.record)
+            event, _ = self.observed_event("bargain", snake, npc, text, encounter.record, witnesses=[snake, npc])
+            self.observed_event("apple_given", snake, npc, f"{SNAKE_NAME} gave {npc.name} one apple.", encounter.record)
             encounter.outcome_event_id = event.id
         elif decision == "warn":
             text = f"{SNAKE_NAME} warned {npc.name} of being eaten: {response.accusation} Evidence from their response: {response.evidence} This is an accusation, not established guilt."
-            event, fact = self.observed_event("judgment", snake, npc, text, encounter.record)
+            event, fact = self.observed_event("judgment", snake, npc, text, encounter.record, witnesses=[snake, npc])
             snake.offenses[npc.id] = fact.id
             encounter.outcome_event_id = event.id
         elif decision == "eat":
             encounter.accusation = response.accusation
             event, _ = self.observed_event("judgment", snake, npc,
-                f"{SNAKE_NAME} condemned {npc.name} after an earlier warning and subsequent response: {response.accusation}", encounter.record)
+                f"{SNAKE_NAME} condemned {npc.name} after an earlier warning and subsequent response: {response.accusation}", encounter.record, witnesses=[snake, npc])
             encounter.outcome_event_id = event.id
         elif npc.id in snake.offenses:
             # A satisfactory response resolves the warning without a separate pardon system.
@@ -688,7 +698,7 @@ class Simulation:
             npc.attitudes = updated
         if encounter.request_context["first_meeting"]:
             self.observed_event("snake_claim", snake, npc,
-                f"{npc.name} heard {SNAKE_NAME}'s claims about authority and the garden; these remain unverified.", encounter.record)
+                f"{npc.name} heard {SNAKE_NAME}'s claims about authority and the garden; these remain unverified.", encounter.record, witnesses=[snake, npc])
         encounter.record.outcomes.append(f"Decision: {decision}. " + ("One apple transferred." if decision == "give_apple" else "No apple transferred."))
 
     def interrupt_resident(self, target, reason, *, departing=False):
@@ -734,6 +744,7 @@ class Simulation:
             if state.target_id == target.id:
                 state.behavior, state.owner, state.target_id = Behavior.WAIT, "autonomous", None
                 state.destination, state.activity_elapsed, state.resume_pending = None, 0.0, False
+                state.eating_witness_ids = []
                 state.reason, state.decision_remaining = reason, 0.0
         remaining = []
         for action in self.pending_actions:
@@ -761,6 +772,7 @@ class Simulation:
                 person.behavior = Behavior.WAIT
                 person.owner = "autonomous"
                 person.activity_elapsed = 0.0
+                person.eating_witness_ids = []
                 person.resume_pending = False
 
     def depart_resident(self, target, encounter):
@@ -769,6 +781,7 @@ class Simulation:
         from social import resolve_goal
         if target.departure or not self.eating_permitted(target, encounter=encounter, reachable=True):
             return False
+        event = self.witness_eating(target, encounter)
         # Mark before cleanup so a second call cannot remove or count this actor twice.
         target.departure = {"day": self.day, "phase": self.phase, "cause": "eaten by the snake", "event_id": ""}
         reason = f"Cancelled because {target.name} was eaten; this is not a deliberate betrayal."
@@ -794,14 +807,7 @@ class Simulation:
         self.roster_revision += 1
         self.introductions[:] = [i for i in self.introductions if i != target.id]
         self.social_rotation %= max(1, len(self.npcs))
-        event, _ = self.observed_event("eating", self.snake, target,
-            f"{SNAKE_NAME} ate {target.name}. {SNAKE_NAME} claims this sends a soul to hell; that destination remains unverified.", encounter.record)
         target.departure["event_id"] = event.id
-        for witness in self.listeners(self.snake, 220):
-            friend = witness.opinion_score(target.id)
-            adjustment = -6 if friend > 0 or witness.attitudes["authority"] == "rejected" else 2 if witness.attitudes["belief"] == "believed" else -3
-            witness.attitudes["trust"] = max(-100, min(100, witness.attitudes["trust"] + adjustment))
-            witness.attitudes["trust_reason"] = f"Witnessed {SNAKE_NAME} eat {target.name} on day {self.day}."
         self.snake.eaten_today += 1
         self.snake.recovery_remaining = RECOVERY_SECONDS
         self.snake.offenses.pop(target.id, None)
@@ -816,6 +822,7 @@ class Simulation:
     def kill_player(self, encounter):
         if not self.player.alive or not self.eating_permitted(self.player, encounter=encounter, reachable=True):
             return False
+        event = self.witness_eating(self.player, encounter)
         from player import end_interaction
         from apartments import finish_visit
         self.player.alive = False
@@ -836,8 +843,6 @@ class Simulation:
         self.snake.eaten_today += 1
         self.snake.recovery_remaining = RECOVERY_SECONDS
         self.player_acknowledgments.clear()
-        event, _ = self.observed_event("eating", self.snake, self.player,
-            f"{SNAKE_NAME} ate the player. Their claimed destination remains unverified.", encounter.record)
         encounter.outcome_event_id = event.id
         encounter.finish()
         encounter.record.status = CONVERSATION_EATEN_PLAYER
@@ -880,10 +885,7 @@ class Simulation:
         from social import refresh_concern
         refresh_concern(npc)
         npc.decision_remaining = 0.0
-        observers = [npc, *self.listeners(npc, 220)]
-        if npc.location == self.snake.location and math.dist((npc.x, npc.y), (self.snake.x, self.snake.y)) <= 220:
-            observers.append(self.snake)
-        self.observed_event("arrival", npc, self.snake, f"{npc.name} arrived for dawn on day {day}, remembering a former life.", witnesses=observers)
+        self.observed_event("arrival", npc, None, f"{npc.name} arrived for dawn on day {day}.")
         return npc
 
 

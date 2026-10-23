@@ -61,6 +61,8 @@ class ConversationRecord:
     authorization_id: str | None = None
     transfer_intent: TransferIntent | None = None
     player_promise_offers: list[PlayerPromiseOffer] = field(default_factory=list)
+    pending_witness_ids: list[str] = field(default_factory=list)
+    eating_witness_ids: list[str] = field(default_factory=list)
 
     @property
     def transcript(self):
@@ -169,7 +171,7 @@ class Memory:
     partner_id: str
     kind: Literal["gave_fruit", "received_fruit", "refused", "kept_fruit", "conversation",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
-                  "claim_shared", "heard_claim", "claim_opinion", "leverage", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "gave_work", "received_work", "visit"]
+                  "claim_shared", "heard_claim", "claim_opinion", "leverage", "arrival", "departure", "apple_eaten", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "gave_work", "received_work", "visit"]
     summary: Annotated[str, Field(max_length=400)]
     weight: Annotated[float, Field(ge=-12, le=12)]
 
@@ -180,7 +182,7 @@ class WorldEvent:
     phase: Literal["day", "night"]
     kind: Literal["phase", "food_requested", "food_refused", "fruit_shared", "conversation_completed", "interaction_failed",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
-                  "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "promise_cancelled", "work_shared", "player_call", "player_conversation", "tree_queue", "travel_failed", "visit"]
+                  "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "departure", "apple_eaten", "conversation_seen", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "promise_cancelled", "work_shared", "player_call", "player_conversation", "tree_queue", "travel_failed", "visit"]
     participants: list[str]
     text: str
     history: str | None = None
@@ -277,6 +279,11 @@ def describe_opinion_change(person, target, previous, opinion, reason):
 
 
 def validate_history_record(record, history, ids, player_id):
+    for witnesses in (record.pending_witness_ids, record.eating_witness_ids):
+        if len(set(witnesses)) != len(witnesses) or not set(witnesses) <= ids - {player_id}:
+            raise ValueError("Conversation witnesses require unique known knowledge owners.")
+    if set(record.pending_witness_ids) & set(record.participant_ids):
+        raise ValueError("Conversation observers must be bystanders.")
     if record.authorization_id is not None and record.authorization_id not in history:
         raise ValueError("Missing transfer authorization conversation.")
     if (len(record.participant_ids) != 2 or len(set(record.participants)) != 2

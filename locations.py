@@ -79,6 +79,14 @@ def colocated(first, second):
     return first is not None and second is not None and first.location == second.location
 
 
+def observers(world, *actors):
+    """Living knowledge owners who can see every supplied actor in their actual area."""
+    if not actors or any(not colocated(actors[0], actor) for actor in actors):
+        return []
+    return [actor for actor in [*world.npcs, world.snake]
+            if getattr(actor, "departure", None) is None and colocated(actor, actors[0])]
+
+
 def available(npc):
     from activity import Behavior
     return (npc.departure is None and npc.behavior not in (Behavior.SLEEP, Behavior.GO_HOME)
@@ -166,8 +174,13 @@ def update_journey(actor, dt):
     speed = MOVEMENT_SPEED * (PLAYER_APPROACH_MULTIPLIER if journey.fast else 1)
     if move_toward(actor, clamp_point(actor.location, step.point), dt, speed):
         if step.arrival is not None:
+            world = actor.world
+            world.observed_event("departure", actor, None, f"{actor.name} left the area.")
             actor.location = step.destination
             actor.x, actor.y = clamp_point(actor.location, step.arrival)
+            world.observed_event("arrival", actor, None, f"{actor.name} arrived in the area.")
+            from interactions import observe_active_conversations
+            observe_active_conversations(world)
         journey.steps.pop(0)
         journey.elapsed = 0.0
         if not journey.steps:
@@ -183,11 +196,12 @@ def environment(location):
         floor = location.split(":")[1]
         return (f"Inside the apartment building's hallway on floor {floor}, with five closed room doors and an elevator. "
                 "The garden and its apple tree are outside the building; there is no grass or open sky here. "
-                "Only people in this hallway can hear. The garden exit is on the first floor; other floors reach it by elevator.")
+                "People in this hallway can see visible activity throughout it; speech is private to its participants. "
+                "The garden exit is on the first floor; other floors reach it by elevator.")
     number = location.split(":")[1]
     return (f"Inside narrow private apartment room {number}, with a doorway at its north end and a bed at its south end. "
             "The doorway leads to the hallway. The garden and apple tree are outside the building, with no grass or open sky here. "
-            "Only people in this room can hear.")
+            "People in this room can see its visible activity; speech is private to its participants.")
 
 
 def validate_feet(location, value):

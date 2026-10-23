@@ -295,6 +295,9 @@ def _account_words(text, names, kind):
         text = re.sub(r"\bunwilling to\b", "refused to", text, flags=re.I)
     elif kind in ("apple_given", "work_given"):
         text = re.sub(r"\b(?:share[ds]?|sharing|pass(?:ed|ing)?)\b", "give", text, flags=re.I)
+    elif kind == "conversation_seen":
+        text = re.sub(r"\b(?:talk(?:ed|ing)?|spoke|speak(?:ing)?|convers(?:e[ds]?|ing)|chat(?:ted|ting)?)\b",
+                      "talk", text, flags=re.I)
     words = _content_words(text, names)
     if kind == "snake_claim":
         words -= {"present", "presented", "presenting", "make", "made", "making", "assert", "asserted", "asserting", "dispute"}

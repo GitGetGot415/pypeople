@@ -343,7 +343,7 @@ def validate_resident_grounding(result, snapshot):
     info = snapshot.get("_information_validation") or {}
     options = {a["id"]: a for a in info.get("options", [])}
     names = [snapshot[role]["npc_name"] for role in ("initiator", "recipient")]
-    names.extend(n["npc_name"] for n in snapshot.get("nearby_npcs", []))
+    names.extend(actor["name"] for actor in snapshot.get("_name_actors", {}).values())
     names.append(SNAKE_NAME)
     for role in ("initiator", "recipient"):
         private = snapshot[role].get("private_context", {})
@@ -407,7 +407,7 @@ def _validate_base_presentation(result, snapshot):
     names = {SNAKE_NAME}
     people = [snapshot, *[snapshot[key] for key in ("initiator", "recipient", "resident", "snake", "speaker", "listener")
                          if isinstance(snapshot.get(key), dict)],
-              *snapshot.get("other_npcs", []), *snapshot.get("nearby_npcs", [])]
+              *snapshot.get("other_npcs", [])]
     for person in people:
         name = person.get("npc_name", person.get("name", person.get("character", {}).get("Name", "")))
         if name:
@@ -591,8 +591,6 @@ def _validate_response(raw, snapshot, model):
             raise ValueError("Only conversation and giving actions may have a target.")
     elif isinstance(result, ConversationResponse):
         validate_resident_gift(result.gift, result.turns, snapshot)
-        people = [snapshot[role]["npc_name"] for role in ("initiator", "recipient")]
-        people.extend(n["npc_name"] for n in snapshot.get("nearby_npcs", []))
         resident_information(snapshot, vars(result), incomplete=False)
         validate_agreements(result.accepted_proposals, proposals_from_snapshot(snapshot),
                             result.turns, snapshot["initiator"]["npc_id"], snapshot["recipient"]["npc_id"],

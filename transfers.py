@@ -90,6 +90,10 @@ def commit_transfer(world, interaction):
     record.transfers.append(transfer)
     event = world.publish("fruit_shared" if item == "fruit" else "work_shared", (giver, recipient),
                           f"{giver.name} gave {description} to {recipient.name}.", record)
+    from locations import observers
+    from social import add_fact
+    add_fact(world, "apple_given" if item == "fruit" else "work_given", giver, recipient,
+             event.id, record, event.text, observers(world, giver, recipient))
     interaction.outcome_event_id = event.id
     for actor, partner, kind, summary, weight in (
         (giver, recipient, "gave_fruit" if item == "fruit" else "gave_work", f"I gave {description} to {recipient.name}.", 2),
@@ -208,6 +212,9 @@ class Handoff(HandoffProgress):
                 self.record.status = CONVERSATION_GIVING_ITEMS
                 face_each_other(giver, recipient)
             return
+        if self.thanks:
+            from interactions import observe_conversation
+            observe_conversation(self.world, self.record, giver, recipient)
         elapsed = self.elapsed + max(0.0, dt)
         if not self.transferred and elapsed + 1e-9 >= GIFT_GIVE_SECONDS:
             try:
@@ -218,6 +225,7 @@ class Handoff(HandoffProgress):
             if self.thanks:
                 self.record.add_turn(recipient.name, " ".join(part.text.strip() for part in self.thanks),
                                      [part.model_dump() for part in self.thanks], self.rewritten_thanks, speaker_id=recipient.id)
+                observe_conversation(self.world, self.record, giver, recipient, accepted=True)
             if not self.player_exchange:
                 self.record.outcomes[0:1] = [f"Gave {self.quantity} {self.item} to {recipient.name}."]
                 self.record.status = CONVERSATION_THANKING
@@ -229,6 +237,7 @@ class Handoff(HandoffProgress):
     def finish(self, error=""):
         if not self.active:
             return
+        self.record.pending_witness_ids.clear()
         self.active = False
         self.record.status = CONVERSATION_FAILED if error and not self.transferred else CONVERSATION_COMPLETED
         self.record.error = error if not self.transferred else ""

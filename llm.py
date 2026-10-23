@@ -403,6 +403,13 @@ unknown dates and day-one chronology. Use only the speaker's own knowledge;
 specific private memories still need a permitted disclosure.
 Use the supplied people and surroundings; do not invent an audience, other
 trees to visit, or a known route home.
+Knowledge comes only from your own experience, visible activity in your current
+area, or an account disclosed directly to you. Seeing two people talk reveals
+only their identities and that they talked: no topic, words, promises, or motives.
+A conversation_seen account grants no shared transcript or prior participation.
+Seeing a handoff reveals only giver, recipient, item and quantity; seeing someone
+eaten reveals who ate whom, never guilt or a destination. Names reveal identity
+only. Retelling any observation is hearsay for the listener, with you as source.
 Conclude in character; never announce that you are following instructions,
 closing without questions, or selecting a concrete event from an account.
 A record can name another hearer of an event that you also witnessed directly.

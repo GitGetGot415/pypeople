@@ -477,6 +477,13 @@ class SimulationState(SaveModel):
             raise ValueError("Player identity conflicts with a physical actor.")
         actors[self.player.id] = PLAYER_LABEL
         ids.add(self.player.id)
+        activities = [*residents, *[state for c in self.conversations for state in c.saved_states],
+                      *[state for h in self.handoffs for state in h.saved_states.values()]]
+        for owner in [self.snake_encounter, physical, self.visit, self.tree_current, *self.tree_queue]:
+            if owner and getattr(owner, "saved_state", None):
+                activities.append(owner.saved_state)
+        if any(not set(state.eating_witness_ids) <= ids - {self.player.id} for state in activities):
+            raise ValueError("An unfinished apple action requires known observer identities.")
         if self.social_rotation >= len(self.npcs):
             raise ValueError("Invalid social rotation.")
         if any(n.departure is not None for n in self.npcs) or any(n.departure is None for n in self.archived):
@@ -693,7 +700,8 @@ def validate_physical_state(state, residents, live, records):
                           for actor_id in (h.initiator, h.recipient) if actor_id == interaction.npc_id}
     if exclusive & (reserved_ids - player_handoff_ids):
         raise ValueError("An actor cannot belong to two exclusive interactions.")
-    validate_saved_visit(state.visit, state.player_invitations, state.player, by_id, layout, interaction, entries, reserved_ids)
+    validate_saved_visit(state.visit, state.player_invitations, state.player, by_id, layout, interaction, entries,
+                         reserved_ids, {fact.id: fact for fact in state.facts})
     validate_player_reports(state.player_claims, records, state.player.id, phase_index(state.day, state.phase))
     validate_saved_invitations(state.player_invitations, records, residents, state.player.id, interaction,
                                Tree(x=state.tree.x, y=state.tree.y).interaction_point)

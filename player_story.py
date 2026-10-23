@@ -105,6 +105,8 @@ def scripted_player_opening(world, npc):
     record.add_turn(npc.name, text, [{"text": text, "emotion": {"name": "neutral", "intensity": 0}}], speaker_id=npc.id)
     world.history.append(record)
     world.player_interaction.record_id = record.id
+    from interactions import observe_conversation
+    observe_conversation(world, record, world.player, npc, accepted=True)
     npc.reply, npc.rewritten_reply, npc.player_reply.closing = text, "", False
     npc.set_emotion("neutral", 0)
     clear_call(npc)

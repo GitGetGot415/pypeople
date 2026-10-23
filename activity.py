@@ -1,7 +1,7 @@
 """Resident activity values shared by suspension and persistence."""
 
 from copy import deepcopy
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from enum import Enum
 from typing import Annotated, Literal
 from pydantic import Field
@@ -38,6 +38,7 @@ class ActivitySnapshot:
     decision_remaining: Annotated[float, Field(ge=0)]
     cooldowns: dict[str, float]
     resume_pending: bool
+    eating_witness_ids: list[str] = field(default_factory=list)
 
     @classmethod
     def capture(cls, actor):
@@ -49,6 +50,9 @@ class ActivitySnapshot:
             setattr(actor, field.name, deepcopy(getattr(values, field.name)))
 
     def validate(self):
+        if (len(set(self.eating_witness_ids)) != len(self.eating_witness_ids)
+                or self.eating_witness_ids and self.behavior != Behavior.EAT):
+            raise ValueError("Eating witnesses belong only to an unfinished apple consumption.")
         if any(value < 0 for value in self.cooldowns.values()):
             raise ValueError("Invalid cooldown duration.")
         if self.destination is not None and not (0 <= self.destination[0] <= WORLD_WIDTH and 0 <= self.destination[1] <= WORLD_HEIGHT):

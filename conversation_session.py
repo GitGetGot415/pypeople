@@ -372,6 +372,8 @@ class ConversationSession:
             self.select_record(record)
         record = self.record
         self.simulation.player_interaction.record_id = record.id
+        from interactions import observe_conversation
+        observe_conversation(self.simulation, record, self.simulation.player, npc)
         self.simulation.player_interaction.pending_request = dict(message=message, kind=snapshot.get("request_kind", ""),
             context=snapshot.get("player_interaction", {}))
         snapshot["_ownership_id"] = self.simulation.player_interaction.id
