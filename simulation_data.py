@@ -17,11 +17,11 @@ from records import SaveModel, saved_record, restore_record
 from interactions import DialogueProgress
 from character_data import normalize_character, normalize_opinions
 from constants import (CONCERN_LIFETIME_RANGE, CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE,
-                      FAILURE_COOLDOWN, SHAKE_SECONDS, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME,
-                      WORLD_HEIGHT, WORLD_WIDTH, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_RANGE,
-                      OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE, WAKE_DELAY_RANGE, PLAYER_LABEL,
-                      PLAYER_NAME_TAG, PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS,
-                      TRAVEL_STEP_TIMEOUT, PLAYER_APPROACH_TIMEOUT)
+                       FAILURE_COOLDOWN, SHAKE_SECONDS, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME,
+                       WORLD_HEIGHT, WORLD_WIDTH, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_RANGE,
+                       OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE, WAKE_DELAY_RANGE, PLAYER_LABEL,
+                       PLAYER_NAME_TAG, PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, TRAVEL_STEP_TIMEOUT,
+                       PLAYER_APPROACH_TIMEOUT, CONVERSATION_REPLY_PENDING_WHEN_SAVED)
 from creations import Creation, CreativeJob
 from apartments import (Invitation, HostedVisit,
                         validate_saved_visit, validate_saved_invitations, validate_saved_home)
@@ -37,7 +37,7 @@ from player import (Player, PlayerInteraction, validate_saved_calls, validate_sa
                     validate_saved_player_mode)
 from purgatory import Attitudes
 from player_story import validate_starting_history, resident_arrival_days
-from social import (Belief, Claim, ConcernKind, ConversationConcern, Disclosure, Fact, Goal, OpinionEffect,
+from social import (Belief, Claim, ConversationConcern, Disclosure, Fact, Goal, OpinionEffect,
                    Promise, Proposal, ClaimOption, InformationContext, phase_index,
                    validate_social_records, validate_saved_promises)
 
@@ -95,11 +95,10 @@ class InformationState(saved_record(InformationContext)):
     options: list[ClaimOptionState]
 
     def restore(self):
-        context = restore_record(InformationContext, self)
-        context.beliefs = {role: [restore_record(Belief, belief) for belief in entries]
-                          for role, entries in self.beliefs.items()}
-        context.options = [restore_record(ClaimOption, option) for option in self.options]
-        return context
+        return restore_record(InformationContext, self,
+            beliefs={role: [restore_record(Belief, belief) for belief in entries]
+                     for role, entries in self.beliefs.items()},
+            options=[restore_record(ClaimOption, option) for option in self.options])
 
 
 class DepartureState(SaveModel):
@@ -205,9 +204,7 @@ class JourneyState(saved_record(Journey)):
     numeric_point = field_validator("point", mode="before")(_physical_point)
 
 
-class ConcernState(SaveModel):
-    kind: ConcernKind
-    claim_id: str | None
+class ConcernState(saved_record(ConversationConcern)):
     remaining: float = Field(ge=0, le=CONCERN_LIFETIME_RANGE[1])
 
     @model_validator(mode="after")
@@ -676,10 +673,7 @@ def _parse_player_interaction(value):
     if not physical.capture().keys() <= value.keys():
         raise ValueError("Missing required physical interaction fields.")
     validated = PlayerInteractionState.model_validate(asdict(physical))
-    physical = restore_record(PlayerInteraction, validated)
-    if validated.saved_state is not None:
-        physical.saved_state = restore_record(ActivitySnapshot, validated.saved_state)
-    return physical
+    return _restore_saved_activity(restore_record(PlayerInteraction, validated))
 
 
 def validate_physical_state(state, residents, live, records):
@@ -711,9 +705,14 @@ def validate_physical_state(state, residents, live, records):
 def _restore_journey(value):
     if value is None:
         return None
-    journey = restore_record(Journey, value)
-    journey.steps = [restore_record(RouteStep, step) for step in value.steps]
-    return journey
+    return restore_record(Journey, value, steps=[restore_record(RouteStep, step) for step in value.steps])
+
+
+def _restore_saved_activity(owner):
+    """Convert the same nested activity value after its owner has been attached."""
+    if owner.saved_state is not None:
+        owner.saved_state = restore_record(ActivitySnapshot, owner.saved_state)
+    return owner
 
 
 def _capture_fields(model, source, **overrides):
@@ -747,7 +746,7 @@ def capture_simulation(world, *, camera_offset, camera_zoom):
     if interaction and interaction.pending_request:
         record = next((row for row in history if row.id == interaction.record_id), None)
         if record:
-            record.status = "Reply pending when saved"
+            record.status = CONVERSATION_REPLY_PENDING_WHEN_SAVED
             record.outcomes.insert(0, "The reply was not saved. Send the request again after loading.")
     npcs, conversations, handoffs = [], [], []
     captured_handoffs = set()
@@ -844,13 +843,12 @@ def restore_simulation(state):
     world.player_claims = [restore_record(PlayerReport, c) for c in state.player_claims]
     world.visit = restore_record(HostedVisit, state.visit) if state.visit else None
     if world.visit:
-        world.visit.saved_state = restore_record(ActivitySnapshot, state.visit.saved_state)
+        _restore_saved_activity(world.visit)
     world.player_interaction = _parse_player_interaction(state.player_interaction)
     world.tree_queue = [restore_record(TreeCustomer, e) for e in state.tree_queue]
     world.tree_current = restore_record(TreeCustomer, state.tree_current) if state.tree_current else None
     for entry in [*world.tree_queue, *([world.tree_current] if world.tree_current else [])]:
-        if entry.saved_state is not None:
-            entry.saved_state = restore_record(ActivitySnapshot, entry.saved_state)
+        _restore_saved_activity(entry)
         world.reservations.acquire("tree", entry, world.participant_by_id(entry.actor_id))
     world.player_call_check = state.player_call_check
     world.player_acknowledgments = [restore_record(PlayerAcknowledgment, a) for a in state.player_acknowledgments]

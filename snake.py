@@ -5,10 +5,13 @@ import random
 import re
 from typing import Annotated, Literal
 from pydantic import Field
-from constants import (MAX_SIMULATION_STEP_SECONDS, DIALOGUE_TIMEOUT_SECONDS, HEARING_RADIUS,
-                      SNAKE_EAT_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME, SNAKE_SPEED, TREE_QUEUE_FACING,
-                      TREE_GUARD_FACING, STARTING_FACING, STARTING_SNAKE_ACTIVITY,
-                      STARTING_SNAKE_DECISION_SECONDS, STARTING_SNAKE_POSITION)
+from constants import (MAX_SIMULATION_STEP_SECONDS, DIALOGUE_TIMEOUT_SECONDS, HEARING_RADIUS, SNAKE_EAT_SECONDS,
+                       SNAKE_FRAME_SECONDS, SNAKE_NAME, SNAKE_SPEED, TREE_QUEUE_FACING, TREE_GUARD_FACING,
+                       STARTING_FACING, STARTING_SNAKE_ACTIVITY, STARTING_SNAKE_DECISION_SECONDS,
+                       STARTING_SNAKE_POSITION, CONVERSATION_APPROACHING_TO_EAT,
+                       CONVERSATION_AWAITING_TREE_VISITOR, CONVERSATION_DIALOGUE_READY, CONVERSATION_EATING,
+                       CONVERSATION_FAILED, CONVERSATION_FINISHED, CONVERSATION_JUDGMENT_ANNOUNCED,
+                       CONVERSATION_PLAYER_TREE_SERVICE, CONVERSATION_WAITING_FOR_GENERATED_DIALOGUE)
 from interactions import (DialogueProgress, PlayerReplyProgress, dialogue_finished, face_each_other,
                          face_toward, finish_generated_dialogue, move_toward, record_failed_dialogue,
                          record_generated_turns)
@@ -235,7 +238,7 @@ class SnakeEncounter(SnakeProgress):
         self.topic = reason or purpose.replace("_", " ")
         self.accusation = reason
         self.record = ConversationRecord((world.snake.name, resident.name), self.topic,
-                                         "Awaiting tree visitor", origin=origin, purpose=purpose, id=self.id,
+                                         CONVERSATION_AWAITING_TREE_VISITOR, origin=origin, purpose=purpose, id=self.id,
                                          participant_ids=[world.snake.id, resident.id])
         from social import concern_description
         self.record.intended_subjects = {world.snake.name: self.topic,
@@ -362,7 +365,7 @@ class SnakeEncounter(SnakeProgress):
         self.record.name_forms = name_forms(self.request_context.get("_name_actors", {}))
         self.record.orientation_discussed = orientation_speech(turn.text for turn in response.turns)
         self.stage = "dialogue"
-        self.record.status = "Judgment announced" if self.purpose == "judgment" else "Dialogue ready"
+        self.record.status = CONVERSATION_JUDGMENT_ANNOUNCED if self.purpose == "judgment" else CONVERSATION_DIALOGUE_READY
         finish_generated_dialogue(self, reading=reading)
 
     def fail_dialogue(self, reason, *, failed_turns=()):
@@ -377,12 +380,18 @@ class SnakeEncounter(SnakeProgress):
                            f"Meeting with {SNAKE_NAME} needs retry: {reason}", self.record)
         self.finish(error=reason)
 
+    def resident_activities(self):
+        return ((self.recipient, self.saved_state),) if self.saved_state is not None else ()
+
+    def activity_snapshots(self):
+        return (state for _, state in self.resident_activities())
+
     def finish(self, tree=None, *, error=""):
         if not self.active:
             return
         self.active = False
         self.reserved = False
-        self.record.status = "Failed" if error else "Finished"
+        self.record.status = CONVERSATION_FAILED if error else CONVERSATION_FINISHED
         self.record.error = error
         if error:
             self.record.outcomes.append(error)
@@ -413,7 +422,7 @@ class SnakeEncounter(SnakeProgress):
                 npc.destination = None
                 self.arrived = True
                 self.stage = "waiting"
-                self.record.status = "Waiting for generated dialogue"
+                self.record.status = CONVERSATION_WAITING_FOR_GENERATED_DIALOGUE
             return
         if self.stage == "waiting":
             face_each_other(self.initiator, self.recipient)
@@ -427,7 +436,7 @@ class SnakeEncounter(SnakeProgress):
                 return
             if self.outcome == "eat":
                 self.stage = "condemned_approach"
-                self.record.status = "Approaching to eat"
+                self.record.status = CONVERSATION_APPROACHING_TO_EAT
                 snake.activity = "approaching condemned resident"
             else:
                 self.finish()
@@ -435,7 +444,7 @@ class SnakeEncounter(SnakeProgress):
             if snake.move_toward((npc.x, npc.y), dt):
                 self.stage = "eating"
                 snake.activity = "eating"
-                self.record.status = "Eating"
+                self.record.status = CONVERSATION_EATING
                 self.elapsed = 0.0
         elif self.stage == "eating":
             self.elapsed += dt
@@ -482,7 +491,7 @@ class PlayerSnakeEncounter(SnakeEncounter):
         self.world, self.initiator, self.recipient = world, world.snake, resident
         self.id, self.purpose, self.origin = uuid4().hex, purpose, origin
         self.topic, self.accusation = reason or "Player tree service", reason
-        self.record = ConversationRecord(("You", world.snake.name), self.topic, "Player tree service",
+        self.record = ConversationRecord(("You", world.snake.name), self.topic, CONVERSATION_PLAYER_TREE_SERVICE,
             origin="player", purpose="snake_player", id=self.id, participant_ids=[resident.id, world.snake.id])
         self.active = self.arrived = True
         self.reserved = False
@@ -578,7 +587,7 @@ class PlayerSnakeEncounter(SnakeEncounter):
             finish_generated_dialogue(self, reading=True)
         else:
             self.committed = False
-            self.record.status = "Player tree service"
+            self.record.status = CONVERSATION_PLAYER_TREE_SERVICE
 
     def update(self, dt, *, reading=False):
         if not self.active:
@@ -594,7 +603,7 @@ class PlayerSnakeEncounter(SnakeEncounter):
             return
         self.active, self.reserved = False, False
         error = error or self.record.error
-        self.record.status, self.record.error = ("Failed", error) if error else ("Finished", "")
+        self.record.status, self.record.error = (CONVERSATION_FAILED, error) if error else (CONVERSATION_FINISHED, "")
         self.world.reservations.release("snake", self, self.initiator, self.recipient)
         self.initiator.target_id = None
         self.initiator.player_reply.complete()

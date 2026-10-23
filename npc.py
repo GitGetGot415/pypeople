@@ -12,7 +12,8 @@ from social import (ConcernKind, ConversationConcern, Goal, check_relationship_g
                    validate_live_agreements)
 from interactions import (DialogueProgress, PlayerReplyProgress, company_point, conversation_points,
                          dialogue_finished, face_each_other, face_toward, finish_generated_dialogue,
-                         move_toward, record_failed_dialogue, record_generated_turns)
+                         move_toward, record_failed_dialogue, record_generated_turns,
+                         release_resident, suspended_activity)
 from dataclasses import asdict, dataclass, field
 from activity import ActivitySnapshot, Behavior
 from uuid import uuid4
@@ -23,16 +24,20 @@ from purgatory import initial_attitudes
 from conversation_history import (ConversationRecord, describe_opinion_change, relevant_memories, remember,
                                  shared_conversation_history)
 from constants import (APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DEFAULT_CHARACTER_NAME,
-                      DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, CONVERSATION_PAUSE_RANGE,
-                      CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, MOVEMENT_SPEED,
-                      NPC_RADIUS, PARTNER_COOLDOWN, SHAKE_SECONDS, SNAKE_NAME, SOCIAL_RADIUS,
-                      SOCIAL_RECOVERED, WANDER_PAUSE, STARTING_DAY, STARTING_FACING, STARTING_NPC_FRUIT,
-                      STARTING_NPC_GENEROSITY_RANGE, STARTING_NPC_POSITION, STARTING_NPC_SATISFACTION_RANGE,
-                      STARTING_NPC_SOCIABILITY_RANGE, STARTING_TREE_POSITION, STARTING_FATIGUE_RANGE,
-                      EXCHANGE_FATIGUE)
+                       DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, CONVERSATION_PAUSE_RANGE,
+                       CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, MOVEMENT_SPEED,
+                       NPC_RADIUS, PARTNER_COOLDOWN, SHAKE_SECONDS, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED,
+                       WANDER_PAUSE, STARTING_DAY, STARTING_FACING, STARTING_NPC_FRUIT,
+                       STARTING_NPC_GENEROSITY_RANGE, STARTING_NPC_POSITION, STARTING_NPC_SATISFACTION_RANGE,
+                       STARTING_NPC_SOCIABILITY_RANGE, STARTING_TREE_POSITION, STARTING_FATIGUE_RANGE,
+                       EXCHANGE_FATIGUE, CONVERSATION_CANCELLED, CONVERSATION_DIALOGUE_READY,
+                       CONVERSATION_ENDED_BEFORE_DIALOGUE, CONVERSATION_ENDED_BEFORE_SHARING,
+                       CONVERSATION_FAILED, CONVERSATION_FINISHED, CONVERSATION_WAITING_FOR_DIALOGUE,
+                       CONVERSATION_WALKING_TO_MEET)
 from social import (NPC_ARRIVAL_MEMORY, orientation_context, validate_orientation)
 from actor_identity import (actor_catalog, name_forms)
 from transfers import Handoff
+from transfer_records import TransferIntent
 from locations import Journey
 from player_records import PlayerOpinion, PlayerCall, PlayerReplyCall
 
@@ -316,8 +321,7 @@ class NPC:
         self.cooldowns = {key: value - dt for key, value in self.cooldowns.items() if value > dt}
         interaction = self.conversation or self.gift
         if interaction is not None:
-            suspended = (self.gift.saved_states[self.id] if self.gift else
-                         interaction.saved_states[0 if interaction.initiator is self else 1])
+            suspended = suspended_activity(self.gift or interaction, self)
             suspended.decision_remaining = max(0.0, suspended.decision_remaining - dt)
             suspended.cooldowns = {key: value - dt for key, value in suspended.cooldowns.items() if value > dt}
 
@@ -579,7 +583,7 @@ class NPC:
         if (recipient is self or self.world is None or self.world.npc_by_id(self.id) is not self
                 or not any(person is recipient for person in self.world.npcs)):
             raise ValueError("Choose another NPC in this world to receive the items.")
-        from apartments import available_outdoors
+        from locations import available as available_outdoors
         if not available_outdoors(self) or not available_outdoors(recipient):
             raise ValueError("Both residents must be available outdoors to exchange items.")
         if self.busy or recipient.busy or recipient.interaction_blocked:
@@ -790,7 +794,7 @@ class Conversation(ResidentProgress):
         self.reactions = []
         self.arrived = False
         self.active = True
-        self.record = ConversationRecord((initiator.name, recipient.name), topic, "Walking to meet",
+        self.record = ConversationRecord((initiator.name, recipient.name), topic, CONVERSATION_WALKING_TO_MEET,
                                          origin=origin, purpose=purpose, id=self.id,
                                          participant_ids=[initiator.id, recipient.id])
         self.record.intended_subjects = {
@@ -839,6 +843,12 @@ class Conversation(ResidentProgress):
 
     def other(self, npc):
         return self.recipient if npc is self.initiator else self.initiator
+
+    def resident_activities(self):
+        return zip((self.initiator, self.recipient), self.saved_states)
+
+    def activity_snapshots(self):
+        return iter(self.saved_states)
 
     @property
     def turns(self):
@@ -898,7 +908,7 @@ class Conversation(ResidentProgress):
             )
             for npc, partner, entry in opinions
         ]
-        self.record.status = "Dialogue ready"
+        self.record.status = CONVERSATION_DIALOGUE_READY
         self.record.orientation_discussed = orientation_discussed
         self.accepted_proposals = list(response.accepted_proposals)
         self.accepted_disclosures = list(response.disclosures)
@@ -978,10 +988,8 @@ class Conversation(ResidentProgress):
                 if self.dialogue.wait_elapsed >= DIALOGUE_TIMEOUT_SECONDS:
                     self.fail_dialogue("Dialogue generation timed out. No dialogue was generated.")
             elif dialogue_finished(self, dt, reading=reading):
-                if self.accepted_gift:
+                if self.accepted_gift or self.purpose == "food_request" and self.food_outcome == "accepted":
                     self.handoff(self.accepted_gift)
-                elif self.purpose == "food_request" and self.food_outcome == "accepted":
-                    self.handoff()
                 else:
                     self.finish(self.initiator.world.tree)
             return
@@ -993,7 +1001,7 @@ class Conversation(ResidentProgress):
                 else:
                     self.arrived = False
         if self.arrived:
-            self.record.status = "Waiting for dialogue"
+            self.record.status = CONVERSATION_WAITING_FOR_DIALOGUE
             face_each_other(self.initiator, self.recipient)
             if self.purpose == "food_request":
                 self.prepare_food_request()
@@ -1054,9 +1062,9 @@ class Conversation(ResidentProgress):
         if not self.active:
             return
         self.active = False
-        self.record.status = "Finished"
+        self.record.status = CONVERSATION_FINISHED
         if not self.turns:
-            self.record.status = "Failed" if self.error else "Ended before dialogue"
+            self.record.status = CONVERSATION_FAILED if self.error else CONVERSATION_ENDED_BEFORE_DIALOGUE
             self.record.outcomes = [self.error or "The conversation ended before any dialogue was generated."]
         if self.purpose != "food_request":
             world = self.initiator.world
@@ -1071,7 +1079,7 @@ class Conversation(ResidentProgress):
                     remember(npc, self.other(npc), event, "conversation", f"Talked about {self.topic}. {reason}", weight)
         elif not self.turns or self.food_outcome in ("", "accepted"):
             if not self.error:
-                self.record.status = "Ended before sharing"
+                self.record.status = CONVERSATION_ENDED_BEFORE_SHARING
                 self.record.outcomes = ["The food request ended before an apple was shared."]
             event = self.initiator.world.publish("interaction_failed", (self.initiator, self.recipient),
                                                 self.record.outcomes[0], self.record)
@@ -1083,18 +1091,15 @@ class Conversation(ResidentProgress):
         if not self.active:
             return
         self.active = False
-        self.record.status, self.record.error = "Cancelled", reason
+        self.record.status, self.record.error = CONVERSATION_CANCELLED, reason
         self.record.outcomes.append(reason)
         self.release_participants(bool(self.record.turns), revise=True)
 
     def release_participants(self, completed, *, revise=False):
         """Restore each suspended activity only while this meeting still owns it."""
-        for npc, state in zip((self.initiator, self.recipient), self.saved_states):
-            if not npc.world.reservations.release("conversation", self, npc):
+        for npc, state in self.resident_activities():
+            if not release_resident(npc.world, "conversation", self, npc, state, self.other(npc).id):
                 continue
-            if npc.world.npc_by_id(npc.id) is not npc:
-                continue
-            npc.restore_after_interaction(state, self.other(npc).id)
             npc.pause_after_conversation(completed)
             if not completed:
                 npc.cooldowns[self.other(npc).id] = dialogue_failure_cooldown(npc, self.other(npc))
@@ -1105,12 +1110,13 @@ class Conversation(ResidentProgress):
         """Reverse the roles without restoring activities or reacquiring tree claims."""
         if not self.active:
             return
-        donor = (self.initiator if gift.giver_id == self.initiator.id else self.recipient) if gift else self.recipient
+        intent = gift or TransferIntent(self.recipient.id, self.initiator.id, "fruit", 1)
+        donor = self.initiator if intent.giver_id == self.initiator.id else self.recipient
         requester = self.other(donor)
         states = self.saved_states if donor is self.initiator else self.saved_states[::-1]
         self.active = False
         donor.world.reservations.release("conversation", self, requester, donor)
-        Handoff(donor, requester, gift.item if gift else "fruit", gift.quantity if gift else 1, self.record,
+        Handoff(donor, requester, intent.item, intent.quantity, self.record,
              saved_states=states, already_met=True,
              thanks=self.handoff_thanks, rewritten_thanks=self.rewritten_handoff_thanks)
 

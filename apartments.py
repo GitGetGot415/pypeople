@@ -60,11 +60,6 @@ def assign_rooms(world):
             next_room += 1
 
 
-def available_outdoors(npc):
-    from locations import available
-    return available(npc)
-
-
 def cancel_work(npc):
     npc.creative_job = None
 

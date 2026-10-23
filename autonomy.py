@@ -199,7 +199,7 @@ def donor_choice(donor, requester):
 
 
 def actionable_obligation(npc, world):
-    from apartments import available_outdoors
+    from locations import available as available_outdoors
     if not available_outdoors(npc):
         return False
     # Preserve a free receiver for a delivery that is already physically possible,

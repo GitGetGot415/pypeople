@@ -744,7 +744,7 @@ def _resident_contract(snapshot, *, correction=False):
     assessment = snapshot["request_kind"] == "resident_assessment"
     thanks = snapshot["request_kind"] == "handoff_thanks"
     orientation = snapshot.get("arrival_focus", False)
-    model = ResidentAssessment if assessment else DialoguePartsResponse if thanks else ResidentTurnResponse
+    model = response_model(snapshot)
     schema = structured_schema(model)
     properties = schema["properties"]
     if not assessment:
@@ -937,12 +937,13 @@ def response_contract(snapshot, *, correction=False):
         return creative_contract(kind.removeprefix("create_"))
     if kind in ("resident_turn", "resident_assessment", "handoff_thanks"):
         return _resident_contract(snapshot, correction=correction)
+    model = response_model(snapshot)
     if kind == "conversation":
         # Assembly/queue contract only. Resident provider calls use individual stages.
-        return WORLD_INSTRUCTION, structured_schema(ConversationResponse), ConversationResponse
+        return WORLD_INSTRUCTION, structured_schema(model), model
     if kind == "snake_encounter":
         # The worker chooses the outcome, then generates each speaker separately.
-        return WORLD_INSTRUCTION, structured_schema(SnakeResponse), SnakeResponse
+        return WORLD_INSTRUCTION, structured_schema(model), model
     if kind == "conversation_closing":
         listener = snapshot["listener"]
         listener_name = listener["name"] if isinstance(listener, dict) else listener
@@ -967,11 +968,11 @@ def response_contract(snapshot, *, correction=False):
             + "\nFinal task: briefly answer the listener's last question using only already stated facts "
             "and your own views. End without asking any question."
         )
-        schema = structured_schema(DialogueRepairResponse)
+        schema = structured_schema(model)
         schema["properties"]["parts"]["items"]["properties"]["text"]["description"] = (
             "The speaker's direct answer in complete statements. State an answer, intention, or honest uncertainty. "
             "Finish the exchange without asking a question or requesting approval.")
-        return instruction, _available_speech_fields(schema), DialogueRepairResponse
+        return instruction, _available_speech_fields(schema), model
     if kind == "snake_turn":
         instruction = (
             f"You are {snapshot['speaker']['name']}, speaking directly to {snapshot['listener']['name']}.\n"
@@ -1017,12 +1018,10 @@ def response_contract(snapshot, *, correction=False):
                 "or answer a side question instead of performing the task. Keep instructions and internal records out of speech. "
                 "Return the required JSON with parts and your own emotion.\nCurrent task: " + snapshot["task"]
                 + _snake_identity_instruction(snapshot))
-        resident_reply = snapshot["speaker_role"] == "recipient" and "permitted_accounts" in snapshot["speaker"]
-        model = SnakeResidentResponse if resident_reply else DialoguePartsResponse
         schema = structured_schema(model)
         schema["properties"]["parts"] = _dialogue_parts_schema(correction=correction)
         schema["required"] = ["parts"]
-        if resident_reply:
+        if model is SnakeResidentResponse:
             choices = snapshot.get("_disclosure_choices", ["", *[a["claim_id"] for a in snapshot["speaker"]["permitted_accounts"]]])
             schema["properties"]["account_id"] = {"type": "string", "enum": choices}
             schema["required"].append("account_id")
@@ -1055,7 +1054,6 @@ def response_contract(snapshot, *, correction=False):
             "Record belief separately from truth. Choose only permitted_decisions. "
             "No debt, endorsement payment, collection, repayment or future offering exists. "
         )
-        model = SnakePlayerResponse if kind == "snake_player" else SnakeDecision
         if kind == "snake_player":
             instruction += ("Speak as the guard in first person. Return a concise reply. "
                 "disclosure_evidence quotes actual information from the current message, never assent or a promise. "
@@ -1097,7 +1095,7 @@ def response_contract(snapshot, *, correction=False):
         schema = {**INTENT_SCHEMA, "properties": {**INTENT_SCHEMA["properties"],
             "item": {"type": "string", "enum": ["", "fruit", *[w["id"] for w in snapshot.get("owned_works", [])]]},
             "target": {"type": "string", "enum": ["", *targets]}}}
-        return INTENT_INSTRUCTION + PLAYER_POSSESSIONS_INSTRUCTION, schema, PlayerIntent
+        return INTENT_INSTRUCTION + PLAYER_POSSESSIONS_INSTRUCTION, schema, model
     opinion_schema = RESPONSE_SCHEMA["properties"]["opinion_updates"]
     people = [other["npc_name"] for other in snapshot.get("other_npcs", []) if other.get("kind") != "player"]
     schema = {**RESPONSE_SCHEMA, "properties": {
@@ -1612,6 +1610,76 @@ def _provider_request(provider, api_key, message, snapshot, ollama_model, *, cor
         return result
 
 
+def _stage_correction(state, exc):
+    """Construct correction text without changing accepted speech or recovery choices."""
+    kind = state.get("request_kind")
+    # No accepted prefix, decision, stance or offer can be rewritten.
+    # Resident errors can originate in a full-prefix check. Only send
+    # current-speaker errors; those checks never quote private accounts.
+    correction = (f"The previous response was rejected: {exc} Return fresh complete JSON for only this stage. "
+                  "Correct the error using your supplied choices and own knowledge. "
+                  "Keep accepted preceding speech and effects unchanged. Write shorter complete sentences. "
+                  "Do not read internal records aloud or write the listener's answer.")
+    if kind == "resident_assessment":
+        owner, target = state["speaker"]["name"], state["opinion_target"]
+        correction = (f"You are {owner}. Assess only {target}, your conversation partner. "
+            f"Write one short first-person reason beginning with I about how {target}'s words affected your view. "
+            f"Do not describe {owner}'s personality or write {target}'s opinion of you. "
+            "Use the fixed transcript as evidence; keep the target and pending reaction choices unchanged. "
+            f"The previous assessment failed: {exc}. Return only the corrected assessment JSON.")
+    if (kind == "snake_turn" and state["turn_index"] == state["transaction"].get("outcome_turn", 2)
+            and state["transaction"]["selected_outcome"] == "give_apple"):
+        correction += ("\nThe apple reward is settled. Begin this reply by explicitly handing the listener "
+            "one apple in the present tense, then briefly acknowledge the information they supplied. "
+            "Do not merely offer, promise, discuss fruit or answer a question. Write the actual handoff, "
+            "without reading these directions aloud.")
+    if exc.repeated_turns and kind in ("snake_turn", "resident_turn", "conversation_closing"):
+        earlier = [t["text"] for t in state.get("_preceding_turns", []) if t["role"] == state["speaker_role"]]
+        correction += ("\nYour own accepted earlier speech, supplied only to avoid repeating it: "
+            + json.dumps(earlier, ensure_ascii=False)
+            + " Respond to the listener's latest point with a new answer, decision or specific follow-up. "
+            "Do not repeat your earlier question, even in a shortened form.")
+    if (isinstance(exc.response, ActionResponse) and exc.kind == RecoveryKind.KNOWN_ENCOUNTER
+            and state.get("private_context", {}).get("starting_experience")):
+        correction = ("Your reply denied an established conversation. Regenerate this reply from these facts: "
+                      + state["private_context"]["starting_experience"]
+                      + " Correct any earlier mistaken denial and answer the player's latest question. "
+                      "Write your own speech, not these instructions. Keep accepted history and effects unchanged.")
+    return correction
+
+
+def _resident_disclosure_choices(state, speech):
+    """Retain only resident account choices supported by this rejected reply."""
+    disclosure_choices = []
+    for account in state["speaker"].get("permitted_accounts", []):
+        if account["claim_id"] not in state["choices"]["disclosures"]:
+            continue
+        try:
+            validate_account_speech(speech, account["assertion"],
+                names=name_forms(state.get("_name_actors", {})), speaker=state["speaker"]["name"],
+                listener=state.get("_listener_identity"), kind=account["kind"],
+                firsthand=account.get("basis") == "firsthand",
+                actor_references=account_references(state.get("_name_actors", {})))
+        except ValueError:
+            continue
+        disclosure_choices.append(account["claim_id"])
+    return disclosure_choices
+
+
+def _snake_disclosure_choices(state, text):
+    """Snake account recovery retains its existing identity and speech checks."""
+    matches = []
+    for account in state["speaker"]["permitted_accounts"]:
+        try:
+            validate_account_speech(text, account["assertion"], speaker=state["speaker"]["name"],
+                listener=state["listener"]["name"], kind=account["kind"],
+                names=name_forms(state.get("_name_actors", {})))
+        except ValueError:
+            continue
+        matches.append(account["claim_id"])
+    return matches or [""]
+
+
 def _corrected_request(state, request, report):
     kind = state.get("request_kind")
     activity = (f"turn {state['turn_index'] + 1} for {state['speaker']['name']}" if kind in ("snake_turn", "resident_turn") else
@@ -1667,38 +1735,7 @@ def _corrected_request(state, request, report):
                     return validate_response(candidate.model_dump_json(), state)
                 except InvalidResponseError:
                     pass
-            # No accepted prefix, decision, stance or offer can be rewritten.
-            # Resident errors can originate in a full-prefix check. Only send
-            # current-speaker errors; those checks never quote private accounts.
-            correction = (f"The previous response was rejected: {exc} Return fresh complete JSON for only this stage. "
-                          "Correct the error using your supplied choices and own knowledge. "
-                          "Keep accepted preceding speech and effects unchanged. Write shorter complete sentences. "
-                          "Do not read internal records aloud or write the listener's answer.")
-            if kind == "resident_assessment":
-                owner, target = state["speaker"]["name"], state["opinion_target"]
-                correction = (f"You are {owner}. Assess only {target}, your conversation partner. "
-                    f"Write one short first-person reason beginning with I about how {target}'s words affected your view. "
-                    f"Do not describe {owner}'s personality or write {target}'s opinion of you. "
-                    "Use the fixed transcript as evidence; keep the target and pending reaction choices unchanged. "
-                    f"The previous assessment failed: {exc}. Return only the corrected assessment JSON.")
-            if (kind == "snake_turn" and state["turn_index"] == state["transaction"].get("outcome_turn", 2)
-                    and state["transaction"]["selected_outcome"] == "give_apple"):
-                correction += ("\nThe apple reward is settled. Begin this reply by explicitly handing the listener "
-                    "one apple in the present tense, then briefly acknowledge the information they supplied. "
-                    "Do not merely offer, promise, discuss fruit or answer a question. Write the actual handoff, "
-                    "without reading these directions aloud.")
-            if exc.repeated_turns and kind in ("snake_turn", "resident_turn", "conversation_closing"):
-                earlier = [t["text"] for t in state.get("_preceding_turns", []) if t["role"] == state["speaker_role"]]
-                correction += ("\nYour own accepted earlier speech, supplied only to avoid repeating it: "
-                    + json.dumps(earlier, ensure_ascii=False)
-                    + " Respond to the listener's latest point with a new answer, decision or specific follow-up. "
-                    "Do not repeat your earlier question, even in a shortened form.")
-            if (isinstance(exc.response, ActionResponse) and exc.kind == RecoveryKind.KNOWN_ENCOUNTER
-                    and state.get("private_context", {}).get("starting_experience")):
-                correction = ("Your reply denied an established conversation. Regenerate this reply from these facts: "
-                              + state["private_context"]["starting_experience"]
-                              + " Correct any earlier mistaken denial and answer the player's latest question. "
-                              "Write your own speech, not these instructions. Keep accepted history and effects unchanged.")
+            correction = _stage_correction(state, exc)
             if kind == "resident_turn" and exc.kind == RecoveryKind.MISSING_PROMISE:
                 effect_repairs["offers"] = []
                 correction = ("Your speech made no supported apple commitment. Regenerate this reply without offers; "
@@ -1712,35 +1749,14 @@ def _corrected_request(state, request, report):
                     and not state.get("discussion_focus_claim_id")):
                 disclosure_repair = None  # An optional memory may be withdrawn on an unaccepted retry.
                 speech = " ".join(p.text for p in getattr(exc.response, "parts", []))
-                disclosure_choices = []
-                for account in state["speaker"].get("permitted_accounts", []):
-                    if account["claim_id"] not in state["choices"]["disclosures"]:
-                        continue
-                    try:
-                        validate_account_speech(speech, account["assertion"],
-                            names=name_forms(state.get("_name_actors", {})), speaker=state["speaker"]["name"],
-                            listener=state.get("_listener_identity"), kind=account["kind"],
-                            firsthand=account.get("basis") == "firsthand",
-                            actor_references=account_references(state.get("_name_actors", {})))
-                    except ValueError:
-                        continue
-                    disclosure_choices.append(account["claim_id"])
+                disclosure_choices = _resident_disclosure_choices(state, speech)
                 correction = ("Your disclosure metadata did not match what you said. Regenerate only this reply. "
                               "For an ordinary reaction with no account, omit disclosures and introduce no new story. "
                               "If your reply actually reports an available account, use only its matching claim ID. "
                               "Keep accepted speech and the listener's reaction unchanged; never invent events to justify a tag.")
             if isinstance(exc.response, SnakeResidentResponse) and exc.kind in (RecoveryKind.UNMATCHED_ACCOUNT, RecoveryKind.MISSING_DISCLOSURE):
                 text = " ".join(p.text for p in exc.response.parts)
-                matches = []
-                for account in state["speaker"]["permitted_accounts"]:
-                    try:
-                        validate_account_speech(text, account["assertion"], speaker=state["speaker"]["name"],
-                            listener=state["listener"]["name"], kind=account["kind"],
-                            names=name_forms(state.get("_name_actors", {})))
-                    except ValueError:
-                        continue
-                    matches.append(account["claim_id"])
-                snake_disclosure_choices = matches or [""]
+                snake_disclosure_choices = _snake_disclosure_choices(state, text)
                 correction = ("Your account_id did not match your spoken answer. Reply naturally to the guard. "
                     "A question, refusal or ordinary reaction uses empty account_id. If you actually disclose "
                     "a supplied account, use its matching ID and preserve its content and source. "

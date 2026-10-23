@@ -4,6 +4,8 @@ The UI supplies only whether a reply and its original offer are still open.
 Outcome-specific commits remain in resident, snake and transfer code.
 """
 
+from constants import (CONVERSATION_APPLYING_PLAYER_REQUEST, CONVERSATION_COMPLETED, CONVERSATION_FAILED,
+                       CONVERSATION_REPLY_WAITING_FOR_PLAYER, CONVERSATION_WAITING_FOR_DONE, CONVERSATION_WALKING_TO_GIVE)
 from transfer_records import TransferIntent
 
 from player_records import PlayerCall, PlayerReplyCall
@@ -15,7 +17,7 @@ from interactions import record_failed_dialogue
 from actor_identity import (actor_catalog, name_forms)
 from social import orientation_speech
 from activity import Behavior
-from player import owns_conversation
+from player import directed_recipient_available, owns_conversation
 from simulation import PendingAction
 from snake import PlayerSnakeEncounter
 
@@ -43,14 +45,14 @@ def accept_generated_dialogue(conversation, result, error, failed_turns, rewritt
 
 
 def accept_snake_reply(world, request, result, error, failed_turns, rewritten):
-    npc, record = request["npc"], request["record"]
+    npc, record = request.actor, request.record
     encounter = world.snake.encounter
     npc.player_reply.complete()
     if not owns_conversation(world, npc) or not isinstance(encounter, PlayerSnakeEncounter):
         error = "This player tree exchange ended before its result arrived."
     if not error:
         try:
-            encounter.accept_player_response(result, request["snapshot"], request["message"],
+            encounter.accept_player_response(result, request.snapshot, request.message,
                                              rewritten=rewritten[0] if rewritten else ())
         except ValueError as exc:
             error = str(exc)
@@ -63,7 +65,7 @@ def accept_snake_reply(world, request, result, error, failed_turns, rewritten):
             if not drafts and result is not None:
                 drafts = [ConversationTurn(speaker="recipient", parts=[ConversationPart(text=result.reply)])]
             record_failed_dialogue(encounter, drafts)
-        record.status, record.error = "Failed", error
+        record.status, record.error = CONVERSATION_FAILED, error
     return AcceptedReply(error)
 
 
@@ -87,11 +89,11 @@ def remember_response_opinions(world, npc, response, snapshot):
 
 def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_validation,
                           visible, record_open):
-    npc, record = request["npc"], request["record"]
-    snapshot, message = request["snapshot"], request["message"]
+    npc, record = request.actor, request.record
+    snapshot, message = request.snapshot, request.message
     pending_offer = None
     npc.player_reply.complete()
-    if not error and (not owns_conversation(world, npc) or npc.busy or npc.command_revision != request["revision"] or request["world_revision"] != world.roster_revision):
+    if not error and (not owns_conversation(world, npc) or npc.busy or npc.command_revision != request.actor_revision or request.roster_revision != world.roster_revision):
         error = "That reply arrived after the NPC became busy. Please send the request again."
     if not error:
         try:
@@ -140,7 +142,7 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
                 error = "I don't have an apple to eat."
             elif result.action in ("TALK_TO_NPC", "GIVE_ITEM") and target is not world.player and (target is None or target.location != npc.location
                     or target.behavior == Behavior.GO_HOME or target.home_reason == "night"
-                    or target.busy or target.interaction_blocked or target.selected or target.player_call):
+                    or not directed_recipient_available(target)):
                 error = "That person is busy now. Please try again later."
             else:
                 if result.action == "GIVE_ITEM":
@@ -210,20 +212,20 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
         record.error = error or ""
         waiting_for_done = npc.waiting_for_done
         if error:
-            record.status = "Failed"
+            record.status = CONVERSATION_FAILED
             record.outcomes.insert(0, f"The request could not be completed: {error}")
         else:
             if npc.unread_player_reply:
-                record.status = "Reply waiting for player"
+                record.status = CONVERSATION_REPLY_WAITING_FOR_PLAYER
                 outcome = "Reply ready; waiting for the player to return to the conversation."
             elif waiting_for_done:
-                record.status = "Waiting for Done"
+                record.status = CONVERSATION_WAITING_FOR_DONE
                 outcome = "Accepted; starts after the player closes the conversation."
             elif npc.interaction_blocked:
-                record.status = "Applying player request"
+                record.status = CONVERSATION_APPLYING_PLAYER_REQUEST
                 outcome = "Accepted; applies on the next simulation tick."
             else:
-                record.status = "Completed"
+                record.status = CONVERSATION_COMPLETED
                 outcome = "Replied without changing their activity."
             record.outcomes.insert(0, outcome)
     if not error and result.invitation:
@@ -274,7 +276,7 @@ def apply_pending_action(world, action, spacing):
             error = str(exc)
     if action.record is not None:
         record = world.record_by_id(action.record)
-        record.status = "Failed" if error else ("Walking to give" if action.action == "GIVE_ITEM" else "Completed")
+        record.status = CONVERSATION_FAILED if error else (CONVERSATION_WALKING_TO_GIVE if action.action == "GIVE_ITEM" else CONVERSATION_COMPLETED)
         if error:
             record.error = error
             record.outcomes[0:1] = [error]

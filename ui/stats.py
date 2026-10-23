@@ -2,13 +2,6 @@ import pygame
 from interactions import player_request_pending
 from time import monotonic
 from character_data import DEFAULT_COLORS, IDENTITY_FIELDS, PROFILE_FIELDS
-from constants import (ACCENT, FAILED_CONVERSATION_COLOR, FAILED_CONVERSATION_SELECTED_COLOR,
-                      GENERATING_CONVERSATION_COLOR, GENERATING_CONVERSATION_SELECTED_COLOR,
-                      GIFT_CONVERSATION_COLOR, GIFT_CONVERSATION_SELECTED_COLOR, QUEUED_CONVERSATION_COLOR,
-                      QUEUED_CONVERSATION_SELECTED_COLOR, REWRITE_FAILED_CONVERSATION_COLOR,
-                      REWRITE_FAILED_CONVERSATION_SELECTED_COLOR, GRASS, INK, MODEL_LOG_COLORS,
-                      MODEL_LOG_REFRESH_SECONDS, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER, SNAKE_NAME,
-                      STATS_TAB_RECTS, STATS_FOLLOW_RECT, STATS_INVENTORY_RECT, STATS_INVENTORY_DETAIL_TOP)
 from conversation_history import (has_failed_voice_rewrite, usable_rewrite, uses_original_dialogue,
                                  voice_rewrite_errors)
 from emotions import portrait_expression
@@ -18,7 +11,14 @@ from .creations import CreationsGallery
 from .button import Button
 from .text import paginate_turn, wrap_text, scrollbar_rects
 from .character_sprite import draw_actor_portrait
-from constants import STATS_PORTRAIT_PADDING
+from constants import (STATS_PORTRAIT_PADDING, CONVERSATION_FAILED, ACCENT, FAILED_CONVERSATION_COLOR,
+                       FAILED_CONVERSATION_SELECTED_COLOR, GENERATING_CONVERSATION_COLOR,
+                       GENERATING_CONVERSATION_SELECTED_COLOR, GIFT_CONVERSATION_COLOR,
+                       GIFT_CONVERSATION_SELECTED_COLOR, QUEUED_CONVERSATION_COLOR,
+                       QUEUED_CONVERSATION_SELECTED_COLOR, REWRITE_FAILED_CONVERSATION_COLOR,
+                       REWRITE_FAILED_CONVERSATION_SELECTED_COLOR, GRASS, INK, MODEL_LOG_COLORS,
+                       MODEL_LOG_REFRESH_SECONDS, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER, SNAKE_NAME,
+                       STATS_TAB_RECTS, STATS_FOLLOW_RECT, STATS_INVENTORY_RECT, STATS_INVENTORY_DETAIL_TOP)
 
 
 class StatsScreen:
@@ -587,8 +587,8 @@ class StatsScreen:
                 if session_id == app.session_id and log.status in ("queued", "waiting_for_ollama")
             }
             for request in getattr(app, "player_requests", {}).values():
-                if player_request_pending(request) and request["id"] in queued_ids:
-                    queued_ids.add(request["record"].id)
+                if player_request_pending(request) and request.id in queued_ids:
+                    queued_ids.add(request.record.id)
             active_requests = {
                 worker.request_id for worker in app.requests.statuses()
                 if worker.session_id == app.session_id and worker.log is not None and worker.log.status == "running"
@@ -597,8 +597,8 @@ class StatsScreen:
                 conversation.record.id for request_id, conversation in app.conversation_requests.items()
                 if request_id in active_requests
             }
-            generating_ids.update(request["record"].id for request in getattr(app, "player_requests", {}).values()
-                                  if player_request_pending(request) and request["id"] in active_requests)
+            generating_ids.update(request.record.id for request in getattr(app, "player_requests", {}).values()
+                                  if player_request_pending(request) and request.id in active_requests)
         if not rows and self.tab == "Conversations":
             surface.blit(app.small_font.render("No conversations yet.", True, MUTED), (self.list_rect.x, self.list_rect.y + 12))
         if not rows and self.tab == "Model logs":
@@ -617,7 +617,7 @@ class StatsScreen:
                 color = GENERATING_CONVERSATION_SELECTED_COLOR if selected else GENERATING_CONVERSATION_COLOR
             elif self.tab == "Conversations" and entry.id in queued_ids:
                 color = QUEUED_CONVERSATION_SELECTED_COLOR if selected else QUEUED_CONVERSATION_COLOR
-            elif self.tab == "Conversations" and (entry.status == "Failed" or entry.dialogue_errors):
+            elif self.tab == "Conversations" and (entry.status == CONVERSATION_FAILED or entry.dialogue_errors):
                 color = FAILED_CONVERSATION_SELECTED_COLOR if selected else FAILED_CONVERSATION_COLOR
             elif self.tab == "Conversations" and has_failed_voice_rewrite(entry):
                 color = REWRITE_FAILED_CONVERSATION_SELECTED_COLOR if selected else REWRITE_FAILED_CONVERSATION_COLOR

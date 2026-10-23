@@ -8,10 +8,11 @@ from typing import Annotated, Literal
 from pydantic import Field
 from uuid import uuid4
 from constants import (PLAYER_ID, STARTING_PLAYER_FRUIT, PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS,
-                      PLAYER_CONTEXT_WORK_LIMIT, PLAYER_OPINION_STEP, PLAYER_CALL_GIFT_GENEROSITY,
-                      PLAYER_CALL_SOCIABILITY, ARRIVAL_LOCATION, STARTING_PLAYER_POSITION, STARTING_FACING,
-                      PLAYER_DEFAULT_APPEARANCE, MOVEMENT_SPEED, PLAYER_APPROACH_MULTIPLIER,
-                      PLAYER_RUN_MULTIPLIER, PLAYER_APPROACH_TIMEOUT, PLAYER_EVIDENCE_LIMIT)
+                       PLAYER_CONTEXT_WORK_LIMIT, PLAYER_OPINION_STEP, PLAYER_CALL_GIFT_GENEROSITY,
+                       PLAYER_CALL_SOCIABILITY, ARRIVAL_LOCATION, STARTING_PLAYER_POSITION, STARTING_FACING,
+                       PLAYER_DEFAULT_APPEARANCE, MOVEMENT_SPEED, PLAYER_APPROACH_MULTIPLIER,
+                       PLAYER_RUN_MULTIPLIER, PLAYER_APPROACH_TIMEOUT, PLAYER_EVIDENCE_LIMIT,
+                       CONVERSATION_CANCELLED, CONVERSATION_PENDING_REPLY_STATUSES)
 from conversation_history import remember
 from locations import Journey
 from player_records import (PlayerCall, PlayerCallReason, PlayerPromiseOffer, PlayerReport)
@@ -109,6 +110,11 @@ def can_claim(world):
         or world.visit and world.visit.stage == "travel")
 
 
+def directed_recipient_available(npc):
+    """Player command previews and accepted commands share these attention rules."""
+    return not npc.busy and not npc.interaction_blocked and not npc.selected and not npc.player_call
+
+
 def start_approach(world, npc, *, incoming=False, gift=None, knock_room=None):
     from locations import available, colocated
     from interactions import company_point
@@ -145,8 +151,8 @@ def end_interaction(world, reason="Conversation ended."):
         for offer in record.player_promise_offers:
             if offer.status == "offered":
                 offer.status = "closed"
-        if record.status in ("Waiting for reply", "Reply pending when saved"):
-            record.status, record.error = "Cancelled", reason
+        if record.status in CONVERSATION_PENDING_REPLY_STATUSES:
+            record.status, record.error = CONVERSATION_CANCELLED, reason
     if npc:
         if npc.gift:
             npc.gift.finish(reason)

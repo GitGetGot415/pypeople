@@ -1,7 +1,7 @@
 """Authored events for new Player games; ordinary simulation dialogue stays generated."""
 
 from player_records import PlayerCallReason
-from constants import SNAKE_NAME, STARTING_DAY, STARTING_PHASE, STARTING_PLAYER_DAY
+from constants import (SNAKE_NAME, STARTING_DAY, STARTING_PHASE, STARTING_PLAYER_DAY, CONVERSATION_COMPLETED)
 
 
 PLAYER_START_ENCOUNTER = "player-start-encounter"
@@ -97,7 +97,7 @@ def scripted_player_opening(world, npc):
                    and any(turn.speaker == npc.name for turn in record.turns) for record in world.history)):
         return None
     text = JUDY_OPENING.format(name=npc.character["Name"])
-    record = ConversationRecord(("You", npc.name), "First meeting with the player", "Completed",
+    record = ConversationRecord(("You", npc.name), "First meeting with the player", CONVERSATION_COMPLETED,
                                 origin="autonomous", participant_ids=[world.player.id, npc.id])
     record.intended_subjects = {"You": "Listening to Judy's introduction.", npc.name: INTRODUCTION_REASON}
     record.name_forms = name_forms(actor_catalog(world))

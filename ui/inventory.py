@@ -53,7 +53,7 @@ class InventoryPanel:
         return f"Apples: {self.owner.inventory['fruit']}"
 
     def recipients(self, app):
-        from apartments import available_outdoors
+        from locations import available as available_outdoors
         from player import active_player
         if not active_player(app.simulation):
             return []

@@ -101,9 +101,35 @@ class PlayerReplyProgress:
         self.request_id, self.closing = None, False
 
 
+@dataclass
+class PlayerRequest:
+    """A live session association; only the physical meeting saves retry data."""
+    id: str
+    actor: object
+    snapshot: dict
+    message: str
+    record: object
+    actor_revision: int
+    roster_revision: int
+
+
 def player_request_pending(request):
     """A session association refers to the actor's authoritative generation."""
-    return request["npc"].player_reply.request_id == request["id"]
+    return request.actor.player_reply.request_id == request.id
+
+
+def suspended_activity(interaction, resident):
+    return next(state for actor, state in interaction.resident_activities() if actor is resident)
+
+
+def release_resident(world, kind, owner, resident, state, *cooldown_ids, preserve_facing=False):
+    """Late cleanup must release the expected owner before restoring its activity."""
+    if not world.reservations.release(kind, owner, resident):
+        return False
+    if resident.world.npc_by_id(resident.id) is not resident:
+        return False
+    resident.restore_after_interaction(state, *cooldown_ids, preserve_facing=preserve_facing)
+    return True
 
 
 def finish_generated_dialogue(interaction, *, reading=False):

@@ -8,9 +8,11 @@ from typing import Annotated, Literal
 from pydantic import Field
 from uuid import uuid4
 from constants import (COMPANY_SOCIAL_RECOVERY, CROWD_LIMIT, DECISION_SECONDS, HEARING_RADIUS,
-                      MAX_SIMULATION_STEP_SECONDS, PROTECTED_POPULATION, RECOVERY_SECONDS,
-                      SATISFACTION_PHASE_LOSS, SOCIAL_RADIUS, SNAKE_NAME, STARTING_DAY, STARTING_PAUSED,
-                      STARTING_PHASE, WITNESS_RADIUS, COMPANY_FATIGUE_PER_SECOND)
+                       MAX_SIMULATION_STEP_SECONDS, PROTECTED_POPULATION, RECOVERY_SECONDS,
+                       SATISFACTION_PHASE_LOSS, SOCIAL_RADIUS, SNAKE_NAME, STARTING_DAY, STARTING_PAUSED,
+                       STARTING_PHASE, WITNESS_RADIUS, COMPANY_FATIGUE_PER_SECOND, CONVERSATION_CANCELLED,
+                       CONVERSATION_EATEN_PLAYER, CONVERSATION_EATEN_RESIDENT,
+                       CONVERSATION_PENDING_REPLY_STATUSES)
 
 
 @dataclass
@@ -240,7 +242,7 @@ class Simulation:
                 npc.player_reply.complete()
             if action.record is not None:
                 record = self.record_by_id(action.record)
-                record.status, record.error = "Cancelled", reason
+                record.status, record.error = CONVERSATION_CANCELLED, reason
                 record.outcomes.append(reason)
         self.pending_actions = retained
 
@@ -274,7 +276,8 @@ class Simulation:
             if self.player_interaction.saved_state:
                 behavior = self.player_interaction.saved_state.behavior
         elif npc.conversation:
-            behavior = npc.conversation.saved_states[0 if npc.conversation.initiator is npc else 1].behavior
+            from interactions import suspended_activity
+            behavior = suspended_activity(npc.conversation, npc).behavior
         return (self.npc_by_id(npc.id) is npc and npc.creative_job is job
                 and behavior == (Behavior.PAINT if job.kind == "art" else Behavior.COMPOSE)
                 and npc.command_revision == job.revision and job.creator_id == npc.id)
@@ -714,8 +717,8 @@ class Simulation:
             encounter.finish(error=reason)
         self.tree.release(target)
         for record in self.history:
-            if record.includes(target) and self.player.id in record.participant_ids and record.status in ("Waiting for reply", "Reply pending when saved"):
-                record.status, record.error = "Cancelled", reason
+            if record.includes(target) and self.player.id in record.participant_ids and record.status in CONVERSATION_PENDING_REPLY_STATUSES:
+                record.status, record.error = CONVERSATION_CANCELLED, reason
                 record.outcomes.append(reason)
         if departing:
             target.pending_social_opinions.clear()
@@ -723,10 +726,9 @@ class Simulation:
         interactions = {id(p.conversation or p.gift): p.conversation or p.gift
                         for p in self.npcs if p.conversation or p.gift}
         states = [state for interaction in interactions.values()
-                  for state in (interaction.saved_states.values() if isinstance(interaction.saved_states, dict)
-                                else interaction.saved_states)]
+                  for state in interaction.activity_snapshots()]
         if self.snake.encounter is not None and self.snake.encounter.saved_state is not None:
-            states.append(self.snake.encounter.saved_state)
+            states.extend(self.snake.encounter.activity_snapshots())
         for state in states:
             state.cooldowns.pop(target.id, None)
             if state.target_id == target.id:
@@ -742,7 +744,7 @@ class Simulation:
                     owner.command_revision += 1
                 if action.record is not None:
                     record = self.record_by_id(action.record)
-                    record.status, record.error = "Cancelled", reason
+                    record.status, record.error = CONVERSATION_CANCELLED, reason
                     record.outcomes.append(reason)
             else:
                 remaining.append(action)
@@ -807,7 +809,7 @@ class Simulation:
             self.snake.retry_request = None
         encounter.outcome_event_id = event.id
         encounter.finish()
-        encounter.record.status = "Eaten; resident archived"
+        encounter.record.status = CONVERSATION_EATEN_RESIDENT
         encounter.record.outcomes.append(f"{target.name} departed on day {self.day}. Their destination is unverified.")
         return True
 
@@ -838,7 +840,7 @@ class Simulation:
             f"{SNAKE_NAME} ate the player. Their claimed destination remains unverified.", encounter.record)
         encounter.outcome_event_id = event.id
         encounter.finish()
-        encounter.record.status = "Eaten; spectator mode"
+        encounter.record.status = CONVERSATION_EATEN_PLAYER
         self.roster_revision += 1
         return True
 

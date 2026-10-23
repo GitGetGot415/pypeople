@@ -17,6 +17,7 @@ def saved_record(record):
                         **{field.name: (annotations[field.name], ...) for field in fields(record)})
 
 
-def restore_record(record, source):
+def restore_record(record, source, **overrides):
     """Project a validated save onto a domain value, excluding enclosing records."""
-    return record(**{field.name: getattr(source, field.name) for field in fields(record)})
+    return record(**{field.name: overrides[field.name] if field.name in overrides else getattr(source, field.name)
+                     for field in fields(record)})

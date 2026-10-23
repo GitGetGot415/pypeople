@@ -619,7 +619,7 @@ class GameScreen:
         status = self.selected_npc.status if self.selected_npc is not None else f"{app.simulation.population} residents"
         request = app.conversations.pending_player_request(self.selected_npc)
         if request:
-            worker = app.requests.workers.get((app.session_id, request["id"]))
+            worker = app.requests.workers.get((app.session_id, request.id))
             state = "Queued" if worker and worker.control and worker.control.stage == "Waiting for provider admission" else "Thinking"
             status = f"{state} for {self.selected_npc.name}... / {status}"
         elif self.selected_npc.player_reply.closing:

@@ -9,9 +9,10 @@ from transfer_records import TransferIntent, TransferReceipt
 from dialogue import ConversationPart
 from uuid import uuid4
 from constants import (GIFT_GIVE_SECONDS, GIFT_SECONDS, PLAYER_TALK_DISTANCE, PLAYER_LABEL,
-                      CONVERSATION_MAX_AGREEMENTS)
+                       CONVERSATION_MAX_AGREEMENTS, CONVERSATION_COMPLETED, CONVERSATION_FAILED,
+                       CONVERSATION_GIVING_ITEMS, CONVERSATION_THANKING, CONVERSATION_WALKING_TO_GIVE)
 from conversation_history import ConversationRecord, remember
-from interactions import company_point, face_each_other
+from interactions import company_point, face_each_other, release_resident
 from dialogue_rules import unquoted_speech
 from actor_identity import actor_id
 
@@ -144,17 +145,17 @@ class Handoff(HandoffProgress):
         self.rewritten_thanks = list(rewritten_thanks)
         self.elapsed = 0.0
         labels = tuple(PLAYER_LABEL if actor is self.world.player else actor.name for actor in (initiator, recipient))
-        self.record = record or ConversationRecord(labels, "Give items", "Walking to give",
+        self.record = record or ConversationRecord(labels, "Give items", CONVERSATION_WALKING_TO_GIVE,
                                                   participant_ids=[initiator.id, recipient.id])
         if set(self.record.participant_ids) != {initiator.id, recipient.id}:
-            self.record = ConversationRecord(labels, "Directed gift", "Walking to give",
+            self.record = ConversationRecord(labels, "Directed gift", CONVERSATION_WALKING_TO_GIVE,
                 authorization_id=record.id, participant_ids=[initiator.id, recipient.id])
             initiator.world.history.append(self.record)
         if player_exchange:
             self.world.player_interaction.record_id = self.record.id
         self.record.transfer_intent = TransferIntent(giver_id=initiator.id, recipient_id=recipient.id, item=item, quantity=quantity)
         self.saved_states = {}
-        self.record.status = "Giving items" if already_met else "Walking to give"
+        self.record.status = CONVERSATION_GIVING_ITEMS if already_met else CONVERSATION_WALKING_TO_GIVE
         for npc in self.residents:
             self.saved_states[npc.id] = npc.suspend_activity(
                 "Exchanging a gift with the player" if player_exchange else
@@ -181,6 +182,12 @@ class Handoff(HandoffProgress):
     def residents(self):
         return tuple(actor for actor in (self.initiator, self.recipient) if actor is not self.world.player)
 
+    def resident_activities(self):
+        return ((npc, self.saved_states[npc.id]) for npc in self.residents)
+
+    def activity_snapshots(self):
+        return iter(self.saved_states.values())
+
     @property
     def player_exchange(self):
         return self.world.player in (self.initiator, self.recipient)
@@ -198,7 +205,7 @@ class Handoff(HandoffProgress):
             self.arrived = giver._move(max(0.0, dt))
             if self.arrived:
                 giver.destination = None
-                self.record.status = "Giving items"
+                self.record.status = CONVERSATION_GIVING_ITEMS
                 face_each_other(giver, recipient)
             return
         elapsed = self.elapsed + max(0.0, dt)
@@ -213,7 +220,7 @@ class Handoff(HandoffProgress):
                                      [part.model_dump() for part in self.thanks], self.rewritten_thanks, speaker_id=recipient.id)
             if not self.player_exchange:
                 self.record.outcomes[0:1] = [f"Gave {self.quantity} {self.item} to {recipient.name}."]
-                self.record.status = "Thanking"
+                self.record.status = CONVERSATION_THANKING
             elapsed = max(GIFT_GIVE_SECONDS, elapsed)
         self.elapsed = elapsed
         if self.elapsed + 1e-9 >= GIFT_SECONDS:
@@ -223,7 +230,7 @@ class Handoff(HandoffProgress):
         if not self.active:
             return
         self.active = False
-        self.record.status = "Failed" if error and not self.transferred else "Completed"
+        self.record.status = CONVERSATION_FAILED if error and not self.transferred else CONVERSATION_COMPLETED
         self.record.error = error if not self.transferred else ""
         if error and self.transferred:
             self.record.outcomes.append(f"The transfer remains committed. {error}")
@@ -231,14 +238,10 @@ class Handoff(HandoffProgress):
             self.record.outcomes[0:1] = [error]
             event = self.initiator.world.publish("interaction_failed", (self.initiator, self.recipient), error, self.record)
             self.outcome_event_id = event.id
-        for npc in self.residents:
-            state = self.saved_states[npc.id]
+        for npc, state in self.resident_activities():
             other = self.recipient if npc is self.initiator else self.initiator
-            if not self.world.reservations.release("handoff", self, npc):
+            if not release_resident(self.world, "handoff", self, npc, state, other.id, preserve_facing=True):
                 continue
-            if npc.world.npc_by_id(npc.id) is not npc:
-                continue
-            npc.restore_after_interaction(state, other.id, preserve_facing=True)
             if self.record.purpose == "food_request":
                 npc.pause_after_conversation(True)
         if self.player_exchange:
