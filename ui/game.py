@@ -505,7 +505,7 @@ class GameScreen:
         self.camera_offset[1] += world_pos[1] * (old_zoom - self.camera_zoom)
 
     def select_at(self, app, screen_pos):
-        from player import active_player, start_approach
+        from player import active_player, can_interrupt_approach, start_approach
         from locations import targets
         world = app.simulation
         if active_player(world) and (world.player_interaction or world.player.journey
@@ -546,7 +546,7 @@ class GameScreen:
             self.close_dialogue()
             return
         interaction = npc.conversation or getattr(npc, "snake_encounter", None)
-        if interaction:
+        if interaction and (not active_player(world) or not can_interrupt_approach(npc)):
             self.close_dialogue()
             self.dialogue_open, self.selected_npc, self.viewed_conversation = True, npc, interaction
             self.conversation_tree = world.tree

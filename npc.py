@@ -365,6 +365,10 @@ class NPC:
         if self.departure:
             from dialogue_rules import named_references
             return f"Departed on day {self.departure['day']} ({named_references(self.departure['cause'])})"
+        if self.world:
+            from player import owns_resident
+            if owns_resident(self.world, self):
+                return self.reason
         if self.journey:
             return f"Travelling to {self.journey.destination}"
         if self.world and self.world.tree_has_actor(self.id) and self.snake_encounter is None:

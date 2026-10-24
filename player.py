@@ -118,12 +118,23 @@ def directed_recipient_available(npc):
     return not npc.busy and not npc.interaction_blocked and not npc.selected and not npc.player_call
 
 
+def can_interrupt_approach(npc):
+    meeting = npc.interaction
+    return bool(meeting and meeting.active and not meeting.arrived
+                and not getattr(meeting, "committed", False)
+                and not getattr(meeting, "social_effects_applied", False)
+                and not getattr(meeting, "transferred", False))
+
+
 def start_approach(world, npc, *, incoming=False, gift=None, knock_room=None):
     from locations import available, colocated
     from interactions import company_point
-    if not can_claim(world) or world.npc_by_id(npc.id) is not npc or not available(npc):
+    available_to_player = available(npc) or (not incoming and npc.journey is not None and npc.departure is None)
+    if not can_claim(world) or world.npc_by_id(npc.id) is not npc or not available_to_player:
         raise ValueError("The player or resident is unavailable.")
-    if npc.busy or npc.interaction_blocked or world.tree_has_actor(npc.id) or npc.journey:
+    interrupt = not incoming and can_interrupt_approach(npc)
+    if (npc.busy and not interrupt or npc.interaction_blocked
+            or incoming and (world.tree_has_actor(npc.id) or npc.journey)):
         raise ValueError("The resident is occupied.")
     if not colocated(world.player, npc) and knock_room is None:
         raise ValueError("You must be in the same location.")
@@ -131,6 +142,17 @@ def start_approach(world, npc, *, incoming=False, gift=None, knock_room=None):
     point = company_point(mover, waiting, allow_vertical=True) if knock_room is None else (world.player.x, world.player.y)
     if point is None:
         raise ValueError("There is no reachable place to meet.")
+    reason = "The player intercepted the resident to talk."
+    if interrupt:
+        meeting = npc.interaction
+        if meeting is npc.conversation:
+            meeting.cancel(reason)
+        elif meeting is npc.gift:
+            meeting.finish(reason)
+        else:
+            meeting.finish(error=reason)
+    if not incoming and world.tree_has_actor(npc.id):
+        world.leave_tree(npc.id, reason)
     state = npc.suspend_activity("Meeting the player")
     world.player_interaction = PlayerInteraction(id=uuid4().hex, kind="resident", npc_id=npc.id,
         location=world.player.location, stage="thinking" if incoming else "approach", incoming=incoming, mover_id=mover.id,
@@ -162,7 +184,6 @@ def end_interaction(world, reason="Conversation ended."):
             npc.gift.finish(reason)
         npc.player_reply.release()
         npc.selected = False
-        npc.journey = None
         clear_call(npc)
         if interaction.saved_state:
             npc.restore_after_interaction(interaction.saved_state, world.player.id, preserve_facing=True)
@@ -511,7 +532,7 @@ def validate_saved_interaction(interaction, player, by_id, records, player_encou
             if player.journey:
                 raise ValueError("A player cannot travel during a resident interaction.")
             npc = by_id.get(interaction.npc_id)
-            if not npc or npc is player or npc.journey:
+            if not npc or npc is player or npc.journey and interaction.incoming:
                 raise ValueError("The player needs one present resident.")
             room = interaction.knock_room
             if room:

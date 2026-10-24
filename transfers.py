@@ -46,7 +46,9 @@ def validate_transfer(world, giver, recipient, item, quantity, *, interaction=No
         if (interaction is None and giver is not world.player and recipient is not world.player
                 and (person.player_call or person is recipient and person.selected)):
             raise ValueError("The resident is waiting to talk to the player.")
-        if world.npc_by_id(person.id) is not person or not available(person):
+        held_for_player = (world.player in (giver, recipient) and owns_resident(world, person)
+                           and person.departure is None)
+        if world.npc_by_id(person.id) is not person or not (available(person) or held_for_player):
             raise ValueError("The resident is no longer available.")
         if person.interaction is not None and person.interaction is not interaction:
             raise ValueError("The resident is occupied in another interaction.")
