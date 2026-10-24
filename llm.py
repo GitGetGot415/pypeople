@@ -332,7 +332,7 @@ pause their participants; ending a conversation releases that pause.
 An observation such as seeing someone talking to someone else is COMMENT/SAY,
 even when it starts with yes. Talking in a report does not request TALK_TO_NPC.
 Return only message_type, action, target, item, and quantity; do not write dialogue or roleplay.
-Supported actions are WANDER (wander around), GO_TO_TREE
+Supported actions are WANDER (release player task control and resume your own autonomous choices), GO_TO_TREE
 (walk to the tree), SHAKE_TREE (walk to the tree and shake it), TALK_TO_NPC
 (approach another NPC to speak to them), GIVE_ITEM (give carried apples or one
 owned work to another resident or the player), EAT (eat one carried apple), and SAY (reply to the player).
@@ -525,7 +525,8 @@ NPCs, even when their profiles are identical. Keep these suffixes when referring
 to people, choosing targets, or updating opinions. If an unnumbered name matches
 multiple NPCs, ask which numbered NPC the player means.
 Interpret the player's message as exactly one supported action:
-WANDER: wander around; GO_TO_TREE: walk to the tree;
+WANDER: release player task control and resume your own autonomous choices;
+GO_TO_TREE: walk to the tree;
 SHAKE_TREE: walk to the tree and shake it; SAY: speak without changing behavior.
 EAT: eat one apple already in your inventory. Face down and eat for one second,
 then consume the apple and gain 10 satisfaction (capped at 100). Use target "",
@@ -1019,6 +1020,22 @@ def response_model(snapshot):
             "intent": PlayerIntent, "voice_rewrite": VoiceRewriteResponse}.get(kind, ActionResponse)
 
 
+def _player_command_brief(intent):
+    """The same action meaning accompanies either player input route and retries."""
+    if not intent or intent["action"] == "SAY":
+        return ""
+    brief = ("Briefly acknowledge the current action request in your own voice, before carrying it out. "
+             "Do not answer an earlier conversation question or claim the task already happened. ")
+    if intent["action"] == "WANDER":
+        brief += ("For this request, make the entire reply one short complete sentence acknowledging the release. "
+                  "The player is releasing task control: after this conversation closes, you choose your own "
+                  "ordinary activities independently. No destination or joint activity is requested. "
+                  "Acknowledge that release without inviting the player along, following them, planning a shared "
+                  "walk, proposing exploration or searching for places or clues. Do not choose your next task "
+                  "or describe where you will walk or what you will see in this acknowledgment. End without a question.")
+    return brief
+
+
 def response_contract(snapshot, *, correction=False):
     kind = snapshot.get("request_kind")
     if kind in ("create_art", "create_music"):
@@ -1234,6 +1251,7 @@ def response_contract(snapshot, *, correction=False):
         schema["properties"]["end_conversation"] = {"type": "boolean", "enum": [False]}
     if snapshot.get("request_intent"):
         intent = snapshot["request_intent"]
+        instruction += "\n" + _player_command_brief(intent)
         giving = intent["action"] == "GIVE_ITEM"
         schema = {**schema, "properties": {
             **schema["properties"],
@@ -1595,6 +1613,9 @@ def _conversation_messages(payload, snapshot):
                 if situation:
                     content["known_situation"] = {key: situation[key] for key in
                                                   ("explanation", "way_home") if key in situation}
+            if snapshot.get("request_intent", {}).get("action") not in (None, "SAY"):
+                content = {"player_message": message, "request_intent": snapshot["request_intent"],
+                           "reply_task": _player_command_brief(snapshot["request_intent"])}
             messages.append({"role": "user", "content": content})
         else:
             call = snapshot.get("player_interaction", {}).get("call")
@@ -1612,7 +1633,8 @@ def _conversation_messages(payload, snapshot):
                     "reply_task": "The player selected this action, without speaking a new line. "
                                   "Respond to the structured request using request_intent. A gift may be declined. "
                                   "Acknowledge an accepted task before it starts; do not claim it already happened. "
-                                  "This selection does not accept a separate social offer. Return the required reply JSON."}})
+                                  "This selection does not accept a separate social offer. Return the required reply JSON. "
+                                  + _player_command_brief(snapshot["request_intent"])}})
             else:
                 messages.append({"role": "user", "content": "Generate your own opening or acknowledgment from player_interaction. The player has not spoken a new line."})
         return messages
@@ -1777,6 +1799,8 @@ def _stage_correction(state, exc):
                   "Correct the error using your supplied choices and own knowledge. "
                   "Keep accepted preceding speech and effects unchanged. Write shorter complete sentences. "
                   "Do not read internal records aloud or write the listener's answer.")
+    if state.get("request_intent", {}).get("action") == "WANDER":
+        correction += "\n" + _player_command_brief(state["request_intent"])
     if kind == "resident_assessment":
         owner, target = state["speaker"]["name"], state["opinion_target"]
         correction = (f"You are {owner}. Assess only {target}, your conversation partner. "

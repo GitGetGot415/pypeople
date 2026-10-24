@@ -159,7 +159,7 @@ def validate_area_speech(text, knowledge, *, question=""):
         proposal = re.search(r"\b(?:let['’]s|let us|we (?:can|could|should|might)|we['’]ll|(?:shall|should|could) we|why don['’]t we|what if we|would you like to|you['’]d like to|would like to|looking forward to|trying to find|(?:happy|eager|ready|excited) to|i (?:will|want to|suggest|plan to|intend to)|i['’]ll|i['’]d (?:like|love) to)\b", sentence, re.I)
         exploring = re.search(r"\b(?:explore|exploring|search|investigate|look around|scout|discover|uncover)\b", sentence, re.I)
         physical = exploring and (exploring[0].casefold() in ("look around", "scout") or re.search(
-            r"\b(?:area|garden|building|place|surroundings|room|hallway|exit|clues?|hidden|discoveries|new things)\b", sentence, re.I))
+            r"\b(?:area|garden|building|place|surroundings|room|hallway|exit|clues?|hidden|discoveries|new things|nooks?|crann(?:y|ies))\b", sentence, re.I))
         if exploring and not physical and knowledge:
             physical = re.search(r"\bexplore (?:when|once|whenever|later|sometime)\b", sentence, re.I)
         if proposal and physical and not re.search(r"\b(?:not|don't|no need|already|former life|past life|used to)\b", sentence, re.I):

@@ -639,8 +639,6 @@ class GameScreen:
         page_index = min(self.dialogue.index, len(self.dialogue.pages) - 1)
         page = self.dialogue.pages[page_index] if self.dialogue.pages else None
         turn, part, text = page if page else (None, None, "Enter a message to talk to this NPC.")
-        if self.dialogue.status:
-            text = self.dialogue.status
         original = app.original_dialogue or turn is None or uses_original_dialogue(
             turn.parts, turn.rewritten, original=app.original_dialogue)
         self.draw_dialogue_background(app, original)
@@ -664,7 +662,7 @@ class GameScreen:
         elif self.player_record and self.player_record.error:
             self.retry_button.draw(app.window, app.small_font, enabled=not app.simulation.paused and not self.dialogue.actor.interaction_blocked)
             status = "Reply failed."
-        title = app.font.render(turn.speaker if turn else self.dialogue.actor.name, True, INK)
+        title = app.font.render(turn.speaker if turn else "Request status" if page else self.dialogue.actor.name, True, INK)
         title_rect = title.get_rect(topleft=(self.reply_rect.x, 557))
         app.window.blit(title, title_rect)
         status_right = self.retry_button.rect.left if self.player_record and self.player_record.error else self.back_button.rect.left

@@ -40,7 +40,8 @@ class DialogueView:
         failed = bool(record and not record.turns and record.failed_turns)
         source = record.failed_turns if failed else record.turns if record else []
         version = (id(record), failed, tuple(id(turn) for turn in source),
-                   tuple(tuple(turn.rewritten) for turn in source) if not failed else (), original, condensed, width)
+                   tuple(tuple(turn.rewritten) for turn in source) if not failed else (), original, condensed, width,
+                   self.status if player_reply else "")
         if version == self.version:
             return False
         was_final = self.final_page
@@ -51,6 +52,9 @@ class DialogueView:
         new_reply = player_reply and latest is not None and latest is not self.latest
         pages = [(turn, emotion, text) for turn in turns
                  for emotion, text in paginate_turn(turn, font, width, original=original, condensed=condensed)]
+        if player_reply and self.status:
+            # An unrecorded notice has a page, never a fabricated speech turn.
+            pages.append((None, None, self.status))
         anchor = latest if new_reply else previous
         if failed and previous is not None:
             old_turns = list(dict.fromkeys(id(page[0]) for page in self.pages))
@@ -59,7 +63,8 @@ class DialogueView:
         positions = [i for i, page in enumerate(pages) if page[0] is anchor]
         appended_input = (player_reply and not new_reply and was_final and self.version is not None
                           and len(source) > len(self.version[2]))
-        if appended_input:
+        new_status = player_reply and self.status and (self.version is None or self.status != self.version[-1])
+        if new_status or appended_input:
             self.index = max(0, len(pages) - 1)
         elif positions:
             self.index = positions[min(0 if new_reply else offset, len(positions) - 1)]
