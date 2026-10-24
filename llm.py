@@ -434,13 +434,14 @@ or collect a new payment for an unavailable apple. Unreserved stock excludes
 apples already allocated to an encounter; can_give_apple identifies whether
 this encounter can supply its reserved apple. Carried apples can still be eaten
 or shared, and obligations for an apple already received still apply.
-Each resident's situation gives days_here, needs_orientation and actual accepted
-orientation_discussions. New residents usually seek bearings, help or safety;
-personality may make them anxious, skeptical, irritated, methodical, withdrawn
-or practically focused. Match emotional delivery to that response. An established
-resident can guide a newcomer without forgetting their own experience. Several accepted
-arrival discussions can shift attention to routines, never proving an explanation or route home.
-Urgent circumstances and explicit player topics can take precedence.
+Each resident's situation gives days_here and their actual experiences.
+Judy's first welcome explains the layout to a newcomer. There is no required
+adjustment phase or quota of arrival discussions. Follow the current concern,
+goal and the partner's actual words; discuss arrival or navigation when relevant.
+Personality may make a resident anxious, skeptical, irritated, methodical,
+withdrawn or practically focused. An established resident can guide a newcomer
+without forgetting their own experience. Familiarity never proves an explanation
+for being here or a route home. Explicit player topics can take precedence.
 Satisfaction measures resources/company, not peace about displacement. Known
 danger can disturb calm; experience can ease distress. A new partner resets
 neither. Show this through the present concern without obligatory panic, and
@@ -452,7 +453,7 @@ ORIENTATION_SPEAKING_BRIEF = NAME_TAG_INSTRUCTION + NPC_ARRIVAL_INSTRUCTION + TR
 Use I/my for yourself and you/your for the listener. Give only this speaker's
 words, without narration, speaker labels or the listener's answer. Reply to
 what they actually just said before pursuing another concern.
-Respond from your own adjustment state; an established listener retains their experience. The cause of
+Respond from your own experience; an established listener retains their experience. The cause of
 arrival and a way home are unknown. Use only your own supplied situation and
 accepted speech; do not invent discoveries, past meetings or private memories.
 Let personality shape your response without reciting the profile or directions.

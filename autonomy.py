@@ -1,7 +1,6 @@
 """Small, local activity choices. Autonomous activities never call a model."""
 
 import math
-from social import orientation_context
 from activity import Behavior
 from conversation_history import memory_bias
 from constants import (APPLE_SATISFACTION, DECISION_SECONDS, MOVEMENT_SPEED, SOCIAL_PARTNER_RANDOMNESS,
@@ -9,11 +8,6 @@ from constants import (APPLE_SATISFACTION, DECISION_SECONDS, MOVEMENT_SPEED, SOC
 from interactions import company_point
 from social import (concern_topic, goal_attempt_cooling_down, last_conversation_partner, pair_objective,
                    pending_promises, repeat_partner_paused)
-
-
-ORIENTATION_TOPIC = (
-    "Adjust to being here using the known layout; discuss practical routines, company, help or safety, without proposing a search for new places or clues"
-)
 
 
 def arrival_greeter(world):
@@ -86,14 +80,14 @@ def target_valid(npc, world):
 
 def lone_introduction(npc, world):
     if (world.phase_pending or world.population != 1 or not world.company_available(npc) or npc.conversation_pause_remaining
-            or orientation_context(npc)["orientation_discussions"]
-            or any(r.purpose == "introduction" and r.turns and npc.name in r.participants for r in world.history)):
+            or any(r.turns and r.includes(npc) and (r.orientation_discussed or r.purpose == "introduction")
+                   for r in world.history)):
         return
     snake = world.snake
     if (snake.encounter or snake.selected or snake.interaction_blocked or snake.recovery_remaining
             or snake.id in npc.cooldowns or not npc.can_reach(world.tree.interaction_point)):
         return
-    world.join_tree(npc, "introduction", ORIENTATION_TOPIC)
+    world.join_tree(npc, "introduction", f"Meet {SNAKE_NAME}, the python guarding the apple tree")
 
 
 def reconsider(npc, world, *, pressing_only=False):
@@ -256,8 +250,7 @@ def social_pair(world, *, due=None):
             if due is not None and npc.id not in due and other.id not in due:
                 continue
             priority, objective = pair_objective(world, npc, other)
-            if priority == 1 and (goal_attempt_cooling_down(npc, other, world)
-                                  or npc.current_concern.kind == "orientation" or repeat_partner_paused(npc, other)):
+            if priority == 1 and (goal_attempt_cooling_down(npc, other, world) or repeat_partner_paused(npc, other)):
                 continue
             if priority:
                 purposeful.append((priority, rank(npc, other), npc, other, objective))
@@ -274,8 +267,7 @@ def social_pair(world, *, due=None):
         if not others:
             continue
         # Keep the existing fixed food-request eligibility and donor decision.
-        if (npc.current_concern.kind != "orientation" and npc.social <= SOCIAL_START
-                and not npc.inventory.get("fruit", 0)):
+        if npc.social <= SOCIAL_START and not npc.inventory.get("fruit", 0):
             donors = [other for other in others if other.inventory.get("fruit", 0) > 0]
             if donors:
                 donor = max(donors, key=lambda other: rank(npc, other))

@@ -221,6 +221,14 @@ class JourneyState(saved_record(Journey)):
 class ConcernState(saved_record(ConversationConcern)):
     remaining: float = Field(ge=0, le=CONCERN_LIFETIME_RANGE[1])
 
+    @model_validator(mode="before")
+    @classmethod
+    def retire_orientation(cls, value):
+        # Old saves can carry the removed concern, including frozen meeting concerns.
+        if isinstance(value, dict) and value.get("kind") == "orientation":
+            return {**value, "kind": "surroundings", "remaining": 0.0}
+        return value
+
     @model_validator(mode="after")
     def validate_account_kind(self):
         if (self.kind in ("recollection", "news")) != bool(self.claim_id):

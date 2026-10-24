@@ -21,7 +21,7 @@ from dialogue_rules import named_references, validate_account_speech, validate_a
 GoalKind = Literal["obtain_apple", "help_with_apple", "repair_relationship", "sabotage_relationship"]
 FactKind = Literal["apple_given", "work_given", "apple_refused", "promise_kept", "promise_broken", "private_motive", "former_life", "arrival", "departure", "apple_eaten", "conversation_seen", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "visit", "report"]
 Stance = Literal["uncertain", "believed", "disbelieved"]
-ConcernKind = Literal["orientation", "recollection", "news", "surroundings", "plans"]
+ConcernKind = Literal["recollection", "news", "surroundings", "plans"]
 
 
 @dataclass
@@ -35,7 +35,7 @@ def valid_concern(npc, concern):
     if concern is None:
         return False
     if concern.kind not in ("recollection", "news"):
-        return concern.claim_id is None and concern.kind in ("orientation", "surroundings", "plans")
+        return concern.claim_id is None and concern.kind in ("surroundings", "plans")
     belief = next((b for b in npc.beliefs if b.claim_id == concern.claim_id), None)
     claim = next((c for c in npc.world.claims if c.id == concern.claim_id), None)
     if belief is None or claim is None:
@@ -58,7 +58,6 @@ def concern_key(npc, concern):
 
 def concern_topic(npc, concern):
     guidance = {
-        "orientation": "Adjust to arrival using the known layout; discuss practical routines, company, help or safety without searching for new places or clues",
         "recollection": "Talk about a memory from my former life",
         "news": "Compare views on an account I know",
         "surroundings": "Talk about life here and what is on my mind",
@@ -101,7 +100,6 @@ def concern_description(npc, concern):
     if concern is None:
         return "No subject selected."
     descriptions = {
-        "orientation": "Adjusting to arrival with a known layout: practical routines, company, help and safety.",
         "surroundings": "Reflecting on their surroundings and present situation.",
         "plans": "Considering what to do next.",
     }
@@ -152,10 +150,7 @@ def refresh_concern(npc):
         return
     if valid_concern(npc, previous) and previous.remaining > 0:
         return
-    if orientation_context(npc)["needs_orientation"]:
-        npc.current_concern = ConversationConcern("orientation", None, npc.rng.uniform(*CONCERN_LIFETIME_RANGE))
-        return
-    candidates = {"orientation": [None], "surroundings": [None], "plans": [None], "recollection": [], "news": []}
+    candidates = {"surroundings": [None], "plans": [None], "recollection": [], "news": []}
     for belief in npc.beliefs:
         claim = claim_by_id(npc.world, belief.claim_id)
         fact = fact_by_id(npc.world, claim.fact_id)
@@ -184,8 +179,6 @@ def commit_concern_use(conversation):
             fact_id = claim_by_id(world, concern.claim_id).fact_id
             used = any(conversation.turns[d.turn].speaker == role and options[d.claim_id].fact_id == fact_id
                        for d in conversation.accepted_disclosures)
-        elif concern.kind == "orientation":
-            used = conversation.record.orientation_discussed
         else:
             used = (role == "initiator" and conversation.opening_kind == concern.kind
                     and conversation.purpose == "chat" and conversation.origin == "autonomous")
@@ -1297,18 +1290,6 @@ NPC_ARRIVAL_MEMORY = (
     "You remember waking up one day in an elevator that was going up. "
     "When its doors opened, you found yourself on the first floor of the apartment building."
 )
-
-def orientation_context(npc):
-    world = npc.world
-    from constants import ARRIVAL_DISCUSSION_THRESHOLD
-    discussed = {record.id for record in world.history if record.includes(npc)
-                 and record.orientation_discussed and record.turns
-                 and orientation_speech(turn.text for turn in record.turns)}
-    return {"days_here": world.day - npc.arrival_day,
-            "orientation_discussions": len(discussed),
-            "needs_orientation": len(discussed) < ARRIVAL_DISCUSSION_THRESHOLD,
-            "adjustment": ("adjusting to arrival with a known physical layout" if not discussed else
-                           "developing routines in the known layout; the reason for being here remains unknown")}
 
 
 def orientation_speech(texts):

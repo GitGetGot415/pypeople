@@ -35,7 +35,7 @@ from constants import (MAX_RESIDENTS, PLAYER_CALL_COOLDOWN, REST_SECONDS_RANGE, 
                        CONVERSATION_ENDED_BEFORE_DIALOGUE, CONVERSATION_ENDED_BEFORE_SHARING,
                        CONVERSATION_FAILED, CONVERSATION_FINISHED, CONVERSATION_WAITING_FOR_DIALOGUE,
                        CONVERSATION_WALKING_TO_MEET)
-from social import (NPC_ARRIVAL_MEMORY, orientation_context, validate_orientation)
+from social import (NPC_ARRIVAL_MEMORY, validate_orientation)
 from actor_identity import (actor_catalog, name_forms)
 from transfers import Handoff
 from transfer_records import TransferIntent
@@ -417,7 +417,7 @@ class NPC(ResidentValues):
             state["private_context"]["snake_attitudes"] = self.attitudes.copy()
             encounters = [record for record in self.world.history if record.includes(self) and record.turns]
             state["private_context"]["situation"] = {
-                **orientation_context(self),
+                "days_here": self.world.day - self.arrival_day,
                 "arrival_day": self.arrival_day,
                 "transition_memory": NPC_ARRIVAL_MEMORY, "explanation": "unknown", "way_home": "unknown",
                 "prior_conversations": len(encounters),
@@ -674,7 +674,7 @@ class ResidentProgress:
     id: Annotated[str, Field(min_length=1)]
     origin: Literal['player', 'autonomous']
     purpose: Literal['chat', 'food_request']
-    opening_kind: ConcernKind | None
+    opening_kind: ConcernKind | Literal["orientation"] | None  # Orientation is only Judy's first welcome.
     goal_id: str | None
     focus_claim_id: str | None
     food_outcome: Literal['', 'accepted', 'need', 'refused', 'unavailable']
@@ -777,6 +777,20 @@ class Conversation(ResidentProgress):
         self.dialogue, self.saved_states = restored["dialogue"], restored["saved_states"]
         self.proposals, self.information_context = restored["proposals"], restored["information_context"]
         self.concerns, self.name_actors, self.active = restored["concerns"], {}, True
+        if self.opening_kind == "orientation":
+            # Earlier saves used this opening for every resident's adjustment chats.
+            # Keep it only for Judy's actual first welcome to a later arrival.
+            first_welcome = (
+                initiator.room_number == JUDY_ROOM_NUMBER and recipient.arrival_day > STARTING_DAY
+                and not any(record is not self.record and record.between(initiator, recipient)
+                            and any(turn.speaker_id == initiator.id for turn in record.turns)
+                            for record in initiator.world.history)
+            )
+            if not first_welcome:
+                self.opening_kind = "surroundings"
+                if not self.social_effects_applied:
+                    self.topic = concern_topic(initiator, ConversationConcern("surroundings", None, 0.0))
+                    self.record.topic = self.topic
         self.dialogue.retry_after_restore()
         initiator.world.reservations.acquire("conversation", self, initiator, recipient)
 
