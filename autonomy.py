@@ -51,33 +51,7 @@ def greet_arrivals(world):
     if greeter.conversation and greeter.conversation.other(greeter) is newcomer:
         return
     reason = f"Welcoming the new arrival {newcomer.name} takes priority."
-    from player import owns_resident, end_interaction, clear_call
-    from apartments import finish_visit, cancel_work
-    if owns_resident(world, greeter):
-        end_interaction(world, reason)
-    if world.visit and world.visit.host_id == greeter.id:
-        finish_visit(world)
-    if greeter.conversation:
-        greeter.conversation.cancel(reason)
-    if greeter.gift:
-        greeter.gift.finish(reason)
-    if greeter.snake_encounter:
-        greeter.snake_encounter.finish(error=reason)
-    world.leave_tree(greeter.id, reason)
-    for action in list(world.pending_actions):
-        if action.npc_id == greeter.id:
-            world.pending_actions.remove(action)
-            record = world.record_by_id(action.record)
-            if record:
-                from constants import CONVERSATION_CANCELLED
-                record.status, record.error = CONVERSATION_CANCELLED, reason
-    clear_call(greeter)
-    greeter.player_reply.release()
-    greeter.selected = False
-    cancel_work(greeter)
-    greeter.journey = None
-    greeter.home_reason = greeter.bedtime_remaining = greeter.wake_remaining = None
-    greeter.begin_activity(Behavior.WAIT, world, reason=reason)
+    world.interrupt_resident(greeter, reason, mode="arrival")
     from locations import clamp_point
     greeter.location = newcomer.location
     greeter.x, greeter.y = clamp_point(newcomer.location, (newcomer.x + SOCIAL_RADIUS, newcomer.y))

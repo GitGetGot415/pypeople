@@ -87,7 +87,21 @@ class ConversationSession:
             self.view_actor.set_selected(False)
         self.view_open = False
 
-    def submit(self, npc, message, *, active=True):
+    def input_unavailable(self, npc, *, active=True):
+        from player import active_player
+        if self.simulation.paused:
+            return "Resume the simulation first."
+        if not active or not active_player(self.simulation):
+            return "The player is unavailable."
+        if npc is None or not self.player_owns(npc) or npc.busy:
+            return "Meet an available resident first."
+        if npc.player_reply.closing:
+            return "Finish reading this reply first."
+        if npc.interaction_blocked:
+            return "Wait for the current request."
+        return ""
+
+    def submit(self, npc, message, *, active=True, command=None):
         from player import active_player
         message = message.strip()[:300]
         if self.simulation.paused or not active_player(self.simulation) or not active:
@@ -95,8 +109,7 @@ class ConversationSession:
         if npc is self.simulation.snake:
             self.submit_snake(message)
             return
-        if (npc is None or not self.player_owns(npc) or npc.busy or npc.player_reply.closing
-                or npc.interaction_blocked or not message):
+        if self.input_unavailable(npc, active=active) or not message and command is None:
             return
         if self.provider == "gemini" and not self.api_key:
             self.show_reply("Add an API key in Settings to generate a reply.")
@@ -104,9 +117,20 @@ class ConversationSession:
         snapshot = self.player_snapshot(npc, message)
         snapshot["player_dialogue"] = [{"speaker": t.speaker, "text": t.text}
                                       for t in self.record.turns[-PLAYER_CONTEXT_TURN_LIMIT:]] if self.record else []
-        snapshot["other_npcs"] = [{**other.snapshot(self.tree, private=False),
-            "available_to_talk": directed_recipient_available(other)}
-            for other in self.npcs if other is not npc and other.location == npc.location] + [self.player_target()]
+        if command is not None:
+            from player import work_choices
+            snapshot["owned_works"] = work_choices(self.simulation, npc.id, command.get("item", ""))
+            from player_commands import normalize_action, validate_action
+            try:
+                intent = normalize_action(command, snapshot)
+                if intent.action == "SAY":
+                    raise ValueError("Choose a supported action.")
+                validate_action(self.simulation, npc, intent, accepting=True)
+            except ValueError as exc:
+                self.notice(str(exc))
+                return
+            snapshot.update(request_kind="player_command", player_interaction={"command": intent.model_dump()},
+                            request_intent=intent.model_dump())
         self._submit_player_message(npc, message, snapshot)
 
     def player_target(self):
@@ -199,7 +223,7 @@ class ConversationSession:
             self.player_requests[request_id] = PlayerRequest(id=request_id, actor=npc, record=record,
                 message=pending["message"], snapshot=snapshot, actor_revision=npc.command_revision,
                 roster_revision=self.simulation.roster_revision)
-        self.show_reply(npc.reply if self.record else "")
+        self.show_reply(record.error if record and record.error else "")
         self.emit("focus")
 
     def accept_player_invitation(self, offer_id):
@@ -232,6 +256,10 @@ class ConversationSession:
             apple_promise_choices=[dict(deadline=self.simulation.phase_index + step,
                 label=phase_label(self.simulation.phase_index + step)) for step in PLAYER_PROMISE_DEADLINE_STEPS])
         snapshot["resolved_work_id"] = requested_work_id(self.simulation, npc.id, message)
+        from locations import available
+        snapshot["other_npcs"] = [{**other.snapshot(self.tree, private=False),
+            "available_to_talk": directed_recipient_available(other) and available(other)}
+            for other in self.npcs if other is not npc and other.location == npc.location] + [self.player_target()]
         record = self.record
         earlier, remaining = [], PLAYER_CONTEXT_TURN_LIMIT
         for previous in reversed(self.conversation_history):
@@ -353,15 +381,23 @@ class ConversationSession:
         message = request.message
         snapshot = self.player_snapshot(npc, message)
         old = request.snapshot
-        if old.get("request_kind") in ("player_opening", "player_gift", "player_acknowledgment"):
+        if old.get("request_kind") == "player_command":
+            from player import work_choices
+            snapshot["owned_works"] = work_choices(self.simulation, npc.id, old["player_interaction"]["command"]["item"])
+            from player_commands import normalize_action, validate_action
+            try:
+                intent = normalize_action(old["player_interaction"]["command"], snapshot)
+                validate_action(self.simulation, npc, intent, accepting=True)
+            except ValueError as exc:
+                self.notice(str(exc))
+                return
+            snapshot.update(request_kind="player_command", player_interaction={"command": intent.model_dump()},
+                            request_intent=intent.model_dump())
+        elif old.get("request_kind") in ("player_opening", "player_gift", "player_acknowledgment"):
             snapshot.update(request_kind=old["request_kind"], player_interaction=old["player_interaction"])
             if old["player_interaction"].get("call"):
                 from player import work_choices
                 snapshot["owned_works"] = work_choices(self.simulation, npc.id, old["player_interaction"]["call"]["reference"])
-        else:
-            snapshot["other_npcs"] = [{**other.snapshot(self.tree, private=False),
-                "available_to_talk": directed_recipient_available(other)}
-                for other in self.simulation.npcs if other is not npc and other.location == npc.location] + [self.player_target()]
         if self.record:
             snapshot["player_dialogue"] = [{"speaker": t.speaker, "text": t.text} for t in self.record.turns[-PLAYER_CONTEXT_TURN_LIMIT:]]
         self._submit_player_message(npc, message, snapshot)
@@ -382,6 +418,12 @@ class ConversationSession:
         if previous and player_request_pending(previous):
             return
         kind = snapshot.get("request_kind")
+        description = ""
+        if kind == "player_command":
+            from dialogue import ActionIntent
+            from player_commands import action_description
+            snapshot["request_intent"] = snapshot["player_interaction"]["command"].copy()
+            description = action_description(ActionIntent(**snapshot["request_intent"]), snapshot)
         if kind in ("player_opening", "player_gift", "player_acknowledgment"):
             snapshot.pop("last_reply", None)
         request_id = uuid4().hex
@@ -394,8 +436,9 @@ class ConversationSession:
             self.show_reply("Could not start the request. Please try again.")
             return
         npc.player_reply.start(request_id)
+        self.show_reply("")
         if self.record is None:
-            topic = message or ("Player gift offer" if kind == "player_gift" else
+            topic = message or description or ("Player gift offer" if kind == "player_gift" else
                                 "Gift acknowledgment" if kind == "player_acknowledgment" else "Resident initiated conversation")
             record = ConversationRecord(("You", npc.name), topic, CONVERSATION_WAITING_FOR_REPLY, purpose=purpose,
                 origin="autonomous" if kind == "player_opening" else "player", participant_ids=[self.simulation.player.id, npc.id])
@@ -410,6 +453,8 @@ class ConversationSession:
             self.conversation_history.append(record)
             self.select_record(record)
         record = self.record
+        if description:
+            record.outcomes.append(f"Player action request: {description}.")
         self.simulation.player_interaction.record_id = record.id
         from interactions import observe_conversation
         if self.simulation.player_interaction.stage == "conversation":
@@ -499,7 +544,7 @@ class ConversationSession:
         if npc is self.simulation.snake:
             accepted = accept_snake_reply(self.simulation, request, result, error, failed_turns, rewritten)
             if self.view_actor is npc:
-                self.show_reply(npc.reply)
+                self.show_reply(npc.reply if accepted.error else "")
             self.requests.finish(self.session_id, request_id, accepted.error)
             if accepted.error:
                 self.end_player_conversation(accepted.error)
@@ -522,7 +567,7 @@ class ConversationSession:
             if accepted.error and preparing:
                 self.notice(accepted.error)
         if self.view_actor is npc and self.viewed_conversation is None:
-            self.show_reply(npc.reply)
+            self.show_reply(npc.reply if accepted.error else "")
         self.requests.finish(self.session_id, request_id, accepted.error)
         if accepted.invitation:
             self.accept_player_invitation(accepted.invitation)
@@ -567,7 +612,7 @@ class ConversationSession:
         clear_call(npc)
         record.status = CONVERSATION_WAITING_FOR_DONE if npc.waiting_for_done else CONVERSATION_COMPLETED
         self.emit("clear_input")
-        self.show_reply(npc.reply)
+        self.show_reply("")
         if not npc.player_reply.closing:
             self.emit("focus")
 
@@ -618,12 +663,11 @@ class ConversationSession:
         self.end_player_conversation("Left the game before a reply was received.")
         for request_id in self.conversation_requests:
             self.requests.cancel(self.session_id, request_id)
-        meetings = {id(npc.conversation): npc.conversation for npc in self.npcs if npc.conversation}
-        if self.simulation.snake.encounter:
-            encounter = self.simulation.snake.encounter
-            meetings[id(encounter)] = encounter
-        for meeting in meetings.values():
-            meeting.finish(self.tree)
+        for npc in self.npcs:
+            self.simulation.interrupt_resident(npc, "The session ended before the handoff finished.", mode="session")
+        encounter = self.simulation.snake.encounter
+        if encounter is not None:
+            encounter.finish(self.tree)
         self.player_requests.clear()
         self.conversation_requests.clear()
         self.pending_offer = None

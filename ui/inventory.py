@@ -200,7 +200,7 @@ class InventoryPanel:
             draw_wrapped_text(surface, "This work is no longer owned here. Select a current possession.", app.font, MUTED,
                               (x, y, INVENTORY_DETAIL_WIDTH, 110))
         if self.owner is app.simulation.player:
-            enabled = not app.simulation.paused and not app.game.dialogue_open
+            enabled = not app.simulation.paused and not app.game.dialogue.open
             can_give = enabled and (self.owner.inventory["fruit"] > 0 if self.selected_id == "fruit" else work is not None)
             self.minus.draw(surface, app.small_font, enabled=enabled and self.selected_id == "fruit")
             self.plus.draw(surface, app.small_font, enabled=enabled and self.selected_id == "fruit")
@@ -221,7 +221,7 @@ class InventoryPanel:
                 surface.set_clip(clip)
                 self.draw_scrollbar(surface, self.recipient_rect, self.recipient_scroll, len(people))
                 self.confirm.draw(surface, app.small_font, enabled=can_give and bool(self.recipient_id))
-            note = ("Resume time to give." if app.simulation.paused else "Finish the open conversation to give." if app.game.dialogue_open else
+            note = ("Resume time to give." if app.simulation.paused else "Finish the open conversation to give." if app.game.dialogue.open else
                     f'Offer: {self.quantity if self.selected_id == "fruit" else 1} × {"apples" if self.selected_id == "fruit" else work.title + " [" + work.id + "]" if work else "unavailable work"}. The resident may accept or decline.')
             draw_wrapped_text(surface, self.status or note, app.small_font, MUTED, INVENTORY_STATUS_RECT)
         elif work:

@@ -115,7 +115,12 @@ def can_claim(world):
 
 def directed_recipient_available(npc):
     """Player command previews and accepted commands share these attention rules."""
-    return not npc.busy and not npc.interaction_blocked and not npc.selected and not npc.player_call
+    from locations import available
+    from autonomy import arrival_greeting_reserved
+    world = npc.world
+    return (available(npc) and not npc.busy and not npc.interaction_blocked and not npc.selected and not npc.player_call
+            and not owns_resident(world, npc) and not (world.visit and world.visit.host_id == npc.id)
+            and not arrival_greeting_reserved(npc, world))
 
 
 def can_interrupt_approach(npc):
@@ -149,16 +154,8 @@ def start_approach(world, npc, *, incoming=False, gift=None, knock_room=None):
     if point is None:
         raise ValueError("There is no reachable place to meet.")
     reason = "The player intercepted the resident to talk."
-    if interrupt:
-        meeting = npc.interaction
-        if meeting is npc.conversation:
-            meeting.cancel(reason)
-        elif meeting is npc.gift:
-            meeting.finish(reason)
-        else:
-            meeting.finish(error=reason)
-    if not incoming and world.tree_has_actor(npc.id):
-        world.leave_tree(npc.id, reason)
+    if interrupt or not incoming and world.tree_has_actor(npc.id):
+        world.interrupt_resident(npc, reason, mode="approach")
     state = npc.suspend_activity("Meeting the player")
     world.player_interaction = PlayerInteraction(id=uuid4().hex, kind="resident", npc_id=npc.id,
         location=world.player.location, stage="thinking" if incoming else "approach", incoming=incoming, mover_id=mover.id,
@@ -322,7 +319,7 @@ def player_reply_closes(closing, reply, rewritten=()):
 
 
 def accept_player_evidence(world, npc, record, message, response, *, opening=False):
-    if opening:
+    if opening or not message:
         return
     index = len(record.turns) - 1
     if index in record.accepted_player_turns:

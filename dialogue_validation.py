@@ -554,14 +554,18 @@ def _validate_response(raw, snapshot, model):
         if result.action == "TALK_TO_NPC" and result.target.strip().casefold() == PLAYER_LABEL.casefold():
             # The player is already here talking. No new trip or task is needed.
             result = ActionIntent(action="SAY")
-        if result.action not in ("TALK_TO_NPC", "GIVE_ITEM"):
-            result.target = ""
-        if result.action != "GIVE_ITEM":
-            result.item, result.quantity = "", 0
         if (result.action == "GIVE_ITEM" and result.item != "fruit" and snapshot.get("resolved_work_id") is not None
                 and result.item != snapshot["resolved_work_id"]):
             result = ActionIntent(action="SAY")
-            result._clarification = "The work reference is ambiguous or does not match an owned work. Ask which exact work is intended."
+            result._clarification = "The work reference is ambiguous. Ask which exact owned work is intended."
+        from player_commands import normalize_action
+        try:
+            normalized = normalize_action(result, snapshot, verbal=True)
+            normalized._clarification = result._clarification
+            result = normalized
+        except ValueError as exc:
+            result = ActionIntent(action="SAY")
+            result._clarification = str(exc) + " Ask for clarification without promising an action."
     if isinstance(result, ActionIntent):
         intent = snapshot.get("request_intent")
         if isinstance(result, ActionResponse) and intent:
@@ -596,24 +600,10 @@ def _validate_response(raw, snapshot, model):
                 "can answer, or keep it true and finish without questions. Other actions must keep "
                 "end_conversation true and acknowledge the task without questions."
             )
-        if result.action == "GIVE_ITEM":
-            works = {w["id"] for w in snapshot.get("owned_works", [])}
-            if (result.item != "fruit" and (result.item not in works or result.quantity != 1)) or result.quantity < 1:
-                raise ValueError("Giving requires a supported item and a positive quantity.")
-        elif result.item or result.quantity:
-            raise ValueError("Only giving actions may include items.")
-        if result.action in ("TALK_TO_NPC", "GIVE_ITEM"):
-            target = result.target.strip().casefold()
-            if not target:
-                raise ValueError("Missing recipient")
-            matches = [other for other in snapshot.get("other_npcs", []) if other["npc_name"].casefold() == target]
-            if len(matches) != 1 or not matches[0].get("available_to_talk", True):
-                raise ValueError("The recipient must be another available NPC.")
-            if result.action == "TALK_TO_NPC" and matches[0].get("kind") == "player":
-                raise ValueError("The player has no walking conversation destination; reply with SAY.")
-            result.target = matches[0]["npc_name"]
-        elif result.target:
-            raise ValueError("Only conversation and giving actions may have a target.")
+        from player_commands import normalize_action
+        normalized = normalize_action(result, snapshot)
+        if (result.target, result.item, result.quantity) != (normalized.target, normalized.item, normalized.quantity):
+            raise ValueError("Use the normalized recipient identity and possession from the request.")
     elif isinstance(result, ConversationResponse):
         validate_resident_gift(result.gift, result.turns, snapshot)
         resident_information(snapshot, vars(result), incomplete=False)

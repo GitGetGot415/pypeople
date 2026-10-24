@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 from dialogue import (AcceptedProposal, ConversationPart, DisclosureChoice, LeverageUse, ResidentGift,
                      ThirdPartyOpinion)
-from social import (ConcernKind, ConversationConcern, Goal, check_relationship_goals, commit_agreements,
+from social import (ConcernKind, ConversationConcern, Goal, OpinionEffect, Belief, check_relationship_goals, commit_agreements,
                    commit_concern_use, commit_information, concern_description, concern_topic,
                    conversation_references, dialogue_failure_cooldown, information_views,
                    permitted_proposals, phase_label, prepare_information, private_context,
@@ -21,9 +21,10 @@ from character_data import DIRECTIONS, PROFILE_FIELDS, normalize_opinions
 from creations import CreativeJob
 from emotions import portrait_expression
 from purgatory import initial_attitudes
-from conversation_history import (ConversationRecord, describe_opinion_change, relevant_memories, remember,
+from conversation_history import (ConversationRecord, Memory, describe_opinion_change, relevant_memories, remember,
                                  shared_conversation_history)
-from constants import (APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DEFAULT_CHARACTER_NAME,
+from constants import (MAX_RESIDENTS, PLAYER_CALL_COOLDOWN, REST_SECONDS_RANGE, CREATION_WORK_SECONDS_RANGE,
+                       OUTDOOR_COOLDOWN_SECONDS, BEDTIME_DELAY_RANGE, WAKE_DELAY_RANGE, APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DEFAULT_CHARACTER_NAME,
                        DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, CONVERSATION_PAUSE_RANGE,
                        CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, MOVEMENT_SPEED,
                        NPC_RADIUS, PARTNER_COOLDOWN, SHAKE_SECONDS, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED,
@@ -95,67 +96,60 @@ class Tree:
 
 
 @dataclass
-class NPC:
+class ResidentValues(ActivitySnapshot):
+    """The resident's durable values, inherited directly by the live actor."""
     character: dict
     x: float = STARTING_NPC_POSITION[0]
     y: float = STARTING_NPC_POSITION[1]
-    behavior: Behavior = Behavior.WANDER
-    destination: tuple[float, float] | None = None
-    pause_remaining: float = 0.0
-    rng: random.Random = field(default_factory=random.Random, repr=False)
-    facing: int = STARTING_FACING
     sprite_size: tuple[int, int] | None = None
-    selected: bool = False
     reply: str = ""
     rewritten_reply: str = ""
     display_name: str | None = None
     emotion: str = "neutral"
     emotion_intensity: int = 0
-    id: str = field(default_factory=lambda: uuid4().hex)
-    social: float = field(default_factory=lambda: random.uniform(*STARTING_NPC_SATISFACTION_RANGE))
-    inventory: dict = field(default_factory=lambda: {"fruit": STARTING_NPC_FRUIT})
+    id: Annotated[str, Field(min_length=1)] = field(default_factory=lambda: uuid4().hex)
+    social: Annotated[float, Field(ge=0, le=100)] = field(default_factory=lambda: random.uniform(*STARTING_NPC_SATISFACTION_RANGE))
+    inventory: dict[Literal["fruit"], Annotated[int, Field(strict=True, ge=0)]] = field(default_factory=lambda: {"fruit": STARTING_NPC_FRUIT})
     preferences: dict = field(default_factory=lambda: {
         "sociability": random.uniform(*STARTING_NPC_SOCIABILITY_RANGE),
         "generosity": random.uniform(*STARTING_NPC_GENEROSITY_RANGE),
     })
-    memories: list = field(default_factory=list)
+    memories: Annotated[list[Memory], Field(max_length=20)] = field(default_factory=list)
     goal: Goal | None = None
     opinions: dict[str, dict] = field(default_factory=dict)
-    pending_social_opinions: list = field(default_factory=list)
-    beliefs: list = field(default_factory=list)
+    pending_social_opinions: list[OpinionEffect] = field(default_factory=list)
+    beliefs: list[Belief] = field(default_factory=list)
     current_concern: ConversationConcern | None = None
-    conversation_pause_remaining: float = 0.0
-    conversation_return_remaining: float = 0.0
+    conversation_pause_remaining: Annotated[float, Field(ge=0, le=max(CONVERSATION_PAUSE_RANGE[1], FAILURE_COOLDOWN))] = 0.0
+    conversation_return_remaining: Annotated[float, Field(ge=0, le=CONVERSATION_RETURN_PAUSE)] = 0.0
     player_opinion: PlayerOpinion = field(default_factory=PlayerOpinion)
     player_call: PlayerCall | PlayerReplyCall | None = None
-    player_call_cooldown: float = 0.0
-    resolved_player_calls: list = field(default_factory=list)
-    owner: str = "autonomous"
-    target_id: str | None = None
-    activity_elapsed: float = 0.0
-    eating_witness_ids: list[str] = field(default_factory=list)
-    reason: str = "Exploring the world"
-    decision_remaining: float = field(default_factory=lambda: random.uniform(0, DECISION_SECONDS))
-    cooldowns: dict = field(default_factory=dict)
-    resume_pending: bool = False
-    command_revision: int = 0
-    player_reply: PlayerReplyProgress = field(default_factory=PlayerReplyProgress, repr=False, compare=False)
-    world: object = field(default=None, repr=False, compare=False)
+    player_call_cooldown: Annotated[float, Field(ge=0, le=PLAYER_CALL_COOLDOWN)] = 0.0
+    resolved_player_calls: list[str] = field(default_factory=list)
+    command_revision: Annotated[int, Field(ge=0)] = 0
     attitudes: dict = field(default_factory=initial_attitudes)
-    arrival_day: int = STARTING_DAY
+    arrival_day: Annotated[int, Field(ge=1)] = STARTING_DAY
     departure: dict | None = None
 
-    room_number: int = 0
-    social_fatigue: float = field(default_factory=lambda: random.uniform(*STARTING_FATIGUE_RANGE))
-    home_remaining: float = 0.0
-    outdoor_remaining: float = 0.0
-    bedtime_remaining: float | None = None
-    wake_remaining: float | None = None
-    home_reason: str | None = None
-    last_creative_day: int = 0
+    room_number: Annotated[int, Field(strict=True, ge=1, le=MAX_RESIDENTS)] = 0
+    social_fatigue: Annotated[float, Field(ge=0, le=100)] = field(default_factory=lambda: random.uniform(*STARTING_FATIGUE_RANGE))
+    home_remaining: Annotated[float, Field(ge=0, le=max(REST_SECONDS_RANGE[1], CREATION_WORK_SECONDS_RANGE[1]))] = 0.0
+    outdoor_remaining: Annotated[float, Field(ge=0, le=OUTDOOR_COOLDOWN_SECONDS)] = 0.0
+    bedtime_remaining: Annotated[float | None, Field(ge=0, le=BEDTIME_DELAY_RANGE[1])] = None
+    wake_remaining: Annotated[float | None, Field(ge=0, le=WAKE_DELAY_RANGE[1])] = None
+    home_reason: Literal["night", "retreat"] | None = None
+    last_creative_day: Annotated[int, Field(strict=True, ge=0)] = 0
     creative_job: CreativeJob | None = field(default=None, repr=False, compare=False)
     location: str = "garden"
     journey: Journey | None = None
+
+
+@dataclass
+class NPC(ResidentValues):
+    rng: random.Random = field(default_factory=random.Random, repr=False)
+    selected: bool = False
+    player_reply: PlayerReplyProgress = field(default_factory=PlayerReplyProgress, repr=False, compare=False)
+    world: object = field(default=None, repr=False, compare=False)
 
     @property
     def indoors(self):
@@ -568,13 +562,7 @@ class NPC:
             raise ValueError("This NPC is already in an interaction.")
         if action == "EAT" and self.inventory.get("fruit", 0) < 1:
             raise ValueError("I don't have an apple to eat.")
-        if self.world.visit and self.world.visit.host_id == self.id:
-            from apartments import finish_visit
-            finish_visit(self.world)
-        self.journey = None
-        if self.creative_job:
-            from apartments import cancel_work
-            cancel_work(self)
+        self.world.interrupt_resident(self, "The player assigned a new activity.", mode="action")
         self.command_revision += 1
         if action == "WANDER":
             self.begin_activity(Behavior.WANDER, self.world, reason="Player released control; choosing activities")

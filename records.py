@@ -10,11 +10,11 @@ class SaveModel(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False, from_attributes=True)
 
 
-def saved_record(record):
+def saved_record(record, *, exclude=()):
     """Keep every save field required, including fields with runtime defaults."""
     annotations = get_type_hints(record, include_extras=True)
     return create_model(record.__name__ + "State", __base__=SaveModel,
-                        **{field.name: (annotations[field.name], ...) for field in fields(record)})
+                        **{field.name: (annotations[field.name], ...) for field in fields(record) if field.name not in exclude})
 
 
 def restore_record(record, source, **overrides):

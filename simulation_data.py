@@ -1,7 +1,7 @@
 """Self-contained simulation saves. No character file paths are loaded."""
 
 import re
-from npc import ResidentProgress, Conversation, NPC, Tree, validate_saved_conversations
+from npc import ResidentProgress, Conversation, NPC, ResidentValues, Tree, validate_saved_conversations
 from transfers import HandoffProgress, Handoff, validate_transfer_history, validate_saved_handoffs
 from transfer_records import TransferIntent, TransferReceipt
 from snake import (SnakeProgress, PlayerSnakeProgress, Snake, SnakeEncounter,
@@ -181,6 +181,20 @@ class PlayerInteractionState(saved_record(PlayerInteraction)):
     point: tuple[PhysicalNumber, PhysicalNumber] | None
     elapsed: PhysicalNumber = Field(ge=0, le=PLAYER_APPROACH_TIMEOUT)
     numeric_elapsed = field_validator("elapsed", mode="before")(_physical_number)
+
+    @model_validator(mode="after")
+    def validate_pending_command(self):
+        pending = self.pending_request
+        if pending and pending.get("kind") == "player_command":
+            from dialogue import ActionIntent
+            if (set(pending) != {"message", "kind", "context"} or pending["message"] != ""
+                    or not isinstance(pending["context"], dict) or set(pending["context"]) != {"command"}
+                    or self.kind != "resident" or self.stage != "conversation"):
+                raise ValueError("A saved action request needs its actual resident meeting and structured intent.")
+            command = ActionIntent.model_validate(pending["context"]["command"])
+            if command.action == "SAY":
+                raise ValueError("A saved control request must identify a supported action.")
+        return self
     numeric_point = field_validator("point", mode="before")(_physical_point)
 
 
@@ -214,47 +228,20 @@ class ConcernState(saved_record(ConversationConcern)):
         return self
 
 
-class NPCState(ActivityState):
-    location: str
+class NPCState(saved_record(ResidentValues, exclude={"emotion_intensity"}), ActivityState):
+    # Only representation conversions differ from the durable runtime record.
     journey: JourneyState | None
-    id: str = Field(min_length=1)
-    character: dict
-    display_name: str | None
-    # Exact positions are checked against each resident's map in validate_saved_locations.
-    x: float
-    y: float
-    reply: str
-    rewritten_reply: str
     emotion: EmotionReaction
-    social: float = Field(ge=0, le=100)
-    inventory: dict[Literal["fruit"], Annotated[int, Field(strict=True, ge=0)]]
     preferences: PreferencesState
     memories: list[MemoryState] = Field(max_length=20)
     goal: GoalState | None
-    opinions: dict[str, dict]
     pending_social_opinions: list[OpinionEffectState]
     beliefs: list[BeliefState]
     current_concern: ConcernState | None
-    conversation_pause_remaining: float = Field(ge=0, le=max(CONVERSATION_PAUSE_RANGE[1], FAILURE_COOLDOWN))
-    conversation_return_remaining: float = Field(ge=0, le=CONVERSATION_RETURN_PAUSE)
     player_opinion: PlayerOpinionState
     player_call: Annotated[PlayerCallState | PlayerReplyCallState, Field(discriminator="kind")] | None
-    player_call_cooldown: float = Field(ge=0, le=PLAYER_CALL_COOLDOWN)
-    resolved_player_calls: list[str]
-    command_revision: int = Field(ge=0)
     attitudes: Attitudes
-    arrival_day: int = Field(ge=1)
     departure: DepartureState | None
-    sprite_size: tuple[int, int] | None
-    room_number: int = Field(strict=True, ge=1, le=MAX_RESIDENTS)
-    social_fatigue: float = Field(ge=0, le=100)
-    home_remaining: float = Field(ge=0, le=max(REST_SECONDS_RANGE[1], CREATION_WORK_SECONDS_RANGE[1]))
-    outdoor_remaining: float = Field(ge=0, le=OUTDOOR_COOLDOWN_SECONDS)
-    bedtime_remaining: float | None = Field(ge=0, le=BEDTIME_DELAY_RANGE[1])
-    wake_remaining: float | None = Field(ge=0, le=WAKE_DELAY_RANGE[1])
-    home_reason: Literal["night", "retreat"] | None
-    last_creative_day: int = Field(strict=True, ge=0)
-    creative_job: CreativeJob | None
 
     @field_validator("opinions")
     @classmethod
@@ -486,6 +473,20 @@ class SimulationState(SaveModel):
             raise ValueError("Player identity conflicts with a physical actor.")
         actors[self.player.id] = PLAYER_LABEL
         ids.add(self.player.id)
+        if physical and physical.pending_request and physical.pending_request.get("kind") == "player_command":
+            from dialogue import ActionIntent
+            command = ActionIntent(**physical.pending_request["context"]["command"])
+            if command.action in ("TALK_TO_NPC", "GIVE_ITEM"):
+                if (command.target not in owner_ids - {physical.npc_id}
+                        or command.action == "TALK_TO_NPC" and command.target == self.player.id):
+                    raise ValueError("A saved command must retain a known eligible recipient identity.")
+            elif command.target:
+                raise ValueError("Unexpected saved command recipient.")
+            if command.action == "GIVE_ITEM":
+                if command.quantity < 1 or command.item != "fruit" and (command.item not in creation_ids or command.quantity != 1):
+                    raise ValueError("A saved gift request needs its actual quantity and possession identity.")
+            elif command.item or command.quantity:
+                raise ValueError("Unexpected saved command possession.")
         activities = [*residents, *[state for c in self.conversations for state in c.saved_states],
                       *[state for h in self.handoffs for state in h.saved_states.values()]]
         for owner in [self.snake_encounter, physical, self.visit, self.tree_current, *self.tree_queue]:
@@ -823,29 +824,19 @@ def restore_simulation(state):
     state = SimulationState.model_validate(state.model_dump())
     all_residents = []
     for saved in [*state.npcs, *state.archived]:
-        npc = NPC(
-            id=saved.id, character=saved.character, display_name=saved.display_name, x=saved.x, y=saved.y,
-            reply=saved.reply, emotion=saved.emotion.name, emotion_intensity=saved.emotion.intensity,
-            social=saved.social, opinions=deepcopy(saved.opinions),
-            sprite_size=saved.sprite_size, room_number=saved.room_number, location=saved.location, journey=_restore_journey(saved.journey), social_fatigue=saved.social_fatigue,
-            home_remaining=saved.home_remaining, outdoor_remaining=saved.outdoor_remaining,
-            bedtime_remaining=saved.bedtime_remaining, wake_remaining=saved.wake_remaining,
-            home_reason=saved.home_reason, last_creative_day=saved.last_creative_day,
-            creative_job=saved.creative_job.model_copy(deep=True) if saved.creative_job else None,
-            inventory=saved.inventory.copy(),
-            rewritten_reply=saved.rewritten_reply,
-            preferences=saved.preferences.model_dump(), command_revision=saved.command_revision,
+        values = restore_record(ResidentValues, saved,
+            emotion=saved.emotion.name, emotion_intensity=saved.emotion.intensity,
+            journey=_restore_journey(saved.journey), preferences=saved.preferences.model_dump(),
+            attitudes=saved.attitudes.model_dump(), departure=saved.departure.model_dump() if saved.departure else None,
             memories=[restore_record(Memory, memory) for memory in saved.memories],
             goal=restore_record(Goal, saved.goal) if saved.goal else None,
             pending_social_opinions=[restore_record(OpinionEffect, effect) for effect in saved.pending_social_opinions],
             beliefs=[restore_record(Belief, belief) for belief in saved.beliefs],
             current_concern=restore_record(ConversationConcern, saved.current_concern) if saved.current_concern else None,
-            conversation_pause_remaining=saved.conversation_pause_remaining,
-            conversation_return_remaining=saved.conversation_return_remaining,
-            attitudes=saved.attitudes.model_dump(),
-            arrival_day=saved.arrival_day, departure=saved.departure.model_dump() if saved.departure else None,
-        )
-        npc.restore_activity(ActivitySnapshot.capture(saved))
+            player_opinion=restore_record(PlayerOpinion, saved.player_opinion),
+            player_call=(restore_record(PlayerReplyCall if saved.player_call.kind == "reply" else PlayerCall,
+                                        saved.player_call) if saved.player_call else None))
+        npc = NPC(**vars(values))
         all_residents.append(npc)
     npcs = all_residents[:len(state.npcs)]
     by_id = {npc.id: npc for npc in npcs}
@@ -870,12 +861,6 @@ def restore_simulation(state):
         world.reservations.acquire("tree", entry, world.participant_by_id(entry.actor_id))
     world.player_call_check = state.player_call_check
     world.player_acknowledgments = [restore_record(PlayerAcknowledgment, a) for a in state.player_acknowledgments]
-    for npc, saved in zip(all_residents, [*state.npcs, *state.archived]):
-        npc.player_opinion = restore_record(PlayerOpinion, saved.player_opinion)
-        npc.player_call = (restore_record(PlayerReplyCall if saved.player_call.kind == "reply" else PlayerCall,
-                                          saved.player_call) if saved.player_call else None)
-        npc.player_call_cooldown = saved.player_call_cooldown
-        npc.resolved_player_calls = saved.resolved_player_calls.copy()
     world.creations = [work.model_copy(deep=True) for work in state.creations]
     for npc in world.archived:
         npc.world = world

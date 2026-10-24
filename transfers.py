@@ -332,6 +332,10 @@ def validate_gift_offer_speech(text, item, quantity, stock):
 
 def validate_player_transfer(result, snapshot):
     """Effect authorization is independent of optional dialogue coherence checks."""
+    if snapshot.get("request_kind") == "player_command" and (result.invitation_acceptance
+            or result.invitation_resolution == "declined" or result.apple_promise
+            and result.apple_promise.giver_id == snapshot.get("player_id")):
+        raise ValueError("An action selection cannot accept a separate social offer or speak for the player.")
     if result.invitation:
         if (result.action != "SAY" or result.gift_offer or result.gift_acceptance or result.apple_promise
                 or result.invitation.evidence not in result.reply

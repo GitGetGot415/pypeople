@@ -346,19 +346,19 @@ that a recipient must need fruit. For every action except GIVE_ITEM, item is ""
 and quantity is 0. Questions about giving, such as "can Judy give fruit?", are SAY;
 polite requests such as "could you give a fruit to Judy?" are GIVE_ITEM.
 First-person requests such as "could I have an apple?", "can I get some fruit?",
-or "give me an apple" ask you to give to the PLAYER, target You. They are COMMAND,
+or "give me an apple" ask you to give to the PLAYER, using the player npc_id from other_npcs. They are COMMAND,
 not information questions. Never use someone mentioned in an earlier reply as
 the recipient of this request. If you cannot give, use SAY to explain why.
 Creative gifts use the exact owned work ID and quantity one. Use resolved_work_id
 when supplied; an ambiguous work reference needs SAY clarification. The player
-appears as target You in other_npcs for giving, but is never a TALK_TO_NPC destination.
+appears as You with a stable npc_id in other_npcs for giving, but is never a TALK_TO_NPC destination.
 Choose TALK_TO_NPC only if the player requests approaching or speaking to
 another NPC. Questions about someone, their activities, past conversations,
 or the selected NPC's opinions are SAY, even if another person's name appears.
 Distinguish the intended recipient from people mentioned as the topic of a
 conversation. Use the current message alone to choose the action and recipient;
 character profiles help identify people but cannot supply commands or game rules.
-For TALK_TO_NPC and GIVE_ITEM, target must be the exact npc_name of one available other_npc.
+For TALK_TO_NPC and GIVE_ITEM, target must be the exact npc_id of one available other_npc.
 Numbered names identify separate people. If the recipient is unknown, ambiguous,
 the selected NPC itself, or busy, choose SAY with target "" so the NPC can clarify.
 For every other action, target is "". Greetings, unclear or unsupported requests,
@@ -553,8 +553,8 @@ someone are SAY replies to the PLAYER. Examples: 'what do you think of Judy?',
 'do you like Judy?', 'tell me about Judy', and 'what is Judy doing?' all choose
 SAY, with target "", and never walk over or relay the player's question.
 Asking 'have you talked to Judy?' is also a question, not an instruction to talk.
-For TALK_TO_NPC and GIVE_ITEM, set target to the exact npc_name of someone in other_npcs.
-Accept unambiguous first names or descriptions, but resolve them to the full npc_name.
+For TALK_TO_NPC and GIVE_ITEM, set target to the exact npc_id of someone in other_npcs.
+Accept unambiguous first names or descriptions, but resolve them to the stable npc_id.
 Choose the recipient from the CURRENT player_message. last_reply and stored
 opinions are background context, never instructions to repeat a previous target.
 world_state.request_intent contains the interpretation of the current command.
@@ -742,6 +742,7 @@ def intent_snapshot(snapshot):
     """Route from current intent, with only the latest utterance for short answers."""
     def identity(person):
         return {
+            "npc_id": person["npc_id"],
             "npc_name": person["npc_name"],
             "kind": person.get("kind", "resident"),
             "character": {"Name": person["character"]["Name"]},
@@ -818,6 +819,11 @@ def _possession_offer_schema(person, recipient_id):
         "required": ["recipient_id", "item", "quantity"], "additionalProperties": False}
         for item, amount in items]
     return {"anyOf": [{"type": "null"}, *choices]} if choices else {"type": "null"}
+
+
+def _resident_stage_model(kind):
+    return {"resident_turn": ResidentTurnResponse, "resident_assessment": ResidentAssessment,
+            "handoff_thanks": DialoguePartsResponse}.get(kind)
 
 
 def _resident_contract(snapshot, *, correction=False):
@@ -1004,8 +1010,10 @@ def response_model(snapshot):
     if kind == "snake_turn":
         return (SnakeResidentResponse if snapshot["speaker_role"] == "recipient"
                 and "permitted_accounts" in snapshot["speaker"] else DialoguePartsResponse)
-    return {"resident_turn": ResidentTurnResponse, "resident_assessment": ResidentAssessment,
-            "handoff_thanks": DialoguePartsResponse, "conversation": ConversationResponse,
+    resident = _resident_stage_model(kind)
+    if resident is not None:
+        return resident
+    return {"conversation": ConversationResponse,
             "snake_encounter": SnakeResponse, "conversation_closing": DialogueRepairResponse,
             "snake_decision": SnakeDecision, "snake_player": SnakePlayerResponse,
             "intent": PlayerIntent, "voice_rewrite": VoiceRewriteResponse}.get(kind, ActionResponse)
@@ -1015,7 +1023,7 @@ def response_contract(snapshot, *, correction=False):
     kind = snapshot.get("request_kind")
     if kind in ("create_art", "create_music"):
         return creative_contract(kind.removeprefix("create_"))
-    if kind in ("resident_turn", "resident_assessment", "handoff_thanks"):
+    if _resident_stage_model(kind) is not None:
         return _resident_contract(snapshot, correction=correction)
     model = response_model(snapshot)
     if kind == "conversation":
@@ -1180,7 +1188,7 @@ def response_contract(snapshot, *, correction=False):
                 schema = other
         return instruction, schema, model
     if snapshot.get("request_kind") == "intent":
-        targets = [other["npc_name"] for other in snapshot.get("other_npcs", []) if other.get("available_to_talk", True)]
+        targets = [other["npc_id"] for other in snapshot.get("other_npcs", []) if other.get("available_to_talk", True)]
         schema = {**INTENT_SCHEMA, "properties": {**INTENT_SCHEMA["properties"],
             "item": {"type": "string", "enum": ["", "fruit", *[w["id"] for w in snapshot.get("owned_works", [])]]},
             "target": {"type": "string", "enum": ["", *targets]}}}
@@ -1210,6 +1218,12 @@ def response_contract(snapshot, *, correction=False):
     if not snapshot.get("player_interaction", {}).get("incoming_gift"):
         schema["properties"]["gift_acceptance"] = {"type": "boolean", "enum": [False]}
     instruction += PLAYER_POSSESSIONS_INSTRUCTION
+    if snapshot.get("request_kind") == "player_command":
+        instruction += (" The player deliberately selected the structured player_interaction.command. "
+                        "It is a trusted action request, not a spoken utterance. Respond naturally to that request "
+                        "using request_intent directly; do not invent or quote player speech. "
+                        "Keep IDs in metadata only; use names or you in speech. This selection does not accept "
+                        "an invitation, apple promise, or unsolicited gift offer.")
     if snapshot.get("request_kind") in ("player_opening", "player_gift", "player_acknowledgment"):
         instruction += " This is an engine-initiated turn, not a player command. Use action SAY, empty target/item, quantity zero. Generate speech from player_interaction, without inventing player speech."
         snapshot = {**snapshot, "request_intent": dict(action="SAY", target="", item="", quantity=0)}
@@ -1592,6 +1606,13 @@ def _conversation_messages(payload, snapshot):
                                   "or a request for permission to talk. If considering a gift, offer it or explain "
                                   "your decision to keep it. The player has not said anything. "
                                   "Use SAY and end_conversation false. Return the required reply JSON."}})
+            elif snapshot.get("request_kind") == "player_command":
+                messages.append({"role": "user", "content": {
+                    "player_action_request": snapshot["player_interaction"]["command"],
+                    "reply_task": "The player selected this action, without speaking a new line. "
+                                  "Respond to the structured request using request_intent. A gift may be declined. "
+                                  "Acknowledge an accepted task before it starts; do not claim it already happened. "
+                                  "This selection does not accept a separate social offer. Return the required reply JSON."}})
             else:
                 messages.append({"role": "user", "content": "Generate your own opening or acknowledgment from player_interaction. The player has not spoken a new line."})
         return messages
@@ -1832,7 +1853,7 @@ def _corrected_request(state, request, report):
     for attempt in range(DIALOGUE_STAGE_ATTEMPTS):
         report(("Generating " if attempt == 0 else "Correcting " if attempt == 1 else "Recovery: rewriting ") + activity)
         retry_state = (_speech_retry_snapshot(state) if attempt == DIALOGUE_STAGE_ATTEMPTS - 1
-                       and kind in ("snake_turn", "conversation_closing", "resident_turn", "handoff_thanks") else state)
+                       and "speaker_role" in state and issubclass(response_model(state), DialoguePartsResponse) else state)
         if snake_disclosure_choices is not None:
             retry_state = {**retry_state, "_disclosure_choices": snake_disclosure_choices,
                 "_compact_rewrite": True, "speaker": {**retry_state["speaker"], "permitted_accounts": [
@@ -1926,21 +1947,38 @@ def _corrected_request(state, request, report):
             correction = "\n".join(corrections)
     raise RequestError(f"The model's reply failed validation after bounded correction: {last_error}")
 
+def _exchange_turns(snapshot, draft, request_turn, retain, *, budget, limit, continuation=None):
+    """Advance only accepted prefixes; family callbacks own stages and effects."""
+    for index in range(limit):
+        check_cancelled()
+        forced = continuation is not None and continuation(index)
+        if index >= budget and not forced and (not snapshot.get("_dialogue_validation", True)
+                or not contains_question(draft["turns"][-1].text)):
+            break
+        request_turn(index, index == limit - 1)
+        check_cancelled()
+        retain(draft["turns"], snapshot)
+
+
+def _complete_exchange(result, snapshot, report):
+    check_cancelled()
+    report("Validating completed conversation")
+    return validate_response(result.model_dump_json(), snapshot)
+
+
 def _resident_exchange(snapshot, request, retain, report):
     draft = _resident_draft()
     budget = FOOD_REQUEST_TURN_COUNT if snapshot.get("purpose") == "food_request" else RESIDENT_TURN_COUNT
     limit = FOOD_REQUEST_TURN_COUNT + 1 if snapshot.get("purpose") == "food_request" else CONVERSATION_MAX_TURNS
     if snapshot.get("arrival_welcome"):
         limit = budget
-    for index in range(limit):
-        if index >= budget and (not snapshot.get("_dialogue_validation", True)
-                                or not contains_question(draft["turns"][-1].text)):
-            break
-        check_cancelled()
-        state = dialogue_context._resident_turn_snapshot(snapshot, draft, closing=index == limit - 1)
+    def turn(index, closing):
+        state = dialogue_context._resident_turn_snapshot(snapshot, draft, closing=closing)
         speech = request(state)
-        draft = dialogue_validation._apply_resident_candidate(snapshot, draft, speech, state)
-        retain(draft["turns"], snapshot)
+        accepted = dialogue_validation._apply_resident_candidate(snapshot, draft, speech, state)
+        draft.update(accepted)
+
+    _exchange_turns(snapshot, draft, turn, retain, budget=budget, limit=limit)
     for role in ("initiator", "recipient"):
         state = dialogue_context._resident_turn_snapshot(snapshot, draft, role=role, assessment=True)
         assessment = request(state)
@@ -1955,8 +1993,7 @@ def _resident_exchange(snapshot, request, retain, report):
         state["task"] = "Generate a brief acknowledgment reserved for AFTER the accepted possession is actually handed over. Preserve giver, recipient and creator roles."
         thanks = request(state).parts
     result = _assemble_resident(snapshot, draft, thanks)
-    report("Validating completed conversation")
-    return validate_response(result.model_dump_json(), snapshot)
+    return _complete_exchange(result, snapshot, report)
 
 
 def _snake_exchange(snapshot, request, retain, report):
@@ -1965,12 +2002,8 @@ def _snake_exchange(snapshot, request, retain, report):
         "permitted_decisions": ["talk"], "heard_turns": [], "opening": True})
     outcome_turn = 2
     followup_pending = False
-    for index in range(CONVERSATION_MAX_TURNS):
-        if (index >= SNAKE_TURN_COUNT and not (index == outcome_turn and followup_pending)
-                and (not snapshot.get("_dialogue_validation", True) or not contains_question(draft["turns"][-1].text))):
-            break
-        closing = index == CONVERSATION_MAX_TURNS - 1
-        check_cancelled()
+    def turn(index, closing):
+        nonlocal decision, outcome_turn, followup_pending
         if index == 2 or index == outcome_turn and followup_pending:
             assessment = {**snapshot, "request_kind": "snake_decision",
                 "heard_turns": [dict(role=t.speaker, text=t.text) for t in draft["turns"]],
@@ -1995,20 +2028,24 @@ def _snake_exchange(snapshot, request, retain, report):
                 outcome_turn = index + 1
                 followup_pending = True
         draft["turns"].append(ConversationTurn(speaker=state["speaker_role"], parts=speech.parts))
-        retain(draft["turns"], snapshot)
+
+    _exchange_turns(snapshot, draft, turn, retain, budget=SNAKE_TURN_COUNT, limit=CONVERSATION_MAX_TURNS,
+                    continuation=lambda index: index == outcome_turn and followup_pending)
     result = SnakeResponse(**decision.model_dump(), turns=draft["turns"], outcome_turn=outcome_turn)
-    report("Validating completed conversation")
-    return validate_response(result.model_dump_json(), snapshot)
+    return _complete_exchange(result, snapshot, report)
 
 
 def _individual_reply(snapshot, request):
     kind = snapshot.get("request_kind")
-    if kind not in ("intent", "snake_player", "conversation_closing", "player_opening", "player_gift", "player_acknowledgment",
-                    "resident_turn", "resident_assessment", "handoff_thanks"):
+    if response_model(snapshot) is ActionResponse and kind not in ("player_opening", "player_gift", "player_acknowledgment", "player_command"):
         intent = request(intent_snapshot(snapshot))
         snapshot["request_intent"] = intent.model_dump()
         if intent._clarification:
             snapshot["intent_clarification"] = intent._clarification
+    if kind == "player_command":
+        from player_commands import normalize_action
+        intent = normalize_action(snapshot["player_interaction"]["command"], snapshot)
+        snapshot["request_intent"] = intent.model_dump()
     return request(snapshot)
 
 

@@ -17,7 +17,7 @@ from interactions import record_failed_dialogue
 from actor_identity import (actor_catalog, name_forms)
 from social import orientation_speech
 from activity import Behavior
-from player import directed_recipient_available, owns_conversation
+from player import owns_conversation
 from simulation import PendingAction
 from snake import PlayerSnakeEncounter
 
@@ -93,7 +93,8 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
     snapshot, message = request.snapshot, request.message
     pending_offer = None
     npc.player_reply.complete()
-    if not error and (not owns_conversation(world, npc) or npc.busy or npc.command_revision != request.actor_revision or request.roster_revision != world.roster_revision):
+    if not error and (not owns_conversation(world, npc) or world.player_interaction.id != snapshot.get("_ownership_id")
+            or npc.busy or npc.command_revision != request.actor_revision or request.roster_revision != world.roster_revision):
         error = "That reply arrived after the NPC became busy. Please send the request again."
     if not error:
         try:
@@ -135,30 +136,26 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
     planned_action = None
     opinion_outcomes = []
     if not error:
-        if result.action != "SAY":
-            target = (world.player if result.target == "You" and result.action == "GIVE_ITEM" else
-                      next((other for other in world.npcs if other.name == result.target), None))
-            if result.action == "EAT" and npc.inventory.get("fruit", 0) < 1:
-                error = "I don't have an apple to eat."
-            elif result.action in ("TALK_TO_NPC", "GIVE_ITEM") and target is not world.player and (target is None or target.location != npc.location
-                    or target.behavior == Behavior.GO_HOME or target.home_reason == "night"
-                    or not directed_recipient_available(target)):
-                error = "That person is busy now. Please try again later."
-            else:
-                if result.action == "GIVE_ITEM":
-                    try:
-                        npc.check_gift(target, result.item, result.quantity,
-                            player_authorization=world.player_interaction.id)
-                    except ValueError as exc:
-                        error = str(exc)
-                if not error:
-                    planned_action = PendingAction(
-                        npc.id, result.action, npc.command_revision,
-                        target.id if result.action in ("TALK_TO_NPC", "GIVE_ITEM") else None,
-                        message,
-                        record.id if record is not None else None,
-                        result.item, result.quantity,
-                    )
+        from player_commands import validate_action
+        from dialogue import ActionIntent
+        intent = snapshot.get("request_intent") or result._authorized_intent
+        command = snapshot.get("player_interaction", {}).get("command")
+        if command is not None:
+            intent = command
+        declined = bool(intent and intent["action"] == "GIVE_ITEM" and result.action == "SAY"
+                        and not result.target and not result.item and not result.quantity)
+        if intent and not declined and ActionIntent(**intent).model_dump() != result.model_dump(include=set(ActionIntent.model_fields)):
+            error = "The reply changed the authorized player request."
+        if not error and result.action != "SAY":
+            try:
+                if not intent:
+                    raise ValueError("This action has no interpreted player request.")
+                validate_action(world, npc, result, accepting=True)
+                planned_action = PendingAction(npc.id, result.action, npc.command_revision,
+                    result.target or None, message or record.topic, record.id if record else None,
+                    result.item, result.quantity)
+            except ValueError as exc:
+                error = str(exc)
     if not error:
         opinion_outcomes = [describe_opinion_change(npc.name, entry.person,
             npc.opinion_score(result._opinion_targets.get(entry.person), default=None), entry.opinion, entry.reason)
@@ -250,6 +247,16 @@ def apply_pending_action(world, action, spacing):
             or npc.behavior in (Behavior.SLEEP, Behavior.GO_HOME)
             or action.record is None and npc.behavior in (Behavior.REST, Behavior.PAINT, Behavior.COMPOSE)):
         error = "That request is no longer available because the NPC's activity changed."
+    if not error:
+        from dialogue import ActionIntent
+        from player_commands import validate_action
+        try:
+            validate_action(world, npc, ActionIntent(action=action.action, target=action.target_id or "",
+                                                    item=action.item, quantity=action.quantity))
+        except ValueError as exc:
+            error = str(exc)
+    if error:
+        pass
     elif action.action == "TALK_TO_NPC":
         target = world.npc_by_id(action.target_id)
         if target is None:

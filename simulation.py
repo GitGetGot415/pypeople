@@ -727,11 +727,36 @@ class Simulation:
                 f"{npc.name} heard {SNAKE_NAME}'s claims about authority and the garden; these remain unverified.", encounter.record, witnesses=[snake, npc])
         encounter.record.outcomes.append(f"Decision: {decision}. " + ("One apple transferred." if decision == "give_apple" else "No apple transferred."))
 
-    def interrupt_resident(self, target, reason, *, departing=False):
-        """Cancel only unfinished work; preserve every committed handoff and record."""
+    def interrupt_resident(self, target, reason, *, mode="cancel"):
+        """Coordinate outcome-specific cleanup without replaying committed effects."""
+        departing = mode == "departure"
         from activity import Behavior
         from transfers import Handoff
         from player import owns_resident, end_interaction
+        if mode not in ("cancel", "departure", "arrival", "approach", "action", "session"):
+            raise ValueError("Unknown resident interruption reason.")
+        if mode == "action":
+            if self.visit and self.visit.host_id == target.id:
+                from apartments import finish_visit
+                finish_visit(self)
+            from apartments import cancel_work
+            cancel_work(target)
+            target.journey = None
+            return
+        if mode in ("approach", "session"):
+            interaction = target.conversation or target.gift or target.snake_encounter
+            if interaction is target.conversation and interaction is not None:
+                if mode == "session":
+                    interaction.finish(self.tree)
+                else:
+                    interaction.cancel(reason)
+            elif isinstance(interaction, Handoff):
+                interaction.finish(reason)
+            elif interaction is not None:
+                interaction.finish(error=reason if mode == "approach" else "")
+            if mode == "approach":
+                self.leave_tree(target.id, reason)
+            return
         if owns_resident(self, target):
             end_interaction(self, reason)
         if self.visit and self.visit.host_id == target.id:
@@ -740,7 +765,6 @@ class Simulation:
         self.leave_tree(target.id, reason)
         interaction = target.conversation or target.gift
         from player import clear_call
-        from transfers import Handoff
         clear_call(target)
         self.player_acknowledgments = [a for a in self.player_acknowledgments if a.npc_id != target.id]
         if isinstance(interaction, Handoff):
@@ -758,23 +782,27 @@ class Simulation:
                 record.outcomes.append(reason)
         if departing:
             target.pending_social_opinions.clear()
-        # An unrelated interaction can have suspended a task aimed at this resident.
-        interactions = {id(p.conversation or p.gift): p.conversation or p.gift
-                        for p in self.npcs if p.conversation or p.gift}
-        states = [state for interaction in interactions.values()
-                  for state in interaction.activity_snapshots()]
-        if self.snake.encounter is not None and self.snake.encounter.saved_state is not None:
-            states.extend(self.snake.encounter.activity_snapshots())
-        for state in states:
-            state.cooldowns.pop(target.id, None)
-            if state.target_id == target.id:
-                state.behavior, state.owner, state.target_id = Behavior.WAIT, "autonomous", None
-                state.destination, state.activity_elapsed, state.resume_pending = None, 0.0, False
-                state.eating_witness_ids = []
-                state.reason, state.decision_remaining = reason, 0.0
+        if mode != "arrival":
+            # An unrelated interaction can have suspended a task aimed at this resident.
+            interactions = {id(p.conversation or p.gift): p.conversation or p.gift
+                            for p in self.npcs if p.conversation or p.gift}
+            states = [state for interaction in interactions.values()
+                      for state in interaction.activity_snapshots()]
+            if self.snake.encounter is not None and self.snake.encounter.saved_state is not None:
+                states.extend(self.snake.encounter.activity_snapshots())
+            for owner in (self.player_interaction, self.visit, self.tree_current, *self.tree_queue):
+                if owner is not None and owner.saved_state is not None:
+                    states.append(owner.saved_state)
+            for state in states:
+                state.cooldowns.pop(target.id, None)
+                if state.target_id == target.id:
+                    state.behavior, state.owner, state.target_id = Behavior.WAIT, "autonomous", None
+                    state.destination, state.activity_elapsed, state.resume_pending = None, 0.0, False
+                    state.eating_witness_ids = []
+                    state.reason, state.decision_remaining = reason, 0.0
         remaining = []
         for action in self.pending_actions:
-            if target.id in (action.npc_id, action.target_id):
+            if action.npc_id == target.id or mode != "arrival" and action.target_id == target.id:
                 owner = self.npc_by_id(action.npc_id)
                 if owner:
                     owner.player_reply.complete()
@@ -787,9 +815,10 @@ class Simulation:
                 remaining.append(action)
         self.pending_actions[:] = remaining
         for person in self.npcs:
-            if person.target_id == target.id:
+            if mode != "arrival" and person.target_id == target.id:
                 person.finish_activity(self, failed=True)
-            person.cooldowns.pop(target.id, None)
+            if mode != "arrival":
+                person.cooldowns.pop(target.id, None)
             if person is target:
                 person.command_revision += 1
                 person.player_reply.complete()
@@ -800,6 +829,14 @@ class Simulation:
                 person.activity_elapsed = 0.0
                 person.eating_witness_ids = []
                 person.resume_pending = False
+        if mode in ("arrival", "departure"):
+            from apartments import cancel_work
+            cancel_work(target)
+            target.journey = None
+            target.home_reason = target.bedtime_remaining = target.wake_remaining = None
+        if mode == "arrival":
+            target.player_reply.release()
+            target.begin_activity(Behavior.WAIT, self, reason=reason)
 
     def depart_resident(self, target, encounter):
         if target is self.player:
@@ -823,11 +860,8 @@ class Simulation:
             goal = person.goal
             if goal and goal.status == "active" and (person is target or target.id in (goal.target_id, goal.third_npc_id)):
                 resolve_goal(person, self, "cancelled", reason, encounter.record)
-        from apartments import cancel_work
-        cancel_work(target)
-        target.home_reason = target.bedtime_remaining = target.wake_remaining = None
+        self.interrupt_resident(target, reason, mode="departure")
         target.home_remaining = 0.0
-        self.interrupt_resident(target, reason, departing=True)
         self.npcs[:] = [p for p in self.npcs if p is not target]
         self.archived.append(target)
         self.roster_revision += 1

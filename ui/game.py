@@ -13,16 +13,22 @@ from constants import (DIALOGUE_PANEL_HEIGHT, DIALOGUE_READING_Y, DIALOGUE_READI
                       BED_POPUP_RECT, BED_POPUP_TITLE_Y, BED_POPUP_MESSAGE_RECT, BED_ADVANCE_RECT,
                       BED_CANCEL_RECT)
 from emotions import portrait_expression
-from conversation_history import RecordedTurn, uses_original_dialogue
+from conversation_history import uses_original_dialogue
+from .dialogue_view import DialogueView
 from .button import Button
 from .event_feed import EventFeed
 from .request_status import RequestStatus
-from .text import draw_centered_text, draw_wrapped_text, paginate_turn, wrap_text, scrollbar_rects, ScrollbarDrag
+from .text import draw_centered_text, draw_wrapped_text, wrap_text, scrollbar_rects, ScrollbarDrag
 from .text_input import TextInput
 from .world import CHARACTER_SCALE, draw_world
 from .character_sprite import draw_actor_portrait
 from constants import GAME_PORTRAIT_BACKGROUND, GAME_PORTRAIT_PADDING, GAME_PORTRAIT_BORDER_WIDTH
 from .inventory import InventoryPanel
+from constants import (PLAYER_ACTION_BUTTON_RECT, PLAYER_ACTION_PICKER_RECT, PLAYER_ACTION_PICKER_ROWS,
+                       PLAYER_ACTION_PICKER_ROW_HEIGHT, PLAYER_ACTION_PICKER_INSET,
+                       PLAYER_ACTION_PICKER_TITLE_HEIGHT, PLAYER_ACTION_PICKER_FOOTER_HEIGHT,
+                       PLAYER_ACTION_PICKER_BUTTON_WIDTH, PLAYER_ACTION_PICKER_ROW_BUTTON_HEIGHT,
+                       PLAYER_ACTION_PICKER_FOOTER_BUTTON_HEIGHT, PLAYER_ACTION_PICKER_BORDER_WIDTH)
 
 
 class GameScreen:
@@ -35,6 +41,7 @@ class GameScreen:
         self.end_button = Button(END_CONVERSATION_RECT, "End conversation")
         self.leave_queue_button = Button(LEAVE_QUEUE_RECT, "Leave queue")
         self.invitation_button = Button(INVITATION_ACCEPT_RECT, "Accept invitation")
+        self.actions_button = Button(PLAYER_ACTION_BUTTON_RECT, "Request action")
         self.menu_button = Button((1144, 16, 112, 38), "Menu")
         self.confirm_menu = False
         self.menu_restore_focus = False
@@ -66,20 +73,10 @@ class GameScreen:
         self.prompt_input = TextInput(
             (dialogue_x, 644, 1122 - dialogue_x, 44), placeholder="[insert cool action here]"
         )
-        self.dialogue_open = False
-        self.selected_npc = None
-        self.reply = ""
-        self._player_page_version = None
-        self._player_latest_turn = None
-        self.viewed_conversation = None
-        self.conversation_tree = None
-        self.conversation_page_index = 0
-        self.conversation_pages = []
-        self._conversation_page_turns = None
-        self.dialogue_scroll = 0
+        self.dialogue = DialogueView()
         self.reply_rect = pygame.Rect(dialogue_x, 580, 1256 - dialogue_x, 58)
         self.dialogue_scroll_rect = self.reply_rect.copy()
-        self.dialogue_scroll_limit = 0
+        self.dialogue.scroll_limit = 0
         self.dialogue_scrollbar = ScrollbarDrag()
         self.camera_offset = [0.0, 0.0]
         self.camera_zoom = 1.0
@@ -99,7 +96,10 @@ class GameScreen:
 
     @property
     def player_record(self):
-        return self.app.conversations.record if self.app and self.app.conversations else None
+        if self.dialogue.conversation is not None:
+            return None
+        record = self.app.conversations.record if self.app and self.app.conversations else None
+        return record or self.dialogue.record
 
     def reset(self):
         self.apartment_scrollbar.cancel()
@@ -112,7 +112,6 @@ class GameScreen:
         self.apartment_scroll = 0
         self.close_dialogue()
         self.prompt_input.set_value("")
-        self.reply = ""
         self.camera_offset[:] = (0.0, 0.0)
         self.camera_zoom = 1.0
         self.pan_start = None
@@ -129,39 +128,28 @@ class GameScreen:
 
     def close_dialogue(self, *, terminate=True, notify=True):
         self.dialogue_scrollbar.cancel()
-        self.dialogue_scroll_limit = 0
+        self.dialogue.scroll_limit = 0
         if notify and self.app and self.app.conversations:
             self.app._sync_conversation_view()
             self.app.conversations.view_closed(terminate=terminate)
             self.app._present_conversation_events()
-        if self.viewed_conversation is not None:
-            self.viewed_conversation = None
-            self.conversation_tree = None
-        if self.selected_npc is not None:
-            self.selected_npc = None
-        self.dialogue_open = False
-        self.conversation_page_index = 0
-        self.conversation_pages = []
-        self._conversation_page_turns = None
-        self._player_page_version = None
-        self._player_latest_turn = None
-        self.dialogue_scroll = 0
+        self.dialogue.reset()
         self.prompt_input.active = False
         self.prompt_input.backspace_held = False
 
     def set_reply(self, text):
         normalized = " ".join(text.split())
-        self.reply = "".join(char for char in normalized if char.isprintable())
-        self.dialogue_scroll = 0
+        self.dialogue.status = "".join(char for char in normalized if char.isprintable())
+        self.dialogue.scroll = 0
         self.prompt_input.active = self.prompt_input.backspace_held = False
-        if self.selected_npc is not None:
-            if self.selected_npc.player_reply.closing:
+        if self.dialogue.actor is not None:
+            if self.dialogue.actor.player_reply.closing:
                 self.prompt_input.set_value("")
                 self.prompt_input.active = False
 
     @property
     def world_viewport(self):
-        height = WINDOW_SIZE[1] - DIALOGUE_PANEL_HEIGHT if self.dialogue_open else WINDOW_SIZE[1]
+        height = WINDOW_SIZE[1] - DIALOGUE_PANEL_HEIGHT if self.dialogue.open else WINDOW_SIZE[1]
         return pygame.Rect(0, 0, WINDOW_SIZE[0], height)
 
     @property
@@ -172,7 +160,7 @@ class GameScreen:
     def handle_event(self, app, event):
         from player import active_player
         world = app.simulation
-        if self.dialogue_open and self.viewed_conversation is None and self.selected_npc is not None:
+        if self.dialogue.open and self.dialogue.conversation is None and self.dialogue.actor is not None:
             self.update_player_pages(app)
         if self.bed_open:
             self.handle_bed_event(app, event)
@@ -188,13 +176,23 @@ class GameScreen:
         if self.location_menu:
             self.handle_location_event(app, event)
             return
+        if self.dialogue.picker is not None:
+            self.handle_action_picker(app, event)
+            return
+        if self.dialogue.open and self.dialogue.conversation is None and self.actions_button.clicked(event):
+            if self.player_response_ready and not self.pending_offer:
+                reason = app.conversations.input_unavailable(self.dialogue.actor, active=app.screen == "game")
+                if not reason and self.dialogue.actor is not world.snake:
+                    self.dialogue.picker = dict(command={}, page=0, focus=self.prompt_input.active)
+                    self.prompt_input.active = self.prompt_input.backspace_held = False
+            return
         if self.leave_queue_button.clicked(event) and world.can_leave_tree(world.player.id):
             world.leave_tree(world.player.id)
             return
-        if self.dialogue_open and world.player_interaction and self.end_button.clicked(event):
+        if self.dialogue.open and world.player_interaction and self.end_button.clicked(event):
             self.close_dialogue()
             return
-        if self.dialogue_open and self.player_response_ready and self.invitation_button.clicked(event):
+        if self.dialogue.open and self.player_response_ready and self.invitation_button.clicked(event):
             offer = self.pending_invitation(world)
             if offer:
                 app._sync_conversation_view()
@@ -206,7 +204,7 @@ class GameScreen:
             self.prompt_input.active = self.prompt_input.backspace_held = False
             self.inventory.open(app.simulation.player)
             return
-        if self.pending_offer and self.dialogue_open and self.player_response_ready:
+        if self.pending_offer and self.dialogue.open and self.player_response_ready:
             if self.accept_offer_button.clicked(event, enabled=not app.simulation.paused):
                 app._sync_conversation_view()
                 app.conversations.accept_gift_offer()
@@ -230,7 +228,7 @@ class GameScreen:
             elif event.type == pygame.MOUSEWHEEL:
                 self.apartment_scroll = max(0, min(limit, self.apartment_scroll - event.y * APARTMENT_INSPECTOR_ROW_HEIGHT))
             return
-        if self.dialogue_open and self.dialogue_scrollbar.active and self.handle_dialogue_scroll(app, event):
+        if self.dialogue.open and self.dialogue_scrollbar.active and self.handle_dialogue_scroll(app, event):
             return
         if self.request_status.scrollbar.active and self.request_status.handle_event(app, event):
             return
@@ -294,59 +292,57 @@ class GameScreen:
             self.open_menu_confirmation()
             return
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-            if self.dialogue_open:
+            if self.dialogue.open:
                 self.close_dialogue()
             else:
                 self.open_menu_confirmation()
             return
-        if self.dialogue_open:
+        if self.dialogue.open:
             if self.original_toggle.clicked(event):
                 app.original_dialogue = not app.original_dialogue
-                self.dialogue_scroll = 0
+                self.dialogue.scroll = 0
                 return
             if (self.player_record and self.player_record.error and self.retry_button.clicked(event,
-                    enabled=not paused and not self.selected_npc.interaction_blocked)):
+                    enabled=not paused and not self.dialogue.actor.interaction_blocked)):
                 app._sync_conversation_view()
                 app.conversations.retry_player_dialogue()
                 app._present_conversation_events()
                 return
             if self.handle_dialogue_scroll(app, event):
                 return
-            if self.viewed_conversation is not None:
-                if self.subjects_button.clicked(event, enabled=bool(self.viewed_conversation.record.intended_subjects)):
-                    record = self.viewed_conversation.record
+            if self.dialogue.conversation is not None:
+                if self.subjects_button.clicked(event, enabled=bool(self.dialogue.conversation.record.intended_subjects)):
+                    record = self.dialogue.conversation.record
                     app.open_stats()
                     app.stats.open_record(record)
-                elif self.next_button.clicked(event, enabled=bool(self.conversation_pages)):
+                elif self.next_button.clicked(event, enabled=bool(self.dialogue.pages)):
                     self.advance_conversation(app)
-                elif self.back_button.clicked(event, enabled=self.conversation_page_index > 0):
+                elif self.back_button.clicked(event, enabled=self.dialogue.index > 0):
                     self.rewind_conversation()
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_LEFT:
                     self.rewind_conversation()
                 elif event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE, pygame.K_RIGHT):
                     self.advance_conversation(app)
                 elif self.retry_button.clicked(event, enabled=not paused and bool(
-                        self.viewed_conversation.error and not self.viewed_conversation.record.turns)):
+                        self.dialogue.conversation.error and not self.dialogue.conversation.record.turns)):
                     app._sync_conversation_view()
-                    app.conversations.retry_conversation_dialogue(self.viewed_conversation)
+                    app.conversations.retry_conversation_dialogue(self.dialogue.conversation)
                     app._present_conversation_events()
                 return
-            if self.back_button.clicked(event, enabled=self.conversation_page_index > 0):
-                self.conversation_page_index -= 1
-                self.dialogue_scroll = 0
+            if self.back_button.clicked(event, enabled=self.dialogue.index > 0):
+                self.dialogue.move(-1)
                 self.prompt_input.active = self.prompt_input.backspace_held = False
                 return
             if not self.player_response_ready:
                 if self.next_button.clicked(event) or (event.type == pygame.KEYDOWN and event.key in (
                         pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE, pygame.K_RIGHT)):
                     self.advance_player_dialogue(app)
-                elif event.type == pygame.KEYDOWN and event.key == pygame.K_LEFT and self.conversation_page_index > 0:
-                    self.conversation_page_index -= 1
-                    self.dialogue_scroll = 0
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_LEFT and self.dialogue.index > 0:
+                    self.dialogue.move(-1)
                 return
             if self.pending_offer:
                 return
-            if self.selected_npc.player_reply.closing:
+            if self.dialogue.actor.player_reply.closing:
                 if self.done_button.clicked(event) or (
                     event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE)
                 ):
@@ -356,64 +352,38 @@ class GameScreen:
                 return
             if self.send_button.clicked(event):
                 app._sync_conversation_view()
-                app.conversations.submit(app.game.selected_npc, app.game.prompt_input.text, active=app.screen == "game")
+                app.conversations.submit(app.game.dialogue.actor, app.game.prompt_input.text, active=app.screen == "game")
                 app._present_conversation_events()
                 self.focus_player_reply(app)
             elif self.prompt_input.handle_event(event):
                 app._sync_conversation_view()
-                app.conversations.submit(app.game.selected_npc, app.game.prompt_input.text, active=app.screen == "game")
+                app.conversations.submit(app.game.dialogue.actor, app.game.prompt_input.text, active=app.screen == "game")
                 app._present_conversation_events()
 
     @property
     def player_response_ready(self):
-        return self.viewed_conversation is None and self.conversation_page_index >= max(0, len(self.conversation_pages) - 1)
+        return self.dialogue.conversation is None and self.dialogue.final_page
 
     def update_player_pages(self, app):
-        record = self.player_record
-        turns = list(record.turns) if record else []
-        latest = next((turn for turn in reversed(turns) if turn.speaker_id == self.selected_npc.id), None)
-        current_reply = latest is not None and " ".join(latest.text.split()) == self.reply
-        latest_key = id(latest) if current_reply else (self.reply, self.selected_npc.rewritten_reply)
-        version = (id(record), tuple((id(turn), tuple(turn.rewritten)) for turn in turns), self.reply,
-                   app.original_dialogue, getattr(app, "condensed_dialogue", False))
-        if self._player_page_version == version:
-            return
-        replying = self._player_page_version is not None and self.player_response_ready
-        previous = (self.conversation_pages[self.conversation_page_index][0]
-                    if self.conversation_page_index < len(self.conversation_pages) else None)
-        if self.reply and not current_reply:
-            latest = RecordedTurn(self.selected_npc.name, [{"text": self.reply}],
-                [self.selected_npc.rewritten_reply] if self.selected_npc.rewritten_reply else [], self.selected_npc.id)
-            turns.append(latest)
-        self.conversation_pages = [(turn, emotion, text) for turn in turns
-            for emotion, text in paginate_turn(turn, app.font, self.reply_rect.width - 12,
-                original=app.original_dialogue, condensed=version[-1])]
-        if latest_key != self._player_latest_turn:
-            self.conversation_page_index = next((index for index, page in enumerate(self.conversation_pages)
-                if page[0] is latest), 0)
+        changed = self.dialogue.refresh(self.player_record, app.font, self.reply_rect.width - 12,
+            original=app.original_dialogue, condensed=getattr(app, "condensed_dialogue", False), player_reply=True)
+        if changed:
             self.prompt_input.active = self.prompt_input.backspace_held = False
-        elif replying:
-            self.conversation_page_index = max(0, len(self.conversation_pages) - 1)
-        else:
-            self.conversation_page_index = next((index for index, page in enumerate(self.conversation_pages)
-                if page[0] is previous), 0)
-        self._player_page_version, self._player_latest_turn = version, latest_key
-        self.dialogue_scroll = 0
-        if self.player_response_ready and not self.selected_npc.player_reply.closing and not self.pending_offer:
-            self.prompt_input.focus()
+        if self.player_response_ready and not self.dialogue.actor.player_reply.closing and not self.pending_offer:
+            if changed:
+                self.prompt_input.focus()
 
     def focus_player_reply(self, app):
-        if not self.dialogue_open or self.viewed_conversation is not None or self.selected_npc is None:
+        if not self.dialogue.open or self.dialogue.conversation is not None or self.dialogue.actor is None:
             return
         self.update_player_pages(app)
-        if self.player_response_ready and not self.selected_npc.player_reply.closing and not self.pending_offer:
+        if self.player_response_ready and not self.dialogue.actor.player_reply.closing and not self.pending_offer:
             self.prompt_input.focus()
 
     def advance_player_dialogue(self, app):
         if self.player_response_ready:
             return
-        self.conversation_page_index += 1
-        self.dialogue_scroll = 0
+        self.dialogue.move(1)
         if self.player_response_ready:
             self.focus_player_reply(app)
 
@@ -511,10 +481,10 @@ class GameScreen:
             app.window.blit(label, label.get_rect(midright=(GAME_PAUSED_LABEL_RIGHT, self.pause_button.rect.centery)))
 
     def advance_conversation(self, app):
-        conversation = self.viewed_conversation
-        if conversation is None or not self.conversation_pages:
+        conversation = self.dialogue.conversation
+        if conversation is None or not self.dialogue.pages:
             return
-        if self.conversation_page_index == len(self.conversation_pages) - 1:
+        if self.dialogue.index == len(self.dialogue.pages) - 1:
             if conversation.active:
                 if app.simulation.paused:
                     return
@@ -522,33 +492,31 @@ class GameScreen:
                 conversation.update(0.0)
             self.close_dialogue()
         else:
-            self.conversation_page_index += 1
-            self.dialogue_scroll = 0
+            self.dialogue.move(1)
 
     def rewind_conversation(self):
-        if self.viewed_conversation is not None and self.conversation_page_index > 0:
-            self.conversation_page_index -= 1
-            self.dialogue_scroll = 0
+        if self.dialogue.conversation is not None and self.dialogue.index > 0:
+            self.dialogue.move(-1)
 
     def handle_dialogue_scroll(self, app, event):
         font = app.font
         value = self.dialogue_scrollbar.handle_event(event, self.dialogue_scroll_rect,
-                                                    self.dialogue_scroll, self.dialogue_scroll_limit)
+                                                    self.dialogue.scroll, self.dialogue.scroll_limit)
         if value is not None:
-            self.dialogue_scroll = value
+            self.dialogue.scroll = value
             return True
         if event.type == pygame.MOUSEWHEEL:
             pos = getattr(event, "pos", pygame.mouse.get_pos())
-            if self.viewed_conversation is None and not self.dialogue_scroll_rect.collidepoint(pos):
+            if self.dialogue.conversation is None and not self.dialogue_scroll_rect.collidepoint(pos):
                 return False
-            self.dialogue_scroll = max(0, self.dialogue_scroll - event.y * font.get_linesize() * 3)
+            self.dialogue.scroll = max(0, self.dialogue.scroll - event.y * font.get_linesize() * 3)
             return True
         if event.type == pygame.KEYDOWN:
             if event.key in (pygame.K_DOWN, pygame.K_PAGEDOWN):
-                self.dialogue_scroll += font.get_linesize() if event.key == pygame.K_DOWN else 80
+                self.dialogue.scroll += font.get_linesize() if event.key == pygame.K_DOWN else 80
                 return True
             if event.key in (pygame.K_UP, pygame.K_PAGEUP):
-                self.dialogue_scroll = max(0, self.dialogue_scroll - (font.get_linesize() if event.key == pygame.K_UP else 80))
+                self.dialogue.scroll = max(0, self.dialogue.scroll - (font.get_linesize() if event.key == pygame.K_UP else 80))
                 return True
         return False
 
@@ -608,8 +576,7 @@ class GameScreen:
         interaction = npc.conversation or getattr(npc, "snake_encounter", None)
         if interaction and (not active_player(world) or not can_interrupt_approach(npc)):
             self.close_dialogue()
-            self.dialogue_open, self.selected_npc, self.viewed_conversation = True, npc, interaction
-            self.conversation_tree = world.tree
+            self.dialogue.show(npc, interaction)
             return
         if not active_player(world):
             self.show_save_message(f"{npc.name}: {npc.status}")
@@ -652,53 +619,59 @@ class GameScreen:
             color = PAPER if app.simulation.phase == "night" else INK
             draw_wrapped_text(app.window, self.save_message, app.small_font, color, (24, 480, 1232, 44))
 
-        if self.dialogue_open and app.simulation.player_interaction:
+        if self.dialogue.open and app.simulation.player_interaction:
             self.end_button.draw(app.window, app.small_font)
-        if not self.dialogue_open:
+        if (self.dialogue.open and self.dialogue.conversation is None
+                and self.dialogue.actor is not app.simulation.snake and self.player_response_ready):
+            reason = app.conversations.input_unavailable(self.dialogue.actor, active=app.screen == "game")
+            self.actions_button.draw(app.window, app.small_font, enabled=not reason and not self.pending_offer)
+        if not self.dialogue.open:
             if self.apartment_open:
                 self.draw_apartments(app)
             from constants import LOCATION_STATUS_POSITION
             app.window.blit(app.small_font.render(f"{app.simulation.mode.title()} / {self.location}", True, PAPER if self.location != "garden" else INK), LOCATION_STATUS_POSITION)
             return
-        if self.viewed_conversation is not None:
+        if self.dialogue.conversation is not None:
             self.draw_conversation(app)
             return
         self.update_player_pages(app)
         responding = self.player_response_ready
-        page_index = min(self.conversation_page_index, len(self.conversation_pages) - 1)
-        page = self.conversation_pages[page_index] if self.conversation_pages else None
+        page_index = min(self.dialogue.index, len(self.dialogue.pages) - 1)
+        page = self.dialogue.pages[page_index] if self.dialogue.pages else None
         turn, part, text = page if page else (None, None, "Enter a message to talk to this NPC.")
+        if self.dialogue.status:
+            text = self.dialogue.status
         original = app.original_dialogue or turn is None or uses_original_dialogue(
             turn.parts, turn.rewritten, original=app.original_dialogue)
         self.draw_dialogue_background(app, original)
-        speaker = app.simulation.participant_by_id(turn.speaker_id) if turn else self.selected_npc
+        speaker = app.simulation.participant_by_id(turn.speaker_id) if turn else self.dialogue.actor
         emotion = portrait_expression(part["name"], part["intensity"]) if part is not None else None
         self.draw_portrait(app, speaker, emotion)
-        status = self.selected_npc.status if self.selected_npc is not None else f"{app.simulation.population} residents"
-        request = app.conversations.pending_player_request(self.selected_npc)
+        status = self.dialogue.actor.status if self.dialogue.actor is not None else f"{app.simulation.population} residents"
+        request = app.conversations.pending_player_request(self.dialogue.actor)
         if request:
             worker = app.requests.workers.get((app.session_id, request.id))
             state = "Queued" if worker and worker.control and worker.control.stage == "Waiting for provider admission" else "Thinking"
-            status = f"{state} for {self.selected_npc.name}... / {status}"
-        elif self.selected_npc.player_reply.closing:
+            status = f"{state} for {self.dialogue.actor.name}... / {status}"
+        elif self.dialogue.actor.player_reply.closing:
             status = "Click Done when you've finished reading."
-        elif self.selected_npc.interaction_blocked:
+        elif self.dialogue.actor.interaction_blocked:
             status = f"Applying player request / {status}"
         if self.pending_offer:
             offer = self.pending_offer
             work = next((w for w in app.simulation.creations if w.id == offer["item"]), None)
             status = f'Gift offer: {offer["quantity"]} × {work.title + " [" + work.id[:8] + "]" if work else "apples"}'
         elif self.player_record and self.player_record.error:
-            self.retry_button.draw(app.window, app.small_font, enabled=not app.simulation.paused and not self.selected_npc.interaction_blocked)
+            self.retry_button.draw(app.window, app.small_font, enabled=not app.simulation.paused and not self.dialogue.actor.interaction_blocked)
             status = "Reply failed."
-        title = app.font.render(turn.speaker if turn else self.selected_npc.name, True, INK)
+        title = app.font.render(turn.speaker if turn else self.dialogue.actor.name, True, INK)
         title_rect = title.get_rect(topleft=(self.reply_rect.x, 557))
         app.window.blit(title, title_rect)
         status_right = self.retry_button.rect.left if self.player_record and self.player_record.error else self.back_button.rect.left
         draw_wrapped_text(app.window, status, app.small_font, MUTED,
                           (title_rect.right + 16, 558, max(0, status_right - title_rect.right - 24), 24))
-        self.back_button.draw(app.window, app.small_font, enabled=self.conversation_page_index > 0)
-        closing = self.selected_npc.player_reply.closing
+        self.back_button.draw(app.window, app.small_font, enabled=self.dialogue.index > 0)
+        closing = self.dialogue.actor.player_reply.closing
         self.next_button.label = "Next"
         self.next_button.draw(app.window, app.small_font, enabled=not responding)
         rect = self.reply_rect if responding else pygame.Rect(self.reply_rect.x, DIALOGUE_READING_Y,
@@ -714,14 +687,14 @@ class GameScreen:
             self.done_button.draw(app.window, app.font)
         elif responding:
             self.prompt_input.draw(app.window, app.font)
-            self.send_button.draw(app.window, app.font, enabled=not self.selected_npc.interaction_blocked and not app.simulation.paused)
+            self.send_button.draw(app.window, app.font, enabled=not self.dialogue.actor.interaction_blocked and not app.simulation.paused)
         if self.player_record and self.player_record.dialogue_errors:
             draw_wrapped_text(app.window, self.player_record.dialogue_errors[-1], app.small_font,
                               FAILED_CONVERSATION_SELECTED_COLOR, (self.reply_rect.x, 696, self.reply_rect.width - 90, 24))
         elif responding and not closing and self.prompt_input.error:
             app.window.blit(app.small_font.render(self.prompt_input.error, True, MUTED), (self.reply_rect.x, 696))
         else:
-            reason = self.selected_npc.decision_reason
+            reason = self.dialogue.actor.decision_reason
             while reason and app.small_font.size(reason)[0] > self.reply_rect.width - 90:
                 reason = reason[:-4] + "..."
             app.window.blit(app.small_font.render(reason, True, MUTED), (self.reply_rect.x, 696))
@@ -729,8 +702,109 @@ class GameScreen:
             count = app.small_font.render(f"{len(self.prompt_input.text)}/300", True, MUTED)
             app.window.blit(count, count.get_rect(topright=(1256, 696)))
         elif not responding:
-            progress = app.small_font.render(f"{self.conversation_page_index + 1}/{len(self.conversation_pages)}", True, MUTED)
+            progress = app.small_font.render(f"{self.dialogue.index + 1}/{len(self.dialogue.pages)}", True, MUTED)
             app.window.blit(progress, progress.get_rect(topright=(1256, 696)))
+        if self.dialogue.picker is not None:
+            self.draw_action_picker(app)
+
+    def picker_options(self, app):
+        from player_commands import command_options
+        command = self.dialogue.picker["command"]
+        if command.get("item") == "fruit":
+            quantity = command["quantity"]
+            stock = self.dialogue.actor.inventory.get("fruit", 0)
+            return "Choose apple quantity", [
+                ("Fewer apples", "less", "" if quantity > 1 else "Minimum one"),
+                ("More apples", "more", "" if quantity < stock else "All carried apples"),
+                (f"Request {quantity} apple" + ("s" if quantity != 1 else ""), command.copy(),
+                 "Not enough carried apples" if quantity > stock else "")]
+        title = "Choose an action" if not command else "Choose a recipient" if not command.get("target") else "Choose an item"
+        return title, command_options(app.simulation, self.dialogue.actor, command.get("action"), command.get("target"))
+
+    def picker_footer(self):
+        rect = pygame.Rect(PLAYER_ACTION_PICKER_RECT)
+        inset, width = PLAYER_ACTION_PICKER_INSET, PLAYER_ACTION_PICKER_BUTTON_WIDTH
+        return [Button((rect.x + inset + i * (width + inset), rect.bottom - PLAYER_ACTION_PICKER_FOOTER_HEIGHT,
+                        width, PLAYER_ACTION_PICKER_FOOTER_BUTTON_HEIGHT), label)
+                for i, label in enumerate(("Back", "Previous", "Next", "Cancel"))]
+
+    def handle_action_picker(self, app, event):
+        picker = self.dialogue.picker
+        back, previous, following, cancel = self.picker_footer()
+        if cancel.clicked(event) or event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            focus = picker["focus"]
+            self.dialogue.picker = None
+            if focus:
+                self.focus_player_reply(app)
+            return
+        if back.clicked(event):
+            command = picker["command"]
+            picker["command"] = ({"action": command["action"], "target": command["target"]} if command.get("item") else
+                                 {"action": command["action"]} if command.get("target") else {})
+            picker["page"] = 0
+            picker["buttons"] = []
+            return
+        if previous.clicked(event, enabled=picker["page"] > 0):
+            picker["page"] -= 1
+            picker["buttons"] = []
+            return
+        if following.clicked(event, enabled=picker.get("more_pages", False)):
+            picker["page"] += 1
+            picker["buttons"] = []
+            return
+        reason = app.conversations.input_unavailable(self.dialogue.actor, active=app.screen == "game")
+        for button, value, unavailable in picker.get("buttons", []):
+            if not button.clicked(event, enabled=not reason and not unavailable):
+                continue
+            if value in ("less", "more"):
+                picker["command"]["quantity"] += -1 if value == "less" else 1
+                picker["buttons"] = []
+                return
+            action = value["action"]
+            complete = (action not in ("TALK_TO_NPC", "GIVE_ITEM") or action == "TALK_TO_NPC" and value.get("target")
+                        or action == "GIVE_ITEM" and value.get("item") and
+                        (value["item"] != "fruit" or picker["command"].get("item") == "fruit"))
+            if complete:
+                self.dialogue.picker = None
+                app._sync_conversation_view()
+                app.conversations.submit(self.dialogue.actor, "", command=value, active=app.screen == "game")
+                app._present_conversation_events()
+            else:
+                picker["command"], picker["page"], picker["buttons"] = value, 0, []
+            return
+
+    def draw_action_picker(self, app):
+        picker = self.dialogue.picker
+        rect = pygame.Rect(PLAYER_ACTION_PICKER_RECT)
+        pygame.draw.rect(app.window, PAPER, rect, border_radius=BORDER_RADIUS)
+        pygame.draw.rect(app.window, INK, rect, width=PLAYER_ACTION_PICKER_BORDER_WIDTH, border_radius=BORDER_RADIUS)
+        title, options = self.picker_options(app)
+        inset = PLAYER_ACTION_PICKER_INSET
+        draw_wrapped_text(app.window, title, app.font, INK,
+                          (rect.x + inset, rect.y + inset, rect.width - inset * 2, PLAYER_ACTION_PICKER_TITLE_HEIGHT - inset))
+        limit = max(0, (len(options) - 1) // PLAYER_ACTION_PICKER_ROWS)
+        picker["page"] = min(picker["page"], limit)
+        picker["more_pages"] = picker["page"] < limit
+        picker["buttons"] = []
+        reason = app.conversations.input_unavailable(self.dialogue.actor, active=app.screen == "game")
+        start = picker["page"] * PLAYER_ACTION_PICKER_ROWS
+        for index, (label, value, unavailable) in enumerate(options[start:start + PLAYER_ACTION_PICKER_ROWS]):
+            label += f" - {reason or unavailable}" if reason or unavailable else ""
+            while app.small_font.size(label)[0] > rect.width - inset * 3:
+                label = label[:-4] + "..."
+            button = Button((rect.x + inset, rect.y + PLAYER_ACTION_PICKER_TITLE_HEIGHT + index * PLAYER_ACTION_PICKER_ROW_HEIGHT,
+                             rect.width - inset * 2, PLAYER_ACTION_PICKER_ROW_BUTTON_HEIGHT), label)
+            button.draw(app.window, app.small_font, enabled=not reason and not unavailable)
+            picker["buttons"].append((button, value, unavailable))
+        if not options:
+            draw_wrapped_text(app.window, "No eligible choices are available right now.", app.small_font, MUTED,
+                              (rect.x + inset, rect.y + PLAYER_ACTION_PICKER_TITLE_HEIGHT,
+                               rect.width - inset * 2, PLAYER_ACTION_PICKER_ROW_HEIGHT * 2))
+        back, previous, following, cancel = self.picker_footer()
+        back.draw(app.window, app.small_font, enabled=bool(picker["command"]))
+        previous.draw(app.window, app.small_font, enabled=picker["page"] > 0)
+        following.draw(app.window, app.small_font, enabled=picker["more_pages"])
+        cancel.draw(app.window, app.small_font)
 
     def apartment_rows(self, app):
         rect = pygame.Rect(APARTMENT_INSPECTOR_RECT)
@@ -784,33 +858,13 @@ class GameScreen:
             emotion=emotion, border_color=INK, border_width=GAME_PORTRAIT_BORDER_WIDTH)
 
     def draw_conversation(self, app):
-        conversation = self.viewed_conversation
+        conversation = self.dialogue.conversation
         rect = pygame.Rect(self.reply_rect.x, DIALOGUE_READING_Y, self.reply_rect.width, DIALOGUE_READING_HEIGHT)
         source = conversation.record.turns or conversation.record.failed_turns
         failed = bool(source) and not conversation.record.turns
-        version = (id(source), app.original_dialogue, getattr(app, "condensed_dialogue", False))
-        if self._conversation_page_turns != version:
-            anchor = None
-            if (self.conversation_pages and self._conversation_page_turns is not None
-                    and self._conversation_page_turns[0] == id(source)):
-                old_index = max(0, min(self.conversation_page_index, len(self.conversation_pages) - 1))
-                previous_turn = self.conversation_pages[old_index][0]
-                turn_ids = list(dict.fromkeys(id(turn) for turn, _, _ in self.conversation_pages))
-                anchor = turn_ids.index(id(previous_turn))
-            turns = conversation.record.display_turns(failed=failed)
-            self.conversation_pages = [
-                (turn, emotion, text)
-                for turn in turns
-                for emotion, text in paginate_turn(turn, app.font, rect.width - 12,
-                    original=app.original_dialogue, condensed=version[2])
-            ]
-            self._conversation_page_turns = version
-            self.conversation_page_index = min(self.conversation_page_index, max(0, len(self.conversation_pages) - 1))
-            if anchor is not None and anchor < len(turns):
-                self.conversation_page_index = next((index for index, page in enumerate(self.conversation_pages)
-                                                     if page[0] is turns[anchor]), self.conversation_page_index)
-            self.dialogue_scroll = 0
-        page = self.conversation_pages[self.conversation_page_index] if self.conversation_pages else None
+        self.dialogue.refresh(conversation.record, app.font, rect.width - 12,
+            original=app.original_dialogue, condensed=getattr(app, "condensed_dialogue", False))
+        page = self.dialogue.pages[self.dialogue.index] if self.dialogue.pages else None
         turn, part, text = page if page is not None else (None, None, "")
         original = app.original_dialogue or failed
         if turn is not None and not failed:
@@ -820,7 +874,7 @@ class GameScreen:
             speaker = app.simulation.participant_by_id(turn.speaker_id)
             title = turn.speaker + (" - failed draft" if failed else "")
         else:
-            speaker = self.selected_npc
+            speaker = self.dialogue.actor
             title = f"{conversation.initiator.name} & {conversation.recipient.name}"
         emotion = portrait_expression(part["name"], part["intensity"]) if part is not None else None
         self.draw_portrait(app, speaker, emotion)
@@ -828,11 +882,11 @@ class GameScreen:
         draw_wrapped_text(app.window, title, app.font, INK, (self.reply_rect.x, 557, title_right - self.reply_rect.x - 16, 30))
         if conversation.record.intended_subjects:
             self.subjects_button.draw(app.window, app.small_font)
-        self.back_button.draw(app.window, app.small_font, enabled=self.conversation_page_index > 0)
-        last_page = bool(self.conversation_pages) and self.conversation_page_index == len(self.conversation_pages) - 1
+        self.back_button.draw(app.window, app.small_font, enabled=self.dialogue.index > 0)
+        last_page = bool(self.dialogue.pages) and self.dialogue.index == len(self.dialogue.pages) - 1
         self.next_button.label = "Done" if last_page else "Next"
         can_finish = not (last_page and conversation.active and app.simulation.paused)
-        self.next_button.draw(app.window, app.small_font, enabled=bool(self.conversation_pages) and can_finish)
+        self.next_button.draw(app.window, app.small_font, enabled=bool(self.dialogue.pages) and can_finish)
         if conversation.error and not conversation.record.turns:
             self.retry_button.draw(app.window, app.small_font, enabled=not app.simulation.paused)
         if not conversation.arrived:
@@ -855,7 +909,7 @@ class GameScreen:
             status_color = FAILED_CONVERSATION_SELECTED_COLOR if conversation.error or conversation.record.dialogue_errors else MUTED
             draw_wrapped_text(app.window, status, app.small_font, status_color,
                               (rect.x, 696, rect.width - 80, 24))
-            progress = app.small_font.render(f"{self.conversation_page_index + 1}/{len(self.conversation_pages)}", True, MUTED)
+            progress = app.small_font.render(f"{self.dialogue.index + 1}/{len(self.dialogue.pages)}", True, MUTED)
             app.window.blit(progress, progress.get_rect(topright=(1256, 696)))
 
     def draw_dialogue_lines(self, surface, lines, font, rect, *, color=INK):
@@ -863,16 +917,16 @@ class GameScreen:
         total_height = len(lines) * line_height
         scroll_limit = max(0, total_height - rect.height)
         self.dialogue_scroll_rect = rect.copy()
-        self.dialogue_scroll_limit = scroll_limit
-        self.dialogue_scroll = max(0, min(self.dialogue_scroll, scroll_limit))
+        self.dialogue.scroll_limit = scroll_limit
+        self.dialogue.scroll = max(0, min(self.dialogue.scroll, scroll_limit))
         previous_clip = surface.get_clip()
         surface.set_clip(rect.clip(previous_clip))
         for index, line in enumerate(lines):
-            y = rect.y + index * line_height - self.dialogue_scroll
+            y = rect.y + index * line_height - self.dialogue.scroll
             if rect.top - line_height < y < rect.bottom:
                 surface.blit(font.render(line, True, color), (rect.x, y))
         if scroll_limit:
-            track, thumb = scrollbar_rects(rect, self.dialogue_scroll, scroll_limit)
+            track, thumb = scrollbar_rects(rect, self.dialogue.scroll, scroll_limit)
             pygame.draw.rect(surface, (181, 191, 174), track)
             pygame.draw.rect(surface, MUTED, thumb)
         surface.set_clip(previous_clip)
@@ -954,11 +1008,11 @@ class GameScreen:
             self.location = world.player.location
             interaction = world.player_interaction
             if interaction and interaction.kind == "resident":
-                if interaction.stage == "conversation" and not self.dialogue_open:
+                if interaction.stage == "conversation" and not self.dialogue.open:
                     app._sync_conversation_view()
                     app.conversations.open_player_dialogue(world.npc_by_id(interaction.npc_id))
                     app._present_conversation_events()
-            elif interaction and interaction.kind == "snake" and not self.dialogue_open:
+            elif interaction and interaction.kind == "snake" and not self.dialogue.open:
                 app._sync_conversation_view()
                 app.conversations.open_player_dialogue(world.snake)
                 app._present_conversation_events()
@@ -966,7 +1020,7 @@ class GameScreen:
                 target = interaction.target
                 world.player_interaction = None
                 app.use_door(target)
-            blocking = (world.player_menu_blocked or self.dialogue_open or self.prompt_input.active
+            blocking = (world.player_menu_blocked or self.dialogue.open or self.prompt_input.active
                         or pygame.display.get_init() and pygame.key.get_mods() & (pygame.KMOD_CTRL | pygame.KMOD_ALT))
             if not blocking and app.screen == "game" and dt > 0 and pygame.display.get_init():
                 keys = pygame.key.get_pressed()
@@ -987,9 +1041,9 @@ class GameScreen:
                 else:
                     desired.append((view - scaled) / 2 if scaled <= view else min(0, max(view - scaled, view / 2 - position * self.camera_zoom)))
             self.camera_offset[:] = [desired[i] - base[i] for i in (0, 1)]
-        elif self.selected_npc and not self.viewed_conversation:
+        elif self.dialogue.actor and not self.dialogue.conversation:
             self.close_dialogue()
 
     def request_is_current(self, app):
-        return (self.viewed_conversation is not None
-                and app.conversation_requests.get(self.viewed_conversation.id) is self.viewed_conversation)
+        return (self.dialogue.conversation is not None
+                and app.conversation_requests.get(self.dialogue.conversation.id) is self.dialogue.conversation)

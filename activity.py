@@ -1,11 +1,12 @@
 """Resident activity values shared by suspension and persistence."""
 
+import random
 from copy import deepcopy
 from dataclasses import dataclass, field, fields
 from enum import Enum
 from typing import Annotated, Literal
 from pydantic import Field
-from constants import APARTMENT_ID, EAT_SECONDS
+from constants import APARTMENT_ID, EAT_SECONDS, STARTING_FACING, DECISION_SECONDS
 
 
 class Behavior(str, Enum):
@@ -24,19 +25,19 @@ class Behavior(str, Enum):
     COMPOSE = "COMPOSE"
 
 
-@dataclass
+@dataclass(kw_only=True)
 class ActivitySnapshot:
-    behavior: Behavior
-    destination: tuple[float, float] | None
-    pause_remaining: Annotated[float, Field(ge=0)]
-    facing: Annotated[int, Field(ge=0, le=7)]
-    owner: Literal["autonomous", "player_task"]
-    target_id: str | None
-    activity_elapsed: Annotated[float, Field(ge=0)]
-    reason: str
-    decision_remaining: Annotated[float, Field(ge=0)]
-    cooldowns: dict[str, float]
-    resume_pending: bool
+    behavior: Behavior = Behavior.WANDER
+    destination: tuple[float, float] | None = None
+    pause_remaining: Annotated[float, Field(ge=0)] = 0.0
+    facing: Annotated[int, Field(ge=0, le=7)] = STARTING_FACING
+    owner: Literal["autonomous", "player_task"] = "autonomous"
+    target_id: str | None = None
+    activity_elapsed: Annotated[float, Field(ge=0)] = 0.0
+    reason: str = "Exploring the world"
+    decision_remaining: Annotated[float, Field(ge=0)] = field(default_factory=lambda: random.uniform(0, DECISION_SECONDS))
+    cooldowns: dict[str, float] = field(default_factory=dict)
+    resume_pending: bool = False
     eating_witness_ids: list[str] = field(default_factory=list)
 
     @classmethod

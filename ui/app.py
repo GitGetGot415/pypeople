@@ -147,8 +147,8 @@ class Application:
     def _sync_conversation_view(self):
         self.conversations.configure(provider=self.provider, api_key=self.api_key, ollama_model=self.ollama_model,
             voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation)
-        self.conversations.set_view(actor=self.game.selected_npc,
-            reply_open=self.game.dialogue_open, viewed_conversation=self.game.viewed_conversation,
+        self.conversations.set_view(actor=self.game.dialogue.actor,
+            reply_open=self.game.dialogue.open, viewed_conversation=self.game.dialogue.conversation,
             menu_open=bool(self.game.location_menu or self.screen != "game"))
 
     def _present_conversation_events(self):
@@ -160,11 +160,9 @@ class Application:
             elif kind == "focus": self.game.focus_player_reply(self)
             elif kind == "close": self.game.close_dialogue(terminate=False, notify=False)
             elif kind == "view_conversation":
-                self.game.viewed_conversation = value
-                self.game._conversation_page_turns = None
+                self.game.dialogue.show(value.initiator, value)
             elif kind == "open":
-                self.game.dialogue_open, self.game.selected_npc = True, value
-                self.game.viewed_conversation = None
+                self.game.dialogue.show(value)
 
     def start_game(self):
         try:
@@ -364,9 +362,9 @@ class Application:
     def apply_pending_action(self, action):
         npc, error, meeting = apply_pending_action(self.simulation, action,
             lambda first, second: self._interaction_spacing(first, second))
-        if meeting and (self.game.selected_npc is meeting.initiator or self.game.selected_npc is meeting.recipient):
+        if meeting and (self.game.dialogue.actor is meeting.initiator or self.game.dialogue.actor is meeting.recipient):
             self.game.close_dialogue()
-        if error and self.game.selected_npc is npc:
+        if error and self.game.dialogue.actor is npc:
             self.game.set_reply(error)
 
     def _interaction_spacing(self, first, second):
@@ -475,7 +473,7 @@ class Application:
         session_active = self.screen in ("game", "stats", "save_sim")
         active_session = self.session_id if session_active else None
         # Live dialogue and Stats share the version toggle and reading hold.
-        viewed = self.game.viewed_conversation if self.screen in ("game", "stats") and self.game.dialogue_open else None
+        viewed = self.game.dialogue.conversation if self.screen in ("game", "stats") and self.game.dialogue.open else None
         # Leave completed replies queued so they cannot change a paused world.
         replies = () if session_active and paused else self.requests.poll(active_session)
         if session_active and not paused:
@@ -518,7 +516,7 @@ class Application:
             self.simulation.advance(dt, active=simulation_active, action_handler=self.apply_pending_action,
                                     viewed_conversation=viewed)
         if simulation_active:
-            if self.game.selected_npc is not None and self.game.selected_npc is not self.simulation.snake and self.simulation.npc_by_id(self.game.selected_npc.id) is not self.game.selected_npc:
+            if self.game.dialogue.actor is not None and self.game.dialogue.actor is not self.simulation.snake and self.simulation.npc_by_id(self.game.dialogue.actor.id) is not self.game.dialogue.actor:
                 self.game.close_dialogue()
             # Initialize arriving sprites before the next render.
             for npc in self.npcs:
