@@ -28,7 +28,8 @@ def draw_actor_portrait(surface, actor, rect, renderer, *, snake, padding, backg
         ratio = min(size[0] / art.get_width(), size[1] / art.get_height())
         portrait = pygame.transform.scale(art, (round(art.get_width() * ratio), round(art.get_height() * ratio)))
     else:
-        portrait = renderer.render_portrait(actor.character, size, emotion=emotion)
+        character = actor.character if hasattr(actor, "character") else actor.appearance
+        portrait = renderer.render_portrait(character, size, emotion=emotion)
     surface.blit(portrait, portrait.get_rect(center=rect.center))
 
 

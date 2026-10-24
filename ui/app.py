@@ -157,7 +157,7 @@ class Application:
             if kind == "reply": self.game.set_reply(value)
             elif kind == "message": self.game.show_save_message(value)
             elif kind == "clear_input": self.game.prompt_input.set_value("")
-            elif kind == "focus": self.game.prompt_input.focus()
+            elif kind == "focus": self.game.focus_player_reply(self)
             elif kind == "close": self.game.close_dialogue(terminate=False, notify=False)
             elif kind == "view_conversation":
                 self.game.viewed_conversation = value
