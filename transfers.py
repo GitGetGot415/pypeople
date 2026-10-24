@@ -309,9 +309,13 @@ def validate_resident_gift(gift, turns, snapshot):
 
 def gift_acceptance_supported(text):
     from dialogue_rules import unquoted_speech
-    speech = unquoted_speech(text).casefold()
-    return bool(re.search(r"\b(?:i accept|i['’]ll take|yes|thank you|thanks)\b", speech)
-        and not re.search(r"\b(?:no thanks|decline|cannot accept|can't accept|don't want|do not want|if|unless|maybe|perhaps|not sure)\b", speech))
+    speech = unquoted_speech(text).replace("\u2019", "'").casefold()
+    return bool(re.search(r"\b(?:i accept|i(?:'ll| will) (?:gladly |happily )?(?:take|accept)|"
+                         r"i(?: am|'m) (?:happy|glad|willing) to (?:accept|take)|yes|thank you|thanks)\b", speech)
+        and not re.search(r"\b(?:no[,!;:]?\s+(?:thanks|thank you)|decline|"
+                          r"(?:cannot|can't|won't|will not|don't|do not) (?:accept|take|want)|"
+                          r"not (?:ready|able|in a position) to (?:accept|take|receive)|"
+                          r"if|unless|maybe|perhaps|not sure)\b", speech))
 
 
 def validate_gift_offer_speech(text, item, quantity, stock):

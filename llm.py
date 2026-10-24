@@ -1170,6 +1170,8 @@ def response_contract(snapshot, *, correction=False):
             "Record belief separately from truth. Choose only permitted_decisions. "
             "No debt, endorsement payment, collection, repayment or future offering exists. "
         )
+        if kind == "snake_decision":
+            instruction += "Give_apple offers the earned reward; the resident must still accept it before any inventory changes. "
         if kind == "snake_player":
             instruction += ("Speak as the guard in first person. Return a concise reply. "
                 "disclosure_evidence quotes actual information from the current message, never assent or a promise. "
@@ -2063,7 +2065,8 @@ def _snake_exchange(snapshot, request, retain, report):
         draft["turns"].append(ConversationTurn(speaker=state["speaker_role"], parts=speech.parts))
 
     _exchange_turns(snapshot, draft, turn, retain, budget=SNAKE_TURN_COUNT, limit=CONVERSATION_MAX_TURNS,
-                    continuation=lambda index: index == outcome_turn and followup_pending)
+                    continuation=lambda index: (index == outcome_turn and followup_pending
+                        or index == outcome_turn + 1 and decision.decision == "give_apple"))
     result = SnakeResponse(**decision.model_dump(), turns=draft["turns"], outcome_turn=outcome_turn)
     return _complete_exchange(result, snapshot, report)
 

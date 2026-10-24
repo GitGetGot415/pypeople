@@ -362,7 +362,7 @@ class SnakeEncounter(SnakeProgress):
         if not dialogue_validation:
             self.record.dialogue_errors = list(dict.fromkeys([
                 *response._dialogue_errors, *dialogue_validation_errors(response, self.request_context)]))
-        # Speech describing a handoff is displayed only after the real transfer commits.
+        # Resolve the resident's acceptance or refusal before displaying the offered handoff.
         world.commit_snake_response(self, response)
         record_generated_turns(self, response.turns, rewritten_parts)
         self.record.name_forms = name_forms(self.request_context.get("_name_actors", {}))
@@ -462,6 +462,14 @@ class SnakeEncounter(SnakeProgress):
             if self.elapsed >= SNAKE_EAT_SECONDS:
                 if not self.world.depart_resident(npc, self):
                     self.finish(error="Eating permission changed; the resident was spared.")
+
+
+def apple_reward_accepted(turns, outcome_turn):
+    """An offered reward changes hands only after the resident accepts it."""
+    from transfers import gift_acceptance_supported
+    reply = outcome_turn + 1
+    return (reply < len(turns) and turns[reply].speaker == "recipient"
+            and gift_acceptance_supported(turns[reply].text))
 
 
 def validate_player_snake_decision(response, snapshot):

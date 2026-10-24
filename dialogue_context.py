@@ -502,7 +502,7 @@ def _snake_turn_snapshot(snapshot, decision, turns, *, outcome_turn=2):
         private = resident["private_context"]
         speaker.update(situation=private.get("situation", {}), inventory=resident["inventory"],
                        view_of_listener=private["snake_attitudes"])
-    from snake import SNAKE_BEHAVIOR
+    from snake import SNAKE_BEHAVIOR, apple_reward_accepted
     direction = SNAKE_BEHAVIOR if role == "initiator" else character_context(resident["character"])["personality"]
     selected = decision.snake_account_id if role == "initiator" else (decision.account_id if index == outcome_turn - 1 else "")
     account = next((a.copy() for a in accounts if a["claim_id"] == selected), None)
@@ -543,6 +543,10 @@ def _snake_turn_snapshot(snapshot, decision, turns, *, outcome_turn=2):
             task += " Accusation: " + decision.accusation
     else:
         task = "Answer the latest point naturally, preserving the recorded outcome; no additional transfer or punishment."
+    if role == "recipient" and index == outcome_turn + 1 and decision.decision == "give_apple":
+        task = ("The guard is offering you one apple for the information already supplied. "
+                "Choose whether to accept or decline, and say your choice clearly in your own words. "
+                "You have not received the apple yet. You may decline without penalty or further payment.")
     if snapshot["purpose"] == "introduction":
         task += " Discuss practical help using the known layout. Do not suggest exploration, initiate an apple bargain or demand private information."
     preceding = [dict(name=snake["name"] if t.speaker == "initiator" else resident["npc_name"],
@@ -553,10 +557,15 @@ def _snake_turn_snapshot(snapshot, decision, turns, *, outcome_turn=2):
                        selected_outcome=decision.decision if index >= outcome_turn else "talk", outcome_turn=outcome_turn)
     environment = world_context(snapshot)["environment"]
     if index > outcome_turn and decision.decision == "give_apple":
-        transaction.update(can_give_apple=False, apple_already_received=True)
-        if role == "recipient":
-            speaker["inventory"] = {**resident["inventory"], "fruit": resident["inventory"].get("fruit", 0) + 1}
-        environment["tree"] = {**environment["tree"], "fruit": environment["tree"]["fruit"] - 1}
+        accepted = apple_reward_accepted(turns, outcome_turn)
+        transaction.update(can_give_apple=False, apple_offered=True, apple_accepted=accepted)
+        if accepted:
+            transaction["apple_already_received"] = True
+            if role == "recipient":
+                speaker["inventory"] = {**resident["inventory"], "fruit": resident["inventory"].get("fruit", 0) + 1}
+            environment["tree"] = {**environment["tree"], "fruit": environment["tree"]["fruit"] - 1}
+        elif index > outcome_turn + 1:
+            task += " The resident did not accept the apple. No apple changed hands; respect their choice."
     state = dict(request_kind="snake_turn", turn_index=index, speaker_role=role,
         interaction_id=snapshot["interaction_id"], _name_actors=snapshot.get("_name_actors", {}),
         _dialogue_validation=snapshot.get("_dialogue_validation", True), speaker=speaker, listener=listener,

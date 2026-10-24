@@ -676,6 +676,12 @@ class Simulation:
                 or not encounter.request_context.get("known_warning")
                 or snake.offenses.get(npc.id) != encounter.request_context["known_warning"]):
             raise ValueError("Condemnation requires the existing warning and current eating permission.")
+        reward_declined = False
+        if not player_encounter and decision == "give_apple":
+            from snake import apple_reward_accepted
+            reward_declined = not apple_reward_accepted(response.turns, response.outcome_turn)
+            if reward_declined:
+                decision = "talk"
         encounter.committed, encounter.outcome, encounter.reserved = True, decision, False
         # Disclosures survive refusal of a reward. They never become verified truth.
         if not player_encounter and response.account_id:
@@ -687,7 +693,7 @@ class Simulation:
                      f"{npc.name} answered about this account: {known['assertion']} "
                      f"Their response: {response.turns[answer_turn].text} This response is not independently verified.", [npc, snake])
             learn_account(self, snake, npc, response.snake_account_id, encounter.record, 0, "uncertain")
-        if not player_encounter and decision == "give_apple" and not response.account_id:
+        if not player_encounter and response.decision == "give_apple" and not response.account_id:
             add_fact(self, "report", npc, snake, encounter.id + ":report", encounter.record,
                      f"{npc.name} reported: {response.turns[answer_turn].text} This is their account, not independently verified.", [npc, snake])
         if player_encounter and response.disclosure_evidence:
@@ -724,7 +730,10 @@ class Simulation:
         if encounter.request_context["first_meeting"]:
             self.observed_event("snake_claim", snake, npc,
                 f"{npc.name} heard {SNAKE_NAME}'s claims about authority and the garden; these remain unverified.", encounter.record, witnesses=[snake, npc])
-        encounter.record.outcomes.append(f"Decision: {decision}. " + ("One apple transferred." if decision == "give_apple" else "No apple transferred."))
+        outcome = "One apple transferred." if decision == "give_apple" else "No apple transferred."
+        if reward_declined:
+            outcome = "The resident did not accept the offered apple. No apple transferred."
+        encounter.record.outcomes.append(f"Decision: {decision}. " + outcome)
 
     def interrupt_resident(self, target, reason, *, mode="cancel"):
         """Coordinate outcome-specific cleanup without replaying committed effects."""

@@ -67,6 +67,9 @@ def validate_snake_response(result, snapshot, *, dialogue_validation=None):
         dialogue_validation = snapshot.get("_dialogue_validation", True)
     if result.outcome_turn >= len(result.turns):
         raise ValueError("The guard must perform the outcome after the resident's actual answer.")
+    if result.decision == "give_apple" and (result.outcome_turn + 1 >= len(result.turns)
+            or result.turns[result.outcome_turn + 1].speaker != "recipient"):
+        raise ValueError("Let the resident accept or decline the offered apple before ending the exchange.")
     validate_snake_decision(result, {**snapshot, "heard_turns": [dict(role=t.speaker, text=t.text) for t in result.turns[:result.outcome_turn]]})
     if dialogue_validation:
         _validate_base_presentation(result, snapshot)
@@ -88,6 +91,7 @@ def validate_snake_response(result, snapshot, *, dialogue_validation=None):
     if dialogue_validation:
         validate_dialogue_speakers(result.turns, {
             "initiator": snapshot["snake"]["name"], "recipient": snapshot["resident"]["npc_name"]})
+        validate_dialogue_repetition(result.turns, actor_references=_repetition_references(snapshot))
 
 
 def validate_dialogue_speakers(turns, names, *, start_index=0):
@@ -134,6 +138,7 @@ def validate_dialogue_repetition(turns, recent_dialogue=(), *, factual_context=(
                 for phrase in _speech_phrases(text)}
     factual = {phrase for text in factual_context for phrase in _speech_phrases(text)}
     current, signatures, repeated, sentences_by_speaker, own_turns = {}, [], set(), set(), set()
+    echoed_sentences = set()
     factual_sentences = {tuple(_speech_words(sentence)) for text in factual_context for sentence in split_sentences(text)}
     aliases = {}
     for actor, names in (actor_references or {}).items():
@@ -144,6 +149,13 @@ def validate_dialogue_repetition(turns, recent_dialogue=(), *, factual_context=(
                 aliases[name] = marker if name not in aliases or aliases[name] == marker else None
     aliases = {name: marker for name, marker in aliases.items() if marker is not None}
     reference_pattern = "|".join(name_pattern(name) for name in sorted(aliases, key=len, reverse=True))
+
+    def echo_words(text):
+        # A name substitution does not make a copied reply a new response.
+        if reference_pattern:
+            text = re.sub(reference_pattern,
+                lambda match: "person" if is_name_reference(match, text) else match[0], text, flags=re.I)
+        return tuple(_speech_words(unquoted_speech(text)))
 
     def fact_tokens(text, role=None):
         text = unicodedata.normalize("NFKC", text).replace("\u2019", "'").casefold()
@@ -201,11 +213,15 @@ def validate_dialogue_repetition(turns, recent_dialogue=(), *, factual_context=(
                 same_fact_words(tuple(word for word in fact_tokens(sentence, turn.speaker) if word), sequence)
                 for sequence in fact_sentence_sequences))
             key = (turn.speaker, words)
+            echo = echo_words(sentence)
             if ((len(words) >= DIALOGUE_REPEAT_SENTENCE_WORDS and key in sentences_by_speaker
                     or len(words) >= DIALOGUE_REPEAT_TURN_WORDS and words in current_sentences)
                     and not factual_sentence):
                 repeated.add(index)
+            if len(words) >= DIALOGUE_REPEAT_SENTENCE_WORDS and echo in echoed_sentences and not factual_sentence:
+                repeated.add(index)
             sentences_by_speaker.add(key)
+            echoed_sentences.add(echo)
             current_sentences.add(words)
         for offset, phrase in enumerate(phrases):
             # Two speakers can refer to the same recorded fact while answering
@@ -373,6 +389,7 @@ def validate_immediate_snake_speech(text, outcome, *, listener=""):
     apple = r"(?:your|an?|one|the|this|that)(?:\s+one)?\s+apple"
     handoff_pattern = (rf"\b(?:here(?: is|'s)\s+{apple}|take\s+{apple}|"
         rf"i\s+(?:give|am giving|hand|am handing)\s+you\s+{apple}|"
+        rf"i(?: am|'m)?\s+(?:hand(?:ing)? over|giving)\s+{apple}(?=\s*(?:now\b|[.!;,]|$))|"
         rf"i(?: am|'m)\s+(?:giving|handing)(?: over)?\s+{apple}\s+to you|"
         rf"i'm\s+(?:giving|handing)\s+you\s+{apple}|i hand(?: over)?\s+{apple}\s+to you)\b")
     handoff = False
@@ -555,8 +572,6 @@ def _validate_response(raw, snapshot, model):
         return result
     if isinstance(result, SnakeResponse):
         validate_snake_response(result, snapshot)
-        if check_dialogue:
-            validate_dialogue_repetition(result.turns)
         return result
     if isinstance(result, SnakePlayerResponse):
         from snake import validate_player_snake_decision
