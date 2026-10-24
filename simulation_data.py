@@ -18,7 +18,7 @@ from interactions import DialogueProgress
 from character_data import normalize_character, normalize_opinions
 from constants import (CONCERN_LIFETIME_RANGE, CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE,
                        FAILURE_COOLDOWN, SHAKE_SECONDS, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME,
-                       WORLD_HEIGHT, WORLD_WIDTH, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_RANGE,
+                       WORLD_HEIGHT, WORLD_WIDTH, GARDEN_BUILDING_POINT, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_RANGE,
                        OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE, WAKE_DELAY_RANGE, PLAYER_LABEL,
                        PLAYER_NAME_TAG, PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, TRAVEL_STEP_TIMEOUT,
                        PLAYER_APPROACH_TIMEOUT, CONVERSATION_REPLY_PENDING_WHEN_SAVED)
@@ -221,7 +221,7 @@ class NPCState(ActivityState):
     character: dict
     display_name: str | None
     x: float = Field(ge=0, le=WORLD_WIDTH)
-    y: float = Field(ge=0, le=WORLD_HEIGHT)
+    y: float = Field(ge=GARDEN_BUILDING_POINT[1], le=WORLD_HEIGHT)
     reply: str
     rewritten_reply: str
     emotion: EmotionReaction
@@ -349,7 +349,7 @@ class SnakeRetryState(SaveModel):
 class SnakeState(SaveModel):
     id: str = Field(min_length=1)
     x: float = Field(ge=0, le=WORLD_WIDTH)
-    y: float = Field(ge=0, le=WORLD_HEIGHT)
+    y: float = Field(ge=GARDEN_BUILDING_POINT[1], le=WORLD_HEIGHT)
     destination: tuple[float, float] | None
     facing: int = Field(ge=0, le=7)
     pause_remaining: float = Field(ge=0)
@@ -369,7 +369,7 @@ class SnakeState(SaveModel):
     @field_validator("destination")
     @classmethod
     def validate_destination(cls, value):
-        if value is not None and not (0 <= value[0] <= WORLD_WIDTH and 0 <= value[1] <= WORLD_HEIGHT):
+        if value is not None and not (0 <= value[0] <= WORLD_WIDTH and GARDEN_BUILDING_POINT[1] <= value[1] <= WORLD_HEIGHT):
             raise ValueError("Invalid snake destination.")
         return value
 

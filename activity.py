@@ -5,7 +5,7 @@ from dataclasses import dataclass, field, fields
 from enum import Enum
 from typing import Annotated, Literal
 from pydantic import Field
-from constants import APARTMENT_ID, EAT_SECONDS, WORLD_HEIGHT, WORLD_WIDTH
+from constants import APARTMENT_ID, EAT_SECONDS, WORLD_HEIGHT, WORLD_WIDTH, GARDEN_BUILDING_POINT
 
 
 class Behavior(str, Enum):
@@ -55,7 +55,7 @@ class ActivitySnapshot:
             raise ValueError("Eating witnesses belong only to an unfinished apple consumption.")
         if any(value < 0 for value in self.cooldowns.values()):
             raise ValueError("Invalid cooldown duration.")
-        if self.destination is not None and not (0 <= self.destination[0] <= WORLD_WIDTH and 0 <= self.destination[1] <= WORLD_HEIGHT):
+        if self.destination is not None and not (0 <= self.destination[0] <= WORLD_WIDTH and GARDEN_BUILDING_POINT[1] <= self.destination[1] <= WORLD_HEIGHT):
             raise ValueError("Invalid destination.")
         if (self.owner == "player_hold") != (self.behavior == Behavior.STOP):
             raise ValueError("A player hold must be stopped.")

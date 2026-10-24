@@ -4,7 +4,7 @@ from constants import (GARDEN_LOCATION, GARDEN_FLOOR_SIZE, GARDEN_FLOOR_OFFSET, 
                       INDOOR_FLOOR_TOP, ROOMS_PER_FLOOR, HALLWAY_DOOR_ORIGINS, HALLWAY_ELEVATOR_ORIGIN,
                       APARTMENT_OVERLAY_SIZE, APARTMENT_OVERLAY_SCALE, HALLWAY_ARRIVAL_Y, ROOM_ARRIVAL,
                       ELEVATOR_ARRIVAL, HALLWAY_EXIT, ROOM_EXIT, HALLWAY_ENTRY, HALLWAY_EXIT_RECT, ROOM_EXIT_RECT,
-                      GARDEN_BUILDING_POINT, GARDEN_BUILDING_ARRIVAL,
+                      GARDEN_BUILDING_POINT, GARDEN_BUILDING_ARRIVAL, GARDEN_BRIDGE_RECT, GARDEN_BRIDGE_APPROACH,
                       MOVEMENT_SPEED, TRAVEL_STEP_TIMEOUT, PLAYER_APPROACH_MULTIPLIER, PLAYER_ROOM_NUMBER)
 from interactions import move_toward
 from dataclasses import dataclass, field
@@ -75,13 +75,20 @@ def feet_bounds(location):
     # the strip at its edge rather than walking into the surrounding black.
     if location == GARDEN_LOCATION:
         left = GARDEN_FLOOR_OFFSET[0]
-        return left + FOOT_MARGIN, left + GARDEN_FLOOR_SIZE[0] - FOOT_MARGIN, FOOT_MARGIN, WORLD_HEIGHT - FOOT_MARGIN
+        return left + FOOT_MARGIN, left + GARDEN_FLOOR_SIZE[0] - FOOT_MARGIN, GARDEN_BUILDING_POINT[1], WORLD_HEIGHT - FOOT_MARGIN
     width, height = HALLWAY_SIZE if location.startswith("hallway:") else ROOM_SIZE
     return FOOT_MARGIN, width - FOOT_MARGIN, INDOOR_FLOOR_TOP + FOOT_MARGIN, height - FOOT_MARGIN
 
 
 def clamp_point(location, point):
     left, right, top, bottom = feet_bounds(location)
+    if location == GARDEN_LOCATION:
+        x, y, width, height = GARDEN_BRIDGE_RECT
+        garden = (min(right, max(left, point[0])), min(bottom, max(FOOT_MARGIN, point[1])))
+        bridge = (min(x + width - FOOT_MARGIN, max(x + FOOT_MARGIN, point[0])),
+                  # Join the garden's inset walking area without extending the image.
+                  min(max(y + height, FOOT_MARGIN), max(top, point[1])))
+        return min((garden, bridge), key=lambda p: (p[0] - point[0]) ** 2 + (p[1] - point[1]) ** 2)
     return min(right, max(left, point[0])), min(bottom, max(top, point[1]))
 
 
@@ -199,7 +206,15 @@ def update_journey(actor, dt):
         return False
     step = journey.steps[0]
     speed = MOVEMENT_SPEED * (PLAYER_APPROACH_MULTIPLIER if journey.fast else 1)
-    if move_toward(actor, clamp_point(actor.location, step.point), dt, speed):
+    destination = clamp_point(actor.location, step.point)
+    waypoint = destination
+    if actor.location == GARDEN_LOCATION:
+        x, _, width, _ = GARDEN_BRIDGE_RECT
+        if destination[1] < FOOT_MARGIN and not x + FOOT_MARGIN <= actor.x <= x + width - FOOT_MARGIN:
+            waypoint = GARDEN_BRIDGE_APPROACH
+        elif actor.y < FOOT_MARGIN and destination[1] >= FOOT_MARGIN:
+            waypoint = GARDEN_BRIDGE_APPROACH
+    if move_toward(actor, waypoint, dt, speed) and waypoint == destination:
         if step.arrival is not None:
             world = actor.world
             world.observed_event("departure", actor, None, f"{actor.name} left the area.")
@@ -218,7 +233,7 @@ def update_journey(actor, dt):
 
 def environment(location):
     if location == GARDEN_LOCATION:
-        return "An open grassy garden with its guarded apple tree and apartment building entrance."
+        return "An open grassy garden with its guarded apple tree and a narrow wooden bridge across a gap to the apartment building entrance."
     if location.startswith("hallway:"):
         floor = location.split(":")[1]
         return (f"Inside the apartment building's hallway on floor {floor}, with five closed room doors and an elevator. "
@@ -235,8 +250,7 @@ def validate_feet(location, value):
     import math
     if not isinstance(value, (list, tuple)) or len(value) != 2 or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in value):
         raise ValueError("Invalid feet position.")
-    left, right, top, bottom = feet_bounds(location)
-    if not left <= value[0] <= right or not top <= value[1] <= bottom:
+    if tuple(value) != clamp_point(location, value):
         raise ValueError("Feet position is outside its map.")
 
 

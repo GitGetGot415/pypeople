@@ -27,7 +27,7 @@ from constants import (APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS
                        DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, CONVERSATION_PAUSE_RANGE,
                        CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, MOVEMENT_SPEED,
                        NPC_RADIUS, PARTNER_COOLDOWN, SHAKE_SECONDS, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED,
-                       WANDER_PAUSE, STARTING_DAY, STARTING_FACING, STARTING_NPC_FRUIT,
+                       WANDER_PAUSE, FOOT_MARGIN, STARTING_DAY, STARTING_FACING, STARTING_NPC_FRUIT,
                        STARTING_NPC_GENEROSITY_RANGE, STARTING_NPC_POSITION, STARTING_NPC_SATISFACTION_RANGE,
                        STARTING_NPC_SOCIABILITY_RANGE, STARTING_TREE_POSITION, STARTING_FATIGUE_RANGE,
                        EXCHANGE_FATIGUE, CONVERSATION_CANCELLED, CONVERSATION_DIALOGUE_READY,
@@ -203,8 +203,8 @@ class NPC:
         return self.action_pending and self.player_reply.closing and self.selected
 
     def can_reach(self, point):
-        left, right, top, bottom = self.movement_bounds
-        return left <= point[0] <= right and top <= point[1] <= bottom
+        from locations import clamp_point
+        return tuple(point) == clamp_point(self.location, point)
 
     def activity_state(self):
         return ActivitySnapshot.capture(self)
@@ -662,7 +662,9 @@ class NPC:
             movement_dt = max(0.0, dt - remaining)
             if movement_dt > 0:
                 if self.destination is None:
-                    self.destination = (self.rng.uniform(left, right), self.rng.uniform(top, bottom))
+                    from locations import clamp_point
+                    self.destination = clamp_point(self.location, (self.rng.uniform(left, right),
+                                                                  self.rng.uniform(max(FOOT_MARGIN, top), bottom)))
                 if self._move(movement_dt):
                     self.destination = None
                     self.pause_remaining = WANDER_PAUSE
