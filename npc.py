@@ -27,7 +27,7 @@ from constants import (MAX_RESIDENTS, PLAYER_CALL_COOLDOWN, REST_SECONDS_RANGE, 
                        OUTDOOR_COOLDOWN_SECONDS, BEDTIME_DELAY_RANGE, WAKE_DELAY_RANGE, APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DEFAULT_CHARACTER_NAME,
                        DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, CONVERSATION_PAUSE_RANGE,
                        CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, MOVEMENT_SPEED,
-                       NPC_RADIUS, PARTNER_COOLDOWN, SHAKE_SECONDS, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED,
+                       NPC_RADIUS, PARTNER_COOLDOWN, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED,
                        WANDER_PAUSE, FOOT_MARGIN, STARTING_DAY, STARTING_FACING, STARTING_NPC_FRUIT, JUDY_ROOM_NUMBER,
                        STARTING_NPC_GENEROSITY_RANGE, STARTING_NPC_POSITION, STARTING_NPC_SATISFACTION_RANGE,
                        STARTING_NPC_SOCIABILITY_RANGE, STARTING_TREE_POSITION, STARTING_FATIGUE_RANGE,
@@ -47,8 +47,6 @@ from player_records import PlayerOpinion, PlayerCall, PlayerReplyCall
 class Tree:
     x: float = STARTING_TREE_POSITION[0]
     y: float = STARTING_TREE_POSITION[1]
-    shake_elapsed: float | None = None
-    shaker: "NPC | None" = field(default=None, repr=False, compare=False)
     id: str = "fruit-tree"
     fruit: int = 0
     reserved_by: "NPC | None" = field(default=None, repr=False, compare=False)
@@ -64,35 +62,8 @@ class Tree:
         return True
 
     def release(self, npc):
-        if self.shaker is npc:
-            self.cancel_shake()
         if self.reserved_by is npc:
             self.reserved_by = None
-
-    @property
-    def shaking(self):
-        return self.shake_elapsed is not None
-
-    @property
-    def offset(self):
-        if self.shake_elapsed is None:
-            return 0
-        return round(5 * math.sin(self.shake_elapsed * math.tau * 8))
-
-    def start_shake(self, npc):
-        if self.shaker is not None and self.shaker is not npc:
-            return False
-        self.shake_elapsed = 0.0
-        self.shaker = npc
-        return True
-
-    def cancel_shake(self):
-        self.shake_elapsed = None
-        self.shaker = None
-
-    def update(self, dt):
-        if self.shake_elapsed is not None:
-            self.shake_elapsed += dt
 
 
 @dataclass
@@ -270,19 +241,13 @@ class NPC(ResidentValues):
         self.decision_remaining = DECISION_SECONDS
         if behavior == Behavior.EAT:
             self.facing = 4
-        elif behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE, Behavior.SHAKE_TREE):
+        elif behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE):
             if self.location != "garden":
                 from locations import start_journey
                 start_journey(self, "garden", world.tree.interaction_point, purpose="tree", fast=False)
                 return
-            if behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE):
-                if not world.join_tree(self, "bargain" if behavior == Behavior.HARVEST else "introduction"):
-                    self.finish_activity(world, failed=True)
-                return
-            if target != world.tree.id or not self.can_reach(world.tree.interaction_point):
+            if not world.join_tree(self, "bargain" if behavior == Behavior.HARVEST else "introduction"):
                 self.finish_activity(world, failed=True)
-                return
-            self.destination = world.tree.interaction_point
         elif behavior == Behavior.COMPANY:
             partner = world.npc_by_id(target)
             self.destination = company_point(self, partner) if partner is not None else None
@@ -294,14 +259,6 @@ class NPC(ResidentValues):
         self.resume_pending = False
         if self.behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE):
             self.begin_activity(self.behavior, world, world.tree.id, self.reason, self.owner)
-        elif self.behavior in (Behavior.SHAKE_TREE, Behavior.SHAKING):
-            if (self.target_id != world.tree.id or not self.can_reach(world.tree.interaction_point)
-                    or self.location != "garden"):
-                self.finish_activity(world, failed=True)
-                return
-            if self.behavior == Behavior.SHAKING:
-                self.behavior = Behavior.SHAKE_TREE
-            self.destination = world.tree.interaction_point
         elif self.behavior == Behavior.COMPANY:
             partner = world.npc_by_id(self.target_id)
             if partner is None or not world.company_available(partner):
@@ -392,8 +349,6 @@ class NPC(ResidentValues):
         return {
             Behavior.WANDER: "Wandering",
             Behavior.GO_TO_TREE: "Walking to tree",
-            Behavior.SHAKE_TREE: "Walking to tree",
-            Behavior.SHAKING: "Shaking tree",
             Behavior.HARVEST: "Walking to the guarded tree",
             Behavior.EAT: "Eating an apple",
             Behavior.COMPANY: "Seeking company" if self.destination else "Spending time together",
@@ -441,7 +396,6 @@ class NPC(ResidentValues):
             "day": self.world.day if self.world else 1,
             "living_count": self.world.population if self.world else 1,
             "time_of_day": self.world.phase if self.world else "day",
-            "tree_is_shaking": tree.shaking,
             "last_reply": self.reply,
         }
         if private:
@@ -539,24 +493,24 @@ class NPC(ResidentValues):
     def _face_when_still(self):
         point = self.world.tree.interaction_point if self.world else None
         at_tree = point is not None and math.hypot(self.x - point[0], self.y - point[1]) <= 1e-6
-        self.facing = 2 if not self.eating and (at_tree or self.behavior == Behavior.SHAKING) else 4
+        self.facing = 2 if not self.eating and at_tree else 4
 
     def set_selected(self, selected):
         """Defer new decisions while allowing the current finite activity to finish."""
         self.selected = selected
         if not selected:
             self.player_reply.closing = False
-        if self.conversation is None and self.gift is None and selected and (self.wandering_paused or self.behavior == Behavior.SHAKING):
+        if self.conversation is None and self.gift is None and selected and self.wandering_paused:
             self._face_when_still()
 
     def apply_action(self, action, tree):
         from locations import available
         if self.world is None or self.world.npc_by_id(self.id) is not self or not available(self):
             raise ValueError("Only living residents can act in this world.")
-        # Reject before changing anything. SAY preserves even an active shake.
+        # Reject unsupported actions before changing anything.
         if action == "SAY":
             return
-        if action not in ("WANDER", "GO_TO_TREE", "SHAKE_TREE", "EAT"):
+        if action not in ("GO_TO_TREE", "EAT"):
             raise ValueError("Unsupported NPC action")
         if self.busy:
             raise ValueError("This NPC is already in an interaction.")
@@ -564,13 +518,10 @@ class NPC(ResidentValues):
             raise ValueError("I don't have an apple to eat.")
         self.world.interrupt_resident(self, "The player assigned a new activity.", mode="action")
         self.command_revision += 1
-        if action == "WANDER":
-            self.begin_activity(Behavior.WANDER, self.world, reason="Player released control; choosing activities")
-            self.decision_remaining = 0
-        elif action == "EAT":
+        if action == "EAT":
             self.begin_activity(Behavior.EAT, self.world, reason="Player asked me to eat an apple", owner="player_task")
         else:
-            self.begin_activity(Behavior(action), self.world, tree.id, "Player asked me to visit the tree" if action == "GO_TO_TREE" else "Player asked for a cosmetic tree shake", owner="player_task")
+            self.begin_activity(Behavior.GO_TO_TREE, self.world, tree.id, "Player asked me to visit the tree", owner="player_task")
 
     def check_gift(self, recipient, item, quantity, *, player_authorization=None):
         from transfers import validate_transfer
@@ -623,7 +574,7 @@ class NPC(ResidentValues):
             return
         if self.journey:
             from locations import update_journey
-            if update_journey(self, dt) and self.behavior in (Behavior.GO_TO_TREE, Behavior.HARVEST, Behavior.SHAKE_TREE):
+            if update_journey(self, dt) and self.behavior in (Behavior.GO_TO_TREE, Behavior.HARVEST):
                 self.begin_activity(self.behavior, self.world, self.world.tree.id, self.reason, self.owner)
             return
         if self.interaction is not None or self.resume_pending or self.player_call:
@@ -658,21 +609,6 @@ class NPC(ResidentValues):
                     self.pause_remaining = WANDER_PAUSE
         elif behavior in (Behavior.GO_TO_TREE, Behavior.HARVEST):
             self.begin_activity(behavior, world, tree.id, self.reason, self.owner)
-        elif behavior in (Behavior.SHAKE_TREE, Behavior.SHAKING):
-            if self.destination is not None:
-                if self._move(dt):
-                    self.destination = None
-                    tree.start_shake(self)
-                    tree.shake_elapsed = self.activity_elapsed
-                    if behavior == Behavior.SHAKE_TREE:
-                        self.behavior = Behavior.SHAKING
-            elif behavior == Behavior.SHAKING:
-                if tree.shaker is not self:
-                    tree.start_shake(self)
-                    tree.shake_elapsed = self.activity_elapsed
-                self.activity_elapsed += dt
-                if self.activity_elapsed + 1e-9 >= SHAKE_SECONDS:
-                    self.finish_activity(world)
         elif behavior == Behavior.COMPANY:
             partner = world.npc_by_id(self.target_id)
             self.activity_elapsed += dt

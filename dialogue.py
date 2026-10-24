@@ -66,7 +66,7 @@ class OpinionUpdate(StrictResponse):
 
 
 class ActionIntent(StrictResponse):
-    action: Literal["WANDER", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "GIVE_ITEM", "EAT", "SAY"]
+    action: Literal["GO_TO_TREE", "TALK_TO_NPC", "GIVE_ITEM", "EAT", "SAY"]
     target: str = ""
     item: str = ""
     quantity: int = Field(default=0, ge=0)

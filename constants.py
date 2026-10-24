@@ -154,7 +154,6 @@ RANDOM_SKIN_LIGHTNESS_RANGE = (0.4, 1.0)  # Keep dark eye outlines distinct from
 
 # Resident movement, needs, and activity timing (seconds).
 MOVEMENT_SPEED = 90.0
-SHAKE_SECONDS = 1.0
 WANDER_PAUSE = 0.5
 DECISION_SECONDS = 4.0
 FAILURE_COOLDOWN = 8.0

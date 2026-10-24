@@ -12,8 +12,6 @@ from constants import APARTMENT_ID, EAT_SECONDS, STARTING_FACING, DECISION_SECON
 class Behavior(str, Enum):
     WANDER = "WANDER"
     GO_TO_TREE = "GO_TO_TREE"
-    SHAKE_TREE = "SHAKE_TREE"
-    SHAKING = "SHAKING"
     HARVEST = "HARVEST"
     EAT = "EAT"
     COMPANY = "COMPANY"
@@ -58,7 +56,7 @@ class ActivitySnapshot:
         if self.destination is not None:
             from locations import validate_destination
             validate_destination(self.destination, location=getattr(self, "location", None))
-        player_behaviors = (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING)
+        player_behaviors = (Behavior.GO_TO_TREE,)
         if self.behavior != Behavior.EAT and (self.owner == "player_task") != (self.behavior in player_behaviors):
             raise ValueError("Invalid player task.")
         if self.behavior == Behavior.EAT and (self.destination is not None or self.activity_elapsed >= EAT_SECONDS):
@@ -68,7 +66,7 @@ class ActivitySnapshot:
 
 def validate_activity_target(activity, owner, tree_id, live_ids):
     target = activity.target_id
-    if activity.behavior in (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING, Behavior.HARVEST):
+    if activity.behavior in (Behavior.GO_TO_TREE, Behavior.HARVEST):
         if target != tree_id:
             raise ValueError("Invalid tree task target.")
     elif activity.behavior == Behavior.GO_HOME:

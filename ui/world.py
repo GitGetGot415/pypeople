@@ -203,7 +203,7 @@ def _draw_scene(surface, tree, phase):
         floor = pygame.transform.scale(floor, surface.get_size())
     surface.blit(floor, (0, 0))
 
-    tree_x = round(tree.x) + tree.offset - GARDEN_FLOOR_OFFSET[0]
+    tree_x = round(tree.x) - GARDEN_FLOOR_OFFSET[0]
     # Shadows lie on the ground beneath every sprite.
     _draw_shadow(surface, pygame.Rect(tree_x - 43, round(tree.y) + 50 - GARDEN_FLOOR_OFFSET[1], 86, 20))
 
@@ -229,7 +229,7 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
     objects.sort(key=lambda obj: tree.y + TREE_BASE_OFFSET if obj is tree else obj.y)
     for obj in objects:
         if obj is tree:
-            tree_x = tree.x + tree.offset
+            tree_x = tree.x
             base_y = tree.y + TREE_BASE_OFFSET
             image = resized(tree_image, TREE_SCALE * zoom)
             rect = image.get_rect(midbottom=screen_point((tree_x, base_y)))

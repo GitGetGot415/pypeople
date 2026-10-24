@@ -5,8 +5,7 @@ from dialogue import ActionIntent
 
 
 COMMAND_LABELS = {
-    "WANDER": "Do your own thing", "GO_TO_TREE": "Go to the tree",
-    "SHAKE_TREE": "Shake the tree", "TALK_TO_NPC": "Talk to someone",
+    "GO_TO_TREE": "Go to the tree", "TALK_TO_NPC": "Talk to someone",
     "GIVE_ITEM": "Give an item", "EAT": "Eat an apple",
 }
 

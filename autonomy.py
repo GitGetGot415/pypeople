@@ -77,8 +77,6 @@ def target_valid(npc, world):
         return (npc.target_id == world.tree.id and world.tree_has_actor(npc.id)
                 and world.available_fruit > 0
                 and npc.can_reach(world.tree.interaction_point))
-    if npc.behavior in (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING):
-        return npc.target_id == world.tree.id and npc.can_reach(world.tree.interaction_point)
     if npc.behavior == Behavior.COMPANY:
         partner = world.npc_by_id(npc.target_id)
         return (partner is not None and partner is not npc and world.company_available(partner)

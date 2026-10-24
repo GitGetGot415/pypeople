@@ -17,7 +17,7 @@ from records import SaveModel, saved_record, restore_record
 from interactions import DialogueProgress
 from character_data import normalize_character, normalize_opinions
 from constants import (CONCERN_LIFETIME_RANGE, CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE,
-                       FAILURE_COOLDOWN, SHAKE_SECONDS, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME,
+                       FAILURE_COOLDOWN, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME,
                        WORLD_HEIGHT, WORLD_WIDTH, GARDEN_LOCATION, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_RANGE,
                        OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE, WAKE_DELAY_RANGE, PLAYER_LABEL,
                        PLAYER_NAME_TAG, PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, TRAVEL_STEP_TIMEOUT,
@@ -321,8 +321,6 @@ class TreeState(SaveModel):
     x: float = Field(ge=60, le=WORLD_WIDTH)
     y: float = Field(ge=0, le=WORLD_HEIGHT - 50)
     fruit: int = Field(ge=0)
-    shake_elapsed: float | None = Field(ge=0, le=SHAKE_SECONDS)
-    shaker: str | None
     reserved_by: str | None
 
 
@@ -810,7 +808,6 @@ def capture_simulation(world, *, camera_offset, camera_zoom):
                          if encounter is not None and encounter.recipient is not world.player else None),
         npcs=npcs, history=history, conversations=conversations, handoffs=handoffs,
         tree=_capture_fields(TreeState, world.tree,
-                       shaker=world.tree.shaker.id if world.tree.shaker is not None else None,
                        reserved_by=world.tree.reserved_by.id if world.tree.reserved_by is not None else None),
         pending_actions=world.pending_actions,
         camera_offset=tuple(camera_offset),
@@ -841,7 +838,6 @@ def restore_simulation(state):
     npcs = all_residents[:len(state.npcs)]
     by_id = {npc.id: npc for npc in npcs}
     tree = Tree(id=state.tree.id, x=state.tree.x, y=state.tree.y, fruit=state.tree.fruit,
-                shake_elapsed=state.tree.shake_elapsed, shaker=by_id.get(state.tree.shaker),
                 reserved_by=by_id.get(state.tree.reserved_by))
     world = Simulation(npcs, tree, assign_goals=False, npc_trait_mode=state.npc_trait_mode, mode=state.mode, initialize_opinions=False)
     world.archived = all_residents[len(state.npcs):]
@@ -908,7 +904,6 @@ def restore_simulation(state):
         world.player_interaction = world.player_interaction
     # Claims are reacquired through the same safe path as interrupted activities.
     tree.reserved_by = None
-    tree.cancel_shake()
     for npc in npcs:
         if npc.conversation is None and npc.gift is None and npc.target_id == tree.id and not world.tree_has_actor(npc.id):
             npc.resume_pending = True

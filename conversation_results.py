@@ -291,9 +291,7 @@ def apply_pending_action(world, action, spacing):
             record.outcomes[0:1] = [error]
         else:
             outcomes = {
-                "WANDER": "Returned to autonomous activities.",
                 "GO_TO_TREE": "Started walking to the tree.",
-                "SHAKE_TREE": "Started the task of shaking the tree.",
                 "TALK_TO_NPC": f"Started a conversation with {target.name}." if action.action == "TALK_TO_NPC" else "",
                 "GIVE_ITEM": f"Walking to give {action.quantity} {action.item} to {target.name}." if action.action == "GIVE_ITEM" else "",
                 "EAT": "Started eating an apple.",

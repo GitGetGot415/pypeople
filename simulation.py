@@ -18,7 +18,7 @@ from constants import (COMPANY_SOCIAL_RECOVERY, CROWD_LIMIT, DECISION_SECONDS, S
 @dataclass
 class PendingAction:
     npc_id: str
-    action: Literal["WANDER", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "GIVE_ITEM", "EAT"]
+    action: Literal["GO_TO_TREE", "TALK_TO_NPC", "GIVE_ITEM", "EAT"]
     revision: Annotated[int, Field(ge=0)]
     target_id: str | None = None
     topic: str = ""
@@ -343,7 +343,6 @@ class Simulation:
         from interactions import observe_active_conversations
 
         observe_active_conversations(self)
-        self.tree.update(dt)
         from player import update_interaction
         from apartments import update_visit
         from locations import update_journey
@@ -984,11 +983,9 @@ def validate_saved_actions(npcs, player, mode, tree, pending_actions, live_ids, 
             validate_activity_target(npc, npc, tree.id, live_ids)
         if npc.id in reserved and npc.behavior != Behavior.WAIT:
             raise ValueError("Encounter participants must wait.")
-    for reference in (tree.reserved_by, tree.shaker):
-        if reference is not None and (reference not in live_ids | ({player.id} if player.alive and mode == "player" else set()) or reference in indoor_ids):
-            raise ValueError("A tree reservation requires a living owner.")
-    if bool(tree.shaker) != (tree.shake_elapsed is not None):
-        raise ValueError("Invalid tree shake owner.")
+    reference = tree.reserved_by
+    if reference is not None and (reference not in live_ids | ({player.id} if player.alive and mode == "player" else set()) or reference in indoor_ids):
+        raise ValueError("A tree reservation requires a living owner.")
     pending_owners = set()
     for action in pending_actions:
         if action.target_id == player.id and action.action != "GIVE_ITEM":

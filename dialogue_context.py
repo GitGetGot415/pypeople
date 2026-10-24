@@ -115,7 +115,7 @@ def _base_preceding_turns(turns, names=()):
 
 def garden_environment():
     return {"place": "The known floating grassy garden island",
-            "objects": ["One living apple tree", "A wooden bridge to the apartment entrance", "One apartment building with residents' rooms"],
+            "objects": ["One very sturdy, unshakable, unbreakable living apple tree", "A wooden bridge to the apartment entrance", "One apartment building with residents' rooms"],
             "tree_present": True, "other_venues": []}
 
 
@@ -261,8 +261,6 @@ def world_context(snapshot, *, correction=False):
     if conversation:
         current = snapshot["initiator"]
         context["day"], context["time_of_day"] = current["day"], current["time_of_day"]
-        if "tree" in context["environment"]:
-            context["environment"]["tree"]["shaking"] = current.get("tree_is_shaking", False)
         if focus:
             context["discussion_focus"] = {key: focus[key] for key in ("assertion", "kind")}
             context["discussion_focus"]["subject_name"] = actor_names.get(focus["subject_id"])
