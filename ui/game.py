@@ -366,7 +366,7 @@ class GameScreen:
 
     @property
     def player_response_ready(self):
-        return self.viewed_conversation is None and self.conversation_page_index >= len(self.conversation_pages)
+        return self.viewed_conversation is None and self.conversation_page_index >= max(0, len(self.conversation_pages) - 1)
 
     def update_player_pages(self, app):
         record = self.player_record
@@ -393,12 +393,14 @@ class GameScreen:
                 if page[0] is latest), 0)
             self.prompt_input.active = self.prompt_input.backspace_held = False
         elif replying:
-            self.conversation_page_index = len(self.conversation_pages)
+            self.conversation_page_index = max(0, len(self.conversation_pages) - 1)
         else:
             self.conversation_page_index = next((index for index, page in enumerate(self.conversation_pages)
                 if page[0] is previous), 0)
         self._player_page_version, self._player_latest_turn = version, latest_key
         self.dialogue_scroll = 0
+        if self.player_response_ready and not self.selected_npc.player_reply.closing and not self.pending_offer:
+            self.prompt_input.focus()
 
     def focus_player_reply(self, app):
         if not self.dialogue_open or self.viewed_conversation is not None or self.selected_npc is None:
@@ -408,12 +410,7 @@ class GameScreen:
             self.prompt_input.focus()
 
     def advance_player_dialogue(self, app):
-        if self.conversation_page_index >= len(self.conversation_pages):
-            return
-        closing = self.selected_npc.player_reply.closing and not self.pending_offer and not self.pending_invitation(app.simulation)
-        if closing and self.conversation_page_index == len(self.conversation_pages) - 1:
-            if not app.simulation.paused:
-                self.close_dialogue()
+        if self.player_response_ready:
             return
         self.conversation_page_index += 1
         self.dialogue_scroll = 0
@@ -702,11 +699,8 @@ class GameScreen:
                           (title_rect.right + 16, 558, max(0, status_right - title_rect.right - 24), 24))
         self.back_button.draw(app.window, app.small_font, enabled=self.conversation_page_index > 0)
         closing = self.selected_npc.player_reply.closing
-        last_page = self.conversation_page_index == len(self.conversation_pages) - 1
-        finish = last_page and closing and not self.pending_offer and not self.pending_invitation(app.simulation)
-        self.next_button.label = "Done" if finish else "Next"
-        self.next_button.draw(app.window, app.small_font,
-            enabled=not responding and not (finish and app.simulation.paused))
+        self.next_button.label = "Next"
+        self.next_button.draw(app.window, app.small_font, enabled=not responding)
         rect = self.reply_rect if responding else pygame.Rect(self.reply_rect.x, DIALOGUE_READING_Y,
                                                              self.reply_rect.width, DIALOGUE_READING_HEIGHT)
         self.draw_dialogue_lines(app.window, wrap_text(text, app.font, rect.width - 12), app.font, rect,
