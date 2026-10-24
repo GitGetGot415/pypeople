@@ -267,6 +267,13 @@ def validate_speech_grounding(text, snapshot):
     situation = speaker.get("situation", {})
     firsthand = [*speaker.get("firsthand_events_with_listener", []),
                  *speaker.get("permitted_accounts", []), *speaker.get("known_accounts", [])]
+    from dialogue_rules import validate_harvest_grounding
+    focus = snapshot.get("account_to_share") or speaker.get("account_focus")
+    tree = snapshot.get("environment", {}).get("tree", {})
+    validate_harvest_grounding(text, [*firsthand, *([focus] if focus else [])],
+        speaker_id=actor_id(speaker), listener_id=actor_id(listener) if isinstance(listener, dict) else None,
+        current_time={"day": snapshot.get("day"), "phase": snapshot.get("time_of_day")},
+        tree_stock=tree.get("fruit"), focus=focus)
     if actor_id(speaker):
         memories = [*firsthand, *speaker.get("heard_accounts", [])]
         recent_memories = [account for account in memories if account.get("kind") == "former_life"
@@ -347,10 +354,13 @@ def validate_resident_grounding(result, snapshot):
                                   names=names, recent_accounts=recent_memories)
         validate_speech_grounding(turn.text, {
             "_name_actors": snapshot.get("_name_actors", {}),
-            "speaker": {"name": speaker["name"], "situation": private.get("situation", {}),
+            "speaker": {"name": speaker["name"], "actor_id": actor_id(speaker), "situation": private.get("situation", {}),
                         "firsthand_events_with_listener": private.get("permitted_accounts", private.get("known_accounts", []))},
-            "listener": snapshot["recipient" if turn.speaker == "initiator" else "initiator"]["name"],
-            "day": speaker.get("day"), "known_actor_names": names})
+            "listener": snapshot[other_role],
+            "account_to_share": next((a for a in private.get("permitted_accounts", [])
+                if any(d.turn == index and d.claim_id == a["claim_id"] for d in result.disclosures)), None),
+            "environment": {"tree": {"fruit": speaker["tree_fruit"]}} if speaker.get("location", "garden") == "garden" and "tree_fruit" in speaker else {},
+            "day": speaker.get("day"), "time_of_day": speaker.get("time_of_day"), "known_actor_names": names})
         # General beliefs can also be formed in the current discussion. Match
         # concrete recollections separately, including sentences in older accounts.
         private_accounts = [{**a, "assertion": sentence} for a in options.values() if a["kind"] == "former_life"
@@ -527,6 +537,8 @@ def _validate_response(raw, snapshot, model):
                             "area_knowledge": snapshot.get("area_knowledge", {}),
                             "situation": snapshot.get("private_context", {}).get("situation", {})},
                 "listener": "You", "day": snapshot.get("day"),
+                "time_of_day": snapshot.get("time_of_day"),
+                "environment": {"tree": {"fruit": snapshot["tree_fruit"]}} if snapshot.get("location", "garden") == "garden" and "tree_fruit" in snapshot else {},
             })
             validate_dialogue_format([ConversationTurn(speaker="initiator", parts=[ConversationPart(text=result.reply)])])
             for entry in result.opinion_updates:

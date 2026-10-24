@@ -398,12 +398,12 @@ def account_view(world, claim, belief):
     if fact.kind == "harvest":
         harvests = witnessed_harvests(world, world.participant_by_id(belief.npc_id).beliefs)
         context["harvest_context"] = [row for (phase, _), row in harvests.items() if phase == fact.phase]
-    return {**context,
+    return harvest_account_view({**context,
             **{key: projected[key] for key in ("claim_id", "subject_id", "subject_name", "object_id", "object_name",
                 "knowledge_owner_name", "original_speaker_id", "immediate_source_id", "original_speaker_name", "immediate_source_name")},
             "source_disclosure_id": belief.disclosure_id, "stance": projected["stance"],
             "learned_at": {"day": belief.phase // len(PHASES) + 1, "phase": PHASES[belief.phase % len(PHASES)]},
-            "basis": projected["basis"]}
+            "basis": projected["basis"]})
 
 
 def harvest_summary(name, quantity):
@@ -429,6 +429,22 @@ def witnessed_harvests(world, beliefs):
         row["quantity"] += fact.quantity
         row["pickups"] += 1
     return totals
+
+
+def harvest_account_view(account):
+    """Present the witnessed collection consistently; durable facts remain individual pickups."""
+    if account.get("kind") != "harvest" or account.get("basis") != "firsthand" or account.get("stance") != "believed":
+        return account
+    total = next((row for row in account.get("harvest_context", [])
+                  if row["subject_id"] == account["subject_id"]), None)
+    if total is None:
+        return account
+    account = {**account, "assertion": harvest_summary(account["subject_name"], total["quantity"]),
+               "quantity": total["quantity"], "pickup_count": total["pickups"],
+               "quantity_scope": "total witnessed for this collector during event_time"}
+    if account.get("firsthand_stance") == "believed":
+        account["firsthand_evidence"] = account["assertion"]
+    return account
 
 
 def add_fact(world, kind, subject, target, source_id, record, summary, witnesses, *, quantity=None, location=None):
@@ -595,7 +611,7 @@ def information_views(context, world):
                 if belief and belief.direct:
                     view["permitted_use"] = ("report the named collector's actions you witnessed; witnessing is not collecting"
                                              if fact.kind == "harvest" else "share personal experience; its truth needs no confirmation")
-            views.append(view)
+            views.append(harvest_account_view(view))
         result[role] = views
     return result
 
@@ -1500,7 +1516,7 @@ def resident_turn_choices(snapshot, draft, role, private, *, closing=False, asse
             if option.kind == "private_motive":
                 for field in ("object_id", "object_name", "object_relation"):
                     view.pop(field, None)  # A goal target is not evidence of an event with that person.
-            accounts.append(view)
+            accounts.append(harvest_account_view(view))
         accounts = resident_accounts_for_turn(accounts, info, role, draft, catalog,
                                                concern_id=(private.get("concern") or {}).get("claim_id"))
     choices = dict(offers=[], acceptances=[], disclosures=[], third_party_opinions=[], leverage=[])

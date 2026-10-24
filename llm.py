@@ -959,8 +959,10 @@ def _resident_contract(snapshot, *, correction=False):
                 instruction += (" Your selected account is account_focus. If you tell its content, include "
                                 + json.dumps({"disclosures": [{"claim_id": focus["claim_id"], "intent": "share"}]})
                                 + " alongside parts. Preserve subject_relation and subject_name: firsthand knowledge does not make the speaker the actor. "
-                                "harvest_context lists this speaker's witnessed totals by collector for the account's phase; quantity alone is one pickup. "
+                                "For harvest accounts, assertion and quantity give the witnessed collector total for event_time; pickup_count counts the separate pickups. "
+                                "harvest_context gives the other witnessed collectors' totals in that same phase. Do not shrink a repeated harvest to one pickup. "
                                 "Use those totals and the current tree stock without inventing unobserved pickups or combining phases. "
+                                "Read the current remaining stock from environment.tree.fruit, never from population minus one pickup. "
                                 "Do not use current stock as the stock of a different phase. "
                                 "An empty tree alone does not prove a particular resident took all its fruit.")
             elif focus and any(d.claim_id == focus["claim_id"] for d in snapshot["_draft"]["disclosures"]):

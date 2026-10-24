@@ -436,9 +436,11 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
         direction = ("Explain the supplied private reason and what you want, in your own words. " if kind == "private_motive" else
                      "Report who made which claims and preserve how you heard them. " if kind == "snake_claim" else
                      "Describe a concrete event or memory from its assertion in your own words. ")
+        expected_account = ("Expected harvest: describe the collector's witnessed collection using the supplied harvest account and totals."
+                            if kind == "harvest" else f"Expected {kind or 'information'}: {assertion}")
         raise DialogueValidationError("The selected account is not actually told in this turn. " + direction +
                          "Discussing trust or promising to tell it later is insufficient. "
-                         f"Expected {kind or 'information'}: {assertion}", RecoveryKind.UNMATCHED_ACCOUNT)
+                         + expected_account, RecoveryKind.UNMATCHED_ACCOUNT)
 
 
 def validate_apple_promise(offer, acceptance, deadline, *, current_phase=None):
@@ -523,6 +525,81 @@ def validate_apple_roles(text, *, giver, receiver, speaker, apple_received=False
             raise ValueError("The apple was already received. Doubting the giver does not undo the recorded handoff.")
         if _asserts(_APPLE_REFUSAL, speech):
             raise ValueError("The resident received the apple. Do not undo the committed handoff.")
+
+
+def validate_harvest_grounding(text, accounts, *, speaker_id, listener_id, current_time, tree_stock=None, focus=None):
+    """Check explicit totals and visible stock; never require a spoken number."""
+    scope = (focus or {}).get("event_time") or current_time
+    totals = {}
+    for account in accounts:
+        if account.get("kind") != "harvest":
+            continue
+        for row in account.get("harvest_context", []):
+            if row.get("event_time") == scope:
+                totals[row["subject_id"]] = row
+    number = r"(?:\d+|zero|no|none|" + "|".join(SPOKEN_NUMBERS) + ")"
+
+    def value(word):
+        return int(word) if word.isdigit() else 0 if word.lower() in ("zero", "no", "none") else SPOKEN_NUMBERS[word.lower()]
+
+    for sentence in split_sentences(unquoted_speech(text)):
+        if sentence.rstrip().endswith("?") or re.search(r"\b(?:if|would|could|might|imagine|suppose|wish)\b", sentence, re.I):
+            continue
+        historical = bool(re.search(r"\b(?:yesterday|last night|previous phase|previous day)\b", sentence, re.I))
+        pickup = bool(re.search(r"\b(?:at a time|each (?:time|pickup|visit)|per (?:pickup|visit)|"
+                                r"(?:first|second|last|single|one) (?:pickup|visit)|on one occasion)\b", sentence, re.I))
+        now = bool(re.search(r"\b(?:now|currently|right now)\b", sentence, re.I))
+        if type(tree_stock) is int and (now or not historical and not pickup):
+            count = rf"(?P<count>{number})\s+(?:apples?|fruit)\b"
+            stock_patterns = [
+                rf"\b(?:apple )?tree\s+(?:still\s+)?(?:has|holds|contains|is left with)\s+(?:still\s+)?(?:(?:only|just|exactly)\s+)?{count}",
+                rf"\bthere\s+(?:are|is)\s+(?:still\s+)?{count}\s+(?:still\s+)?(?:left|remaining|on (?:the|this) (?:apple )?tree)",
+                rf"\b{count}\s+(?:remain|are left|are remaining)\s+on (?:the|this) (?:apple )?tree",
+                rf"\b(?:leaving|leaves|left|leave)\s+(?:behind\s+)?(?:(?:only|just|exactly)\s+)?{count}(?:\s+(?:behind|on (?:the|this) (?:apple )?tree))?",
+            ]
+            for pattern in stock_patterns:
+                for match in re.finditer(pattern, sentence, re.I):
+                    # Apples left in a pocket or given to someone are not tree stock.
+                    if re.match(r"\s+(?:in|inside|for|with|to|at)\b", sentence[match.end():], re.I):
+                        continue
+                    if pattern == stock_patterns[-1] and not re.search(r"\btree\b", sentence, re.I):
+                        continue
+                    if pattern == stock_patterns[-1] and scope != current_time and not now:
+                        continue  # A past harvest does not establish the tree's current remainder.
+                    if value(match["count"]) != tree_stock:
+                        raise ValueError(f"The visible tree currently has {tree_stock} apples. "
+                            "Use that remaining stock; do not subtract one pickup from population or confuse collected fruit with fruit left on the tree.")
+            empty = re.search(r"\b(?:apple )?tree\s+(?:is|stands)\s+(?:now\s+)?(?:empty|bare)\b", sentence, re.I)
+            if empty and tree_stock != 0:
+                raise ValueError(f"The visible tree still has {tree_stock} apples; it is not empty.")
+            stocked = re.search(r"\b(?:apple )?tree\s+(?:still\s+)?has\s+(?:(?:some|many|any|several|a few|plenty of)\s+)?(?:apples|fruit)\b", sentence, re.I)
+            if stocked and tree_stock == 0:
+                raise ValueError("The visible tree has zero apples; do not claim it still has fruit.")
+        if pickup or historical and scope == current_time:
+            continue
+        for identity, row in totals.items():
+            name = row["subject_name"]
+            refs = [name_pattern(name)]
+            first = name.split()[0] if name else ""
+            if first and sum(r["subject_name"].split()[0] == first for r in totals.values()) == 1:
+                refs.append(name_pattern(first))
+            if identity == speaker_id:
+                refs.append("I")
+            elif identity == listener_id:
+                refs.append("you")
+            subject = "(?:" + "|".join(refs) + ")"
+            pattern = (rf"\b{subject}(?:['\u2019](?:ve|s|d)|\s+(?:has|have|had))?\s+"
+                r"(?:(?:just|already|recently|only)\s+){0,3}"
+                r"(?:harvest(?:ed|s)?|collect(?:ed|s)?|pick(?:ed|s)?(?: up)?|took|take|takes)\s+"
+                rf"(?P<bound>at least\s+|more than\s+)?(?:(?:only|exactly|all|the|last|just)\s+){{0,3}}"
+                rf"(?P<count>{number})\s+(?:apples?|fruit)\b")
+            for match in re.finditer(pattern, sentence, re.I):
+                count, total = value(match["count"]), row["quantity"]
+                bound = (match["bound"] or "").strip().lower()
+                supported = count <= total if bound == "at least" else count < total if bound == "more than" else count == total
+                if not supported:
+                    raise ValueError(f"The witnessed total for {name} in this account's phase is {total} apples across {row['pickups']} pickups. "
+                        "Do not present one pickup as the whole harvest. You may omit numbers or explicitly distinguish an individual pickup from the total.")
 
 
 def validate_python_harvest(text, *, snake_role=None):
