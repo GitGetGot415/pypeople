@@ -329,7 +329,7 @@ class Application:
         from constants import PLAYER_ROOM_NUMBER
         world, player = self.simulation, self.simulation.player
         if target["kind"] == "elevator":
-            self.game.open_location_menu("Elevator", [(f"Floor {f}", hallway_location(f)) for f in allocated_floors(world)])
+            self.game.open_location_menu([(f"Floor {f}", hallway_location(f)) for f in allocated_floors(world)])
             return
         if not active_player(world):
             if valid_location(world, target["destination"]):

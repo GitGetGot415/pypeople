@@ -37,7 +37,6 @@ class GameScreen:
         self.app = None
         self.location = "garden"
         self.location_menu = None
-        self.location_page = 0
         self.end_button = Button(END_CONVERSATION_RECT, "End conversation")
         self.leave_queue_button = Button(LEAVE_QUEUE_RECT, "Leave queue")
         self.invitation_button = Button(INVITATION_ACCEPT_RECT, "Accept invitation")
@@ -933,9 +932,8 @@ class GameScreen:
         from apartments import pending_invitation
         return pending_invitation(world)
 
-    def open_location_menu(self, purpose, choices):
-        self.location_menu = dict(purpose=purpose, choices=choices)
-        self.location_page = 0
+    def open_location_menu(self, choices):
+        self.location_menu = dict(choices=choices)
 
     def observe_location(self, location):
         from locations import map_size
@@ -947,23 +945,20 @@ class GameScreen:
 
     def location_buttons(self):
         from constants import (LOCATION_MENU_RECT, LOCATION_BUTTON_HEIGHT, LOCATION_BUTTON_GAP,
-            LOCATION_BUTTON_WIDTH, LOCATION_BUTTON_INSET, LOCATION_BUTTONS_PER_PAGE)
+            LOCATION_BUTTON_WIDTH, LOCATION_BUTTON_INSET)
         x, y = LOCATION_MENU_RECT[:2]
-        start = self.location_page * LOCATION_BUTTONS_PER_PAGE
         return [(Button((x + LOCATION_BUTTON_INSET[0], y + LOCATION_BUTTON_INSET[1] + row * LOCATION_BUTTON_GAP,
             LOCATION_BUTTON_WIDTH, LOCATION_BUTTON_HEIGHT), label), value)
-            for row, (label, value) in enumerate(self.location_menu["choices"][start:start + LOCATION_BUTTONS_PER_PAGE])]
+            for row, (label, value) in enumerate(self.location_menu["choices"])]
 
     def handle_location_event(self, app, event):
         from player import active_player
-        from constants import LOCATION_BUTTONS_RECT, LOCATION_NEXT_RECT, LOCATION_CANCEL_RECT, LOCATION_BUTTONS_PER_PAGE
-        if Button(LOCATION_CANCEL_RECT, "Cancel").clicked(event) or event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+        from constants import LOCATION_MENU_RECT
+        if (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
+                or event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
+                and not pygame.Rect(LOCATION_MENU_RECT).collidepoint(event.pos)):
             self.location_menu = None
             return
-        if Button(LOCATION_BUTTONS_RECT, "Previous").clicked(event):
-            self.location_page = max(0, self.location_page - 1)
-        if Button(LOCATION_NEXT_RECT, "Next").clicked(event):
-            self.location_page = min((len(self.location_menu["choices"]) - 1) // LOCATION_BUTTONS_PER_PAGE, self.location_page + 1)
         for button, value in self.location_buttons():
             if button.clicked(event):
                 if not active_player(app.simulation):
@@ -976,17 +971,13 @@ class GameScreen:
                 return
 
     def draw_location_menu(self, app):
-        from constants import LOCATION_MENU_RECT, LOCATION_BUTTONS_RECT, LOCATION_NEXT_RECT, LOCATION_CANCEL_RECT, LOCATION_TITLE_INSET
+        from constants import LOCATION_MENU_RECT
         overlay = pygame.Surface(WINDOW_SIZE, pygame.SRCALPHA)
         overlay.fill(MODAL_OVERLAY_COLOR)
         app.window.blit(overlay, (0, 0))
-        pygame.draw.rect(app.window, PAPER, LOCATION_MENU_RECT)
-        app.window.blit(app.heading_font.render(self.location_menu["purpose"], True, INK),
-                        (LOCATION_MENU_RECT[0] + LOCATION_TITLE_INSET[0], LOCATION_MENU_RECT[1] + LOCATION_TITLE_INSET[1]))
+        pygame.draw.rect(app.window, PAPER, LOCATION_MENU_RECT, border_radius=BORDER_RADIUS)
         for button, _ in self.location_buttons():
             button.draw(app.window, app.small_font)
-        for rect, label in ((LOCATION_BUTTONS_RECT, "Previous"), (LOCATION_NEXT_RECT, "Next"), (LOCATION_CANCEL_RECT, "Cancel")):
-            Button(rect, label).draw(app.window, app.small_font)
 
     def update_physical(self, app, dt):
         from player import active_player, move_player
