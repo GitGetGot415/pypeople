@@ -394,7 +394,11 @@ def account_view(world, claim, belief):
                "subject_id": claim.subject_id, "object_id": fact.object_id,
                "original_speaker_id": claim.originator_id}
     projected = build_account_view(account, account_knowledge(belief, belief.npc_id), catalog, belief.npc_id, None)
-    return {**fact_context(world, fact, claim.affirmed),
+    context = fact_context(world, fact, claim.affirmed)
+    if fact.kind == "harvest":
+        harvests = witnessed_harvests(world, world.participant_by_id(belief.npc_id).beliefs)
+        context["harvest_context"] = [row for (phase, _), row in harvests.items() if phase == fact.phase]
+    return {**context,
             **{key: projected[key] for key in ("claim_id", "subject_id", "subject_name", "object_id", "object_name",
                 "knowledge_owner_name", "original_speaker_id", "immediate_source_id", "original_speaker_name", "immediate_source_name")},
             "source_disclosure_id": belief.disclosure_id, "stance": projected["stance"],
@@ -404,6 +408,27 @@ def account_view(world, claim, belief):
 
 def harvest_summary(name, quantity):
     return f"{name} harvested {quantity} {'apple' if quantity == 1 else 'apples'} from the tree."
+
+
+def witnessed_harvests(world, beliefs):
+    """Derive totals from this observer's distinct witnessed events, within each phase."""
+    claims = {claim.id: claim for claim in world.claims}
+    facts = {fact.id: fact for fact in world.facts}
+    totals, seen = {}, set()
+    for belief in beliefs:
+        claim = claims[belief.claim_id]
+        fact = facts[claim.fact_id]
+        if not belief.direct or not claim.affirmed or fact.kind != "harvest" or fact.id in seen:
+            continue
+        seen.add(fact.id)
+        key = (fact.phase, fact.subject_id)
+        row = totals.setdefault(key, dict(subject_id=fact.subject_id,
+            subject_name=world.participant_by_id(fact.subject_id).name,
+            event_time={"day": fact.phase // len(PHASES) + 1, "phase": PHASES[fact.phase % len(PHASES)]},
+            quantity=0, pickups=0))
+        row["quantity"] += fact.quantity
+        row["pickups"] += 1
+    return totals
 
 
 def add_fact(world, kind, subject, target, source_id, record, summary, witnesses, *, quantity=None, location=None):
@@ -533,6 +558,7 @@ def information_views(context, world):
     result = {}
     for role, npc_id in context.participants.items():
         beliefs = {belief.claim_id: belief for belief in context.beliefs[role]}
+        harvests = witnessed_harvests(world, beliefs.values())
         firsthand = {options[b.claim_id].fact_id: options[b.claim_id]
                      for b in beliefs.values() if b.direct}
         views = []
@@ -549,6 +575,8 @@ def information_views(context, world):
                     **{key: projected[key] for key in ("claim_id", "subject_id", "subject_name", "object_id", "object_name",
                         "knowledge_owner_name", "original_speaker_id", "original_speaker_name")},
                     "permitted_use": "deliberate denial; private to this speaker" if option.creator_id else "known account"}
+            if fact.kind == "harvest":
+                view["harvest_context"] = [row for (phase, _), row in harvests.items() if phase == fact.phase]
             if belief:
                 view.update(stance=projected["stance"], immediate_source_id=projected["immediate_source_id"],
                             immediate_source_name=projected["immediate_source_name"],
@@ -565,7 +593,8 @@ def information_views(context, world):
                 view["firsthand_evidence"] = evidence.assertion
                 view["firsthand_stance"] = "believed" if evidence.affirmed == option.affirmed else "disbelieved"
                 if belief and belief.direct:
-                    view["permitted_use"] = "share personal experience; its truth needs no confirmation"
+                    view["permitted_use"] = ("report the named collector's actions you witnessed; witnessing is not collecting"
+                                             if fact.kind == "harvest" else "share personal experience; its truth needs no confirmation")
             views.append(view)
         result[role] = views
     return result
@@ -577,8 +606,11 @@ def related_beliefs(option, beliefs, options):
 
 def reputation_assessment_available(option, related, options, *, believed, heard, participants, assessed=False):
     """Stance is actual during validation, possible before a pending reaction."""
+    # A witness knows who picked the fruit, but may reconsider the collector's
+    # generosity when someone frames that conduct. Assessment remains once per fact.
     return (option.kind != "conversation_seen" and heard and believed and option.subject_id not in participants and not assessed
-            and not any(b.direct or b.assessed and options[b.claim_id].affirmed == option.affirmed
+            and not any(b.direct and option.kind != "harvest"
+                        or b.assessed and options[b.claim_id].affirmed == option.affirmed
                         for b in related))
 
 

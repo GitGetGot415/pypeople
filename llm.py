@@ -912,8 +912,9 @@ def _resident_contract(snapshot, *, correction=False):
         "Use only your own supplied context and accepted preceding speech. The listener's private views are unknown. "
         "Speaker and listener names are visible on their floating tags. Give only your own reply, never the listener's answer. "
         "Use one or two short complete sentences with your emotion, ending in sentence punctuation. "
-        "Sources, subjects, and objects of accounts remain distinct. Firsthand events are personal experience; "
-        "a heard account is hearsay, never your own remembered life. Denials, uncertainty and deliberate lies remain distinct. "
+        "Sources, subjects, and objects of accounts remain distinct. Firsthand means you witnessed the event, not that you performed its action. "
+        "Use subject_relation: speaker means I, listener means you, another person means subject_name. "
+        "A heard account is hearsay, never your own remembered life. Denials, uncertainty and deliberate lies remain distinct. "
         "Hearing a divine claim is different from believing its theology. "
         "Respond to what the partner actually said; do not invent transfers, events, discoveries or shared experiences.\n"
         + CONVERSATION_HISTORY_INSTRUCTION + "\n" + DIALOGUE_VARIETY_INSTRUCTION + "\n"
@@ -929,7 +930,9 @@ def _resident_contract(snapshot, *, correction=False):
                         "You are usually reluctant to seek optional company, give unsolicited gifts or invite them home. "
                         "An explanation or peaceful confrontation is possible; honor accepted promises and real handoffs.")
     if snapshot.get("social_only"):
-        instruction += " The python has no possessions or human tasks. This meeting permits conversation and sourced reports; do not bargain, demand payment, offer gifts or promise apples."
+        instruction += (" The python cannot harvest or possess apples. Never attribute a resident's harvest to the python, "
+                        "whether you are speaking as the python or addressing it. Witnessing is not collecting. "
+                        "This meeting permits conversation and sourced reports; do not bargain, demand payment, offer gifts or promise apples.")
     if assessment and snapshot.get("escalation_choices"):
         instruction += (" Choose escalation leave or attack only from escalation_choices. Peaceful endings are normal; "
             "an explanation, apology or reconciliation can avert escalation. Evaluate your authored personality, actual history "
@@ -955,7 +958,11 @@ def _resident_contract(snapshot, *, correction=False):
             if focus and focus["claim_id"] in snapshot["choices"]["disclosures"]:
                 instruction += (" Your selected account is account_focus. If you tell its content, include "
                                 + json.dumps({"disclosures": [{"claim_id": focus["claim_id"], "intent": "share"}]})
-                                + " alongside parts. Its authored you/your refers to its named owner; use I/my for your own memory.")
+                                + " alongside parts. Preserve subject_relation and subject_name: firsthand knowledge does not make the speaker the actor. "
+                                "harvest_context lists this speaker's witnessed totals by collector for the account's phase; quantity alone is one pickup. "
+                                "Use those totals and the current tree stock without inventing unobserved pickups or combining phases. "
+                                "Do not use current stock as the stock of a different phase. "
+                                "An empty tree alone does not prove a particular resident took all its fruit.")
             elif focus and any(d.claim_id == focus["claim_id"] for d in snapshot["_draft"]["disclosures"]):
                 instruction += (" account_focus has already been shared in this exchange. Respond to the listener's reaction "
                                 "without another disclosure entry for it; an ordinary follow-up uses disclosures: [].")

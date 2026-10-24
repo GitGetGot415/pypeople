@@ -5,7 +5,7 @@ import unicodedata
 from collections import Counter
 from validation_errors import DialogueValidationError, RecoveryKind
 from constants import (DIALOGUE_CAPS_MIN_LETTERS, DIALOGUE_CAPS_MIN_WORDS, DIALOGUE_CAPS_RATIO, PHASES,
-                      SNAKE_NAME)
+                      SNAKE_NAME, SPOKEN_NUMBERS)
 from dialogue_text import split_sentences
 
 
@@ -525,9 +525,38 @@ def validate_apple_roles(text, *, giver, receiver, speaker, apple_received=False
             raise ValueError("The resident received the apple. Do not undo the committed handoff.")
 
 
+def validate_python_harvest(text, *, snake_role=None):
+    """Reject collection attributed to the python without constraining harvest counts."""
+    subjects = [name_pattern(SNAKE_NAME), r"the (?:python|snake)"]
+    if snake_role:
+        subjects.extend(["I" if snake_role == "speaker" else "you", "we"])
+    subject = "(?:" + "|".join(subjects) + ")"
+    determiner = (r"(?:\d+|" + "|".join(SPOKEN_NUMBERS)
+        + r"|all|of|the|an?|some|any|more|another|several|many|few|remaining|last|my|your|these|those|ripe|red|green|exactly|only|just|no|zero)")
+    harvest = re.compile(rf"\b{subject}(?:['\u2019](?:ve|d|m|re)|\s+(?:have|has|had|am|are|was|were|can|will))?\s+"
+        r"(?:(?:recently|just|already|personally|also|actually)\s+){0,3}"
+        r"(?:harvest(?:ed|s|ing)?|pick(?:ed|s|ing)?(?:\s+up)?|collect(?:ed|s|ing)?|took|take|takes|taking)\b"
+        rf"(?P<object>\s+(?:{determiner}\s+){{0,5}}(?:apples?|fruit)\b|\s+from (?:the|this|that) (?:apple )?tree\b)", re.I)
+    for sentence in split_sentences(unquoted_speech(text)):
+        if sentence.rstrip().endswith("?"):
+            continue
+        for match in harvest.finditer(sentence):
+            prefix = sentence[:match.start()]
+            if re.search(r"\b(?:if|imagine|suppose|wish)\b", prefix, re.I):
+                continue
+            if re.search(r"\b(?:said|says|claim(?:ed|s)?|told me|thought|assumed)\s+(?:that\s+)?$", prefix, re.I):
+                continue
+            if re.match(r"\s+(?:(?:exactly|just)\s+)?(?:no|zero|0|nothing|none)\b", match["object"], re.I):
+                continue
+            raise ValueError(f"{SNAKE_NAME} is a python and cannot harvest apples. "
+                "Witnessing a harvest does not make the witness its collector. "
+                "Keep the actual resident or player as the harvester, using the supplied subject and source.")
+
+
 def validate_snake_perspective(text, *, snake_role):
     """Catch detached species references before they become the partner's context."""
     # Direct quotations may legitimately report someone else's earlier wording.
+    validate_python_harvest(text, snake_role=snake_role)
     unquoted = unquoted_speech(text)
     if re.search(name_pattern(SNAKE_NAME) + r"(?:['’]s\b|\s+(?:gave|gives|said|says|offered|offers|received|refused|accepted|decided|thinks|believes|claims|was|has|had)\b)", unquoted, re.I):
         raise ValueError(f"{SNAKE_NAME} is the {snake_role} in this exchange. Use I/my for yourself and you/your for the listener, retaining the event's ownership.")

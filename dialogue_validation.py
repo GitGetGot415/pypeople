@@ -258,6 +258,10 @@ def validate_speech_grounding(text, snapshot):
     question = snapshot.get("_player_message", preceding[-1]["text"] if preceding else "")
     validate_area_speech(text, speaker.get("area_knowledge", {}), question=question)
     listener_name = snapshot.get("_listener_identity", _actor_name(listener))
+    from dialogue_rules import validate_python_harvest
+    snake_role = ("speaker" if speaker.get("kind") == "python" or _actor_name(speaker) == SNAKE_NAME else
+                  "listener" if listener_name == SNAKE_NAME else None)
+    validate_python_harvest(text, snake_role=snake_role)
     names = [_actor_name(speaker), listener_name, SNAKE_NAME, *snapshot.get("known_actor_names", [])]
     validate_english(text, names)
     situation = speaker.get("situation", {})

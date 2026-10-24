@@ -16,8 +16,14 @@ from social import Belief, ConversationConcern, OpinionEffect
 SNAKE_VOICE_BRIEF = "Calm, confident, ceremonious and concise, with occasional dry humor."
 SNAKE_BEHAVIOR = (
     f"You are {SNAKE_NAME}, a talking python wandering the garden. "
-    "Privately seek influence by selectively reporting true known accounts and framing them suspiciously. "
+    "Privately provoke distrust between residents by selectively reporting true known accounts and making pointed accusations or insinuations. "
+    "Connect witnessed conduct to selfishness, greed or disregard for the listener; these are your hostile interpretations, not proven motives. "
+    "For harvests, use harvest_context to consider repeated pickups together, rather than presenting one pickup as the whole story. "
+    "Emphasize taking most or all the fruit and leaving others without it only when the supplied evidence supports that description. "
+    "Totals cover only your witnessed pickups in the named phase; do not combine phases or assume you witnessed everything. "
+    "Do not reduce the exchange to neutral news, mysterious tree behavior or omens. Respond to resistance without deciding the listener's beliefs. "
     "You may claim religious authority, but your explanations remain claims. "
+    "You cannot harvest, pick, collect, carry, eat or give apples. Witnessing someone harvest never makes you the harvester. "
     "You have no control over apples or residents. Never invent events, quantities or memories, "
     "and never command violence. Speak to the listener using I and you."
 )
@@ -148,7 +154,7 @@ class Snake(SnakeValues, ConversationActor):
 
     def update(self, dt):
         from social import (apply_opinion_effects, claim_by_id, fact_by_id,
-                            ConversationConcern, repeat_partner_paused)
+                            ConversationConcern, repeat_partner_paused, witnessed_harvests)
         from player import owns_resident
         if dt <= 0:
             return
@@ -161,6 +167,7 @@ class Snake(SnakeValues, ConversationActor):
         if not self.world.phase_pending and not self.conversation_pause_remaining and self.decision_remaining == 0:
             self.decision_remaining = DECISION_SECONDS
             choices = []
+            harvests = witnessed_harvests(self.world, self.beliefs)
             for human in self.world.npcs:
                 if (not self.world.company_available(human) or human.location != "garden"
                         or human.conversation_pause_remaining or human.id in self.cooldowns
@@ -174,14 +181,17 @@ class Snake(SnakeValues, ConversationActor):
                     shared = any(d.speaker_id == self.id and d.listener_id == human.id
                                  and claim_by_id(self.world, d.claim_id).fact_id == fact.id for d in self.world.disclosures)
                     if not shared:
-                        choices.append((fact.kind == "killing", -human.opinion_score(fact.subject_id)
+                        quantity = harvests.get((fact.phase, fact.subject_id), {}).get("quantity", 0) if fact.kind == "harvest" else 0
+                        choices.append((fact.kind == "killing", fact.kind == "harvest", quantity,
+                                        human.id != fact.subject_id, -human.opinion_score(fact.subject_id)
                                         - math.dist((self.x, self.y), (human.x, human.y)) / SNAKE_SPEED,
                                         belief.phase, human, claim))
             if choices:
-                _, _, _, human, claim = max(choices, key=lambda row: row[:3])
+                *_, human, claim = max(choices, key=lambda row: row[:-2])
                 self.current_concern = ConversationConcern("news", claim.id, DECISION_SECONDS)
                 self.world.start_conversation(self, human,
-                    "Share a known account truthfully while privately encouraging suspicion; leave interpretation to the listener.",
+                    "Use a true known account to provoke distrust of the resident involved. "
+                    "Make a pointed accusation or insinuation grounded in what you witnessed; the listener decides whether to believe it.",
                     origin="autonomous", opening_kind="news", focus_claim_id=claim.id)
                 return
             humans = [n for n in self.world.npcs if n.location == "garden" and self.world.company_available(n)
