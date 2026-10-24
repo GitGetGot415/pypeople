@@ -404,6 +404,10 @@ Use first person for the speaker and second person for the listener, even when
 a record describes either of them in third person. Preserve who experienced
 each event and how they learned about it. Third-person references belong to
 other people or explicitly quoted earlier words.
+Another person's former-life memory remains theirs after they tell it to you.
+The account's subject experienced it; knowing or believing the account does not
+mean you were there. React to their memory without adopting its people or actions
+as your own. Remembering their telling is distinct from remembering their event.
 If an objective names the listener, address that person as you/your rather than
 discussing their support, behavior, or plans as though they were absent.
 Personality shapes questions, disagreement, reassurance and natural hesitation.

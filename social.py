@@ -1373,7 +1373,10 @@ def pending_reactions(snapshot, draft, role):
             continue
         option = options[entry.claim_id]
         source = beliefs[source_role].get(entry.claim_id)
+        owner = build_account_view(asdict(option), None, snapshot.get("_name_actors", {}),
+                                   info.participants[role], info.participants[source_role])
         pending.append(dict(disclosure_turn=entry.turn, claim_id=entry.claim_id, assertion=option.assertion,
+                            subject_name=owner["subject_name"], subject_relation=owner["subject_relation"],
                             stances=listener_stances(option, beliefs[role], options,
                                                     firsthand_source=bool(source and source.direct))))
     return pending

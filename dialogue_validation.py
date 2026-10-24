@@ -18,7 +18,7 @@ from constants import (RESIDENT_TURN_COUNT, CONVERSATION_MAX_TURNS, DIALOGUE_REP
 from dialogue_text import (contains_question, contains_serialized_dialogue, contains_speaker_label,
                           speech_is_complete, split_sentences)
 from dialogue_rules import (is_name_reference, mentions_account, mentions_private_recollection, name_pattern,
-                           unquoted_speech, validate_account_speech, validate_apple_roles,
+                           unquoted_speech, validate_account_speech, validate_apple_roles, validate_memory_ownership,
                            validate_continuity, validate_base_prose, validate_claim_source, validate_english,
                            validate_opinion_reason, validate_environment_speech, validate_speaker_identity,
                            _personal_apple_request, _short_player_answer, validate_snake_perspective)
@@ -329,6 +329,12 @@ def validate_speech_grounding(text, snapshot):
     situation = speaker.get("situation", {})
     firsthand = [*speaker.get("firsthand_events_with_listener", []),
                  *speaker.get("permitted_accounts", []), *speaker.get("known_accounts", [])]
+    if actor_id(speaker):
+        memories = [*firsthand, *speaker.get("heard_accounts", [])]
+        recent_memories = [account for account in memories if account.get("kind") == "former_life"
+                           and mentions_private_recollection(question, account["assertion"], names)]
+        validate_memory_ownership(text, memories, speaker_id=actor_id(speaker), names=names,
+                                  recent_accounts=recent_memories)
     knows_claims = bool(situation.get("prior_snake_encounters", 0)) or any(
         a.get("kind") == "snake_claim" and a.get("basis") == "firsthand" for a in firsthand)
     validate_continuity(text, day=snapshot.get("day"), situation=situation, knows_claims=knows_claims,
@@ -432,6 +438,10 @@ def validate_resident_grounding(result, snapshot):
         validate_environment_speech(turn.text, location=speaker.get("location", "garden"))
         other_role = "recipient" if turn.speaker == "initiator" else "initiator"
         private = speaker.get("private_context", {})
+        recent_memories = [options[entry.claim_id] for entry in result.disclosures
+                           if entry.turn == index - 1 and entry.claim_id in options]
+        validate_memory_ownership(turn.text, options.values(), speaker_id=speaker["npc_id"],
+                                  names=names, recent_accounts=recent_memories)
         validate_speech_grounding(turn.text, {
             "_name_actors": snapshot.get("_name_actors", {}),
             "speaker": {"name": speaker["npc_name"], "situation": private.get("situation", {}),
@@ -641,6 +651,8 @@ def _validate_response(raw, snapshot, model):
                 "_name_actors": snapshot.get("_name_actors", {}),
                 "_player_message": snapshot.get("_player_message", ""),
                 "speaker": {"name": snapshot.get("npc_name", ""),
+                            "npc_id": actor_id(snapshot),
+                            "known_accounts": snapshot.get("private_context", {}).get("known_accounts", []),
                             "area_knowledge": snapshot.get("area_knowledge", {}),
                             "situation": snapshot.get("private_context", {}).get("situation", {})},
                 "listener": "You", "day": snapshot.get("day"),

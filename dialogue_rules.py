@@ -285,6 +285,34 @@ def mentions_private_recollection(text, assertion, names):
     return bool(expected) and len(overlap) >= min(2, len(expected))
 
 
+def validate_memory_ownership(text, accounts, *, speaker_id, names=(), recent_accounts=()):
+    """Hearing a recollection does not make its event the listener's experience."""
+    memories = [account for account in accounts if account.get("kind") == "former_life"]
+    own = [account for account in memories if account.get("subject_id") == speaker_id]
+    recent = [account for account in recent_accounts
+              if account.get("kind") == "former_life" and account.get("subject_id") != speaker_id]
+    for sentence in split_sentences(unquoted_speech(text)):
+        if not re.search(r"\b(?:i|we)\s+(?:(?:also|still|once|clearly|vividly)\s+)*"
+                         r"(?:remember|recall|worked|kept|helped|taught|drove|organized|saw|met|was an?)\b", sentence, re.I):
+            continue
+        # Remembering the telling is different from remembering the original event.
+        if re.search(r"\b(?:remember|recall)\s+(?:you (?:telling|saying|mentioning|describing|explaining)|"
+                     r"hearing|being told|your (?:story|account|recollection|description))\b", sentence, re.I):
+            continue
+        if any(mentions_private_recollection(sentence, account["assertion"], names) for account in own):
+            continue
+        for account in memories:
+            if account.get("subject_id") == speaker_id:
+                continue
+            refers_back = (account in recent
+                and re.search(r"\b(?:remember|recall)\s+(?:that|this|those|it|the same)\b", sentence, re.I)
+                and (bool(_content_words(sentence, names) & _content_words(account["assertion"], names))
+                     or re.search(r"\b(?:remember|recall)\s+(?:it|that|this)"
+                                  r"(?:\s+(?:too|well|clearly|vividly|as well))?[.!?,;]", sentence, re.I)))
+            if refers_back or mentions_private_recollection(sentence, account["assertion"], names):
+                raise ValueError("That former-life memory belongs to another person. React to their experience or recall hearing their account; do not claim you remember living it or were there yourself.")
+
+
 def _account_words(text, names, kind):
     # Normalize only the account types whose wording describes the same fact.
     # Private-memory detection keeps its separate, narrower word comparison.
