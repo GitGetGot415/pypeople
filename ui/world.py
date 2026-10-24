@@ -33,6 +33,12 @@ def interaction_bubble(name):
 
 
 def player_bubble_name(npc):
+    interaction = npc.world.player_interaction if npc.world else None
+    if interaction and interaction.npc_id == npc.id and interaction.incoming:
+        if interaction.stage == "thinking":
+            return "Thinking"
+        if interaction.stage == "approach":
+            return None
     if npc.generation_pending:
         return "Thinking"
     if npc.player_call and not npc.selected:

@@ -146,7 +146,7 @@ class Application:
             voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation)
         self.conversations.set_view(actor=self.game.selected_npc,
             reply_open=self.game.dialogue_open, viewed_conversation=self.game.viewed_conversation,
-            menu_open=bool(self.game.location_menu or self.game.call_choice or self.screen != "game"))
+            menu_open=bool(self.game.location_menu or self.screen != "game"))
 
     def _present_conversation_events(self):
         events, self.conversations.events = self.conversations.events, []
@@ -155,7 +155,6 @@ class Application:
             elif kind == "message": self.game.show_save_message(value)
             elif kind == "clear_input": self.game.prompt_input.set_value("")
             elif kind == "focus": self.game.prompt_input.focus()
-            elif kind == "clear_call": self.game.call_choice = None
             elif kind == "close": self.game.close_dialogue(terminate=False, notify=False)
             elif kind == "view_conversation":
                 self.game.viewed_conversation = value
@@ -467,6 +466,8 @@ class Application:
                 session_id=active_session, viewed=viewed)
             self._present_conversation_events()
         if self.conversations:
+            if simulation_active:
+                self.conversations.prepare_player_opening()
             self.conversations.schedule_acknowledgments(paused=paused, simulation_active=simulation_active)
             self._present_conversation_events()
         self.game.prompt_input.update(dt)
@@ -520,8 +521,6 @@ class Application:
 
     def draw(self):
         self.screens[self.screen].draw(self)
-        if self.screen == "game":
-            self.game.draw_call_choice(self)
         if (self.screen in ("game", "stats") and self.game.inventory.visible
                 and (active_player(self.simulation) or self.game.inventory.owner is not self.simulation.player)):
             self.game.inventory.draw(self)

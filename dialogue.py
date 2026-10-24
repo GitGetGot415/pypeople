@@ -105,7 +105,7 @@ class PlayerInvitation(StrictResponse):
 
 
 class ActionResponse(ActionIntent):
-    reply: str = Field(description="Your words to the player. If end_conversation is true, give only a brief closing without a question or invitation to continue.")
+    reply: str = Field(description="Your response to the player's actual message, or your prepared opening concern. Do not add a separate farewell; ending is handled by the conversation controls.")
     end_conversation: bool = Field(default=False, description="True when you finish talking without asking a question. If your SAY reply asks the player a question, this must be false so they can answer. End when the player is done or declines further conversation.")
     opinion_updates: list[OpinionUpdate] = Field(default_factory=list, max_length=8)
     emotion: EmotionReaction = Field(default_factory=EmotionReaction)

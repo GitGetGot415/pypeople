@@ -111,6 +111,7 @@ class PlayerRequest:
     record: object
     actor_revision: int
     roster_revision: int
+    prepared_opening: tuple | None = None
 
 
 def player_request_pending(request):

@@ -6,8 +6,7 @@ from constants import (DIALOGUE_PANEL_HEIGHT, FAILED_CONVERSATION_SELECTED_COLOR
                       APARTMENT_INSPECTOR_ROW_HEIGHT, APARTMENT_INSPECTOR_CONTENT_INSET,
                       APARTMENT_INSPECTOR_CONTENT_TOP, APARTMENT_INSPECTOR_TITLE_OFFSET, MODAL_OVERLAY_COLOR,
                       INVENTORY_BUTTON_RECT, GAME_PAUSE_RECT, GAME_CLOCK_RECT, GAME_PHASE_POSITION,
-                      GAME_PAUSED_LABEL_RIGHT, GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT, CALL_CHOICE_RECT,
-                      CALL_CHOICE_TITLE_RECT, CALL_CHOICE_STATUS_RECT, CALL_CHOICE_BUTTON_RECTS,
+                      GAME_PAUSED_LABEL_RIGHT, GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT,
                       DIALOGUE_ORIGINAL_TOGGLE_RECT, BORDER_RADIUS, GAME_MENU_CONFIRM_RECT,
                       GAME_MENU_CONFIRM_TITLE_Y, GAME_MENU_CONFIRM_MESSAGE_RECT, GAME_MENU_KEEP_PLAYING_RECT,
                       GAME_MENU_LEAVE_RECT, PLAYER_ROOM_NUMBER, PLAYER_ROOM_LOCATION, ROOM_BED_RECT,
@@ -49,10 +48,6 @@ class GameScreen:
         self.inventory = InventoryPanel()
         self.accept_offer_button = Button(GIFT_ACCEPT_RECT, "Accept gift")
         self.decline_offer_button = Button(GIFT_DECLINE_RECT, "Decline")
-        self.call_choice = None
-        self.call_status = ""
-        self.call_buttons = {label: Button(rect, label)
-                             for label, rect in zip(("Talk", "Decline"), CALL_CHOICE_BUTTON_RECTS)}
         self.pause_button = Button(GAME_PAUSE_RECT, "Pause")
         self.arrival_retry = Button((476, 72, 120, 32), "Retry arrival")
         self.clock_button = Button(GAME_CLOCK_RECT, "")
@@ -113,7 +108,6 @@ class GameScreen:
         self.confirm_menu = False
         self.menu_restore_focus = False
         self.inventory.close()
-        self.call_choice = None
         self.apartment_open = False
         self.location_menu = None
         self.apartment_scroll = 0
@@ -204,10 +198,7 @@ class GameScreen:
             world.leave_tree(world.player.id)
             return
         if self.dialogue_open and world.player_interaction and self.end_button.clicked(event):
-            app._sync_conversation_view()
-            if not app.conversations.say_player_farewell():
-                self.close_dialogue()
-            app._present_conversation_events()
+            self.close_dialogue()
             return
         if self.dialogue_open and self.invitation_button.clicked(event):
             offer = self.pending_invitation(world)
@@ -216,26 +207,6 @@ class GameScreen:
                 app.conversations.accept_player_invitation(offer.id)
                 app._present_conversation_events()
                 return
-        if self.call_choice:
-            from player import clear_call
-            npc = app.simulation.npc_by_id(self.call_choice)
-            if npc is None or not npc.player_call:
-                self.call_choice = None
-                return
-            for label, button in self.call_buttons.items():
-                if button.clicked(event, enabled=label != "Talk" or not app.simulation.paused):
-                    if label == "Talk":
-                        app._sync_conversation_view()
-                        self.call_status = app.conversations.talk_to_call(npc)
-                        app._present_conversation_events()
-                        if not self.call_status:
-                            self.call_choice = None
-                    else:
-                        app._sync_conversation_view()
-                        app.conversations.end_player_conversation()
-                        app._present_conversation_events()
-                        self.call_choice = None
-            return
         if active_player(world) and self.inventory_button.clicked(event):
             self.pan_start = self.pan_last = None
             self.prompt_input.active = self.prompt_input.backspace_held = False
@@ -698,36 +669,6 @@ class GameScreen:
             count = app.small_font.render(f"{len(self.prompt_input.text)}/300", True, MUTED)
             app.window.blit(count, count.get_rect(topright=(1256, 696)))
 
-    def open_call(self, app, npc):
-        if npc.unread_player_reply:
-            app._sync_conversation_view()
-            app.conversations.open_unread(npc)
-            app._present_conversation_events()
-            self.pan_start = self.pan_last = None
-            self.panning = False
-            return
-        if npc.player_call:
-            self.call_choice = npc.id
-            self.call_status = ""
-            self.pan_start = self.pan_last = None
-
-    def draw_call_choice(self, app):
-        if not self.call_choice:
-            return
-        npc = app.simulation.npc_by_id(self.call_choice)
-        if not npc or not npc.player_call:
-            self.call_choice = None
-            return
-        overlay = pygame.Surface(WINDOW_SIZE, pygame.SRCALPHA)
-        overlay.fill(MODAL_OVERLAY_COLOR)
-        app.window.blit(overlay, (0, 0))
-        pygame.draw.rect(app.window, PAPER, CALL_CHOICE_RECT)
-        draw_wrapped_text(app.window, f"{npc.name} would like to talk to you.", app.heading_font, INK, CALL_CHOICE_TITLE_RECT)
-        draw_wrapped_text(app.window, self.call_status or "Accept starts a conversation. Decline releases both of you.",
-                          app.font, MUTED, CALL_CHOICE_STATUS_RECT)
-        for label, button in self.call_buttons.items():
-            button.draw(app.window, app.small_font, enabled=label != "Talk" or not app.simulation.paused)
-
     def apartment_rows(self, app):
         rect = pygame.Rect(APARTMENT_INSPECTOR_RECT)
         content = rect.inflate(*(-value for value in APARTMENT_INSPECTOR_CONTENT_INSET))
@@ -943,16 +884,14 @@ class GameScreen:
         if self.bed_open and not self.can_use_bed(world):
             self.bed_open = False
         world.player_menu_blocked = bool(self.location_menu or self.inventory.visible or self.apartment_open
-            or self.call_choice or self.confirm_menu or self.bed_open or app.screen != "game")
+            or self.confirm_menu or self.bed_open or app.screen != "game")
         if self.confirm_menu:
             return
         if active_player(world):
             self.location = world.player.location
             interaction = world.player_interaction
             if interaction and interaction.kind == "resident":
-                if interaction.stage == "prompt" and not self.call_choice:
-                    self.open_call(app, world.npc_by_id(interaction.npc_id))
-                elif interaction.stage == "conversation" and not self.dialogue_open:
+                if interaction.stage == "conversation" and not self.dialogue_open:
                     app._sync_conversation_view()
                     app.conversations.open_player_dialogue(world.npc_by_id(interaction.npc_id))
                     app._present_conversation_events()

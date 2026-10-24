@@ -636,8 +636,9 @@ order; last_reply is your previous reply. Interpret a short answer using your
 MOST RECENT question, rather than an older topic. A negative answer to a factual
 question alone does not require ending the conversation.
 When ending after a question, answer it or explicitly acknowledge your lack
-of knowledge or refusal first. Then, if useful, add a brief natural closing.
-For a player's goodbye or declined offer of more conversation, just close.
+of knowledge or refusal first. Do not append farewell dialogue: ending is
+handled by the conversation controls. For a player's goodbye or declined
+offer of more conversation, acknowledge it briefly without a farewell.
 Do not add a question, offer of help, new topic, or invitation to talk again.
 Use end_conversation false when you actually choose to continue the exchange,
 including when a clarification question is necessary.
@@ -1197,6 +1198,11 @@ def response_contract(snapshot, *, correction=False):
     if snapshot.get("request_kind") in ("player_opening", "player_gift", "player_acknowledgment"):
         instruction += " This is an engine-initiated turn, not a player command. Use action SAY, empty target/item, quantity zero. Generate speech from player_interaction, without inventing player speech."
         snapshot = {**snapshot, "request_intent": dict(action="SAY", target="", item="", quantity=0)}
+    if snapshot.get("request_kind") == "player_opening":
+        instruction += (" Prepare the words you will say when you reach the player. Express your actual "
+                        "player_interaction.call reason immediately, without asking permission to talk. "
+                        "The player has said nothing yet. Leave room for their response: end_conversation false.")
+        schema["properties"]["end_conversation"] = {"type": "boolean", "enum": [False]}
     if snapshot.get("request_intent"):
         intent = snapshot["request_intent"]
         giving = intent["action"] == "GIVE_ITEM"
@@ -1561,7 +1567,17 @@ def _conversation_messages(payload, snapshot):
                                                   ("explanation", "way_home") if key in situation}
             messages.append({"role": "user", "content": content})
         else:
-            messages.append({"role": "user", "content": "Generate your own opening or acknowledgment from player_interaction. The player has not spoken a new line."})
+            call = snapshot.get("player_interaction", {}).get("call")
+            if snapshot.get("request_kind") == "player_opening" and call:
+                messages.append({"role": "user", "content": {
+                    "opening_reason": call["reason"],
+                    "reply_task": "Prepare the actual words you will say when you reach the player. "
+                                  "Express opening_reason directly in your own voice, rather than a generic greeting "
+                                  "or a request for permission to talk. If considering a gift, offer it or explain "
+                                  "your decision to keep it. The player has not said anything. "
+                                  "Use SAY and end_conversation false. Return the required reply JSON."}})
+            else:
+                messages.append({"role": "user", "content": "Generate your own opening or acknowledgment from player_interaction. The player has not spoken a new line."})
         return messages
     if snapshot.get("request_kind") not in ("resident_turn", "snake_turn", "conversation_closing"):
         return [{"role": "user", "content": payload}]

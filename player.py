@@ -24,7 +24,7 @@ class PlayerInteraction:
     """Simulation's physical meeting/travel ownership, independent of any view."""
     id: Annotated[str, Field(min_length=1)]
     kind: Literal["resident", "snake", "door"]
-    stage: Literal["approach", "prompt", "conversation", "handoff", "travel"]
+    stage: Literal["thinking", "approach", "conversation", "handoff", "travel"]
     location: str
     npc_id: str | None = None
     record_id: str | None = None
@@ -53,10 +53,13 @@ class PlayerInteraction:
         saved = {name: values[name] for name in names}
         if self.pending_request is not None:
             saved["pending_request"] = values["pending_request"]
+        if self.kind == "resident" and self.incoming and self.stage == "approach":
+            # Prepared but unspoken replies are transient. Reprepare after loading.
+            saved["stage"], saved["elapsed"] = "thinking", 0.0
         return saved
 
     def arrive(self):
-        self.stage = "prompt" if self.incoming else "conversation"
+        self.stage = "conversation"
 
     def wait_for_handoff(self):
         self.stage = "handoff"
@@ -130,7 +133,7 @@ def start_approach(world, npc, *, incoming=False, gift=None, knock_room=None):
         raise ValueError("There is no reachable place to meet.")
     state = npc.suspend_activity("Meeting the player")
     world.player_interaction = PlayerInteraction(id=uuid4().hex, kind="resident", npc_id=npc.id,
-        location=world.player.location, stage="approach", incoming=incoming, mover_id=mover.id,
+        location=world.player.location, stage="thinking" if incoming else "approach", incoming=incoming, mover_id=mover.id,
         point=tuple(point), elapsed=0.0, saved_state=state, record_id=None,
         gift=gift, knock_room=knock_room)
     if knock_room is not None:
@@ -179,8 +182,10 @@ def update_interaction(world, dt):
             or not interaction.knock_room and not colocated(world.player, npc)):
         end_interaction(world, "The participants are no longer available together.")
         return
+    if interaction.stage == "thinking":
+        return
     if interaction.stage != "approach":
-        if interaction.record_id:
+        if interaction.record_id and interaction.stage == "conversation":
             from interactions import observe_conversation
             observe_conversation(world, world.record_by_id(interaction.record_id), world.player, npc)
         return
@@ -196,7 +201,9 @@ def update_interaction(world, dt):
 
 
 def move_player(world, dx, dy, dt, *, running=False):
-    if not can_claim(world) or world.paused:
+    thinking = (world.player_interaction and world.player_interaction.kind == "resident"
+                and world.player_interaction.stage == "thinking")
+    if world.paused or not (can_claim(world) or thinking and not world.player_menu_blocked):
         return
     from interactions import move_toward
     from locations import clamp_point, targets, doorway_arrival, start_journey
@@ -213,6 +220,8 @@ def move_player(world, dx, dy, dt, *, running=False):
             x, y, width, height = target["rect"]
             if (x - FOOT_MARGIN <= p.x <= x + width + FOOT_MARGIN
                     and y - FOOT_MARGIN <= p.y <= y + height + FOOT_MARGIN):
+                if thinking:
+                    end_interaction(world, "The player left before the resident could speak.")
                 start_journey(p, target["destination"], doorway_arrival(target), purpose="doorway", fast=True)
                 break
 
@@ -408,6 +417,7 @@ def clear_call(npc):
 def start_call(world, npc, reason):
     """Claim an incoming meeting before normal activities can reserve its actors."""
     start_approach(world, npc, incoming=True)
+    npc.reason = "Thinking about what to say to the player"
     npc.player_call = PlayerCall(**asdict(reason), event_id="")
     event = world.publish("player_call", (npc,), f"{npc.name} would like to talk to you.")
     npc.player_call.event_id = event.id
@@ -509,12 +519,12 @@ def validate_saved_interaction(interaction, player, by_id, records, player_encou
                     raise ValueError("A knock must address the present owner of that door.")
             elif npc.location != player.location:
                 raise ValueError("Player conversation participants must be together.")
-            if interaction.stage not in ("approach", "prompt", "conversation", "handoff") or not 0 <= interaction.elapsed <= PLAYER_APPROACH_TIMEOUT:
+            if interaction.stage not in ("thinking", "approach", "conversation", "handoff") or not 0 <= interaction.elapsed <= PLAYER_APPROACH_TIMEOUT:
                 raise ValueError("Invalid player approach progress.")
             ActivitySnapshot.validate(interaction.saved_state)
             validate_feet(npc.location if interaction.incoming else player.location, interaction.point)
-            if interaction.stage == "prompt" and (not interaction.incoming or not npc.player_call):
-                raise ValueError("An incoming prompt needs its physical call.")
+            if interaction.stage == "thinking" and (not interaction.incoming or not npc.player_call):
+                raise ValueError("A thinking resident needs its incoming call.")
             if interaction.record_id and (interaction.record_id not in records
                     or set(records[interaction.record_id].participant_ids) != {player.id, npc.id}):
                 raise ValueError("Player conversation ownership needs its actual source record.")
