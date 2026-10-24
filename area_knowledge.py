@@ -3,7 +3,7 @@
 import math
 import re
 
-from constants import (APARTMENT_FLOORS, ROOMS_PER_FLOOR, JUDY_ROOM_NUMBER, STARTING_PHASE,
+from constants import (APARTMENT_FLOORS, ROOMS_PER_FLOOR, JUDY_ROOM_NUMBER, STARTING_PHASE, SNAKE_NAME,
                        ROOM_BED_RECT, ROOM_EXIT, ELEVATOR_ARRIVAL, HALLWAY_EXIT,
                        GARDEN_BUILDING_POINT, GARDEN_BRIDGE_RECT, APARTMENT_RECT, TREE_BASE_OFFSET,
                        SPATIAL_NEAR_DISTANCE)
@@ -36,6 +36,8 @@ on the first floor. No further exploration is needed to learn its layout.
 Answer layout-source questions directly, in first person about the speaker. Do not
 tell the listener that they were the one who toured the place, or recite the elevator
 arrival instead of explaining where the speaker's layout knowledge came from.
+Credit the guide naturally; phrases such as "according to Judy", "Judy said" or
+"I heard it from Judy" are sufficient. No exact wording or repeated attribution is needed.
 For directions, use spatial_view: map directions are fixed, body directions depend on
 facing. My left refers to from_speaker; your left refers to from_listener. Facing each
 other gives different left/right. Use compass directions if a body direction is unclear.
@@ -49,6 +51,7 @@ def known_layout():
         apartment=f"A cream-colored building with muted green trim, rows of windows and a brown entrance door. It has {APARTMENT_FLOORS} floors, with {ROOMS_PER_FLOOR} rooms per floor. The elevator serves every floor, even when rooms are vacant. There are no stairs.",
         hallway=f"A long, narrow hallway with a tan floor, cream wall and muted green trim. The elevator is at the western end; {ROOMS_PER_FLOOR} brown room doors line the north wall. Only floor 1 has the garden exit, at the southwestern end beside the elevator.",
         room="A narrow private room with a tan floor, cream wall and muted green trim. A wood-framed bed with a pale pillow and muted green blanket is against the north wall. One doorway at the south end leads back to that floor's hallway. No other furnishings or exits are present.",
+        apple_access=f"Residents can ask {SNAKE_NAME}, the python guarding the apple tree, for an apple. When stock is available, it may exchange one immediately for information it values. The tree being unshakable and unbreakable does not prevent obtaining apples through the guard. Carried apples can be given to and received from other people, even when the tree is empty. A request or spoken offer alone does not transfer an apple.",
         routes="From a room, use the south doorway to its hallway. On floors above 1, take the elevator to floor 1. Use the garden exit at the southwestern end of floor 1, then cross the wooden bridge to the grass. This exits the building, not this world.")
 
 
@@ -140,11 +143,13 @@ def validate_area_speech(text, knowledge, *, question=""):
         if source["source"] == "judy":
             guide = re.escape(source["guide_name"].split()[0])
             to_guide = (knowledge.get("listener_name") == source["guide_name"]
-                and re.search(r"\byou (?:already )?(?:told|explained|described|showed)\b", speech, re.I))
-            told = re.search(rf"\b{guide}\b[^.!?]{{0,60}}\b(?:told|explained|described)\b|"
-                             rf"\bfrom {guide}\b|\b{guide}['’]s (?:explanation|description)\b", speech, re.I)
+                and re.search(r"\byou (?:already )?(?:told|explained|described|showed|said|mentioned)\b", speech, re.I))
+            told = re.search(rf"\b{guide}\b.{{0,160}}?\b(?:told|explained|described|showed|said|says|mentioned|shared|pointed out)\b|"
+                             rf"\b(?:from|according to) {guide}\b|"
+                             rf"\b{guide}['’]s (?:explanation|description|directions|tour)\b|"
+                             rf"\b(?:told|explained|described|shown).{{0,60}}?\bby {guide}\b", speech, re.I | re.S)
             if not to_guide and not told:
-                raise ValueError("Answer in first person about the speaker's knowledge: credit Judy's explanation of the layout, rather than merely mentioning Judy or describing her own walk.")
+                raise ValueError("Credit Judy as the source of the layout information in natural wording, such as 'according to Judy' or 'Judy told me'.")
         elif source["source"] in ("own_observation", "confirmed_by_walking"):
             observed = re.search(r"\bi(?:['’]ve| have| did)? (?:(?:already|personally|also) )*(?:walked|looked|checked|confirmed|saw|seen)\b", speech, re.I)
             complete = re.search(r"\b(?:(?:all|everything) (?:i|we)(?:['’]ve| have| could| can)? (?:see|saw|seen|found)|"
