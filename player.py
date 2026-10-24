@@ -119,6 +119,9 @@ def directed_recipient_available(npc):
 
 
 def can_interrupt_approach(npc):
+    from autonomy import arrival_greeting_reserved
+    if npc.world and arrival_greeting_reserved(npc, npc.world):
+        return False
     meeting = npc.interaction
     return bool(meeting and meeting.active and not meeting.arrived
                 and not getattr(meeting, "committed", False)
@@ -129,6 +132,9 @@ def can_interrupt_approach(npc):
 def start_approach(world, npc, *, incoming=False, gift=None, knock_room=None):
     from locations import available, colocated
     from interactions import company_point
+    from autonomy import arrival_greeting_reserved
+    if arrival_greeting_reserved(npc, world):
+        raise ValueError("Judy is welcoming a new arrival. Let them finish their first conversation.")
     available_to_player = available(npc) or (not incoming and npc.journey is not None and npc.departure is None)
     if not can_claim(world) or world.npc_by_id(npc.id) is not npc or not available_to_player:
         raise ValueError("The player or resident is unavailable.")

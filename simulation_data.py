@@ -514,8 +514,9 @@ class SimulationState(SaveModel):
                                live_ids, indoor_ids, reserved, history, creation_ids)
         pending, processed = self.pending_arrival_days, self.processed_arrival_days
         arrival_days = resident_arrival_days(self)
-        if pending != sorted(set(pending)) or processed != sorted(set(processed)) or set(pending) & set(processed) or set(pending) | set(processed) != arrival_days:
-            raise ValueError("Every dawn must have exactly one pending or completed arrival.")
+        if (pending != sorted(set(pending)) or processed != sorted(set(processed)) or set(pending) & set(processed)
+                or not (set(pending) | set(processed)) <= arrival_days):
+            raise ValueError("Pending and completed arrivals must be unique and belong to an eligible dawn. A full building skips that dawn's arrival.")
         arrivals = [n.arrival_day for n in residents if n.arrival_day >= 2]
         if sorted(arrivals) != processed:
             raise ValueError("Completed arrivals must match their preserved residents.")

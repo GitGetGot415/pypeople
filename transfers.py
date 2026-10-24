@@ -21,6 +21,7 @@ def validate_transfer(world, giver, recipient, item, quantity, *, interaction=No
     """Always enforce authority, including with speech diagnostics disabled."""
     from locations import available, colocated
     from player import active_player, owns_resident
+    from autonomy import arrival_greeting_reserved
     if giver is None or recipient is None or giver is recipient:
         raise ValueError("Choose a giver and a different recipient.")
     if not colocated(giver, recipient):
@@ -37,6 +38,8 @@ def validate_transfer(world, giver, recipient, item, quantity, *, interaction=No
     for person in (giver, recipient):
         if person is world.player:
             continue
+        if arrival_greeting_reserved(person, world):
+            raise ValueError("Judy's welcome must finish before exchanging gifts.")
         authorized = bool(player_authorization and world.player_interaction
             and player_authorization == world.player_interaction.id and owns_resident(world, giver))
         if world.player not in (giver, recipient) and owns_resident(world, person) and not authorized:

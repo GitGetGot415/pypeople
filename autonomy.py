@@ -5,14 +5,14 @@ from social import orientation_context
 from activity import Behavior
 from conversation_history import memory_bias
 from constants import (APPLE_SATISFACTION, DECISION_SECONDS, MOVEMENT_SPEED, SOCIAL_PARTNER_RANDOMNESS,
-                      SOCIAL_START, SNAKE_NAME, STARTING_DAY, JUDY_ROOM_NUMBER)
+                      SOCIAL_START, SNAKE_NAME, STARTING_DAY, JUDY_ROOM_NUMBER, SOCIAL_RADIUS)
 from interactions import company_point
 from social import (concern_topic, goal_attempt_cooling_down, last_conversation_partner, pair_objective,
                    pending_promises, repeat_partner_paused)
 
 
 ORIENTATION_TOPIC = (
-    "Find my bearings: understand these surroundings, the missing transition, or where to find help and safety"
+    "Adjust to being here using the known layout; discuss practical routines, company, help or safety, without proposing a search for new places or clues"
 )
 
 
@@ -24,6 +24,7 @@ def awaiting_arrival_greeting(npc, world):
     greeter = arrival_greeter(world)
     return (greeter is not None and npc is not greeter and npc.arrival_day > STARTING_DAY
             and not any(greeter.id in record.participant_ids and npc.id in record.participant_ids
+                        and any(turn.speaker_id == greeter.id for turn in record.turns)
                         for record in world.history))
 
 
@@ -32,28 +33,65 @@ def next_arrival_to_greet(world):
                  if awaiting_arrival_greeting(person, world)), None)
 
 
+def arrival_greeting_reserved(npc, world):
+    return awaiting_arrival_greeting(npc, world) or (
+        npc is arrival_greeter(world) and next_arrival_to_greet(world) is not None)
+
+
 def greet_arrivals(world):
-    """Give the first resident the first automatic attempt to welcome each arrival."""
+    """Reserve Judy's first conversation immediately, before any other activity."""
     if world.phase_pending:
         return
     greeter = arrival_greeter(world)
-    if greeter is None or not world.company_available(greeter):
+    if greeter is None:
         return
     newcomer = next_arrival_to_greet(world)
-    if newcomer is None or not world.company_available(newcomer, allow_arrival=True):
+    if newcomer is None:
         return
-    if greeter.location != newcomer.location:
-        from locations import start_journey, door_point, clamp_point
-        greeter.begin_activity(Behavior.WAIT, world, reason=f"Going to welcome {newcomer.name}")
-        start_journey(greeter, newcomer.location, clamp_point(newcomer.location, door_point(greeter.room_number)),
-                      purpose="arrival_greeting")
+    if greeter.conversation and greeter.conversation.other(greeter) is newcomer:
+        return
+    reason = f"Welcoming the new arrival {newcomer.name} takes priority."
+    from player import owns_resident, end_interaction, clear_call
+    from apartments import finish_visit, cancel_work
+    if owns_resident(world, greeter):
+        end_interaction(world, reason)
+    if world.visit and world.visit.host_id == greeter.id:
+        finish_visit(world)
+    if greeter.conversation:
+        greeter.conversation.cancel(reason)
+    if greeter.gift:
+        greeter.gift.finish(reason)
+    if greeter.snake_encounter:
+        greeter.snake_encounter.finish(error=reason)
+    world.leave_tree(greeter.id, reason)
+    for action in list(world.pending_actions):
+        if action.npc_id == greeter.id:
+            world.pending_actions.remove(action)
+            record = world.record_by_id(action.record)
+            if record:
+                from constants import CONVERSATION_CANCELLED
+                record.status, record.error = CONVERSATION_CANCELLED, reason
+    clear_call(greeter)
+    greeter.player_reply.release()
+    greeter.selected = False
+    cancel_work(greeter)
+    greeter.journey = None
+    greeter.home_reason = greeter.bedtime_remaining = greeter.wake_remaining = None
+    greeter.begin_activity(Behavior.WAIT, world, reason=reason)
+    from locations import clamp_point
+    greeter.location = newcomer.location
+    greeter.x, greeter.y = clamp_point(newcomer.location, (newcomer.x + SOCIAL_RADIUS, newcomer.y))
+    if not world.company_available(newcomer, allow_arrival=True):
         return
     try:
-        world.start_conversation(greeter, newcomer,
-            f"Welcome {newcomer.name}, who has just arrived, and help them find their bearings here.",
+        meeting = world.start_conversation(greeter, newcomer,
+            f"Welcome {newcomer.name} and explain the known garden, apartment rooms and routes. Do not propose exploring for discoveries.",
             origin="autonomous", opening_kind="orientation")
     except ValueError:
-        return  # A selected actor or occupied meeting space can wait for the next tick.
+        return
+    for person in (greeter, newcomer):
+        person.x, person.y = person.destination
+    meeting.update(0)
     greeter.reason = f"Welcoming {newcomer.name}"
     newcomer.reason = f"Meeting {greeter.name} after arriving"
 
@@ -89,7 +127,7 @@ def lone_introduction(npc, world):
 def reconsider(npc, world, *, pressing_only=False):
     from apartments import HOME_BEHAVIORS
     from player import owns_resident
-    if awaiting_arrival_greeting(npc, world):
+    if arrival_greeting_reserved(npc, world):
         return
     if owns_resident(world, npc) or world.tree_has_actor(npc.id) or npc.journey or world.visit and world.visit.host_id == npc.id:
         return

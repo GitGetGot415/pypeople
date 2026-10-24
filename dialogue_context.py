@@ -114,8 +114,8 @@ def _base_preceding_turns(turns, names=()):
 
 
 def garden_environment():
-    return {"place": "One unfamiliar grassy area",
-            "objects": ["One living apple tree", "One apartment building with residents' rooms"],
+    return {"place": "The known floating grassy garden island",
+            "objects": ["One living apple tree", "A wooden bridge to the apartment entrance", "One apartment building with residents' rooms"],
             "tree_present": True, "other_venues": []}
 
 
@@ -149,6 +149,7 @@ def _orientation_world_context(snapshot, *, correction=False):
             "private_context": {"situation": {key: value for key, value in private.get("situation", {}).items()
                                              if key not in ("known_danger", "apple_bargain")},
                                 "concern": deepcopy(private.get("concern"))},
+            "area_knowledge": person.get("area_knowledge", {}),
         }
     history = deepcopy(snapshot.get("shared_history", {}))
     if correction:
@@ -204,7 +205,7 @@ def world_context(snapshot, *, correction=False):
         if conversation or snapshot.get("request_kind") in ("snake_encounter", "snake_decision"):
             # Rendering and movement bookkeeping do not help write a conversation.
             fields = {"npc_id", "npc_name", "character", "activity", "satisfaction", "inventory",
-                      "memories", "private_context", "arrival_day", "location",
+                      "memories", "private_context", "arrival_day", "location", "area_knowledge",
                       "tree_fruit", "tree_available_fruit", "living_count"}
             person = {key: value for key, value in person.items() if key in fields}
             # Private facts already have individually scoped accounts. A second full
@@ -358,6 +359,7 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
                    opinion_record_name=person["npc_name"], personality=character_context(person["character"]).get("personality", ""),
                    situation=private.get("situation", {}), concern=deepcopy(private.get("concern")),
                    opinion_of_listener=private.get("opinions", {}).get(partner["npc_name"]))
+    speaker["area_knowledge"] = person.get("area_knowledge", {})
     listener = dict(npc_id=actor_id(partner), name=own_name(partner), kind="human resident", location=partner.get("location", "garden"))
     if not assessment and speaker["opinion_of_listener"]:
         # Reasons are private assessments, often long or written in third person;
@@ -401,9 +403,11 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
         if person.get("location", "garden") == "garden" and "tree_fruit" in person:
             state["environment"]["tree"] = dict(fruit=person["tree_fruit"], available_fruit=person["tree_available_fruit"])
     if orientation:
-        state["task"] = ("Find your bearings: raise an arrival or surroundings concern. "
-                         "Suggest or respond to one practical first step without inventing discoveries. "
-                         "Names are already visible on floating name tags. The cause of arrival and way home remain unknown. "
+        state["task"] = ("Welcome the newcomer and explain the known garden, apartment layout and practical routes. "
+                         "Give concrete layout details now; this is the first welcome explanation, not a repeated tour or earlier conversation. "
+                         "If you are also new, discuss your actual concern using the layout Judy already explained. "
+                         "Do not suggest exploring for clues, new places or exits. "
+                         "Names are visible on floating tags. The cause of arrival and a way back to the former world remain unknown. "
                          if index == 0 else
                          "Answer the partner's actual point about arrival or surroundings and respond to their practical suggestion. "
                          "Use visible name tags without requiring introductions.")
@@ -458,6 +462,7 @@ def _snake_turn_snapshot(snapshot, decision, turns, *, outcome_turn=2):
     guard = dict(actor_id=snake["actor_id"], name=snake["name"], kind="python")
     human = dict(actor_id=resident["npc_id"], name=resident["npc_name"], kind="human resident")
     speaker, listener = (guard.copy(), human) if role == "initiator" else (human.copy(), guard)
+    speaker["area_knowledge"] = (snake if role == "initiator" else resident).get("area_knowledge", {})
     accounts = snake_speaker_accounts(snapshot, decision, turns, role, outcome_turn=outcome_turn)
     def speech_account(account):
         projected = build_account_view(account, None, snapshot.get("_name_actors", {}),
@@ -541,7 +546,7 @@ def _snake_turn_snapshot(snapshot, decision, turns, *, outcome_turn=2):
     else:
         task = "Answer the latest point naturally, preserving the recorded outcome; no additional transfer or punishment."
     if snapshot["purpose"] == "introduction":
-        task += " Help the visitor find their bearings. Do not initiate an apple bargain or demand private information."
+        task += " Discuss practical help using the known layout. Do not suggest exploration, initiate an apple bargain or demand private information."
     preceding = [dict(name=snake["name"] if t.speaker == "initiator" else resident["npc_name"],
                       role=t.speaker, text=t.text) for t in turns]
     speaker["earlier_speech"] = [t["text"] for t in preceding if t["role"] == role]

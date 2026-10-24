@@ -82,6 +82,7 @@ class Simulation:
         self.phase = STARTING_PHASE
         self.paused = STARTING_PAUSED
         self.phase_pending = False
+        self.sleep_until_day = False
         self.pending_actions = []
         self.history = []
         self.events = []
@@ -165,6 +166,12 @@ class Simulation:
         self.phase_pending = True
         self.finish_phase_change()
 
+    def next_day(self):
+        if self.paused or self.phase_pending or self.player_attention_pending:
+            return
+        self.sleep_until_day = True
+        self.next_phase()
+
     def finish_phase_change(self):
         """Commit one clock request only after existing speech and handoffs finish."""
         from social import advance_social_phase
@@ -180,7 +187,9 @@ class Simulation:
             self.phase = "day"
             self.day += 1
             self.snake.eaten_today = 0
-            if self.day not in self.pending_arrival_days and self.day not in self.processed_arrival_days:
+            from locations import npc_capacity
+            if (len(self.npcs) < npc_capacity(self) and self.day not in self.pending_arrival_days
+                    and self.day not in self.processed_arrival_days):
                 self.pending_arrival_days.append(self.day)
         for npc in self.npcs:
             npc.social = max(0.0, npc.social - SATISFACTION_PHASE_LOSS)
@@ -189,6 +198,13 @@ class Simulation:
         phase_changed(self)
         advance_social_phase(self)
         self.publish("phase", [], f"Time changed to {self.phase}.")
+        if self.sleep_until_day and self.phase == "night":
+            self.phase_pending = True
+            self.finish_phase_change()
+            return
+        self.sleep_until_day = False
+        if self.phase == "day":
+            self.deliver_arrivals()
 
     def publish(self, kind, participants, text, record=None):
         from conversation_history import WorldEvent
@@ -206,6 +222,11 @@ class Simulation:
         from npc import Conversation
 
         from locations import available as available_outdoors, colocated
+        from autonomy import arrival_greeter, arrival_greeting_reserved, awaiting_arrival_greeting
+        welcome = (initiator is arrival_greeter(self) and awaiting_arrival_greeting(recipient, self)
+                   and opening_kind == "orientation")
+        if not welcome and any(arrival_greeting_reserved(p, self) for p in (initiator, recipient)):
+            raise ValueError("The new arrival must speak with Judy first.")
         if self.phase_pending and origin == "autonomous":
             raise ValueError("Waiting for the pending time change before starting another automatic conversation.")
         if not colocated(initiator, recipient) or any(self.npc_by_id(p.id) is not p or not available_outdoors(p) for p in (initiator, recipient)):
@@ -305,9 +326,9 @@ class Simulation:
         from activity import Behavior
 
         from locations import available as available_outdoors
-        from autonomy import awaiting_arrival_greeting
+        from autonomy import arrival_greeting_reserved
         return (self.npc_by_id(npc.id) is npc and available_outdoors(npc)
-                and (allow_arrival or not awaiting_arrival_greeting(npc, self))
+                and (allow_arrival or not arrival_greeting_reserved(npc, self))
                 and not self.reservations.held(npc.id, "player", "tree", "visit", "conversation", "handoff", "snake")
                 and not npc.selected and not npc.interaction_blocked
                 and (allow_player_call or not npc.player_call)
@@ -447,11 +468,13 @@ class Simulation:
     def tree_can_admit(self, actor):
         from constants import TREE_NPC_ADMISSION_LIMIT
         from player import active_player, owns_resident
+        from autonomy import arrival_greeting_reserved
         if not self.is_outdoors(actor) or self.tree_has_actor(actor.id):
             return False
         if actor is self.player:
             return active_player(self) and not (self.player_interaction or actor.journey)
         return (len(self.tree_queue) + bool(self.tree_current) < TREE_NPC_ADMISSION_LIMIT
+                and not arrival_greeting_reserved(actor, self)
                 and not owns_resident(self, actor) and not actor.busy and not actor.interaction_blocked
                 and not actor.journey and not actor.player_call)
 
@@ -858,7 +881,11 @@ class Simulation:
         from purgatory import remember_description
         from social import assign_goal
         from locations import npc_capacity
-        if not self.pending_arrival_days or self.arrival_error or len(self.npcs) >= npc_capacity(self):
+        if len(self.npcs) >= npc_capacity(self):
+            self.pending_arrival_days.clear()
+            self.arrival_error = ""
+            return None
+        if not self.pending_arrival_days or self.arrival_error:
             return None
         day = self.pending_arrival_days[0]
         if day in self.processed_arrival_days:
@@ -890,6 +917,8 @@ class Simulation:
         refresh_concern(npc)
         npc.decision_remaining = 0.0
         self.observed_event("arrival", npc, None, f"{npc.name} arrived for dawn on day {day}.")
+        from autonomy import greet_arrivals
+        greet_arrivals(self)
         return npc
 
 

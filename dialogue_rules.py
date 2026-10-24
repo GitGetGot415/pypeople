@@ -15,6 +15,8 @@ def unquoted_speech(text):
 
 def validate_environment_speech(text, *, location="garden"):
     """Check local setting facts while preserving wishes, quotations and past lives."""
+    from area_knowledge import validate_area_speech
+    validate_area_speech(text, {})
     speech = unquoted_speech(text)
     venue = r"(?:jazz club|nightclub|caf[eé]|restaurant)"
     mentions_venue = bool(re.search(rf"\b{venue}\b", speech, re.I))

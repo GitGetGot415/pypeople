@@ -265,6 +265,10 @@ def validate_dialogue_format(turns):
 def validate_speech_grounding(text, snapshot):
     """Check this speech before a partner sees it or its effects are committed."""
     speaker, listener = snapshot["speaker"], snapshot["listener"]
+    from area_knowledge import validate_area_speech
+    preceding = snapshot.get("preceding_turns", [])
+    question = snapshot.get("_player_message", preceding[-1]["text"] if preceding else "")
+    validate_area_speech(text, speaker.get("area_knowledge", {}), question=question)
     listener_name = snapshot.get("_listener_identity", _actor_name(listener))
     names = [_actor_name(speaker), listener_name, SNAKE_NAME, *snapshot.get("known_actor_names", [])]
     validate_english(text, names)
@@ -523,6 +527,8 @@ def _validate_response(raw, snapshot, model):
         validate_player_snake_decision(result, snapshot)
         if check_dialogue:
             validate_english(result.reply, (SNAKE_NAME,))
+            from area_knowledge import validate_area_speech
+            validate_area_speech(result.reply, snapshot.get("snake", {}).get("area_knowledge", {}))
             validate_dialogue_format([ConversationTurn(speaker="initiator", parts=[ConversationPart(text=result.reply)])])
             validate_snake_perspective(result.reply, snake_role="speaker")
             _validate_speaker(result.reply, SNAKE_NAME, PLAYER_LABEL)
@@ -574,7 +580,9 @@ def _validate_response(raw, snapshot, model):
         if isinstance(result, ActionResponse) and check_dialogue:
             validate_speech_grounding(result.reply, {
                 "_name_actors": snapshot.get("_name_actors", {}),
+                "_player_message": snapshot.get("_player_message", ""),
                 "speaker": {"name": snapshot.get("npc_name", ""),
+                            "area_knowledge": snapshot.get("area_knowledge", {}),
                             "situation": snapshot.get("private_context", {}).get("situation", {})},
                 "listener": "You", "day": snapshot.get("day"),
             })
@@ -750,4 +758,19 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
         if snapshot.get("arrival_focus", False) and index == 0:
             if not orientation_speech([turn.text]):
                 raise ValueError("Open this orientation exchange with an arrival or surroundings concern; routine apple goals are deferred.")
+            if snapshot.get("arrival_welcome") and re.search(
+                    r"\bi(?:['’]ve| have)? already (?:told|explained|described|shown)\b",
+                    unquoted_speech(turn.text), re.I):
+                raise ValueError("This is Judy's first conversation with this newcomer. Explain the layout now; do not claim you already told them in an earlier conversation.")
+            if snapshot.get("arrival_welcome") and not (
+                    (re.search(r"\bbed\b", turn.text, re.I)
+                     and re.search(r"\b(?:doorway|door|exit)\b", turn.text, re.I)
+                     and re.search(r"\b(?:south|hallway)\b", turn.text, re.I))
+                    or (re.search(r"\belevator\b", turn.text, re.I)
+                        and re.search(r"\bgarden exit\b", turn.text, re.I)
+                        and re.search(r"\b(?:first floor|floor (?:1|one))\b", turn.text, re.I))
+                    or (re.search(r"\bbridge\b", turn.text, re.I)
+                        and re.search(r"\bgarden\b", turn.text, re.I)
+                        and re.search(r"\b(?:apartment entrance|building entrance)\b", turn.text, re.I))):
+                raise ValueError("Give concrete layout information in this welcome: describe the room's bed and exit, or explain the elevator and floor-one garden exit. A greeting, saying you walked around, or offering to explain later is insufficient.")
     return projected

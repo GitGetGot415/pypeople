@@ -146,8 +146,8 @@ def home_priority(npc, world, dt):
     """Run after existing interactions finish and before anyone reserves partners."""
     npc.outdoor_remaining = max(0.0, npc.outdoor_remaining - dt)
     from player import owns_resident
-    from autonomy import awaiting_arrival_greeting
-    if awaiting_arrival_greeting(npc, world):
+    from autonomy import arrival_greeting_reserved
+    if arrival_greeting_reserved(npc, world):
         return
     if (owns_resident(world, npc) or world.tree_has_actor(npc.id) or npc.journey
             or world.visit and world.visit.host_id == npc.id or npc.interaction):

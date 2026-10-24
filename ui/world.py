@@ -7,7 +7,7 @@ from constants import (GARDEN_LOCATION, GARDEN_FLOOR_ART, GARDEN_FLOOR_OFFSET, I
                       APARTMENT_BASE_Y, APARTMENT_ROOF_RECT, GARDEN_BRIDGE_RECT, DEFAULT_BUBBLE_SPRITE_SIZE,
                       GARDEN_UNDERSIDE_RECT, APARTMENT_UNDERSIDE_RECT,
                       UI_SMALL_FONT_SIZE, NAME_TAG_FONT_SIZE, NAME_TAG_HEAD_GAP, PLAYER_NAME_TAG,
-                      ROOM_BED_RECT, SLEEP_FACING, SLEEP_ROTATION, PLAYER_ROOM_NUMBER)
+                      ROOM_BED_RECT, SLEEP_FACING, SLEEP_ROTATION, PLAYER_ROOM_NUMBER, TREE_BASE_OFFSET)
 from activity import Behavior
 from npc import NPC
 from .fonts import UnicodeFont
@@ -16,7 +16,6 @@ from .character_sprite import snake_artwork
 
 CHARACTER_SCALE = 0.5
 TREE_SCALE = 0.6
-TREE_BASE_OFFSET = 64
 APPLE_POINTS = ((38, 58), (83, 28), (112, 60), (65, 84), (96, 111), (33, 101), (111, 32), (46, 30))
 _tree_artwork = None
 

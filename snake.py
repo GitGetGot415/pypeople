@@ -143,6 +143,7 @@ class Snake:
     def snapshot(self, tree=None):
         from social import account_view, claim_by_id
         from actor_identity import actor_catalog
+        from area_knowledge import area_knowledge
         # Rehearing an event cannot replace the snake's own firsthand knowledge.
         by_fact = {}
         for belief in self.beliefs:
@@ -155,6 +156,7 @@ class Snake:
             claim = claim_by_id(self.world, belief.claim_id)
             known.append(account_view(self.world, claim, belief))
         return {"actor_id": self.id, "name": self.name, "activity": self.status,
+                "area_knowledge": area_knowledge(self, self.encounter.recipient if self.encounter else None),
                 "_name_actors": actor_catalog(self.world),
                 "known_accounts": known, "doctrine": SNAKE_DOCTRINE,
                 "tree_fruit": self.world.tree.fruit, "tree_available_fruit": self.world.available_fruit,

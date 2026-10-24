@@ -58,7 +58,7 @@ def concern_key(npc, concern):
 
 def concern_topic(npc, concern):
     guidance = {
-        "orientation": "Find my bearings: understand these surroundings, the missing transition, or where to find help and safety",
+        "orientation": "Adjust to arrival using the known layout; discuss practical routines, company, help or safety without searching for new places or clues",
         "recollection": "Talk about a memory from my former life",
         "news": "Compare views on an account I know",
         "surroundings": "Talk about life here and what is on my mind",
@@ -101,7 +101,7 @@ def concern_description(npc, concern):
     if concern is None:
         return "No subject selected."
     descriptions = {
-        "orientation": "Finding their bearings: arrival, surroundings, help and safety.",
+        "orientation": "Adjusting to arrival with a known layout: practical routines, company, help and safety.",
         "surroundings": "Reflecting on their surroundings and present situation.",
         "plans": "Considering what to do next.",
     }
@@ -1307,11 +1307,12 @@ def orientation_context(npc):
     return {"days_here": world.day - npc.arrival_day,
             "orientation_discussions": len(discussed),
             "needs_orientation": len(discussed) < ARRIVAL_DISCUSSION_THRESHOLD,
-            "adjustment": "finding bearings" if not discussed else "developing routines; questions remain unanswered"}
+            "adjustment": ("adjusting to arrival with a known physical layout" if not discussed else
+                           "developing routines in the known layout; the reason for being here remains unknown")}
 
 
 def orientation_speech(texts):
-    pattern = (r"\b(?:arriv\w*|elevator|where (?:are|am) (?:we|i)|where (?:we|i) (?:are|am)|"
+    pattern = (r"\b(?:arriv\w*|welcome|layout|hallway|rooms?|garden exit|bridge|elevator|where (?:are|am) (?:we|i)|where (?:we|i) (?:are|am)|"
                r"why (?:we|i) (?:are|am) here|how (?:did|do) (?:we|i) get|how (?:we|i) got here|"
                r"(?:get|getting|go|going|way|back) home|"
                r"(?:remember|recall).{0,35}(?:how|why|when).{0,25}here|"
@@ -1327,10 +1328,10 @@ def validate_orientation(response, snapshot):
     discussed = orientation_speech(turn.text for turn in response.turns)
     if snapshot.get("arrival_focus"):
         if any((response.accepted_proposals, response.disclosures, response.third_party_opinions, response.leverage)):
-            raise ValueError("This orientation exchange does not authorize apple promises, private disclosures or leverage. Meet the person and find your bearings.")
+            raise ValueError("This orientation exchange does not authorize apple promises, private disclosures or leverage. Welcome the person and discuss the known layout or practical routines.")
         if snapshot.get("_dialogue_validation", True):
             if not discussed:
-                raise ValueError("This is an orientation exchange. Discuss the unfamiliar surroundings or remembered elevator arrival, rather than pursuing a routine apple goal.")
+                raise ValueError("This is an orientation exchange. Discuss the known surroundings, practical routines or remembered elevator arrival, rather than pursuing a routine apple goal.")
     # This is derived bookkeeping, not a reason to regenerate otherwise valid speech.
     response.orientation_discussed = discussed
     return discussed

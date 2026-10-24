@@ -30,6 +30,7 @@ from ollama_manager import DEFAULT_OLLAMA_MODEL, mark_ollama_ready
 from model_debug import admitted_provider, provider_wait_seconds, check_cancelled, record_output
 from conversation_history import rewrite_validation_error, usable_rewrite
 from dialogue_context import (NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION, account_speech_context)
+from area_knowledge import AREA_KNOWLEDGE_INSTRUCTION
 from actor_identity import (account_references, name_forms, actor_id, forms, own_name)
 
 
@@ -1441,6 +1442,7 @@ def _request_context(message, snapshot, correction):
         instruction += "\n" + NAME_TAG_INSTRUCTION
     if NPC_ARRIVAL_INSTRUCTION not in instruction:
         instruction += "\n" + NPC_ARRIVAL_INSTRUCTION
+    instruction += "\n" + AREA_KNOWLEDGE_INSTRUCTION
     if snapshot.get("_name_actors"):
         context["engine_identities"] = dialogue_context._catalog_for_prompt(snapshot["_name_actors"])
     if snapshot.get("request_kind") in ("resident_turn", "snake_turn", "conversation_closing"):
@@ -1923,6 +1925,8 @@ def _resident_exchange(snapshot, request, retain, report):
     draft = _resident_draft()
     budget = FOOD_REQUEST_TURN_COUNT if snapshot.get("purpose") == "food_request" else RESIDENT_TURN_COUNT
     limit = FOOD_REQUEST_TURN_COUNT + 1 if snapshot.get("purpose") == "food_request" else CONVERSATION_MAX_TURNS
+    if snapshot.get("arrival_welcome"):
+        limit = budget
     for index in range(limit):
         if index >= budget and (not snapshot.get("_dialogue_validation", True)
                                 or not contains_question(draft["turns"][-1].text)):

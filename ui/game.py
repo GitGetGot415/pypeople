@@ -388,7 +388,7 @@ class GameScreen:
             self.bed_open = False
         elif self.bed_advance_button.clicked(event, enabled=self.can_advance_from_bed(app.simulation)):
             self.bed_open = False
-            app.simulation.next_phase()
+            app.simulation.next_day()
 
     def draw_bed_popup(self, app):
         if not self.bed_open:
@@ -401,9 +401,9 @@ class GameScreen:
         draw_centered_text(app.window, "Rest in your bed", app.heading_font, BED_POPUP_TITLE_Y)
         message = ("Resume the game before passing time." if world.paused else
                    "Time will change after the current conversations finish." if world.phase_pending else
-                   "Pass time until the next phase? Current conversations and handoffs will finish first.")
+                   "Sleep until tomorrow morning? Current conversations and handoffs will finish first. A new resident arrives if there is room.")
         draw_wrapped_text(app.window, message, app.font, INK, BED_POPUP_MESSAGE_RECT)
-        self.bed_advance_button.label = f"Rest until {world.next_phase_label}"
+        self.bed_advance_button.label = f"Sleep until Day {world.day + 1}"
         self.bed_advance_button.draw(app.window, app.small_font, enabled=self.can_advance_from_bed(world))
         self.bed_cancel_button.draw(app.window, app.small_font)
 
@@ -584,9 +584,6 @@ class GameScreen:
         if pending or error:
             color = PAPER if app.simulation.phase == "night" else INK
             label = f"Arrivals waiting: {', '.join(str(d) for d in pending)}" if pending else "Next arrival"
-            from locations import npc_capacity
-            if pending and len(app.npcs) >= npc_capacity(app.simulation):
-                label = "Building full; arrivals are waiting for a vacant room."
             if error:
                 label += f" / {error}"
                 self.arrival_retry.draw(app.window, app.small_font, enabled=not app.simulation.paused)

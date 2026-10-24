@@ -27,7 +27,7 @@ from constants import (APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS
                        DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, CONVERSATION_PAUSE_RANGE,
                        CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, MOVEMENT_SPEED,
                        NPC_RADIUS, PARTNER_COOLDOWN, SHAKE_SECONDS, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED,
-                       WANDER_PAUSE, FOOT_MARGIN, STARTING_DAY, STARTING_FACING, STARTING_NPC_FRUIT,
+                       WANDER_PAUSE, FOOT_MARGIN, STARTING_DAY, STARTING_FACING, STARTING_NPC_FRUIT, JUDY_ROOM_NUMBER,
                        STARTING_NPC_GENEROSITY_RANGE, STARTING_NPC_POSITION, STARTING_NPC_SATISFACTION_RANGE,
                        STARTING_NPC_SOCIABILITY_RANGE, STARTING_TREE_POSITION, STARTING_FATIGUE_RANGE,
                        EXCHANGE_FATIGUE, CONVERSATION_CANCELLED, CONVERSATION_DIALOGUE_READY,
@@ -454,6 +454,8 @@ class NPC:
             "last_reply": self.reply,
         }
         if private:
+            from area_knowledge import area_knowledge
+            state["area_knowledge"] = area_knowledge(self, partner_id)
             from player import work_choices
             from player_story import starting_encounter, starting_dialogue_context
             state["owned_works"] = work_choices(self.world, self.id)
@@ -1066,6 +1068,8 @@ class Conversation(ResidentProgress):
             "purpose": self.purpose,
             "opening_kind": self.opening_kind,
             "arrival_focus": self.opening_kind == "orientation",
+            "arrival_welcome": (self.opening_kind == "orientation" and self.initiator.room_number == JUDY_ROOM_NUMBER
+                                and self.recipient.arrival_day > STARTING_DAY),
             "food_request": {"item": "fruit", "quantity": 1, "outcome": self.food_outcome,
                              "reason": self.food_reason, "transferred": False} if self.purpose == "food_request" else None,
             "initiator": initiator,
