@@ -16,7 +16,9 @@ JUDY_OPENING = (
     "on my own, I started wondering whether it was just for me. My own private purgatory. "
     "Though I suppose all those empty rooms should have been a clue that someone else might turn up. "
     "I feel a little silly now. Mostly relieved, honestly. It's good to have someone else here. "
-    "How are you holding up?"
+    "I've looked through every nook and cranny in this world, and aside from this apartment building and the garden outside... "
+    "There genuinely appears to be nothing else. This is it. "
+    "Anyways, how are you holding up?"
 )
 
 
