@@ -10,7 +10,6 @@ from constants import APARTMENT_ID, EAT_SECONDS
 
 class Behavior(str, Enum):
     WANDER = "WANDER"
-    STOP = "STOP"
     GO_TO_TREE = "GO_TO_TREE"
     SHAKE_TREE = "SHAKE_TREE"
     SHAKING = "SHAKING"
@@ -31,7 +30,7 @@ class ActivitySnapshot:
     destination: tuple[float, float] | None
     pause_remaining: Annotated[float, Field(ge=0)]
     facing: Annotated[int, Field(ge=0, le=7)]
-    owner: Literal["autonomous", "player_task", "player_hold"]
+    owner: Literal["autonomous", "player_task"]
     target_id: str | None
     activity_elapsed: Annotated[float, Field(ge=0)]
     reason: str
@@ -58,8 +57,6 @@ class ActivitySnapshot:
         if self.destination is not None:
             from locations import validate_destination
             validate_destination(self.destination, location=getattr(self, "location", None))
-        if (self.owner == "player_hold") != (self.behavior == Behavior.STOP):
-            raise ValueError("A player hold must be stopped.")
         player_behaviors = (Behavior.GO_TO_TREE, Behavior.SHAKE_TREE, Behavior.SHAKING)
         if self.behavior != Behavior.EAT and (self.owner == "player_task") != (self.behavior in player_behaviors):
             raise ValueError("Invalid player task.")

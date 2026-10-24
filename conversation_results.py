@@ -285,7 +285,6 @@ def apply_pending_action(world, action, spacing):
         else:
             outcomes = {
                 "WANDER": "Returned to autonomous activities.",
-                "STOP": "Holding position until another player task.",
                 "GO_TO_TREE": "Started walking to the tree.",
                 "SHAKE_TREE": "Started the task of shaking the tree.",
                 "TALK_TO_NPC": f"Started a conversation with {target.name}." if action.action == "TALK_TO_NPC" else "",

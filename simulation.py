@@ -18,7 +18,7 @@ from constants import (COMPANY_SOCIAL_RECOVERY, CROWD_LIMIT, DECISION_SECONDS, S
 @dataclass
 class PendingAction:
     npc_id: str
-    action: Literal["WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "GIVE_ITEM", "EAT"]
+    action: Literal["WANDER", "GO_TO_TREE", "SHAKE_TREE", "TALK_TO_NPC", "GIVE_ITEM", "EAT"]
     revision: Annotated[int, Field(ge=0)]
     target_id: str | None = None
     topic: str = ""
@@ -543,7 +543,7 @@ class Simulation:
             position = queue_positions.get(actor.id)
             eligible = (position is not None if actor is self.player else
                 not (actor.busy or actor.journey or owns_resident(self, actor) or actor.player_call
-                     or actor.interaction_blocked or actor.owner == "player_hold")
+                     or actor.interaction_blocked)
                 and (position is not None or actor.resume_pending))
             if not eligible or position == 0:
                 self._tree_exit_targets.pop(actor.id, None)

@@ -326,10 +326,13 @@ Do not turn a remark into an instruction to approach someone else. Another NPC's
 presence or profile is never a reason to choose TALK_TO_NPC or GIVE_ITEM.
 Short conversational answers such as yes please, no thanks and sure are SAY;
 answering_npc_utterance explains what is being answered, not a new command.
+The player cannot command a resident to stay still or hold position. Requests
+to stop moving are SAY and must not change activity. Conversations temporarily
+pause their participants; ending a conversation releases that pause.
 An observation such as seeing someone talking to someone else is COMMENT/SAY,
 even when it starts with yes. Talking in a report does not request TALK_TO_NPC.
 Return only message_type, action, target, item, and quantity; do not write dialogue or roleplay.
-Supported actions are WANDER (wander around), STOP (stay still), GO_TO_TREE
+Supported actions are WANDER (wander around), GO_TO_TREE
 (walk to the tree), SHAKE_TREE (walk to the tree and shake it), TALK_TO_NPC
 (approach another NPC to speak to them), GIVE_ITEM (give carried apples or one
 owned work to another resident or the player), EAT (eat one carried apple), and SAY (reply to the player).
@@ -509,7 +512,9 @@ Eating one carried apple raises satisfaction by 10, up to 100; company also rais
 Autonomous collecting, eating, and company use local simulation rules.
 Apples are stored as "fruit" in inventory. There are no hunger or rest needs.
 The tree's fruit count is real. A player SHAKE_TREE is cosmetic and gives no fruit.
-STOP holds you in place until another task; WANDER releases player control.
+WANDER releases task control so you can choose autonomous activities.
+There is no command to stay still or hold position; respond with SAY to such a
+request without changing activity. Ending a conversation releases its temporary pause.
 Only the supported action contract can change activities; do not invent actions.
 Use the profile's Name as your identity and its Age, Weight (kg), Height (cm),
 Sex, and appearance as your own stats. Use personality for behavior, and permitted
@@ -520,7 +525,7 @@ NPCs, even when their profiles are identical. Keep these suffixes when referring
 to people, choosing targets, or updating opinions. If an unnumbered name matches
 multiple NPCs, ask which numbered NPC the player means.
 Interpret the player's message as exactly one supported action:
-WANDER: wander around; STOP: stay still; GO_TO_TREE: walk to the tree;
+WANDER: wander around; GO_TO_TREE: walk to the tree;
 SHAKE_TREE: walk to the tree and shake it; SAY: speak without changing behavior.
 EAT: eat one apple already in your inventory. Face down and eat for one second,
 then consume the apple and gain 10 satisfaction (capped at 100). Use target "",

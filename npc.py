@@ -391,15 +391,12 @@ class NPC:
                 return f"Talking with {self.conversation.other(self).name}"
             partner = self.conversation.other(self)
             return f"Walking to meet {partner.name}" if self.destination is not None else f"Waiting for {partner.name}"
-        if self.owner == "player_hold":
-            return "Player hold (STOP)"
         if self.resume_pending:
             return "Resuming activity on next simulation tick"
         if self.wandering_paused:
             return "Waiting for player"
         return {
             Behavior.WANDER: "Wandering",
-            Behavior.STOP: "Stopped",
             Behavior.GO_TO_TREE: "Walking to tree",
             Behavior.SHAKE_TREE: "Walking to tree",
             Behavior.SHAKING: "Shaking tree",
@@ -555,7 +552,7 @@ class NPC:
         self.selected = selected
         if not selected:
             self.player_reply.closing = False
-        if self.conversation is None and self.gift is None and selected and (self.wandering_paused or self.behavior in (Behavior.STOP, Behavior.SHAKING)):
+        if self.conversation is None and self.gift is None and selected and (self.wandering_paused or self.behavior == Behavior.SHAKING):
             self._face_when_still()
 
     def apply_action(self, action, tree):
@@ -565,7 +562,7 @@ class NPC:
         # Reject before changing anything. SAY preserves even an active shake.
         if action == "SAY":
             return
-        if action not in ("WANDER", "STOP", "GO_TO_TREE", "SHAKE_TREE", "EAT"):
+        if action not in ("WANDER", "GO_TO_TREE", "SHAKE_TREE", "EAT"):
             raise ValueError("Unsupported NPC action")
         if self.busy:
             raise ValueError("This NPC is already in an interaction.")
@@ -582,9 +579,6 @@ class NPC:
         if action == "WANDER":
             self.begin_activity(Behavior.WANDER, self.world, reason="Player released control; choosing activities")
             self.decision_remaining = 0
-        elif action == "STOP":
-            self.begin_activity(Behavior.STOP, self.world, reason="Player asked me to stay here; waiting for another task", owner="player_hold")
-            self._face_when_still()
         elif action == "EAT":
             self.begin_activity(Behavior.EAT, self.world, reason="Player asked me to eat an apple", owner="player_task")
         else:
