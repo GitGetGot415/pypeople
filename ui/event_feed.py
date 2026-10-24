@@ -10,7 +10,7 @@ class EventFeed:
     def __init__(self):
         self.header = pygame.Rect(0, 0, 0, HUD_HEADER_HEIGHT)
         self.body = pygame.Rect(0, 0, 0, EVENT_FEED_BODY_HEIGHT)
-        self.collapsed = False
+        self.collapsed = True
         self.scroll = 0
         self.following = True
         self.unread = 0

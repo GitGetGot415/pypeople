@@ -17,11 +17,12 @@ PLAYER_NAME_TAG = "Player"
 WORLD_WIDTH = 960
 WORLD_HEIGHT = 460
 GARDEN_FLOOR_ART = "assets/Garden Floor.png"
-GARDEN_FLOOR_SIZE = (WORLD_WIDTH, 720)
-GARDEN_FLOOR_OFFSET = (0, -200)
 # Physical maps use feet positions and a small footprint, including indoors.
 GARDEN_LOCATION = "garden"
 HALLWAY_SIZE = (840, 240)
+# Match the exterior's width while preserving existing world coordinates.
+GARDEN_FLOOR_SIZE = (HALLWAY_SIZE[0], 720)
+GARDEN_FLOOR_OFFSET = ((WORLD_WIDTH - GARDEN_FLOOR_SIZE[0]) // 2, -200)
 ROOM_SIZE = (128, 448)
 INDOOR_BACKGROUND = (0, 0, 0)
 FOOT_MARGIN = 6
@@ -49,7 +50,10 @@ SLEEP_ROTATION = 90
 ELEVATOR_ARRIVAL = (HALLWAY_ELEVATOR_ORIGIN[0] + APARTMENT_OVERLAY_SIZE[0] / 2, HALLWAY_ARRIVAL_Y)
 HALLWAY_EXIT = (80.0, HALLWAY_SIZE[1] - FOOT_MARGIN)
 ROOM_EXIT = (64.0, ROOM_SIZE[1] - FOOT_MARGIN)
-APARTMENT_RECT = ((GARDEN_FLOOR_SIZE[0] - HALLWAY_SIZE[0]) // 2, -HALLWAY_SIZE[1], *HALLWAY_SIZE)
+APARTMENT_FLOORS = 10
+APARTMENT_FLOOR_SIZE = (HALLWAY_SIZE[0], 120)
+APARTMENT_RECT = (GARDEN_FLOOR_OFFSET[0], -APARTMENT_FLOOR_SIZE[1] * APARTMENT_FLOORS,
+                  APARTMENT_FLOOR_SIZE[0], APARTMENT_FLOOR_SIZE[1] * APARTMENT_FLOORS)
 APARTMENT_DOOR_RECT = (APARTMENT_RECT[0] + 52, -84, 56, 84)
 GARDEN_BUILDING_POINT = (APARTMENT_DOOR_RECT[0] + APARTMENT_DOOR_RECT[2] / 2, FOOT_MARGIN)
 GARDEN_BUILDING_ARRIVAL = (GARDEN_BUILDING_POINT[0], 40.0)
@@ -57,7 +61,9 @@ GARDEN_VISIT_POINT = (100.0, 280.0)
 APARTMENT_ART = {"hallway": "assets/Apartment Building Hallway.png",
                  "room": "assets/Apartment Room.png", "door": "assets/Door.png",
                  "elevator": "assets/Elevator.png", "bed": "assets/Apartment Bed.png",
-                 "exterior": "assets/Apartment Building Exterior.png", "exit": "assets/Walk here to Exit.png"}
+                 "exterior_ground": "assets/Apartment Building Ground Floor.png",
+                 "exterior_upper": "assets/Apartment Building Upper Floor.png",
+                 "exit": "assets/Walk here to Exit.png"}
 STARTING_MODE = "spectator"
 ARRIVAL_LOCATION = "hallway:1"
 STARTING_PLAYER_POSITION = ELEVATOR_ARRIVAL

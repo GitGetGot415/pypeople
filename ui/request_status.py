@@ -14,7 +14,7 @@ class RequestStatus:
     def __init__(self, max_requests):
         self.rect = pygame.Rect(24, 16, LLM_PANEL_WIDTH, 0)
         self.header = pygame.Rect(self.rect.x, self.rect.y, self.rect.width, HUD_HEADER_HEIGHT)
-        self.collapsed = False
+        self.collapsed = True
         self.slot_scroll = 0
         self.scrollbar = ScrollbarDrag()
         self.set_capacity(max_requests)

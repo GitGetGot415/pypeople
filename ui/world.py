@@ -3,7 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 from constants import (GARDEN_LOCATION, GARDEN_FLOOR_ART, GARDEN_FLOOR_OFFSET, INK, PAPER, SHADOW_COLOR, CHARACTER_SHADOW_HEIGHT,
                       CHARACTER_SHADOW_OFFSET_Y, WORLD_COLORS,
-                      APARTMENT_DOOR_RECT, APARTMENT_RECT, DEFAULT_BUBBLE_SPRITE_SIZE,
+                      APARTMENT_DOOR_RECT, APARTMENT_RECT, APARTMENT_FLOORS, APARTMENT_FLOOR_SIZE, DEFAULT_BUBBLE_SPRITE_SIZE,
                       UI_SMALL_FONT_SIZE, NAME_TAG_FONT_SIZE, NAME_TAG_HEAD_GAP, PLAYER_NAME_TAG,
                       ROOM_BED_RECT, SLEEP_FACING, SLEEP_ROTATION, PLAYER_ROOM_NUMBER)
 from activity import Behavior
@@ -104,7 +104,7 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     # Use nearest-neighbor scaling throughout to keep the original pixels crisp.
     # Scale the ground separately; artwork is drawn directly at the camera zoom.
     from locations import map_size, targets, player_has_room
-    from constants import INDOOR_BACKGROUND, APARTMENT_ART_SCALE, ROOM_EXIT_RECT, HALLWAY_EXIT_RECT
+    from constants import INDOOR_BACKGROUND, HALLWAY_SIZE, ROOM_SIZE, ROOM_EXIT_RECT, HALLWAY_EXIT_RECT
     size = map_size(location)
     scene = pygame.Surface(size)
     artwork = []
@@ -112,12 +112,17 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     if location == "garden":
         _draw_scene(scene, tree, phase)
         surface.fill(WORLD_COLORS[phase][0])
-        artwork.extend((("exterior", APARTMENT_RECT), ("door", APARTMENT_DOOR_RECT)))
+        width, height = APARTMENT_FLOOR_SIZE
+        for floor in range(APARTMENT_FLOORS):
+            kind = "exterior_ground" if floor == 0 else "exterior_upper"
+            artwork.append((kind, (APARTMENT_RECT[0], -(floor + 1) * height, width, height)))
+        artwork.append(("door", APARTMENT_DOOR_RECT))
     else:
         surface.fill(INDOOR_BACKGROUND)
         scene.fill(INDOOR_BACKGROUND)
         kind = location.split(":")[0]
-        art_size = tuple(round(extent * APARTMENT_ART_SCALE) for extent in apartment_art(kind).get_size())
+        # Map dimensions stay fixed even when the artwork's resolution changes.
+        art_size = ROOM_SIZE if kind == "room" else HALLWAY_SIZE
         artwork.append((kind, (0, 0, *art_size)))
         if kind == "room":
             artwork.extend((("bed", ROOM_BED_RECT), ("exit", ROOM_EXIT_RECT)))
@@ -146,8 +151,11 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     surface.blit(scene, scene_rect)
     for kind, geometry in artwork:
         x, y, width, height = geometry
-        rect = pygame.Rect(round(x * zoom + camera_offset[0]), round(y * zoom + camera_offset[1]),
-                           max(1, round(width * zoom)), max(1, round(height * zoom)))
+        left, top = round(x * zoom + camera_offset[0]), round(y * zoom + camera_offset[1])
+        # Round shared edges identically so stacked floors never leave a gap.
+        right = round((x + width) * zoom + camera_offset[0])
+        bottom = round((y + height) * zoom + camera_offset[1])
+        rect = pygame.Rect(left, top, max(1, right - left), max(1, bottom - top))
         # Always start from the full-resolution source, including when zooming in.
         surface.blit(apartment_art_at_size(kind, rect.size), rect)
     for label, (x, y) in labels:

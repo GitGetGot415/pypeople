@@ -128,6 +128,7 @@ class GameScreen:
         self.save_message = ""
         self.save_message_remaining = 0
         self.feed = EventFeed()
+        self.request_status = RequestStatus(self.request_status.max_requests)
 
     def show_save_message(self, message):
         self.save_message = message
