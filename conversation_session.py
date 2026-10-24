@@ -4,7 +4,7 @@ from dataclasses import asdict
 from interactions import PlayerRequest, player_request_pending
 from player import directed_recipient_available
 from uuid import uuid4
-from constants import (PLAYER_CONTEXT_TRANSFER_LIMIT, PLAYER_PROMISE_DEADLINE_STEPS, CONVERSATION_COMPLETED,
+from constants import (PLAYER_CONTEXT_TRANSFER_LIMIT, PLAYER_CONTEXT_TURN_LIMIT, PLAYER_PROMISE_DEADLINE_STEPS, CONVERSATION_COMPLETED,
                        CONVERSATION_ENDED_BEFORE_REPLY, CONVERSATION_FAILED, CONVERSATION_WAITING_FOR_DONE,
                        CONVERSATION_WAITING_FOR_REPLY)
 from conversation_history import ConversationRecord
@@ -103,7 +103,7 @@ class ConversationSession:
             return
         snapshot = self.player_snapshot(npc, message)
         snapshot["player_dialogue"] = [{"speaker": t.speaker, "text": t.text}
-                                      for t in self.record.turns[-12:]] if self.record else []
+                                      for t in self.record.turns[-PLAYER_CONTEXT_TURN_LIMIT:]] if self.record else []
         snapshot["other_npcs"] = [{**other.snapshot(self.tree, private=False),
             "available_to_talk": directed_recipient_available(other)}
             for other in self.npcs if other is not npc and other.location == npc.location] + [self.player_target()]
@@ -218,6 +218,21 @@ class ConversationSession:
                 label=phase_label(self.simulation.phase_index + step)) for step in PLAYER_PROMISE_DEADLINE_STEPS])
         snapshot["resolved_work_id"] = requested_work_id(self.simulation, npc.id, message)
         record = self.record
+        earlier, remaining = [], PLAYER_CONTEXT_TURN_LIMIT
+        for previous in reversed(self.conversation_history):
+            if previous is record or not previous.between(self.simulation.player, npc):
+                continue
+            turns = [{"speaker": "You" if turn.speaker_id == self.simulation.player.id else npc.name,
+                      "text": turn.text}
+                     for index, turn in enumerate(previous.turns)
+                     if turn.speaker_id in (self.simulation.player.id, npc.id)
+                     and (turn.speaker_id != self.simulation.player.id or index in previous.accepted_player_turns)]
+            if turns:
+                earlier.append({"topic": previous.topic, "turns": turns[-remaining:]})
+                remaining -= len(earlier[-1]["turns"])
+            if not remaining:
+                break
+        snapshot["earlier_player_conversations"] = list(reversed(earlier))
         offers = record.player_promise_offers if record and npc.id in record.participant_ids else []
         snapshot["player_apple_offer_count"] = len(offers)
         snapshot["pending_apple_promise"] = next((asdict(o) for o in offers if o.status == "offered"), None)
@@ -325,7 +340,7 @@ class ConversationSession:
                 "available_to_talk": directed_recipient_available(other)}
                 for other in self.simulation.npcs if other is not npc and other.location == npc.location] + [self.player_target()]
         if self.record:
-            snapshot["player_dialogue"] = [{"speaker": t.speaker, "text": t.text} for t in self.record.turns[-12:]]
+            snapshot["player_dialogue"] = [{"speaker": t.speaker, "text": t.text} for t in self.record.turns[-PLAYER_CONTEXT_TURN_LIMIT:]]
         self._submit_player_message(npc, message, snapshot)
 
     def player_request(self, npc):
