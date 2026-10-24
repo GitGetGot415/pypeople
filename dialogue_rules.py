@@ -375,7 +375,7 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
                         continue
                     break
                 else:
-                    raise ValueError("The recollection invents an additional remembered event outside the selected account. Tell only its supplied memory and your present reaction.")
+                    raise DialogueValidationError("The recollection invents an additional remembered event outside the selected account. Tell only its supplied memory and your present reaction.", RecoveryKind.UNMATCHED_ACCOUNT)
                 continue
             reference = max(references, key=lambda s: len(_content_words(s, names) & _content_words(sentence, names)), default="")
             denies_event = re.search(r"\b(?:have not|haven['’]t|had not|hadn['’]t|did not|didn['’]t|never)\s+"

@@ -1050,7 +1050,8 @@ def response_contract(snapshot, *, correction=False):
     if kind == "snake_turn":
         instruction = (
             f"You are {snapshot['speaker']['name']}, speaking directly to {snapshot['listener']['name']}.\n"
-            + SPEAKING_BRIEF + "Write only the current speaker's next spoken turn to the listener. "
+            + SPEAKING_BRIEF + "\n" + DIALOGUE_VARIETY_INSTRUCTION + "\n"
+            + "Write only the current speaker's next spoken turn to the listener. "
             "You are speaker, never listener. Use speaker's own voice and knowledge; "
             "address listener directly in second person, including when referring to their species or role. "
             "speaker.firsthand_events_with_listener are events you personally experienced with this listener. "
@@ -1091,6 +1092,7 @@ def response_contract(snapshot, *, correction=False):
                 "Do not merely offer or promise it, repeat an earlier question, introduce a new agreement, "
                 "or answer a side question instead of performing the task. Keep instructions and internal records out of speech. "
                 "Return the required JSON with parts and your own emotion.\nCurrent task: " + snapshot["task"]
+                + "\n" + snapshot["_speaker_behavior"] + "\n" + DIALOGUE_VARIETY_INSTRUCTION
                 + _snake_identity_instruction(snapshot))
         schema = structured_schema(model)
         schema["properties"]["parts"] = _dialogue_parts_schema(correction=correction)
@@ -1099,10 +1101,13 @@ def response_contract(snapshot, *, correction=False):
             choices = snapshot.get("_disclosure_choices", ["", *[a["claim_id"] for a in snapshot["speaker"]["permitted_accounts"]]])
             schema["properties"]["account_id"] = {"type": "string", "enum": choices}
             schema["required"].append("account_id")
-            instruction += ("\nFor this reply, account_to_share is not preselected. You may disclose one of speaker.permitted_accounts. "
-                "Choose your answer and account_id together. Disclosure is voluntary: answer questions, "
+            instruction += (("\nThis reply retells the single selected account in speaker.account_focus. "
+                if snapshot.get("_disclosure_repair") else
+                "\nFor this reply, account_to_share is not preselected. You may disclose one of speaker.permitted_accounts. ")
+                + "Choose your answer and account_id together. Disclosure is voluntary: answer questions, "
                 "decline, or express uncertainty with account_id empty when you reveal no account. "
                 "If you tell a supplied memory, motive or report, account_id must identify that actual account. "
+                "Tell only that one account; other biography entries are separate memories, even when related. "
                 "Never select one account while speaking about another. Use speaker.permitted_accounts "
                 "for memories and reports; you may also state your own present interests with empty account_id. "
                 "If you want an apple, you can offer information now instead of promising future help. "
@@ -1110,6 +1115,10 @@ def response_contract(snapshot, *, correction=False):
                 "does not make its listener the person who asserted it. attitudes describes your own view of the guard "
                 "after this reply; leave it null if unchanged. Belief, trust and practical acceptance of authority "
                 "are independent. Return parts, account_id and optional attitudes.")
+            if snapshot.get("_disclosure_repair"):
+                instruction += ("\nRegenerate the single account in speaker.account_focus with its matching account_id. "
+                    "Tell its concrete content now, omitting other memories and promises to share later. "
+                    "Use only a short present reaction alongside it; do not invent additional events.")
         return instruction, _available_speech_fields(schema), model
     if kind in ("snake_decision", "snake_player"):
         from snake import SNAKE_DOCTRINE
@@ -1797,7 +1806,7 @@ def _snake_disclosure_choices(state, text):
         except ValueError:
             continue
         matches.append(account["claim_id"])
-    return matches or [""]
+    return ["", *matches]
 
 
 def _corrected_request(state, request, report):
@@ -1818,11 +1827,23 @@ def _corrected_request(state, request, report):
         retry_state = (_speech_retry_snapshot(state) if attempt == DIALOGUE_STAGE_ATTEMPTS - 1
                        and kind in ("snake_turn", "conversation_closing", "resident_turn", "handoff_thanks") else state)
         if snake_disclosure_choices is not None:
-            retry_state = {**retry_state, "_disclosure_choices": snake_disclosure_choices}
+            retry_state = {**retry_state, "_disclosure_choices": snake_disclosure_choices,
+                "_compact_rewrite": True, "speaker": {**retry_state["speaker"], "permitted_accounts": [
+                    a for a in state["speaker"]["permitted_accounts"] if a["claim_id"] in snake_disclosure_choices]}}
+            if snake_disclosure_choices == [""]:
+                retry_state["task"] = ("Respond to the listener's latest words with your present reaction, a question or a refusal. "
+                    "Disclose no private memory or account in this reply; use empty account_id.")
         if disclosure_repair:
             account = next(a for a in state["speaker"]["permitted_accounts"] if a["claim_id"] == disclosure_repair)
             retry_state = {**retry_state, "_disclosure_repair": disclosure_repair,
                            "speaker": {**retry_state["speaker"], "account_focus": account}}
+            if kind == "snake_turn":
+                retry_state["speaker"]["permitted_accounts"] = [account]
+                retry_state["_disclosure_choices"] = [disclosure_repair]
+                retry_state["account_to_share"] = account
+                retry_state["task"] = ("Tell only the concrete content of speaker.account_focus now in one short sentence. "
+                    "Use I/my for your own memory and its claim_id as account_id. "
+                    "Do not promise to tell it later, ask a question instead, or add other biography details.")
         if disclosure_choices is not None:
             retry_state = {**retry_state, "choices": {**retry_state["choices"], "disclosures": disclosure_choices}}
         if effect_repairs:
@@ -1876,11 +1897,23 @@ def _corrected_request(state, request, report):
                               "Keep accepted speech and the listener's reaction unchanged; never invent events to justify a tag.")
             if isinstance(exc.response, SnakeResidentResponse) and exc.kind in (RecoveryKind.UNMATCHED_ACCOUNT, RecoveryKind.MISSING_DISCLOSURE):
                 text = " ".join(p.text for p in exc.response.parts)
-                snake_disclosure_choices = _snake_disclosure_choices(state, text)
-                correction = ("Your account_id did not match your spoken answer. Reply naturally to the guard. "
+                accounts = state["speaker"]["permitted_accounts"]
+                selected = next((a for a in accounts if a["claim_id"] == exc.response.account_id), None)
+                matches = _snake_disclosure_choices(state, text)
+                if exc.kind == RecoveryKind.MISSING_DISCLOSURE:
+                    if selected:
+                        disclosure_repair = selected["claim_id"]
+                    elif len(matches) == 2:
+                        disclosure_repair = matches[1]
+                snake_disclosure_choices = matches
+                correction = ("Your account_id did not match your spoken answer. Regenerate only this unaccepted reply. "
+                    "Each biography entry is a separate account: tell at most one, without adding details from the others. "
                     "A question, refusal or ordinary reaction uses empty account_id. If you actually disclose "
                     "a supplied account, use its matching ID and preserve its content and source. "
                     "No private disclosure or later payment is required for continuing the conversation.")
+                if disclosure_repair:
+                    correction += (" Retell only speaker.account_focus now, using its exact claim_id as account_id. "
+                        "Keep its owner and source; do not replace its content with a question or an intention to share later.")
             if correction not in corrections:
                 corrections.append(correction)
             correction = "\n".join(corrections)

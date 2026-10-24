@@ -296,7 +296,7 @@ def validate_speech_grounding(text, snapshot):
         validate_snake_account_roles(text, report, speaker, listener)
     if snapshot["speaker_role"] == "initiator":
         validate_immediate_snake_speech(text, transaction["selected_outcome"]
-            if snapshot["turn_index"] == transaction.get("outcome_turn", 2) else "talk")
+            if snapshot["turn_index"] == transaction.get("outcome_turn", 2) else "talk", listener=listener_name)
         for heard in speaker.get("known_accounts", []):
             if (heard.get("kind") == "former_life" and heard.get("subject_id") != speaker["actor_id"]
                     and mentions_private_recollection(text, heard["assertion"], names)
@@ -320,14 +320,31 @@ def validate_snake_account_roles(text, report, speaker, listener):
             raise ValueError("The listener made these claims. Address the guard's claims as your claims; do not adopt them as my claims.")
 
 
-def validate_immediate_snake_speech(text, outcome):
-    speech = unquoted_speech(text)
+def validate_immediate_snake_speech(text, outcome, *, listener=""):
+    speech = unquoted_speech(text).replace("\u2019", "'")
     if re.search(r"\b(?:you owe me|offering (?:is |still )?owed|pay me later|endorsement owed)\b", speech, re.I):
         raise ValueError("This is an immediate exchange; no offering or debt remains.")
-    handoff = re.search(r"\b(?:here(?: is|'s) (?:your|an?|one|the) apple|take (?:this|your|the) apple|"
-        r"I (?:give|am giving|hand|am handing) you (?:an?|one|the) apple|"
-        r"I(?: am|'m) (?:giving|handing)(?: over)? (?:an?|one|the) apple to you|"
-        r"I'm (?:giving|handing) you (?:an?|one|the) apple|I hand(?: over)? (?:an?|one|the) apple to you)\b", speech, re.I)
+    # Direct address can interrupt a handoff: "Here, Judy Judge, is one apple."
+    for name in sorted({listener, listener.split()[0] if listener else ""}, key=len, reverse=True):
+        if name:
+            speech = re.sub(rf",\s*{name_pattern(name)}\s*,", " ", speech, flags=re.I)
+    apple = r"(?:your|an?|one|the|this|that)(?:\s+one)?\s+apple"
+    handoff_pattern = (rf"\b(?:here(?: is|'s)\s+{apple}|take\s+{apple}|"
+        rf"i\s+(?:give|am giving|hand|am handing)\s+you\s+{apple}|"
+        rf"i(?: am|'m)\s+(?:giving|handing)(?: over)?\s+{apple}\s+to you|"
+        rf"i'm\s+(?:giving|handing)\s+you\s+{apple}|i hand(?: over)?\s+{apple}\s+to you)\b")
+    handoff = False
+    for sentence in split_sentences(speech):
+        # A question, future offer or refusal does not perform a present handoff.
+        if contains_question(sentence):
+            continue
+        for clause in sentence.split(";"):
+            if re.search(r"\b(?:if|once|tomorrow|later)\b", clause, re.I):
+                continue
+            for match in re.finditer(handoff_pattern, clause, re.I):
+                if not re.search(r"\b(?:not|never|don't|won't|cannot|can't|would|could|will|i'll|refuse to|decline to)\s+"
+                                 r"(?:\w+\s+){0,2}$", clause[:match.start()], re.I):
+                    handoff = True
     if outcome != "give_apple" and handoff:
         raise ValueError("No apple is transferred by this reply.")
     if outcome == "give_apple" and not handoff:
@@ -509,7 +526,7 @@ def _validate_response(raw, snapshot, model):
             validate_dialogue_format([ConversationTurn(speaker="initiator", parts=[ConversationPart(text=result.reply)])])
             validate_snake_perspective(result.reply, snake_role="speaker")
             _validate_speaker(result.reply, SNAKE_NAME, PLAYER_LABEL)
-            validate_immediate_snake_speech(result.reply, result.decision)
+            validate_immediate_snake_speech(result.reply, result.decision, listener=PLAYER_LABEL)
             if result.snake_account_id:
                 account = next(a for a in snake_disclosure_accounts(snapshot) if a["claim_id"] == result.snake_account_id)
                 validate_account_speech(result.reply, account["assertion"], speaker=SNAKE_NAME, listener=PLAYER_LABEL,
