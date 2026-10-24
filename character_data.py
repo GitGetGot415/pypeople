@@ -11,7 +11,9 @@ from constants import (DEFAULT_CHARACTER_NAME, RANDOM_EYE_STYLES_BY_SEX, RANDOM_
 
 IDENTITY_FIELDS = ("Name", "Age", "Weight", "Height", "Sex")
 PROFILE_FIELDS = ("Personality", "Voice", "Mannerisms", "Background")
-FIELDS = IDENTITY_FIELDS + PROFILE_FIELDS
+DIALOGUE_FIELDS = ("Greeting", "Farewell")
+DEFAULT_DIALOGUE = {"Greeting": "Hello! What would you like to talk about?", "Farewell": "Goodbye. Take care."}
+FIELDS = IDENTITY_FIELDS + PROFILE_FIELDS + DIALOGUE_FIELDS
 EYE_STYLES = ("one", "two")
 HAIR_STYLES = ("one", "two", "three", "four")
 DEFAULT_COLORS = {
@@ -45,7 +47,9 @@ def normalize_character(data):
             raise ValueError(f"{name} must be text (empty text is allowed).")
     values = {}
     for name in FIELDS:
-        value = data.get(name, "")
+        value = data.get(name, DEFAULT_DIALOGUE.get(name, ""))
+        if name in DIALOGUE_FIELDS and not isinstance(value, str):
+            raise ValueError(f"{name} must be text.")
         if not isinstance(value, (str, int, float)):
             raise ValueError(f"{name} must be text.")
         values[name] = str(value)

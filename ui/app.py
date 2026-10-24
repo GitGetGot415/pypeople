@@ -26,7 +26,7 @@ from .ollama_setup import OllamaSetupScreen
 from constants import (FPS, INTERACTION_GAP, STARTING_CHARACTER_FILE, STARTING_NPC_POSITION,
                       STARTING_SPAWN_ORIGIN, STARTING_SPAWN_SIDE_OFFSET, STARTING_SPAWN_SPREAD, WINDOW_SIZE,
                       UI_TITLE_FONT_SIZE, UI_HEADING_FONT_SIZE, UI_TEXT_FONT_SIZE, UI_SMALL_FONT_SIZE,
-                      NAME_TAG_FONT_SIZE)
+                      NAME_TAG_FONT_SIZE, MAX_RESIDENTS)
 from .world import CHARACTER_SCALE
 from .fonts import UnicodeFont
 
@@ -167,10 +167,11 @@ class Application:
     def start_game(self):
         try:
             sources = [STARTING_CHARACTER_PATH]
-            if self.setup.mode == "spectator":
-                sources.extend(self.setup.sources[1:])
+            sources.extend(self.setup.sources[1:])
+            if len(sources) > MAX_RESIDENTS - int(self.setup.mode == "player"):
+                raise ValueError("Too many starting NPCs for this mode.")
             characters = []
-            # Both modes require Judy first; Spectator can add other residents.
+            # Both modes require Judy first and permit additional residents.
             for index, source in enumerate(sources, start=1):
                 try:
                     characters.append(random_character(trait_mode=self.npc_trait_mode)

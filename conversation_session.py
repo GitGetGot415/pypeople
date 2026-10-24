@@ -161,8 +161,8 @@ class ConversationSession:
             interaction = self.simulation.player_interaction
             record = next((r for r in self.simulation.history if r.id == interaction.record_id), None)
             if record is None:
-                from player_story import scripted_player_opening
-                record = scripted_player_opening(self.simulation, npc)
+                from player_story import scripted_player_phrase
+                record = scripted_player_phrase(self.simulation, npc)
             self.select_record(record)
             gift = interaction.gift
             if gift:
@@ -186,6 +186,32 @@ class ConversationSession:
                 roster_revision=self.simulation.roster_revision)
         self.show_reply(npc.reply if self.record else "")
         self.emit("focus")
+
+    def say_player_farewell(self):
+        """Keep the physical meeting until Done after the authored farewell."""
+        npc = self.view_actor
+        if (not isinstance(npc, NPC) or not self.player_owns(npc) or npc.player_reply.closing
+                or npc.gift or npc.action_pending):
+            return False
+        for request_id, request in tuple(self.player_requests.items()):
+            if request.actor is npc:
+                if player_request_pending(request):
+                    self.requests.cancel(self.session_id, request_id)
+                self.player_requests.pop(request_id)
+        npc.player_reply.complete()
+        from player_story import scripted_player_phrase
+        record = scripted_player_phrase(self.simulation, npc, closing=True)
+        if record is None:
+            return False
+        self.select_record(record)
+        self.pending_offer = None
+        from apartments import pending_invitation
+        invitation = pending_invitation(self.simulation)
+        if invitation:
+            invitation.status = "withdrawn"
+        self.emit("clear_input")
+        self.show_reply(npc.reply)
+        return True
 
     def accept_player_invitation(self, offer_id):
         from apartments import accept_invitation
@@ -254,8 +280,8 @@ class ConversationSession:
         self.simulation.player_interaction.stage = "conversation"
         self.open_view(npc)
         npc.set_selected(True)
-        from player_story import scripted_player_opening
-        record = scripted_player_opening(self.simulation, npc)
+        from player_story import scripted_player_phrase
+        record = scripted_player_phrase(self.simulation, npc) if call["kind"] == "introduction" else None
         if record is not None:
             self.select_record(record)
             self.show_reply(npc.reply)

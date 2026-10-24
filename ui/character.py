@@ -4,7 +4,8 @@ from pathlib import Path
 import pygame
 
 from character_data import (DEFAULT_COLORS, DIRECTIONS, EYE_STYLES, FIELDS, HAIR_STYLES,
-                            IDENTITY_FIELDS, PROFILE_FIELDS, load_character, parse_color, random_character)
+                            IDENTITY_FIELDS, PROFILE_FIELDS, DIALOGUE_FIELDS, DEFAULT_DIALOGUE,
+                            load_character, parse_color, random_character)
 
 from .button import Button
 from .file_dialog import character_file_dialog
@@ -25,10 +26,13 @@ class CharacterScreen:
         "Voice": "Delivery, cadence and casing in optional voice rewrites.",
         "Mannerisms": "Verbal tics and delivery habits in voice rewrites.",
         "Background": "Private former life, memories, regrets and beliefs.",
+        "Greeting": "Said on approach; empty uses the default greeting.",
+        "Farewell": "Said on End conversation; empty uses the default.",
     }
 
     def __init__(self):
         self.values = {name: "" for name in self.FIELDS}
+        self.values.update(DEFAULT_DIALOGUE)
         self.values["Hair"] = "one"
         self.values["Eyes"] = "one"
         self.values.update(self.DEFAULT_COLORS)
@@ -36,9 +40,11 @@ class CharacterScreen:
         self.category = "Stats"
         self.inputs = {}
         for index, name in enumerate(self.FIELDS):
-            multiline = name in PROFILE_FIELDS
+            multiline = name in PROFILE_FIELDS + DIALOGUE_FIELDS
+            panel_fields = DIALOGUE_FIELDS if name in DIALOGUE_FIELDS else PROFILE_FIELDS
+            spacing, height = (156, 84) if name in DIALOGUE_FIELDS else (224, 156)
             self.inputs[name] = TextInput(
-                ((590, 298 + PROFILE_FIELDS.index(name) * 224, 420, 156) if multiline
+                ((590, 298 + panel_fields.index(name) * spacing, 420, height) if multiline
                  else (710, 250 + index * 58, 300, 42)),
                 max_length=None if multiline else 100,
                 strip_paste=not multiline,
@@ -49,14 +55,14 @@ class CharacterScreen:
         self.stats_viewport = pygame.Rect(590, 240, 450, 308)
         self.stats_scroll = 0
         self.stats_input_tops = {name: field.rect.y for name, field in self.inputs.items()}
-        self.panel_scrolls = {"Stats": 0, "Traits": 0}
+        self.panel_scrolls = {"Stats": 0, "Traits": 0, "Dialogue": 0}
         self.stats_scroll_limit = self._panel_scroll_limit()
         self.stats_scrollbar = pygame.Rect(1024, self.stats_viewport.y, 8, self.stats_viewport.height)
         self.stats_dragging = False
         self._stats_drag_offset = 0
         self.tab_buttons = {
-            name: Button((590 + index * 72, 180, 90 if name == "Emotions" else 66, 44), name)
-            for index, name in enumerate(("Stats", "Traits", "Color", "Eyes", "Hair", "Emotions"))
+            name: Button((590 + index * 68, 180, 66, 44), name)
+            for index, name in enumerate(("Stats", "Traits", "Dialogue", "Color", "Eyes", "Hair", "Emotions"))
         }
         self.eye_buttons = {
             style: Button((590 + index % 2 * 220, 240 + index // 2 * 158, 200, 148), style.title())
@@ -121,7 +127,8 @@ class CharacterScreen:
                 slider.dragging = False
 
     def _panel_fields(self):
-        return PROFILE_FIELDS if self.category == "Traits" else IDENTITY_FIELDS
+        return (PROFILE_FIELDS if self.category == "Traits" else
+                DIALOGUE_FIELDS if self.category == "Dialogue" else IDENTITY_FIELDS)
 
     def _panel_scroll_limit(self):
         return max(0, max(self.stats_input_tops[name] + self.inputs[name].rect.height
@@ -269,7 +276,7 @@ class CharacterScreen:
             if button.clicked(event):
                 self._clear_focus()
                 self.category = name
-                if name in ("Stats", "Traits"):
+                if name in ("Stats", "Traits", "Dialogue"):
                     self.stats_scroll_limit = self._panel_scroll_limit()
                     self._set_stats_scroll(self.panel_scrolls[name])
                 return
@@ -280,7 +287,7 @@ class CharacterScreen:
             self.direction = (self.direction + step) % len(self.DIRECTIONS)
             return
 
-        if self.category in ("Stats", "Traits"):
+        if self.category in ("Stats", "Traits", "Dialogue"):
             if self._handle_stats_event(event):
                 return
         elif self.category in ("Eyes", "Hair"):
@@ -311,7 +318,7 @@ class CharacterScreen:
             self._export()
 
     def update(self, dt):
-        if self.category in ("Stats", "Traits"):
+        if self.category in ("Stats", "Traits", "Dialogue"):
             for name in self._panel_fields():
                 self.inputs[name].update(dt)
 
@@ -361,7 +368,7 @@ class CharacterScreen:
             self.turn_left_button.draw(surface, app.small_font)
             self.turn_right_button.draw(surface, app.small_font)
         for name, button in self.tab_buttons.items():
-            button.draw(surface, app.font)
+            button.draw(surface, app.small_font)
             if self.category == name:
                 pygame.draw.line(
                     surface, PAPER,
@@ -369,7 +376,7 @@ class CharacterScreen:
                     (button.rect.right - 16, button.rect.bottom - 5), 2,
                 )
 
-        if self.category in ("Stats", "Traits"):
+        if self.category in ("Stats", "Traits", "Dialogue"):
             previous_clip = surface.get_clip()
             surface.set_clip(self.stats_viewport.clip(previous_clip))
             for name in self._panel_fields():

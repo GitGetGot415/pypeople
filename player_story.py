@@ -2,12 +2,12 @@
 
 from player_records import PlayerCallReason
 from constants import (SNAKE_NAME, STARTING_DAY, STARTING_PHASE, STARTING_PLAYER_DAY, CONVERSATION_COMPLETED)
+from character_data import DEFAULT_DIALOGUE
 
 
 PLAYER_START_ENCOUNTER = "player-start-encounter"
 INTRODUCTION_REASON = (
     "Start our first conversation: greet the player and discuss arriving here. "
-    "The player is the first other person I have seen here. "
     "We have not met before; their floating tag already shows their name."
 )
 JUDY_OPENING = (
@@ -37,8 +37,8 @@ def starting_dialogue_context(world, resident_id):
         "There is only one snake here, not a separate snake and a human tree guard. "
         f"Before this player arrived, you had a spoken conversation with {SNAKE_NAME}. "
         "You could read its floating name tag and heard it explain its apple "
-        "information exchanges and claimed divine role. You already know it speaks. The player is the first "
-        "other human you have seen here; that does not include the snake. Recall that conversation "
+        "information exchanges and claimed divine role. You already know it speaks. At that meeting you "
+        "had not yet seen another human here. Recall that conversation "
         "when asked about the snake, rather than describing an unfamiliar animal you have only watched. "
         "You took no apple in that meeting. You may still doubt its divine claims."
     )
@@ -84,32 +84,46 @@ def valid_introduction_call(world, npc, call, *, interaction):
                      and interaction.npc_id == npc.id and interaction.incoming))
 
 
-def scripted_player_opening(world, npc):
-    """Record the first greeting once, before submitting any player reply to the model."""
+def scripted_player_phrase(world, npc, *, closing=False):
+    """Record an authored player greeting or farewell without a provider call."""
     from conversation_history import ConversationRecord
     from actor_identity import (actor_catalog, name_forms)
-    from social import orientation_speech
     from player import active_player, clear_call, owns_resident
 
-    if (not active_player(world) or not owns_resident(world, npc)
-            or starting_encounter(world, npc.id) is None
-            or any(set(record.participant_ids) == {world.player.id, npc.id}
-                   and any(turn.speaker == npc.name for turn in record.turns) for record in world.history)):
+    if not active_player(world) or not owns_resident(world, npc):
         return None
-    text = JUDY_OPENING.format(name=npc.character["Name"])
-    record = ConversationRecord(("You", npc.name), "First meeting with the player", CONVERSATION_COMPLETED,
-                                origin="autonomous", participant_ids=[world.player.id, npc.id])
-    record.intended_subjects = {"You": "Listening to Judy's introduction.", npc.name: INTRODUCTION_REASON}
-    record.name_forms = name_forms(actor_catalog(world))
-    record.orientation_discussed = orientation_speech([text])
+    field = "Farewell" if closing else "Greeting"
+    text = npc.character.get(field, "").strip() or DEFAULT_DIALOGUE[field]
+    introduction = (not closing and starting_encounter(world, npc.id) is not None
+                    and not any(previous.between(world.player, npc)
+                                and any(turn.speaker_id == npc.id for turn in previous.turns)
+                                for previous in world.history))
+    if introduction:
+        text = JUDY_OPENING.format(name=npc.character["Name"])
+    record = world.record_by_id(world.player_interaction.record_id)
+    if record is None:
+        record = ConversationRecord(("You", npc.name), "Conversation with the player", CONVERSATION_COMPLETED,
+                                    origin="autonomous" if world.player_interaction.incoming else "player",
+                                    participant_ids=[world.player.id, npc.id])
+        record.intended_subjects = {"You": "Talking to this resident.", npc.name: "Greet the player."}
+        record.name_forms = name_forms(actor_catalog(world))
+        world.history.append(record)
+    if introduction:
+        from social import orientation_speech
+        record.topic = "First meeting with the player"
+        record.intended_subjects = {"You": "Listening to Judy's introduction.", npc.name: INTRODUCTION_REASON}
+        record.orientation_discussed = orientation_speech([text])
+    record.status = CONVERSATION_COMPLETED
+    record.error = ""
     record.add_turn(npc.name, text, [{"text": text, "emotion": {"name": "neutral", "intensity": 0}}], speaker_id=npc.id)
-    world.history.append(record)
     world.player_interaction.record_id = record.id
+    world.player_interaction.pending_request = None
     from interactions import observe_conversation
     observe_conversation(world, record, world.player, npc, accepted=True)
-    npc.reply, npc.rewritten_reply, npc.player_reply.closing = text, "", False
+    npc.reply, npc.rewritten_reply, npc.player_reply.closing = text, "", closing
     npc.set_emotion("neutral", 0)
-    clear_call(npc)
+    if not npc.unread_player_reply:
+        clear_call(npc)
     return record
 
 

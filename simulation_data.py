@@ -21,7 +21,7 @@ from constants import (CONCERN_LIFETIME_RANGE, CONVERSATION_PAUSE_RANGE, CONVERS
                        WORLD_HEIGHT, WORLD_WIDTH, GARDEN_BUILDING_POINT, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_RANGE,
                        OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE, WAKE_DELAY_RANGE, PLAYER_LABEL,
                        PLAYER_NAME_TAG, PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, TRAVEL_STEP_TIMEOUT,
-                       PLAYER_APPROACH_TIMEOUT, CONVERSATION_REPLY_PENDING_WHEN_SAVED)
+                       PLAYER_APPROACH_TIMEOUT, CONVERSATION_REPLY_PENDING_WHEN_SAVED, MAX_RESIDENTS)
 from creations import Creation, CreativeJob
 from apartments import (Invitation, HostedVisit,
                         validate_saved_visit, validate_saved_invitations, validate_saved_home)
@@ -245,7 +245,7 @@ class NPCState(ActivityState):
     arrival_day: int = Field(ge=1)
     departure: DepartureState | None
     sprite_size: tuple[int, int] | None
-    room_number: int = Field(strict=True, ge=1)
+    room_number: int = Field(strict=True, ge=1, le=MAX_RESIDENTS)
     social_fatigue: float = Field(ge=0, le=100)
     home_remaining: float = Field(ge=0, le=max(REST_SECONDS_RANGE[1], CREATION_WORK_SECONDS_RANGE[1]))
     outdoor_remaining: float = Field(ge=0, le=OUTDOOR_COOLDOWN_SECONDS)
@@ -427,7 +427,7 @@ class SimulationState(SaveModel):
     claims: list[ClaimState]
     disclosures: list[DisclosureState]
     social_rotation: int = Field(ge=0)
-    npcs: list[NPCState] = Field(min_length=1)
+    npcs: list[NPCState] = Field(min_length=1, max_length=MAX_RESIDENTS)
     creations: list[Creation]
     tree: TreeState
     snake: SnakeState
@@ -447,6 +447,9 @@ class SimulationState(SaveModel):
 
     @model_validator(mode="after")
     def validate_references(self):
+        from locations import npc_capacity
+        if len(self.npcs) > npc_capacity(self):
+            raise ValueError("The living population exceeds apartment capacity.")
         residents = [*self.npcs, *self.archived]
         live = {npc.id: npc for npc in self.npcs}
         live_ids = set(live)

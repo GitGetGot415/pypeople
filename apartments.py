@@ -9,7 +9,7 @@ from constants import (APARTMENT_ID, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_
                       CREATIVE_QUEUE_SECONDS, INDOOR_RECOVERY_PER_SECOND, MINIMUM_INDOOR_SECONDS,
                       OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE, RETREAT_SOCIABILITY_WEIGHT,
                       RETREAT_THRESHOLD_BASE, WAKE_DELAY_RANGE, ROOM_SLEEP_POSITION, SLEEP_FACING,
-                      PLAYER_ROOM_NUMBER, JUDY_ROOM_NUMBER, JUDY_WAKE_DELAY)
+                      PLAYER_ROOM_NUMBER, JUDY_ROOM_NUMBER, JUDY_WAKE_DELAY, MAX_RESIDENTS)
 from creations import CreativeJob
 from activity import Behavior
 
@@ -52,13 +52,16 @@ def entrance(npc):
 
 def assign_rooms(world):
     from locations import player_has_room
-    next_room = max((p.room_number for p in world.residents), default=0) + 1
+    occupied = {npc.room_number for npc in world.npcs if npc.room_number}
+    if player_has_room(world):
+        occupied.add(PLAYER_ROOM_NUMBER)
     for npc in world.npcs:
         if npc.room_number == 0:
-            if next_room == PLAYER_ROOM_NUMBER and player_has_room(world):
-                next_room += 1
-            npc.room_number = next_room
-            next_room += 1
+            room = next((number for number in range(1, MAX_RESIDENTS + 1) if number not in occupied), None)
+            if room is None:
+                raise ValueError("The apartment building is full.")
+            npc.room_number = room
+            occupied.add(room)
 
 
 def cancel_work(npc):
@@ -81,11 +84,12 @@ def discard_work(npc):
 
 def leave(npc, world):
     cancel_work(npc)
-    from locations import start_journey, door_point
+    from locations import start_journey, door_point, npc_capacity
     from constants import GARDEN_BUILDING_ARRIVAL, ARRIVAL_LOCATION
     from autonomy import next_arrival_to_greet
     greeting = (npc.room_number == JUDY_ROOM_NUMBER and world.phase == "day"
-                and (world.pending_arrival_days or next_arrival_to_greet(world) is not None))
+                and (world.pending_arrival_days and len(world.npcs) < npc_capacity(world)
+                     or next_arrival_to_greet(world) is not None))
     start_journey(npc, ARRIVAL_LOCATION if greeting else "garden",
                   door_point(npc.room_number) if greeting else GARDEN_BUILDING_ARRIVAL,
                   purpose="arrival_greeting" if greeting else "leave_home")
@@ -436,8 +440,11 @@ def validate_saved_home(residents, creations, player, mode, day, phase, live_ids
     from locations import player_has_room
     from social import phase_index
     layout = SimpleNamespace(residents=residents, mode=mode, player=player)
-    if len({n.room_number for n in residents}) != len(residents):
-        raise ValueError("Apartment rooms must be unique, including departed assignments.")
+    living = [n for n in residents if n.departure is None]
+    if len({n.room_number for n in living}) != len(living):
+        raise ValueError("Living residents must have distinct apartment rooms.")
+    if any(not 1 <= n.room_number <= MAX_RESIDENTS for n in residents):
+        raise ValueError("An apartment room must be inside the eight-floor building.")
     creation_ids, job_ids = set(), set()
     for work in creations:
         if (work.id in creation_ids or work.job_id in job_ids or work.creator_id not in {n.id for n in residents}

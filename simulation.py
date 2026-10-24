@@ -57,6 +57,9 @@ class Simulation:
         self.player = Player()
         self.player.world = self
         self.mode = mode
+        from locations import npc_capacity
+        if len(npcs) > npc_capacity(self):
+            raise ValueError("Too many starting NPCs for the apartment building.")
         self.tree = tree if tree is not None else Tree(fruit=self.population)
         self.player_interaction = None
         self.player_invitations = []
@@ -854,7 +857,8 @@ class Simulation:
         from npc import NPC, assign_npc_names
         from purgatory import remember_description
         from social import assign_goal
-        if not self.pending_arrival_days or self.arrival_error:
+        from locations import npc_capacity
+        if not self.pending_arrival_days or self.arrival_error or len(self.npcs) >= npc_capacity(self):
             return None
         day = self.pending_arrival_days[0]
         if day in self.processed_arrival_days:

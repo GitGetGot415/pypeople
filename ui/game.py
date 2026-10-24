@@ -193,7 +193,7 @@ class GameScreen:
         if self.observe_button.clicked(event) and not active_player(world):
             self.close_dialogue()
             from locations import allocated_floors, room_location, hallway_location, player_has_room
-            rooms = [(n.room_number, n.name) for n in world.residents]
+            rooms = [(n.room_number, n.name) for n in world.npcs]
             if player_has_room(world):
                 rooms.append((PLAYER_ROOM_NUMBER, "Player (reserved)"))
             self.open_location_menu("Observe", [("Garden", "garden"),
@@ -204,7 +204,10 @@ class GameScreen:
             world.leave_tree(world.player.id)
             return
         if self.dialogue_open and world.player_interaction and self.end_button.clicked(event):
-            self.close_dialogue()
+            app._sync_conversation_view()
+            if not app.conversations.say_player_farewell():
+                self.close_dialogue()
+            app._present_conversation_events()
             return
         if self.dialogue_open and self.invitation_button.clicked(event):
             offer = self.pending_invitation(world)
@@ -610,6 +613,9 @@ class GameScreen:
         if pending or error:
             color = PAPER if app.simulation.phase == "night" else INK
             label = f"Arrivals waiting: {', '.join(str(d) for d in pending)}" if pending else "Next arrival"
+            from locations import npc_capacity
+            if pending and len(app.npcs) >= npc_capacity(app.simulation):
+                label = "Building full; arrivals are waiting for a vacant room."
             if error:
                 label += f" / {error}"
                 self.arrival_retry.draw(app.window, app.small_font, enabled=not app.simulation.paused)

@@ -8,7 +8,7 @@ from .button import Button
 from .file_dialog import character_file_dialog
 from .text import draw_centered_text, draw_wrapped_text
 from .text_input import TextInput
-from constants import ACCENT, BORDER_RADIUS, GRASS, INK, MUTED, PAPER, STARTING_CHARACTER_FILE, STARTING_SPECTATOR_NPCS, STARTING_SPECTATOR_MIN_NPCS, SETUP_LOAD_NPCS_RECT, SETUP_PLAYER_NOTE_RECT, SETUP_TITLE_POSITION
+from constants import ACCENT, BORDER_RADIUS, GRASS, INK, MUTED, PAPER, STARTING_CHARACTER_FILE, STARTING_SPECTATOR_NPCS, STARTING_SPECTATOR_MIN_NPCS, SETUP_LOAD_NPCS_RECT, SETUP_TITLE_POSITION, MAX_RESIDENTS
 
 
 class SetupScreen:
@@ -37,11 +37,15 @@ class SetupScreen:
         self.json_buttons = [Button((815, 258 + row * 65, 185, 38), "Choose JSON") for row in range(self.ROWS_PER_PAGE)]
 
     @property
+    def max_npcs(self):
+        return MAX_RESIDENTS - int(self.mode == "player")
+
+    @property
     def last_page(self):
         return max(0, (len(self.sources) - 1) // self.ROWS_PER_PAGE)
 
     def set_count(self, count):
-        count = max(STARTING_SPECTATOR_MIN_NPCS, count)
+        count = min(self.max_npcs, max(STARTING_SPECTATOR_MIN_NPCS, count))
         if count < len(self.sources):
             del self.sources[count:]
         else:
@@ -56,10 +60,10 @@ class SetupScreen:
             if not value.isdecimal():
                 raise ValueError
             count = int(value)
-            if count < STARTING_SPECTATOR_MIN_NPCS:
+            if not STARTING_SPECTATOR_MIN_NPCS <= count <= self.max_npcs:
                 raise ValueError
         except ValueError:
-            self.message = f"Enter a whole number of starting NPCs ({STARTING_SPECTATOR_MIN_NPCS} or more)."
+            self.message = f"Enter a whole number from {STARTING_SPECTATOR_MIN_NPCS} to {self.max_npcs}."
             return False
         self.set_count(count)
         return True
@@ -77,6 +81,8 @@ class SetupScreen:
                 raise ValueError(f"{path.name}: {error}") from error
         slots = ([index] if index is not None else []) + [
             slot for slot, source in enumerate(self.sources) if slot > 0 and source is None and slot != index]
+        if len(self.sources) + max(0, len(paths) - len(slots)) > self.max_npcs:
+            raise ValueError(f"This mode allows at most {self.max_npcs} NPCs.")
         first = slots[0] if slots else len(self.sources)
         replaced = min(len(slots), len(paths))
         for offset, path in enumerate(paths):
@@ -99,6 +105,8 @@ class SetupScreen:
         for mode, button in self.mode_buttons.items():
             if button.clicked(event):
                 self.mode = mode
+                if len(self.sources) > self.max_npcs:
+                    self.set_count(self.max_npcs)
                 self.count_input.active = False
                 self.count_input.backspace_held = False
                 self.message = ""
@@ -108,17 +116,15 @@ class SetupScreen:
             app.screen = "menu"
             return
         if self.start_button.clicked(event):
-            if self.mode == "player" or self.apply_count():
+            if self.apply_count():
                 app.start_game()
-            return
-        if self.mode == "player":
             return
         if self.count_input.handle_event(event) or self.apply_button.clicked(event):
             self.apply_count()
             return
         if self.remove_button.clicked(event, enabled=len(self.sources) > STARTING_SPECTATOR_MIN_NPCS):
             self.set_count(len(self.sources) - 1)
-        elif self.add_button.clicked(event):
+        elif self.add_button.clicked(event, enabled=len(self.sources) < self.max_npcs):
             self.set_count(len(self.sources) + 1)
         elif self.load_npcs_button.clicked(event):
             self.choose_characters()
@@ -143,8 +149,7 @@ class SetupScreen:
                 self.choose_characters(index)
 
     def update(self, dt):
-        if self.mode == "spectator":
-            self.count_input.update(dt)
+        self.count_input.update(dt)
 
     def draw(self, app):
         app.window.fill(GRASS)
@@ -156,21 +161,13 @@ class SetupScreen:
                 pygame.draw.rect(app.window, ACCENT, button.rect.inflate(4, 4), width=2)
         self.back_button.draw(app.window, app.font)
         self.start_button.draw(app.window, app.font)
-        if self.mode == "player":
-            app.window.blit(app.font.render("Starting NPCs: 1", True, INK), (260, 148))
-            pygame.draw.rect(app.window, (225, 232, 210), (260, 215, 760, 32))
-            app.window.blit(app.font.render("NPC 1: judy.json (fixed)", True, INK), (272, 220))
-            draw_wrapped_text(app.window, "Play as your own character, with Judy Judge as the only starting NPC.",
-                              app.font, MUTED, SETUP_PLAYER_NOTE_RECT)
-            draw_wrapped_text(app.window, self.message, app.small_font, MUTED, (260, 564, 760, 38))
-            return
         app.window.blit(app.font.render("Starting NPCs", True, INK), (260, 148))
         self.count_input.draw(app.window, app.font)
         self.remove_button.draw(app.window, app.font, enabled=len(self.sources) > STARTING_SPECTATOR_MIN_NPCS)
-        self.add_button.draw(app.window, app.font)
+        self.add_button.draw(app.window, app.font, enabled=len(self.sources) < self.max_npcs)
         self.apply_button.draw(app.window, app.font)
         self.load_npcs_button.draw(app.window, app.small_font)
-        app.window.blit(app.small_font.render(f"Total: {len(self.sources)} starting NPCs (includes Judy Judge)", True, MUTED), (260, 188))
+        app.window.blit(app.small_font.render(f"Total: {len(self.sources)} / {self.max_npcs} NPCs (includes Judy Judge)", True, MUTED), (260, 188))
         pygame.draw.rect(app.window, (225, 232, 210), (260, 215, 760, 32))
         app.window.blit(app.font.render("Judy Judge is required; choose additional NPCs below", True, INK), (272, 220))
 

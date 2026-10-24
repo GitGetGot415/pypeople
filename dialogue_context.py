@@ -82,7 +82,7 @@ def account_speech_context(value, speaker, listener, catalog):
 def character_context(character):
     """Base-only profile; private Background reaches speech through scoped accounts."""
     profile = {key: value for key, value in character.items()
-                 if key not in ("Personality", "Voice", "Mannerisms", "Background")}
+                 if key not in ("Personality", "Voice", "Mannerisms", "Background", "Greeting", "Farewell")}
     if "Personality" in character:
         profile["personality"] = character["Personality"]
     profile["Opinions"] = _base_opinions(character.get("Opinions", {}), character.get("Name", ""))

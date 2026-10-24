@@ -5,7 +5,8 @@ from constants import (GARDEN_LOCATION, GARDEN_FLOOR_SIZE, GARDEN_FLOOR_OFFSET, 
                       APARTMENT_OVERLAY_SIZE, APARTMENT_OVERLAY_SCALE, HALLWAY_ARRIVAL_Y, ROOM_ARRIVAL,
                       ELEVATOR_ARRIVAL, HALLWAY_EXIT, ROOM_EXIT, HALLWAY_ENTRY, HALLWAY_EXIT_RECT, ROOM_EXIT_RECT,
                       GARDEN_BUILDING_POINT, GARDEN_BUILDING_ARRIVAL, GARDEN_BRIDGE_RECT, GARDEN_BRIDGE_APPROACH,
-                      MOVEMENT_SPEED, TRAVEL_STEP_TIMEOUT, PLAYER_APPROACH_MULTIPLIER, PLAYER_ROOM_NUMBER)
+                      MOVEMENT_SPEED, TRAVEL_STEP_TIMEOUT, PLAYER_APPROACH_MULTIPLIER, PLAYER_ROOM_NUMBER,
+                      APARTMENT_FLOORS, MAX_RESIDENTS)
 from interactions import move_toward
 from dataclasses import dataclass, field
 from typing import Annotated
@@ -38,7 +39,7 @@ def hallway_location(floor):
 
 
 def player_has_room(world):
-    return world.mode == "player" or not world.player.alive
+    return world.mode == "player" and world.player.alive
 
 
 def floor_for_room(number):
@@ -46,7 +47,11 @@ def floor_for_room(number):
 
 
 def allocated_floors(world):
-    return range(1, floor_for_room(max((n.room_number for n in world.residents), default=1)) + 1)
+    return range(1, APARTMENT_FLOORS + 1)
+
+
+def npc_capacity(world):
+    return MAX_RESIDENTS - int(player_has_room(world))
 
 
 def valid_location(world, location):
