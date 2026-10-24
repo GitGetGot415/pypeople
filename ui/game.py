@@ -9,7 +9,7 @@ from constants import (DIALOGUE_PANEL_HEIGHT, FAILED_CONVERSATION_SELECTED_COLOR
                       GAME_PAUSED_LABEL_RIGHT, GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT,
                       DIALOGUE_ORIGINAL_TOGGLE_RECT, BORDER_RADIUS, GAME_MENU_CONFIRM_RECT,
                       GAME_MENU_CONFIRM_TITLE_Y, GAME_MENU_CONFIRM_MESSAGE_RECT, GAME_MENU_KEEP_PLAYING_RECT,
-                      GAME_MENU_LEAVE_RECT, PLAYER_ROOM_NUMBER, PLAYER_ROOM_LOCATION, ROOM_BED_RECT,
+                      GAME_MENU_LEAVE_RECT, PLAYER_ROOM_LOCATION, ROOM_BED_RECT,
                       BED_POPUP_RECT, BED_POPUP_TITLE_Y, BED_POPUP_MESSAGE_RECT, BED_ADVANCE_RECT,
                       BED_CANCEL_RECT)
 from emotions import portrait_expression
@@ -28,14 +28,13 @@ from .inventory import InventoryPanel
 
 class GameScreen:
     def __init__(self, max_requests=MAX_LLM_REQUESTS):
-        from constants import END_CONVERSATION_RECT, LEAVE_QUEUE_RECT, OBSERVE_LOCATION_RECT, INVITATION_ACCEPT_RECT
+        from constants import END_CONVERSATION_RECT, LEAVE_QUEUE_RECT, INVITATION_ACCEPT_RECT
         self.app = None
         self.location = "garden"
         self.location_menu = None
         self.location_page = 0
         self.end_button = Button(END_CONVERSATION_RECT, "End conversation")
         self.leave_queue_button = Button(LEAVE_QUEUE_RECT, "Leave queue")
-        self.observe_button = Button(OBSERVE_LOCATION_RECT, "Observe location")
         self.invitation_button = Button(INVITATION_ACCEPT_RECT, "Accept invitation")
         self.menu_button = Button((1144, 16, 112, 38), "Menu")
         self.confirm_menu = False
@@ -183,16 +182,6 @@ class GameScreen:
             return
         if self.location_menu:
             self.handle_location_event(app, event)
-            return
-        if self.observe_button.clicked(event) and not active_player(world):
-            self.close_dialogue()
-            from locations import allocated_floors, room_location, hallway_location, player_has_room
-            rooms = [(n.room_number, n.name) for n in world.npcs]
-            if player_has_room(world):
-                rooms.append((PLAYER_ROOM_NUMBER, "Player (reserved)"))
-            self.open_location_menu("Observe", [("Garden", "garden"),
-                *[(f"Hallway floor {n}", hallway_location(n)) for n in allocated_floors(world)],
-                *[(f"Room {number}: {name}", room_location(number)) for number, name in sorted(rooms)]])
             return
         if self.leave_queue_button.clicked(event) and world.can_leave_tree(world.player.id):
             world.leave_tree(world.player.id)
@@ -565,8 +554,6 @@ class GameScreen:
         draw_world(app.window, app.npcs, app.tree, app.small_font, app.character.renderer,
                    self.view_offset, phase=app.simulation.phase, zoom=self.camera_zoom,
                    viewport=self.world_viewport, snake=app.simulation.snake, world=app.simulation, location=self.location)
-        if app.simulation.mode == "spectator":
-            self.observe_button.draw(app.window, app.small_font)
         if app.simulation.can_leave_tree(app.simulation.player.id):
             self.leave_queue_button.draw(app.window, app.small_font)
         if self.location_menu:
@@ -848,7 +835,7 @@ class GameScreen:
             self.location_page = min((len(self.location_menu["choices"]) - 1) // LOCATION_BUTTONS_PER_PAGE, self.location_page + 1)
         for button, value in self.location_buttons():
             if button.clicked(event):
-                if self.location_menu["purpose"] == "Observe" or not active_player(app.simulation):
+                if not active_player(app.simulation):
                     self.observe_location(value)
                 elif value != app.simulation.player.location:
                     from locations import start_journey
