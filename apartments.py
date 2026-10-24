@@ -444,7 +444,7 @@ def validate_saved_home(residents, creations, player, mode, day, phase, live_ids
     if len({n.room_number for n in living}) != len(living):
         raise ValueError("Living residents must have distinct apartment rooms.")
     if any(not 1 <= n.room_number <= MAX_RESIDENTS for n in residents):
-        raise ValueError("An apartment room must be inside the eight-floor building.")
+        raise ValueError("An apartment room must be inside the apartment building.")
     creation_ids, job_ids = set(), set()
     for work in creations:
         if (work.id in creation_ids or work.job_id in job_ids or work.creator_id not in {n.id for n in residents}
