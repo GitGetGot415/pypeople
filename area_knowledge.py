@@ -21,10 +21,9 @@ The elevator is the only route between floors; there are no stairs.
 current_location identifies where you actually stand: hallway:N is a hallway,
 room:N is a private room, and garden is outdoors. Other layout entries describe
 other places; do not describe their fixtures as being in your current location.
-If asked how you know the layout, use familiarity.explanation: Judy has already walked
-around; other residents first know from Judy, and after a time shift have confirmed it
-by walking around themselves and seeing nothing else. This public layout knowledge
-requires no private-memory disclosure or account_id. Do not recite it unless relevant.
+Layout information is public knowledge and requires no private-memory disclosure,
+account_id or credit to Judy or any other guide. Familiarity is background context,
+not a required script or attribution. Discuss it only when relevant.
 Use only your CURRENT familiarity source, never the conditional rules for a later
 phase. With source judy, you have not yet confirmed the layout yourself; do not say
 you already walked around, or narrate a time shift that has not happened. Retain
@@ -36,8 +35,6 @@ on the first floor. No further exploration is needed to learn its layout.
 Answer layout-source questions directly, in first person about the speaker. Do not
 tell the listener that they were the one who toured the place, or recite the elevator
 arrival instead of explaining where the speaker's layout knowledge came from.
-Credit the guide naturally; phrases such as "according to Judy", "Judy said" or
-"I heard it from Judy" are sufficient. No exact wording or repeated attribution is needed.
 For directions, use spatial_view: map directions are fixed, body directions depend on
 facing. My left refers to from_speaker; your left refers to from_listener. Facing each
 other gives different left/right. Use compass directions if a body direction is unclear.
@@ -140,17 +137,7 @@ def validate_area_speech(text, knowledge, *, question=""):
         speech = unquoted_speech(text)
         if re.search(r"\byou (?:already )?know (?:the|this|what|how|because)\b|\bthat['’]s how you know\b", speech, re.I):
             raise ValueError("The question asks how the speaker knows the layout. Answer about I/my knowledge, not how the listener knows it.")
-        if source["source"] == "judy":
-            guide = re.escape(source["guide_name"].split()[0])
-            to_guide = (knowledge.get("listener_name") == source["guide_name"]
-                and re.search(r"\byou (?:already )?(?:told|explained|described|showed|said|mentioned)\b", speech, re.I))
-            told = re.search(rf"\b{guide}\b.{{0,160}}?\b(?:told|explained|described|showed|said|says|mentioned|shared|pointed out)\b|"
-                             rf"\b(?:from|according to) {guide}\b|"
-                             rf"\b{guide}['’]s (?:explanation|description|directions|tour)\b|"
-                             rf"\b(?:told|explained|described|shown).{{0,60}}?\bby {guide}\b", speech, re.I | re.S)
-            if not to_guide and not told:
-                raise ValueError("Credit Judy as the source of the layout information in natural wording, such as 'according to Judy' or 'Judy told me'.")
-        elif source["source"] in ("own_observation", "confirmed_by_walking"):
+        if source["source"] in ("own_observation", "confirmed_by_walking"):
             observed = re.search(r"\bi(?:['’]ve| have| did)? (?:(?:already|personally|also) )*(?:walked|looked|checked|confirmed|saw|seen)\b", speech, re.I)
             complete = re.search(r"\b(?:(?:all|everything) (?:i|we)(?:['’]ve| have| could| can)? (?:see|saw|seen|found)|"
                                  r"nothing else|no other|(?:that['’]s|that is|this is) (?:all|everything)|"
