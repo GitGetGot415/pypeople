@@ -1,6 +1,6 @@
 """The garden and rectangular apartment maps; no scene or pathfinding framework."""
 
-from constants import (GARDEN_LOCATION, GARDEN_FLOOR_SIZE, GARDEN_FLOOR_OFFSET, WORLD_HEIGHT, HALLWAY_SIZE, ROOM_SIZE, FOOT_MARGIN,
+from constants import (GARDEN_LOCATION, GARDEN_FLOOR_SIZE, GARDEN_FLOOR_OFFSET, HALLWAY_SIZE, ROOM_SIZE, FOOT_MARGIN,
                       INDOOR_FLOOR_TOP, ROOMS_PER_FLOOR, HALLWAY_DOOR_ORIGINS, HALLWAY_ELEVATOR_ORIGIN,
                       APARTMENT_OVERLAY_SIZE, APARTMENT_OVERLAY_SCALE, HALLWAY_ARRIVAL_Y, ROOM_ARRIVAL,
                       ELEVATOR_ARRIVAL, HALLWAY_EXIT, ROOM_EXIT, HALLWAY_ENTRY, HALLWAY_EXIT_RECT, ROOM_EXIT_RECT,
@@ -74,8 +74,9 @@ def feet_bounds(location):
     # Exit strips attach beyond the floor; feet stay on the floor and touch
     # the strip at its edge rather than walking into the surrounding black.
     if location == GARDEN_LOCATION:
-        left = GARDEN_FLOOR_OFFSET[0]
-        return left + FOOT_MARGIN, left + GARDEN_FLOOR_SIZE[0] - FOOT_MARGIN, GARDEN_BUILDING_POINT[1], WORLD_HEIGHT - FOOT_MARGIN
+        left, top = GARDEN_FLOOR_OFFSET
+        width, height = GARDEN_FLOOR_SIZE
+        return left + FOOT_MARGIN, left + width - FOOT_MARGIN, GARDEN_BUILDING_POINT[1], top + height - FOOT_MARGIN
     width, height = HALLWAY_SIZE if location.startswith("hallway:") else ROOM_SIZE
     return FOOT_MARGIN, width - FOOT_MARGIN, INDOOR_FLOOR_TOP + FOOT_MARGIN, height - FOOT_MARGIN
 
