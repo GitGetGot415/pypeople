@@ -56,6 +56,8 @@ APARTMENT_GARDEN_GAP = 80
 APARTMENT_BASE_Y = -APARTMENT_GARDEN_GAP
 APARTMENT_RECT = (GARDEN_FLOOR_OFFSET[0], APARTMENT_BASE_Y - APARTMENT_FLOOR_SIZE[1] * APARTMENT_FLOORS,
                   APARTMENT_FLOOR_SIZE[0], APARTMENT_FLOOR_SIZE[1] * APARTMENT_FLOORS)
+APARTMENT_ROOF_SIZE = (APARTMENT_FLOOR_SIZE[0], 48)
+APARTMENT_ROOF_RECT = (APARTMENT_RECT[0], APARTMENT_RECT[1] - APARTMENT_ROOF_SIZE[1], *APARTMENT_ROOF_SIZE)
 APARTMENT_DOOR_RECT = (APARTMENT_RECT[0] + 52, APARTMENT_BASE_Y - 84, 56, 84)
 GARDEN_BRIDGE_RECT = (APARTMENT_DOOR_RECT[0] - 8, APARTMENT_BASE_Y, 72, APARTMENT_GARDEN_GAP)
 GARDEN_BUILDING_POINT = (APARTMENT_DOOR_RECT[0] + APARTMENT_DOOR_RECT[2] / 2, APARTMENT_BASE_Y + FOOT_MARGIN)
@@ -67,6 +69,7 @@ APARTMENT_ART = {"hallway": "assets/Apartment Building Hallway.png",
                  "elevator": "assets/Elevator.png", "bed": "assets/Apartment Bed.png",
                  "exterior_ground": "assets/Apartment Building Ground Floor.png",
                  "exterior_upper": "assets/Apartment Building Upper Floor.png",
+                 "roof": "assets/Apartment Building Roof.png",
                  "bridge": "assets/Garden Bridge.png",
                  "exit": "assets/Walk here to Exit.png"}
 STARTING_MODE = "spectator"

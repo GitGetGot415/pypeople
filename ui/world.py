@@ -4,7 +4,7 @@ from pathlib import Path
 from constants import (GARDEN_LOCATION, GARDEN_FLOOR_ART, GARDEN_FLOOR_OFFSET, INK, PAPER, SHADOW_COLOR, CHARACTER_SHADOW_HEIGHT,
                       CHARACTER_SHADOW_OFFSET_Y, WORLD_COLORS,
                       APARTMENT_DOOR_RECT, APARTMENT_RECT, APARTMENT_FLOORS, APARTMENT_FLOOR_SIZE,
-                      APARTMENT_BASE_Y, GARDEN_BRIDGE_RECT, DEFAULT_BUBBLE_SPRITE_SIZE,
+                      APARTMENT_BASE_Y, APARTMENT_ROOF_RECT, GARDEN_BRIDGE_RECT, DEFAULT_BUBBLE_SPRITE_SIZE,
                       UI_SMALL_FONT_SIZE, NAME_TAG_FONT_SIZE, NAME_TAG_HEAD_GAP, PLAYER_NAME_TAG,
                       ROOM_BED_RECT, SLEEP_FACING, SLEEP_ROTATION, PLAYER_ROOM_NUMBER)
 from activity import Behavior
@@ -118,7 +118,7 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
         for floor in range(APARTMENT_FLOORS):
             kind = "exterior_ground" if floor == 0 else "exterior_upper"
             artwork.append((kind, (APARTMENT_RECT[0], APARTMENT_BASE_Y - (floor + 1) * height, width, height)))
-        artwork.append(("door", APARTMENT_DOOR_RECT))
+        artwork.extend((("roof", APARTMENT_ROOF_RECT), ("door", APARTMENT_DOOR_RECT)))
     else:
         surface.fill(INDOOR_BACKGROUND)
         scene.fill(INDOOR_BACKGROUND)
