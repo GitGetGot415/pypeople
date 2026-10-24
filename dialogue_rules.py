@@ -363,13 +363,13 @@ def validate_claim_source(text, *, names=(), speaker=None, listener=None, actor_
 
 
 def validate_account_speech(text, assertion, *, names=(), speaker=None, listener=None, kind=None, firsthand=False,
-                            actor_references=None, known_events=(), quantity=None):
+                            actor_references=None, known_events=()):
     """Require content evidence, rather than an ID or a promise to tell it later.
 
     This is a conservative vocabulary check, not a proof of semantic equivalence.
     """
-    if kind == "harvest":
-        validate_harvest_quantity(text, quantity)
+    # A harvest fact records one pickup, not the collector's total. Speech may
+    # discuss repeated pickups or the remaining stock without restating its count.
     sentences = [s for s in split_sentences(text) if not (
         re.search(r"\b(?:i['’]ll|will|would|could|might|going to|want to|like to)\s+(?:\w+\s+){0,3}(?:share[d]?|tell|told|disclose[d]?)\b", s, re.I)
         and not re.search(r"\b(?:now|right away|right here)\b|:\s*i\b", s, re.I))]
@@ -388,7 +388,7 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
                         continue
                     try:
                         validate_account_speech(sentence, event["assertion"], names=names, speaker=speaker, listener=listener,
-                                                kind=event["kind"], firsthand=True, actor_references=actor_references, quantity=event.get("quantity"))
+                                                kind=event["kind"], firsthand=True, actor_references=actor_references)
                     except ValueError:
                         continue
                     break
@@ -564,20 +564,6 @@ def _personal_apple_request(message):
         r"|(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:give|hand|pass)\s+me)\s+"
         r"(?:(?:an?|some|one|two|three|\d+)\s+)?(?:of\s+your\s+)?(?:apples?|fruit)"
         r"(?:,?\s+please)?\s*[.!?]*\s*", message, re.I) is not None
-
-
-def validate_harvest_quantity(text, quantity):
-    """Compare spoken counts with the structured fact, never with parsed source prose."""
-    if type(quantity) is not int or quantity < 1:
-        raise ValueError("A harvest account requires its recorded exact quantity.")
-    from constants import SPOKEN_NUMBERS
-    count = r"(\d+|" + "|".join(SPOKEN_NUMBERS) + r")"
-    counts = re.findall(r"\b(?:harvest(?:ed|s|ing)?|collect(?:ed|s|ing)?|pick(?:ed|s|ing)?(?: up)?|take|takes|taking|took)\s+"
-                        r"(?:(?:exactly|only|all|the|last|just)\s+){0,3}" + count + r"\s+(?:apples?|fruit)\b",
-                        unquoted_speech(text), re.I)
-    values = [int(word) if word.isdigit() else SPOKEN_NUMBERS[word.lower()] for word in counts]
-    if not values or any(value != quantity for value in values):
-        raise ValueError(f"The witnessed harvest was exactly {quantity} apples. Preserve that quantity; interpretation cannot change the event.")
 
 
 def validate_killing_roles(text, account, speaker_id, listener_id, catalog):

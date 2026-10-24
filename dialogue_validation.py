@@ -291,23 +291,10 @@ def validate_speech_grounding(text, snapshot):
                 r"\bi\s+(?:(?:have|just|already)\s+){0,2}(?:killed|murdered)\s+you\b|\byou are dead\b", sentence, re.I):
             raise ValueError("Speech cannot establish the living listener's death. Threats remain intentions, never completed actions.")
     account = snapshot.get("account_to_share")
-    focus = account or speaker.get("account_focus")
-    if focus and focus.get("kind") == "harvest":
-        from dialogue_rules import validate_harvest_quantity
-        from constants import SPOKEN_NUMBERS
-        count_pattern = r"(?:\d+|" + "|".join(SPOKEN_NUMBERS) + r")"
-        relation = focus.get("subject_relation")
-        subject = (r"I" if relation == "speaker" else r"you" if relation == "listener" else
-                   name_pattern(focus.get("subject_name", "")))
-        for sentence in split_sentences(unquoted_speech(text)):
-            if re.search(rf"\b{subject}\s+(?:(?:has|had|just|already)\s+){{0,2}}"
-                         r"(?:harvest(?:ed|s)?|collect(?:ed|s)?|pick(?:ed|s)?|took|take)\s+"
-                         r"(?:(?:only|exactly|the|last|just)\s+){0,3}" + count_pattern + r"\b", sentence, re.I):
-                validate_harvest_quantity(sentence, focus.get("quantity"))
     if account:
         account_names = [value for key, value in account.items() if key.endswith("_name") and value]
         validate_account_speech(text, account["assertion"], names=(*names, *account_names),
-                                speaker=_actor_name(speaker), listener=listener_name, kind=account.get("kind"), quantity=account.get("quantity"),
+                                speaker=_actor_name(speaker), listener=listener_name, kind=account.get("kind"),
                                 firsthand=account.get("basis") == "firsthand",
                                 actor_references=account_references(snapshot.get("_name_actors", {})),
                                 known_events=[event for event in firsthand if event.get("basis") == "firsthand"])

@@ -689,9 +689,9 @@ def validate_information(response, context, *, names=(), participant_names=None,
             if dialogue_validation:
                 validate_account_speech(speech.text, option.assertion, names=names,
                                         speaker=(participant_names or {}).get(role),
-                                        listener=(participant_names or {}).get(listener), kind=option.kind, quantity=option.quantity,
+                                        listener=(participant_names or {}).get(listener), kind=option.kind,
                                         firsthand=bool(belief and belief.direct), actor_references=actor_references,
-                                        known_events=[{"assertion": options[b.claim_id].assertion, "kind": options[b.claim_id].kind, "quantity": options[b.claim_id].quantity}
+                                        known_events=[{"assertion": options[b.claim_id].assertion, "kind": options[b.claim_id].kind}
                                                       for b in beliefs[role].values() if b.direct and b.claim_id in options])
             seen_disclosures.add((role, entry.claim_id))
             fabricating = option.creator_id is not None and belief is None
