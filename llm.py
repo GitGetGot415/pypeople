@@ -1514,7 +1514,9 @@ def _request_context(message, snapshot, correction):
             "They are not the player's biography or actions. Attribute every account to its actual actors. "
             "Knowing a tag name proves no past meeting, apple transfer or obligation. "
             "Only actual player speech and recorded player transfers support such claims. "
-            "An engine-initiated opening has no player utterance to thank, summarize or answer."
+            "An engine-initiated opening has no player utterance to thank, summarize or answer. "
+            "Earlier accepted replies have already been spoken; do not copy their prose into a new reply. "
+            "When the player answers your question, acknowledge what their answer changes instead of asking it again."
         )
     location = snapshot.get("location", snapshot.get("initiator", {}).get("location", "garden"))
     if location == "garden":
@@ -1593,6 +1595,7 @@ def _conversation_messages(payload, snapshot):
                 content = {"player_message": message,
                            "reply_task": "Write your reply to this player_message. Your first sentence must address "
                                          "what the player asks or says, using earlier_player_conversations for follow-ups. "
+                                         "If this message answers your last question, react to the answer; do not repeat that question or your previous response. "
                                          "If they refer to 'the question', answer previous_player_message explicitly; "
                                          "an apology or general confusion alone does not answer it. "
                                          "If you do not know the answer, say what you do not know directly. "
@@ -1819,6 +1822,12 @@ def _stage_correction(state, exc):
             + json.dumps(earlier, ensure_ascii=False)
             + " Respond to the listener's latest point with a new answer, decision or specific follow-up. "
             "Do not repeat your earlier question, even in a shortened form.")
+    if exc.repeated_turns and isinstance(exc.response, (ActionResponse, SnakePlayerResponse)):
+        correction += ("\nYour already spoken replies, supplied only to avoid copying them: "
+            + json.dumps(dialogue_validation.player_reply_history(state), ensure_ascii=False)
+            + "\nRespond to the current player message: " + json.dumps(state.get("_player_message", ""), ensure_ascii=False)
+            + ". React to its new information and use fresh wording. Keep the action, recipient, possession, "
+              "quantity and other authorized effects consistent with the request. Do not rewrite accepted history.")
     if (isinstance(exc.response, ActionResponse) and exc.kind == RecoveryKind.KNOWN_ENCOUNTER
             and state.get("private_context", {}).get("starting_experience")):
         correction = ("Your reply denied an established conversation. Regenerate this reply from these facts: "

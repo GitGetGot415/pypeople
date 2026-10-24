@@ -232,6 +232,44 @@ def validate_dialogue_repetition(turns, recent_dialogue=(), *, factual_context=(
         )
 
 
+def player_reply_history(snapshot):
+    """Only this speaker's recorded originals, never rewrites or player speech."""
+    person = snapshot.get("snake", snapshot)
+    speaker = own_name(person)
+    history = [turn for exchange in snapshot.get("earlier_player_conversations", []) for turn in exchange["turns"]]
+    history.extend(snapshot.get("player_dialogue", []))
+    replies = []
+    for turn in history:
+        who, text = (turn["speaker"], turn["text"]) if isinstance(turn, dict) else turn
+        if who == speaker:
+            replies.append(text)
+    return replies
+
+
+def validate_player_reply_repetition(text, snapshot):
+    """Check the new reply against accepted speech without revalidating old turns."""
+    message = unquoted_speech(snapshot.get("_player_message", ""))
+    if re.match(r"\s*(?:(?:can|could|would|will) you (?:please )?|please )?"
+                r"(?:repeat\b|say (?:that|it) again\b|quote yourself\b|what did you (?:just )?say\b)", message, re.I):
+        return
+    speech = unquoted_speech(text).strip()
+    if not speech:
+        return
+    person = snapshot.get("snake", snapshot)
+    accounts = person.get("private_context", {}).get("known_accounts", person.get("known_accounts", []))
+    facts = [account["assertion"] for account in accounts if account.get("assertion")]
+    facts.extend(person.get("area_knowledge", {}).get("layout", {}).values())
+    recent = [{"excerpts": [(own_name(person), unquoted_speech(reply))]} for reply in player_reply_history(snapshot)]
+    try:
+        validate_dialogue_repetition([ConversationTurn(speaker="initiator", parts=[ConversationPart(text=speech)])],
+            recent, factual_context=facts, actor_references=_repetition_references(snapshot),
+            participant_ids={"initiator": actor_id(person), "recipient": snapshot.get("player_id", "")})
+    except DialogueRepetitionError:
+        raise DialogueRepetitionError(
+            "The new reply repeats a substantial passage. Respond to the player's latest message with fresh wording; "
+            "do not repeat a question they just answered. Rewrite only the new reply, keeping accepted speech unchanged.", (0,)) from None
+
+
 def dialogue_validation_errors(response, snapshot):
     """Diagnose accepted originals without another provider call or any effects."""
     try:
@@ -526,6 +564,7 @@ def _validate_response(raw, snapshot, model):
             raise ValueError("Return the immediate decision and generated reply together.")
         validate_player_snake_decision(result, snapshot)
         if check_dialogue:
+            validate_player_reply_repetition(result.reply, snapshot)
             validate_english(result.reply, (SNAKE_NAME,))
             from area_knowledge import validate_area_speech
             validate_area_speech(result.reply, snapshot.get("snake", {}).get("area_knowledge", {}))
@@ -582,6 +621,7 @@ def _validate_response(raw, snapshot, model):
             if check_dialogue:
                 validate_speaker_identity(result.reply, own_name(snapshot), PLAYER_NAME_TAG)
         if isinstance(result, ActionResponse) and check_dialogue:
+            validate_player_reply_repetition(result.reply, snapshot)
             validate_speech_grounding(result.reply, {
                 "_name_actors": snapshot.get("_name_actors", {}),
                 "_player_message": snapshot.get("_player_message", ""),
