@@ -21,7 +21,7 @@ from .event_feed import EventFeed
 from .request_status import RequestStatus
 from .text import draw_centered_text, draw_wrapped_text, paginate_turn, wrap_text, scrollbar_rects, ScrollbarDrag
 from .text_input import TextInput
-from .world import draw_world
+from .world import CHARACTER_SCALE, draw_world
 from .character_sprite import draw_actor_portrait
 from constants import GAME_PORTRAIT_BACKGROUND, GAME_PORTRAIT_PADDING, GAME_PORTRAIT_BORDER_WIDTH
 from .inventory import InventoryPanel
@@ -974,8 +974,11 @@ class GameScreen:
             # Dialogue clips the world view but must not move the camera anchor.
             # Follow freely in the garden, even when it fits inside the window.
             base = ((WINDOW_SIZE[0] - WORLD_WIDTH) / 2, (WINDOW_SIZE[1] - WORLD_HEIGHT) / 2)
+            # Positions mark the feet; follow the standing body's center above them.
+            body = app.character.renderer.body
+            center_y = world.player.y - (body.get_height() - body.get_bounding_rect().centery) * CHARACTER_SCALE
             desired = []
-            for extent, view, position in ((width, WINDOW_SIZE[0], world.player.x), (height, WINDOW_SIZE[1], world.player.y)):
+            for extent, view, position in ((width, WINDOW_SIZE[0], world.player.x), (height, WINDOW_SIZE[1], center_y)):
                 scaled = extent * self.camera_zoom
                 if self.location == GARDEN_LOCATION:
                     desired.append(view / 2 - position * self.camera_zoom)
