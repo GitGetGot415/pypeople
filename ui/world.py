@@ -5,6 +5,7 @@ from constants import (GARDEN_LOCATION, GARDEN_FLOOR_ART, GARDEN_FLOOR_OFFSET, I
                       CHARACTER_SHADOW_OFFSET_Y, WORLD_COLORS,
                       APARTMENT_DOOR_RECT, APARTMENT_RECT, APARTMENT_FLOORS, APARTMENT_FLOOR_SIZE,
                       APARTMENT_BASE_Y, APARTMENT_ROOF_RECT, GARDEN_BRIDGE_RECT, DEFAULT_BUBBLE_SPRITE_SIZE,
+                      GARDEN_UNDERSIDE_RECT, APARTMENT_UNDERSIDE_RECT,
                       UI_SMALL_FONT_SIZE, NAME_TAG_FONT_SIZE, NAME_TAG_HEAD_GAP, PLAYER_NAME_TAG,
                       ROOM_BED_RECT, SLEEP_FACING, SLEEP_ROTATION, PLAYER_ROOM_NUMBER)
 from activity import Behavior
@@ -113,6 +114,8 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     if location == "garden":
         _draw_scene(scene, tree, phase)
         surface.fill(WORLD_COLORS[phase][0])
+        artwork.extend((("garden_underside", GARDEN_UNDERSIDE_RECT),
+                        ("apartment_underside", APARTMENT_UNDERSIDE_RECT)))
         artwork.append(("bridge", GARDEN_BRIDGE_RECT))
         width, height = APARTMENT_FLOOR_SIZE
         for floor in range(APARTMENT_FLOORS):

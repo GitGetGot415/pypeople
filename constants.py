@@ -23,6 +23,8 @@ HALLWAY_SIZE = (840, 240)
 # Match the exterior's width while preserving existing world coordinates.
 GARDEN_FLOOR_SIZE = (HALLWAY_SIZE[0], 520)
 GARDEN_FLOOR_OFFSET = ((WORLD_WIDTH - GARDEN_FLOOR_SIZE[0]) // 2, 0)
+GARDEN_UNDERSIDE_RECT = (GARDEN_FLOOR_OFFSET[0], GARDEN_FLOOR_OFFSET[1] + GARDEN_FLOOR_SIZE[1],
+                        GARDEN_FLOOR_SIZE[0], 84)
 ROOM_SIZE = (128, 448)
 INDOOR_BACKGROUND = (0, 0, 0)
 FOOT_MARGIN = 6
@@ -54,6 +56,7 @@ APARTMENT_FLOORS = 3
 APARTMENT_FLOOR_SIZE = (HALLWAY_SIZE[0], 120)
 APARTMENT_GARDEN_GAP = 80
 APARTMENT_BASE_Y = -APARTMENT_GARDEN_GAP
+APARTMENT_UNDERSIDE_RECT = (GARDEN_FLOOR_OFFSET[0], APARTMENT_BASE_Y, APARTMENT_FLOOR_SIZE[0], 64)
 APARTMENT_RECT = (GARDEN_FLOOR_OFFSET[0], APARTMENT_BASE_Y - APARTMENT_FLOOR_SIZE[1] * APARTMENT_FLOORS,
                   APARTMENT_FLOOR_SIZE[0], APARTMENT_FLOOR_SIZE[1] * APARTMENT_FLOORS)
 APARTMENT_ROOF_SIZE = (APARTMENT_FLOOR_SIZE[0], 48)
@@ -69,6 +72,8 @@ APARTMENT_ART = {"hallway": "assets/Apartment Building Hallway.png",
                  "elevator": "assets/Elevator.png", "bed": "assets/Apartment Bed.png",
                  "exterior_ground": "assets/Apartment Building Ground Floor.png",
                  "exterior_upper": "assets/Apartment Building Upper Floor.png",
+                 "apartment_underside": "assets/Apartment Building Underside.png",
+                 "garden_underside": "assets/Garden Underside.png",
                  "roof": "assets/Apartment Building Roof.png",
                  "bridge": "assets/Garden Bridge.png",
                  "exit": "assets/Walk here to Exit.png"}
