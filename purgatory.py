@@ -1,28 +1,4 @@
-"""Snake attitudes and private knowledge from a resident's Background."""
-
-from typing import Literal
-
-from pydantic import BaseModel, ConfigDict, Field
-from constants import SNAKE_NAME
-
-
-class Attitudes(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    belief: Literal["believed", "uncertain", "disbelieved"]
-    belief_reason: str = Field(min_length=1, max_length=400)
-    trust: int = Field(ge=-100, le=100)
-    trust_reason: str = Field(min_length=1, max_length=400)
-    authority: Literal["accepted", "uncertain", "rejected"]
-    authority_reason: str = Field(min_length=1, max_length=400)
-
-
-def initial_attitudes():
-    return {
-        "belief": "uncertain", "belief_reason": f"Has not heard {SNAKE_NAME}'s claims yet.",
-        "trust": 0, "trust_reason": f"Has not dealt with {SNAKE_NAME} yet.",
-        "authority": "uncertain", "authority_reason": f"Has not encountered {SNAKE_NAME}'s rules yet.",
-    }
-
+"""Private former-life recollections from the authored Background."""
 
 def remember_description(npc):
     """Only authored Background supplies former-life knowledge."""

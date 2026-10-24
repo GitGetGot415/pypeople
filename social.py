@@ -19,7 +19,7 @@ from dialogue_rules import named_references, validate_account_speech, validate_a
 
 
 GoalKind = Literal["obtain_apple", "help_with_apple", "repair_relationship", "sabotage_relationship"]
-FactKind = Literal["apple_given", "work_given", "apple_refused", "promise_kept", "promise_broken", "private_motive", "former_life", "arrival", "departure", "apple_eaten", "conversation_seen", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "visit", "report"]
+FactKind = Literal["apple_given", "work_given", "apple_refused", "promise_kept", "promise_broken", "private_motive", "former_life", "arrival", "departure", "apple_eaten", "conversation_seen", "harvest", "killing", "snake_claim", "visit", "report"]
 Stance = Literal["uncertain", "believed", "disbelieved"]
 ConcernKind = Literal["recollection", "news", "surroundings", "plans"]
 
@@ -133,7 +133,7 @@ def undisclosed_danger(npc):
     discussed = {claim_by_id(world, d.claim_id).fact_id for d in world.disclosures if d.speaker_id == npc.id}
     return next((b.claim_id for b in reversed(npc.beliefs) if b.stance != "disbelieved"
                  and claim_by_id(world, b.claim_id).fact_id not in discussed
-                 and fact_by_id(world, claim_by_id(world, b.claim_id).fact_id).kind in ("eating", "judgment", "defiance")
+                 and fact_by_id(world, claim_by_id(world, b.claim_id).fact_id).kind in ("killing",)
                  and not any(r.turns and r.topic == danger_topic(npc, b.claim_id) and npc.name in r.participants
                              for r in world.history)), None)
 
@@ -263,6 +263,8 @@ class Fact:
     phase: Annotated[int, Field(ge=0)]
     summary: Annotated[str, Field(min_length=1)]
     witness_ids: list[str]
+    quantity: Annotated[int | None, Field(strict=True, ge=1)] = None
+    location: str | None = None
 
 
 @dataclass
@@ -317,6 +319,7 @@ class ClaimOption:
     creator_id: str | None
     kind: FactKind
     assertion: Annotated[str, Field(min_length=1)]
+    quantity: Annotated[int | None, Field(strict=True, ge=1)] = None
 
 
 @dataclass
@@ -340,7 +343,8 @@ def claim_by_id(world, claim_id):
 
 def assertion_text(world, fact, affirmed=True):
     if affirmed:
-        return f"At {phase_label(fact.phase)}: {fact.summary}"
+        summary = harvest_summary(world.participant_by_id(fact.subject_id).name, fact.quantity) if fact.kind == "harvest" else fact.summary
+        return f"At {phase_label(fact.phase)}: {summary}"
     subject, target = world.participant_by_id(fact.subject_id), world.participant_by_id(fact.object_id)
     action = {"apple_given": "give an apple to", "apple_refused": "refuse an apple to",
               "promise_kept": "keep the apple promise to", "promise_broken": "miss the apple promise to"}
@@ -353,7 +357,8 @@ def assertion_text(world, fact, affirmed=True):
 
 def account_content(world, fact, affirmed=True):
     """Request prose has no record header; keep UI formatting in assertion_text()."""
-    summary = fact.summary if fact.kind == "former_life" else named_references(fact.summary)
+    summary = (harvest_summary(world.participant_by_id(fact.subject_id).name, fact.quantity)
+               if fact.kind == "harvest" else fact.summary if fact.kind == "former_life" else named_references(fact.summary))
     if fact.kind == "former_life":
         _, marker, description = summary.partition("'s own description: ")
         summary = description if marker else summary
@@ -378,7 +383,8 @@ def fact_context(world, fact, affirmed=True):
     date = {"day": fact.phase // len(PHASES) + 1, "phase": PHASES[fact.phase % len(PHASES)]}
     return {"assertion": account_content(world, fact, affirmed), "kind": fact.kind,
             "recorded_at": date, "event_time": None if fact.kind == "former_life" else date,
-            "time_scope": "remembered former life; event date unknown" if fact.kind == "former_life" else "life here"}
+            "time_scope": "remembered former life; event date unknown" if fact.kind == "former_life" else "life here",
+            "quantity": fact.quantity, "location": fact.location}
 
 
 def account_view(world, claim, belief):
@@ -396,14 +402,22 @@ def account_view(world, claim, belief):
             "basis": projected["basis"]}
 
 
-def add_fact(world, kind, subject, target, source_id, record, summary, witnesses):
+def harvest_summary(name, quantity):
+    return f"{name} harvested {quantity} {'apple' if quantity == 1 else 'apples'} from the tree."
+
+
+def add_fact(world, kind, subject, target, source_id, record, summary, witnesses, *, quantity=None, location=None):
     # Callers own audience selection: direct participants can speak through a door,
     # and an observer may have left before accepted speech establishes the exchange.
-    witnesses = list({p.id: p for p in witnesses if p is not world.player}.values())
+    if (kind == "harvest") != (type(quantity) is int and quantity > 0) or kind != "harvest" and quantity is not None:
+        raise ValueError("Only harvesting facts require an exact positive integer quantity.")
+    if kind == "harvest":
+        summary = harvest_summary(subject.name, quantity)
+    witnesses = list({p.id: p for p in witnesses if p is not None and p is not world.player}.values())
     fact = next((fact for fact in world.facts if fact.source_id == source_id and fact.kind == kind), None)
     if fact is None:
         fact = Fact(uuid4().hex, kind, subject.id, target.id if target else subject.id, source_id,
-                    record.id if record else None, world.phase_index, summary, [])
+                    record.id if record else None, world.phase_index, summary, [], quantity, location)
         world.facts.append(fact)
     for npc in witnesses:
         if npc.id in fact.witness_ids:
@@ -439,8 +453,8 @@ def record_event_fact(world, event, record):
 
 
 def can_deceive(npc):
-    return npc.preferences["generosity"] < 0.5 or bool(npc.goal and npc.goal.kind == "sabotage_relationship"
-                                                     and npc.goal.status == "active")
+    return npc is not npc.world.snake and (npc.preferences["generosity"] < 0.5 or bool(npc.goal and npc.goal.kind == "sabotage_relationship"
+                                                     and npc.goal.status == "active"))
 
 
 def selected_beliefs(npc, partner_id=None, *, pinned=()):
@@ -452,8 +466,8 @@ def selected_beliefs(npc, partner_id=None, *, pinned=()):
         fact = fact_by_id(world, claim.fact_id)
         return (claim.id in pinned or bool(npc.current_concern and npc.current_concern.claim_id == claim.id),
                 bool(goal and goal.claim_id == claim.id),
-                fact.kind in ("eating", "judgment", "defiance"),
-                fact.kind in ("eating", "judgment", "pardon", "snake_claim", "defiance", "bargain", "endorsement", "arrival"),
+                fact.kind in ("killing",),
+                fact.kind in ("killing", "snake_claim", "arrival", "harvest"),
                 partner_id in (fact.subject_id, fact.object_id, belief.source_id),
                 bool(goal and fact.subject_id == goal.third_npc_id),
                 fact.kind == "promise_broken" or fact.kind == "private_motive" and fact.subject_id != npc.id,
@@ -485,7 +499,7 @@ def prepare_information(conversation):
             fact = fact_by_id(world, claim.fact_id)
             options[claim.id] = ClaimOption(claim.id, fact.id, fact.subject_id, claim.originator_id,
                                            claim.affirmed, claim.parent_claim_id, None, fact.kind,
-                                           account_content(world, fact, claim.affirmed))
+                                           account_content(world, fact, claim.affirmed), quantity=fact.quantity)
         if can_deceive(npc):
             bases = [claim_by_id(world, belief.claim_id) for belief in selected
                      if belief.stance == "believed" and claim_by_id(world, belief.claim_id).affirmed]
@@ -493,7 +507,7 @@ def prepare_information(conversation):
                 fact = fact_by_id(world, base.fact_id)
                 option_id = f"{conversation.id}:deny_{role}_{index}"
                 options[option_id] = ClaimOption(option_id, fact.id, fact.subject_id, npc.id, False,
-                                                base.id, npc.id, fact.kind, account_content(world, fact, False))
+                                                base.id, npc.id, fact.kind, account_content(world, fact, False), quantity=fact.quantity)
                 allowed[role].append(option_id)
         if npc.goal and npc.goal.kind == "sabotage_relationship" and npc.goal.status == "active":
             allowed[role].sort(key=lambda claim_id: options[claim_id].creator_id is None)
@@ -675,9 +689,9 @@ def validate_information(response, context, *, names=(), participant_names=None,
             if dialogue_validation:
                 validate_account_speech(speech.text, option.assertion, names=names,
                                         speaker=(participant_names or {}).get(role),
-                                        listener=(participant_names or {}).get(listener), kind=option.kind,
+                                        listener=(participant_names or {}).get(listener), kind=option.kind, quantity=option.quantity,
                                         firsthand=bool(belief and belief.direct), actor_references=actor_references,
-                                        known_events=[{"assertion": options[b.claim_id].assertion, "kind": options[b.claim_id].kind}
+                                        known_events=[{"assertion": options[b.claim_id].assertion, "kind": options[b.claim_id].kind, "quantity": options[b.claim_id].quantity}
                                                       for b in beliefs[role].values() if b.direct and b.claim_id in options])
             seen_disclosures.add((role, entry.claim_id))
             fabricating = option.creator_id is not None and belief is None
@@ -845,23 +859,26 @@ def trim_information(world):
             keep.add(npc.conversation.focus_claim_id)
         npc.beliefs[:] = [b for b in npc.beliefs if b.claim_id in keep]
     claim_ids = {b.claim_id for npc in world.actors for b in npc.beliefs}
+    claim_ids.update(r.grievance_id for r in world.history if r.grievance_id)
     claim_ids.update(effect.claim_id for npc in residents for effect in npc.pending_social_opinions if effect.claim_id)
     disclosure_ids = {b.disclosure_id for npc in world.actors for b in npc.beliefs if b.disclosure_id}
     disclosure_ids.update(d.id for d in world.disclosures for npc in residents
                           for effect in npc.pending_social_opinions if effect.claim_id == d.claim_id
                           and effect.conversation_id == d.conversation_id and d.listener_id == npc.id)
     disclosure_ids.update(d.id for d in world.disclosures[-100:])
+    confrontations = {r.id for r in world.history if r.grievance_id and r.turns}
+    disclosure_ids.update(d.id for d in world.disclosures if d.conversation_id in confrontations)
     event_ids = {event.id for event in world.events}
     disclosure_ids.update(d.id for d in world.disclosures if d.event_id in event_ids)
     fact_ids = {fact.id for fact in world.facts[-100:] if fact.source_id not in current_goals}
     active_records = {n.conversation.record.id for n in residents if n.conversation}
     active_records.update(n.gift.record.id for n in residents if n.gift)
-    if world.snake.encounter:
-        active_records.add(world.snake.encounter.record.id)
+    if world.snake.conversation:
+        active_records.add(world.snake.conversation.record.id)
     if world.player_interaction and world.player_interaction.record_id:
         active_records.add(world.player_interaction.record_id)
     fact_ids.update(f.id for f in world.facts if f.kind == "conversation_seen" and f.conversation_id in active_records)
-    fact_ids.update(fact.id for fact in world.facts if fact.source_id in current_goals)
+    fact_ids.update(fact.id for fact in world.facts if fact.source_id in current_goals or fact.kind == "killing")
     for npc in residents:
         if npc.conversation and npc.conversation.information_context:
             disclosure_ids.update(b.disclosure_id for entries in npc.conversation.information_context.beliefs.values()
@@ -998,7 +1015,7 @@ def check_relationship_goals(world, opinion_owner, record=None):
 
 
 def permitted_proposals(conversation):
-    if conversation.purpose == "food_request" or conversation.opening_kind == "orientation":
+    if conversation.purpose in ("food_request", "confrontation") or conversation.opening_kind == "orientation" or conversation.initiator is conversation.initiator.world.snake or conversation.recipient is conversation.initiator.world.snake:
         return []
     world = conversation.initiator.world
     proposals = []
@@ -1055,7 +1072,7 @@ def validate_agreements(agreements, proposals, turns, initiator_id, recipient_id
 def validate_live_agreements(conversation, response, *, dialogue_validation=True):
     world = conversation.initiator.world
     pair = (conversation.initiator, conversation.recipient)
-    if any(npc.conversation is not conversation or world.npc_by_id(npc.id) is not npc or npc.location != pair[0].location for npc in pair):
+    if any(npc.conversation is not conversation or world.actor_by_id(npc.id) is not npc or npc.departure or npc.location != pair[0].location for npc in pair):
         raise ValueError("The conversation participants are no longer available.")
     if conversation.context_references != conversation_references(conversation):
         raise ValueError("An objective or promise changed while the reply was being generated. Please try again.")
@@ -1137,9 +1154,6 @@ def apply_opinion_effects(npc):
         except ValueError:
             return False
         npc.pending_social_opinions.pop(0)
-        if target is npc.world.snake and npc.attitudes:
-            npc.attitudes["trust"] = max(-100, min(100, npc.attitudes["trust"] + effect.delta))
-            npc.attitudes["trust_reason"] = effect.reason[:400]
         if effect.claim_id:
             record = next(entry for entry in npc.world.history if entry.id == effect.conversation_id)
             actual_delta = npc.opinions[target.id]["opinion"] - previous["opinion"]
@@ -1218,7 +1232,9 @@ def private_context(npc, partner_id=None):
     goal_view = asdict(npc.goal) if npc.goal else None
     if goal_view:
         goal_view.pop("baseline_opinion")
-    return {"owner_id": npc.id, "visibility": "Only this speaker knows their private motive and memories.",
+    partner = world.participant_by_id(partner_id) if world and partner_id else None
+    return {"dangerous_partner": bool(partner and regards_as_dangerous(npc, partner)),
+            "owner_id": npc.id, "visibility": "Only this speaker knows their private motive and memories.",
             "concern": ({"kind": npc.current_concern.kind, "claim_id": npc.current_concern.claim_id,
                          "guidance": concern_topic(npc, npc.current_concern)} if npc.current_concern else None),
             "goal": goal_view,
@@ -1350,12 +1366,10 @@ def build_account_view(account, knowledge, actors, speaker_id, listener_id):
     return view
 
 
-
-
 def resident_information(snapshot, draft, *, incomplete=True):
     return validate_information(SimpleNamespace(**draft), snapshot.get("_information_validation"),
         names=(*[p["name"] for p in snapshot.get("_name_actors", {}).values()], SNAKE_NAME),
-        participant_names={role: snapshot[role]["npc_name"] for role in ("initiator", "recipient")},
+        participant_names={role: snapshot[role]["name"] for role in ("initiator", "recipient")},
         dialogue_validation=snapshot.get("_dialogue_validation", True),
         actor_references=account_references(snapshot.get("_name_actors", {})), incomplete=incomplete)
 
@@ -1438,7 +1452,7 @@ def resident_turn_choices(snapshot, draft, role, private, *, closing=False, asse
                                      for a in snapshot[source_role].get("private_context", {}).get("permitted_accounts", [])
                                      if a["claim_id"] == claim_id), {})
                     view = {key: deepcopy(supplied[key]) for key in ("object_id", "object_name", "event_time") if key in supplied}
-            selected = {**view, "claim_id": claim_id, "assertion": option.assertion, "kind": option.kind,
+            selected = {**view, "claim_id": claim_id, "assertion": option.assertion, "kind": option.kind, "quantity": option.quantity,
                         "subject_id": option.subject_id, "original_speaker_id": option.originator_id}
             projected = build_account_view(selected, account_knowledge(belief, actor_id(person),
                 creator_id=option.creator_id, fallback_source=actor_id(partner)), catalog,
@@ -1447,7 +1461,7 @@ def resident_turn_choices(snapshot, draft, role, private, *, closing=False, asse
                         subject_id=option.subject_id, subject_name=projected["subject_name"],
                         original_speaker_id=option.originator_id, original_speaker_name=projected["original_speaker_name"],
                         immediate_source_id=projected["immediate_source_id"], immediate_source_name=projected["immediate_source_name"],
-                        knowledge_owner_name=person["npc_name"], basis=projected["basis"], stance=projected["stance"])
+                        knowledge_owner_name=person["name"], basis=projected["basis"], stance=projected["stance"])
             for field in ("subject", "object", "original_speaker", "immediate_source"):
                 if view.get(field + "_id") and field + "_relation" in projected:
                     view[field + "_relation"] = projected[field + "_relation"]
@@ -1495,22 +1509,9 @@ def resident_turn_choices(snapshot, draft, role, private, *, closing=False, asse
             focus_fact = next(o.fact_id for o in info.options if o.id == focus)
             choices["disclosures"] = [claim for claim in choices["disclosures"]
                                       if next(o.fact_id for o in info.options if o.id == claim) == focus_fact]
+    if any(snapshot[r].get("kind") == "python" for r in ("initiator", "recipient")):
+        choices["leverage"] = []
     return info, accounts, choices, pending
-
-
-def snake_speaker_accounts(snapshot, decision, turns, role, *, outcome_turn=2):
-    snake, resident = snapshot["snake"], snapshot["resident"]
-    index = len(turns)
-    guard = dict(actor_id=snake["actor_id"], name=snake["name"], kind="python")
-    human = dict(actor_id=resident["npc_id"], name=resident["npc_name"], kind="human resident")
-    accounts = snake["known_accounts"] if role == "initiator" else snapshot["offering_accounts"]
-    if role == "initiator" and index >= outcome_turn and decision.account_id:
-        disclosed = next((a for a in snapshot["offering_accounts"] if a["claim_id"] == decision.account_id), None)
-        if disclosed:
-            disclosed = {**disclosed, "basis": "hearsay", "immediate_source_id": human["actor_id"],
-                         "immediate_source_name": human["name"], "knowledge_owner_name": guard["name"], "stance": "uncertain"}
-            accounts = [*accounts, disclosed]
-    return accounts
 
 
 def validate_player_promise_offers(record, promises, owner_ids, player_id, now, player_offer_ids):
@@ -1527,7 +1528,7 @@ def validate_player_promise_offers(record, promises, owner_ids, player_id, now, 
                 or record.turns[offer.offer_turn].speaker_id != offer.giver_id):
             raise ValueError("Invalid player apple offer authority or source.")
         player_offer_ids.add(offer.id)
-        from dialogue_rules import validate_apple_offer, validate_apple_promise
+        from dialogue_rules import validate_apple_offer
         validate_apple_offer(record.turns[offer.offer_turn].text, offer.deadline, current_phase=offer.created_phase)
         if offer.status == "accepted":
             turn = offer.accept_turn
@@ -1561,13 +1562,13 @@ def validate_social_records(facts, claims, disclosures, events, history, residen
     from constants import PLAYER_ID
     observed_conversations = set()
     for fact in facts.values():
-        single_actor = fact.kind in ("arrival", "departure", "apple_eaten")
+        single_actor = fact.kind in ("arrival", "departure", "apple_eaten", "harvest")
         if (fact.subject_id not in ids or fact.object_id not in ids
                 or (fact.subject_id == fact.object_id) != single_actor
                 or fact.phase > now or not set(fact.witness_ids) <= ids
                 or PLAYER_ID in fact.witness_ids
                 or len(set(fact.witness_ids)) != len(fact.witness_ids)
-                or not fact.witness_ids and fact.kind != "conversation_seen"):
+                or not fact.witness_ids and fact.kind not in ("conversation_seen", "harvest")):
             raise ValueError("Invalid fact participants or witnesses.")
         if fact.kind == "conversation_seen":
             record = source_record(history, fact.conversation_id)
@@ -1587,7 +1588,8 @@ def validate_social_records(facts, claims, disclosures, events, history, residen
             expected = {"apple_given": "fruit_shared", "work_given": "work_shared", "apple_refused": "food_refused", "promise_kept": "promise_fulfilled"}.get(fact.kind, fact.kind)
             if (event.kind != expected or fact.phase != phase_index(event.day, event.phase)
                     or set(event.participants) != {fact.subject_id, fact.object_id}
-                    or event.history != fact.conversation_id):
+                    or event.history != fact.conversation_id
+                    or fact.kind == "harvest" and event.text != fact.summary):
                 raise ValueError("A fact must match its actual source event.")
     for claim in claims.values():
         fact = facts.get(claim.fact_id)
@@ -1620,6 +1622,12 @@ def validate_social_records(facts, claims, disclosures, events, history, residen
                 raise ValueError("A repeated account requires its actual source.")
         seen.add(disclosure.id)
     for actor in [*residents, snake]:
+        validate_saved_concern(actor.current_concern, actor, claims, facts)
+        if any(m.partner_id not in ids or phase_index(m.day, m.phase) > now for m in actor.memories):
+            raise ValueError("Invalid personal memory ownership or phase.")
+        for effect in actor.pending_social_opinions:
+            if effect.target_id not in ids or effect.claim_id is not None and effect.claim_id not in claims:
+                raise ValueError("Invalid queued social effect.")
         if len({b.claim_id for b in actor.beliefs}) != len(actor.beliefs):
             raise ValueError("Duplicate owned account.")
         for belief in actor.beliefs:
@@ -1633,14 +1641,24 @@ def validate_social_records(facts, claims, disclosures, events, history, residen
                 source = disclosures.get(belief.disclosure_id)
                 if source is None or source.listener_id != actor.id or source.claim_id != claim.id or source.speaker_id != belief.source_id:
                     raise ValueError("Hearsay requires its actual disclosure source.")
+    for record in history.values():
+        if record.purpose == "confrontation":
+            grievance = claims.get(record.grievance_id)
+            if (not grievance or not grievance.affirmed or grievance.subject_id != record.participant_ids[1]
+                    or not set(record.participant_ids) <= {n.id for n in residents}):
+                raise ValueError("A confrontation history needs two human residents and its original sourced grievance.")
+            if record.turns and not any(d.conversation_id == record.id and d.speaker_id == record.participant_ids[0]
+                    and claims[d.claim_id].fact_id == grievance.fact_id for d in disclosures.values()):
+                raise ValueError("An accepted confrontation must retain its actual grievance discussion and date.")
+        elif record.grievance_id is not None:
+            raise ValueError("Only confrontation history owns a grievance.")
     goal_ids = set()
     for npc in residents:
         if npc.id in live_ids and npc.current_concern is None:
             raise ValueError("A living resident must have a concern.")
-        validate_saved_concern(npc.current_concern, npc, claims, facts)
-        if npc.arrival_day > day or any(m.partner_id not in ids or phase_index(m.day, m.phase) > now for m in npc.memories):
+        if npc.arrival_day > day:
             raise ValueError("Invalid arrival day or personal memory.")
-        if npc.departure and (phase_index(npc.departure.day, npc.departure.phase) > now or not any(f.source_id == npc.departure.event_id and f.kind == "eating" and f.object_id == npc.id for f in facts.values())):
+        if npc.departure and (phase_index(npc.departure.day, npc.departure.phase) > now or not any(f.source_id == npc.departure.event_id and f.kind == "killing" and f.object_id == npc.id for f in facts.values())):
             raise ValueError("An archived resident needs its actual departure record.")
         goal = npc.goal
         if goal:
@@ -1653,9 +1671,6 @@ def validate_social_records(facts, claims, disclosures, events, history, residen
                 raise ValueError("Invalid goal resolution.")
             if goal.claim_id is not None and goal.claim_id not in claims:
                 raise ValueError("Unknown goal account.")
-        for effect in npc.pending_social_opinions:
-            if effect.target_id not in ids or effect.claim_id is not None and effect.claim_id not in claims:
-                raise ValueError("Invalid queued social effect.")
 
 
 def validate_saved_promises(promises, history, ids, live_ids, player_id, now):
@@ -1670,3 +1685,66 @@ def validate_saved_promises(promises, history, ids, live_ids, player_id, now):
             raise ValueError("Impossible obligations must be cancelled.")
         if promise.deadline < promise.created_phase or promise.created_phase > now or (promise.status == "pending") != (promise.resolved_phase is None):
             raise ValueError("Invalid promise resolution.")
+
+
+def grievance_against(npc, target):
+    """A retained believed allegation, with its original source and uncertainty intact."""
+    from constants import CONFRONTATION_START_OPINION, GRIEVANCE_FACT_KINDS, CONFRONTATION_GRIEVANCE_PHASE_PAUSE
+    if npc.opinion_score(target.id) > CONFRONTATION_START_OPINION:
+        return None
+    for belief in reversed(npc.beliefs):
+        claim = claim_by_id(npc.world, belief.claim_id)
+        fact = fact_by_id(npc.world, claim.fact_id)
+        if (belief.stance != "believed" or not claim.affirmed or fact.subject_id != target.id
+                or fact.kind not in GRIEVANCE_FACT_KINDS):
+            continue
+        latest = next((r for r in reversed(npc.world.history) if r.purpose == "confrontation"
+                       and r.between(npc, target) and r.grievance_id
+                       and claim_by_id(npc.world, r.grievance_id).fact_id == fact.id and r.turns), None)
+        if latest is not None:
+            discussed_phase = max((d.phase for d in npc.world.disclosures
+                if d.conversation_id == latest.id and d.speaker_id == npc.id
+                and claim_by_id(npc.world, d.claim_id).fact_id == fact.id), default=npc.world.phase_index)
+            if npc.world.phase_index - discussed_phase < CONFRONTATION_GRIEVANCE_PHASE_PAUSE:
+                continue
+        return claim.id
+    return None
+
+
+def confrontation_topic(npc, claim_id):
+    belief = next(b for b in npc.beliefs if b.claim_id == claim_id)
+    account = account_view(npc.world, claim_by_id(npc.world, claim_id), belief)
+    return f"Seek an explanation for this unresolved account: {account['assertion']} Source: {account['immediate_source_name']}; stance: {account['stance']}."
+
+
+def regards_as_dangerous(npc, target):
+    return npc.opinion_score(target.id) < 0 and any(
+        b.stance == "believed" and (c := claim_by_id(npc.world, b.claim_id)).affirmed
+        and (f := fact_by_id(npc.world, c.fact_id)).kind == "killing" and f.subject_id == target.id
+        for b in npc.beliefs)
+
+
+def validate_escalation_snapshot(decision, snapshot, turns, opinion):
+    choices = snapshot.get("escalation_choices")
+    if decision is None:
+        if choices:
+            raise ValueError("The confrontation initiator must choose a peaceful leave or an available attack.")
+        return
+    if not choices or snapshot.get("purpose") != "confrontation":
+        raise ValueError("Only an eligible confrontation initiator may select escalation.")
+    if (decision.target_id != choices["target_id"] or decision.grievance_id != choices["grievance_id"]
+            or decision.action not in choices["actions"]):
+        raise ValueError("Escalation must match the supplied target, grievance and actions.")
+    if not any(t.speaker == "recipient" for t in turns):
+        raise ValueError("The target must have a real opportunity to answer.")
+    if decision.action == "attack":
+        from constants import CONFRONTATION_OPINION
+        if opinion > CONFRONTATION_OPINION or not decision.evidence.strip() or not any(
+                decision.evidence in t.text for t in turns if t.speaker == "recipient"):
+            raise ValueError("An attack requires final hostility and exact evidence from the target's accepted answer.")
+
+
+def validate_escalation(conversation, response):
+    validate_escalation_snapshot(response.escalation,
+        {"purpose": conversation.purpose, "escalation_choices": conversation.initiator.world.escalation_choices(conversation)},
+        response.turns, response.initiator_opinion.opinion)

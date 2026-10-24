@@ -33,12 +33,14 @@ from constants import (PLAYER_ACTION_BUTTON_RECT, PLAYER_ACTION_PICKER_RECT, PLA
 
 class GameScreen:
     def __init__(self, max_requests=MAX_LLM_REQUESTS):
-        from constants import END_CONVERSATION_RECT, LEAVE_QUEUE_RECT, INVITATION_ACCEPT_RECT
+        from constants import END_CONVERSATION_RECT, HARVEST_BUTTON_RECT, HARVEST_AMOUNT_RECT, INVITATION_ACCEPT_RECT
         self.app = None
         self.location = "garden"
         self.location_menu = None
         self.end_button = Button(END_CONVERSATION_RECT, "End conversation")
-        self.leave_queue_button = Button(LEAVE_QUEUE_RECT, "Leave queue")
+        self.harvest_button = Button(HARVEST_BUTTON_RECT, "Harvest apples")
+        self.harvest_amount = TextInput(HARVEST_AMOUNT_RECT, max_length=6, placeholder="1")
+        self.harvest_amount.set_value("1")
         self.invitation_button = Button(INVITATION_ACCEPT_RECT, "Accept invitation")
         self.actions_button = Button(PLAYER_ACTION_BUTTON_RECT, "Request action")
         self.menu_button = Button((1144, 16, 112, 38), "Menu")
@@ -185,9 +187,18 @@ class GameScreen:
                     self.dialogue.picker = dict(command={}, page=0, focus=self.prompt_input.active)
                     self.prompt_input.active = self.prompt_input.backspace_held = False
             return
-        if self.leave_queue_button.clicked(event) and world.can_leave_tree(world.player.id):
-            world.leave_tree(world.player.id)
-            return
+        if self.can_harvest(world):
+            self.harvest_amount.handle_event(event)
+            if self.harvest_button.clicked(event):
+                try:
+                    world.harvest(world.player, int(self.harvest_amount.text or "1"))
+                except ValueError as exc:
+                    self.show_save_message(str(exc))
+                return
+            if self.harvest_amount.active:
+                return
+        else:
+            self.harvest_amount.active = False
         if self.dialogue.open and world.player_interaction and self.end_button.clicked(event):
             self.close_dialogue()
             return
@@ -405,7 +416,6 @@ class GameScreen:
         from player import active_player
         return (active_player(world) and self.location == world.player.location == PLAYER_ROOM_LOCATION
                 and not world.player_interaction and not world.player.journey
-                and not world.tree_has_actor(world.player.id)
                 and not (world.visit and world.visit.stage == "travel"))
 
     def can_advance_from_bed(self, world):
@@ -552,8 +562,6 @@ class GameScreen:
         for target in targets(world, self.location):
             if hit_actor is None and pygame.Rect(target["rect"]).collidepoint(point):
                 if active_player(world):
-                    if world.tree_has_actor(world.player.id):
-                        return
                     from locations import start_journey
                     self.close_dialogue()
                     start_journey(world.player, self.location, target["point"], purpose="door", fast=True)
@@ -562,17 +570,16 @@ class GameScreen:
                 else:
                     app.use_door(target)
                 return
-        if active_player(world):
-            if self.location == "garden" and hit_actor in (None, world.snake) and (world.snake.contains(point) or abs(point[0] - world.tree.x) < 70 and abs(point[1] - world.tree.y) < 100):
-                self.close_dialogue()
-                if not world.join_tree(world.player, "introduction" if world.snake.contains(point) else "bargain"):
-                    self.show_save_message("Tree service is unavailable.")
-                return
+        if active_player(world) and self.location == "garden" and hit_actor is None and abs(point[0] - world.tree.x) < 70 and abs(point[1] - world.tree.y) < 100:
+            from locations import start_journey
+            self.close_dialogue()
+            start_journey(world.player, "garden", world.tree.interaction_point, purpose="tree", fast=True)
+            return
         npc = hit_actor
         if npc is None:
             self.close_dialogue()
             return
-        interaction = npc.conversation or getattr(npc, "snake_encounter", None)
+        interaction = npc.conversation
         if interaction and (not active_player(world) or not can_interrupt_approach(npc)):
             self.close_dialogue()
             self.dialogue.show(npc, interaction)
@@ -586,13 +593,22 @@ class GameScreen:
         except ValueError as exc:
             self.show_save_message(str(exc))
 
+    def can_harvest(self, world):
+        import math
+        from constants import HARVEST_DISTANCE
+        from player import can_claim
+        return (not world.paused and self.location == "garden" and can_claim(world)
+                and not self.dialogue.open and math.dist((world.player.x, world.player.y),
+                                                        world.tree.interaction_point) <= HARVEST_DISTANCE)
+
     def draw(self, app):
         from player import active_player
         draw_world(app.window, app.npcs, app.tree, app.small_font, app.character.renderer,
                    self.view_offset, phase=app.simulation.phase, zoom=self.camera_zoom,
                    viewport=self.world_viewport, snake=app.simulation.snake, world=app.simulation, location=self.location)
-        if app.simulation.can_leave_tree(app.simulation.player.id):
-            self.leave_queue_button.draw(app.window, app.small_font)
+        if self.can_harvest(app.simulation):
+            self.harvest_button.draw(app.window, app.small_font)
+            self.harvest_amount.draw(app.window, app.small_font)
         if self.location_menu:
             self.draw_location_menu(app)
         self.menu_button.draw(app.window, app.small_font)
@@ -887,10 +903,7 @@ class GameScreen:
         if conversation.error and not conversation.record.turns:
             self.retry_button.draw(app.window, app.small_font, enabled=not app.simulation.paused)
         if not conversation.arrived:
-            if conversation.initiator is app.simulation.snake:
-                text = f"{conversation.recipient.name} is walking to the guarded tree..."
-            else:
-                text = f"{conversation.initiator.name} is walking over to {conversation.recipient.name}..."
+            text = f"{conversation.initiator.name} is walking over to {conversation.recipient.name}..."
         elif conversation.error and not source:
             text = conversation.error
         elif not source:
@@ -996,15 +1009,11 @@ class GameScreen:
         if active_player(world):
             self.location = world.player.location
             interaction = world.player_interaction
-            if interaction and interaction.kind == "resident":
+            if interaction and interaction.kind in ("resident", "snake"):
                 if interaction.stage == "conversation" and not self.dialogue.open:
                     app._sync_conversation_view()
-                    app.conversations.open_player_dialogue(world.npc_by_id(interaction.npc_id))
+                    app.conversations.open_player_dialogue(world.actor_by_id(interaction.npc_id))
                     app._present_conversation_events()
-            elif interaction and interaction.kind == "snake" and not self.dialogue.open:
-                app._sync_conversation_view()
-                app.conversations.open_player_dialogue(world.snake)
-                app._present_conversation_events()
             elif interaction and interaction.kind == "door" and not world.player.journey:
                 target = interaction.target
                 world.player_interaction = None

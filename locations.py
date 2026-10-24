@@ -239,7 +239,7 @@ def update_journey(actor, dt):
 
 def environment(location):
     if location == GARDEN_LOCATION:
-        return "An open grassy garden with its guarded apple tree and a narrow wooden bridge across a gap to the apartment building entrance."
+        return "An open grassy garden with its finite apple tree and a narrow wooden bridge across a gap to the apartment building entrance."
     if location.startswith("hallway:"):
         floor = location.split(":")[1]
         return (f"Inside the apartment building's hallway on floor {floor}, with five closed room doors and an elevator. "

@@ -4,11 +4,11 @@ from constants import PLAYER_NAME_TAG, SNAKE_NAME
 
 
 def actor_id(person):
-    return person.get("npc_id", person.get("actor_id"))
+    return person.get("actor_id")
 
 
 def own_name(person):
-    return person.get("npc_name", person.get("name", person.get("character", {}).get("Name", "")))
+    return person.get("name", "")
 
 
 def forms(name):
@@ -21,7 +21,7 @@ def actor_catalog(world, location="garden"):
     catalog = {p.id: {"name": p.name, "self_name": p.character["Name"],
                       "_visible": p.id in live_ids and p.location == location} for p in people}
     catalog[world.snake.id] = {"name": SNAKE_NAME, "self_name": SNAKE_NAME,
-                               "_visible": location == "garden", "references": ["the python guarding the apple tree"]}
+                               "_visible": location == "garden", "references": ["the python wandering the garden"]}
     catalog[world.player.id] = {"name": PLAYER_NAME_TAG, "self_name": PLAYER_NAME_TAG, "kind": "player",
         "_visible": world.mode == "player" and world.player.alive and world.player.location == location,
         "references": ["the player"]}

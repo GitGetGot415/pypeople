@@ -363,25 +363,13 @@ def validate_claim_source(text, *, names=(), speaker=None, listener=None, actor_
 
 
 def validate_account_speech(text, assertion, *, names=(), speaker=None, listener=None, kind=None, firsthand=False,
-                            actor_references=None, known_events=()):
+                            actor_references=None, known_events=(), quantity=None):
     """Require content evidence, rather than an ID or a promise to tell it later.
 
     This is a conservative vocabulary check, not a proof of semantic equivalence.
     """
-    speech = unquoted_speech(text)
-    if "offering remained unpaid" in assertion.casefold() and not assertion.startswith("An account disputes:"):
-        if (_asserts(_APPLE_REFUSAL, speech)
-                or not re.search(r"\b(?:offering|information|recollection|memory|endorsement|support)\b", text, re.I)):
-            raise ValueError("This account concerns an unpaid offering after an apple was received, not refusal of the apple. Preserve what was refused.")
-        subject = assertion.partition(" refused the agreed ")[0]
-        if " refused the agreed " in assertion and speaker is not None and subject not in (speaker, listener):
-            actor = "(?:" + "|".join(name_pattern(ref) for ref in
-                [subject, subject.split()[0], *(actor_references or {}).get(subject, [])]) + ")"
-            adopts_event = re.search(r"\bi\s+(?:received|accepted|got|refused|declined)\b", speech, re.I)
-            if adopts_event and not re.search(actor + r"\s*,?\s+(?:(?:she|he|they|has|had|have|did|not|never|already|also|then|still|to)\s+){0,4}"
-                             r"(?:refuse[d]?|decline[d]?|reject(?:ed)?|receive[d]?|accept(?:ed)?|took|got|take|said|told|won['’]t|wouldn['’]t)\b",
-                             text, re.I):
-                raise ValueError("Keep the selected account's subject with its action. Describe that person's receipt or refusal; mentioning their name elsewhere does not let the reporter adopt the event as I/my.")
+    if kind == "harvest":
+        validate_harvest_quantity(text, quantity)
     sentences = [s for s in split_sentences(text) if not (
         re.search(r"\b(?:i['’]ll|will|would|could|might|going to|want to|like to)\s+(?:\w+\s+){0,3}(?:share[d]?|tell|told|disclose[d]?)\b", s, re.I)
         and not re.search(r"\b(?:now|right away|right here)\b|:\s*i\b", s, re.I))]
@@ -400,7 +388,7 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
                         continue
                     try:
                         validate_account_speech(sentence, event["assertion"], names=names, speaker=speaker, listener=listener,
-                                                kind=event["kind"], firsthand=True, actor_references=actor_references)
+                                                kind=event["kind"], firsthand=True, actor_references=actor_references, quantity=event.get("quantity"))
                     except ValueError:
                         continue
                     break
@@ -435,7 +423,7 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
                 references = [name.split()[0], *(actor_references or {}).get(name, [])]
                 if not any(re.search(name_pattern(ref), spoken, re.I) for ref in references):
                     raise DialogueValidationError("The selected account is not actually told in this turn. "
-                        f"Preserve who heard the guard: {name}. Expected snake_claim: {assertion}", RecoveryKind.UNMATCHED_ACCOUNT)
+                        f"Preserve who heard the snake: {name}. Expected snake_claim: {assertion}", RecoveryKind.UNMATCHED_ACCOUNT)
     missing_actor = speaker is not None and any(
         name not in (speaker, listener) and any(is_name_reference(match, assertion)
             for match in re.finditer(name_pattern(name), assertion, re.I))
@@ -485,28 +473,20 @@ def validate_apple_acceptance(acceptance):
         raise DialogueValidationError("The apple receiver must explicitly accept the spoken promise before it can be recorded.", RecoveryKind.MISSING_ACCEPTANCE)
 
 
-def validate_continuity(text, *, day, situation, knows_claims=False, listener_is_guard=False):
+def validate_continuity(text, *, day, situation, knows_claims=False, listener_is_snake=False):
     speech = unquoted_speech(text).replace("\u2019", "'")
-    receipt = situation.get("received_snake_apple")
-    if receipt is False and re.search(
-            rf"\bi(?:['’]ve|\s+have)?\s+(?:already\s+)?(?:received|accepted|got)\s+(?:(?:an?|one|the) apple|one|fruit)\s+"
-            rf"(?:(?:upfront|earlier)\s+)?from\s+{name_pattern(SNAKE_NAME)}|"
-            rf"{name_pattern(SNAKE_NAME)}\s+(?:already\s+)?(?:gave|handed)\s+me\s+(?:an? apple|one|fruit)\b", speech, re.I):
-        raise ValueError("The speaker has not received an apple from the named guard. Do not adopt another resident's apple transaction.")
-    if receipt and re.search(r"\bi heard (?:he|she|they) (?:gave|handed) me (?:an?|one) apple\b", speech, re.I):
-        raise ValueError("Receiving the apple is the speaker's own experience, not hearsay. Preserve the actual receipt and distinguish it from refusing the later offering.")
     if day == 1 and re.search(r"\b(?:yesterday|(?:a few|several|\d+) days ago|last (?:night|week))\b", speech, re.I) and re.search(
             rf"{name_pattern(SNAKE_NAME)}|\b(?:garden|authority|claims)\b", speech, re.I):
         raise ValueError("This is day one. Refer to earlier today for garden events, preserving unknown former-life dates.")
     guard = rf"(?:{name_pattern(SNAKE_NAME)}|the (?:snake|python)|it|him|her"
-    guard += r"|you)\b" if listener_is_guard else r")\b"
+    guard += r"|you)\b" if listener_is_snake else r")\b"
     if situation.get("prior_snake_encounters", 0) and re.search(
             r"\bi(?:\s+(?:have not|haven't|have never|never|did not|didn't)|'ve (?:never|not))\s+"
             r"(?:(?:yet|ever|actually|personally|really)\s+)*"
             r"(?:met|meet|encountered|encounter|(?:spoken|speak|talked|talk) (?:to|with)|dealt with|deal with|"
             r"(?:thought about|considered) (?:speaking|talking) (?:to|with))\s+"
             + guard, speech, re.I):
-        raise DialogueValidationError("The speaker has already met the named guard. Doubting authority does not erase that encounter.", RecoveryKind.KNOWN_ENCOUNTER)
+        raise DialogueValidationError("The speaker has already met the named snake. Doubting authority does not erase that encounter.", RecoveryKind.KNOWN_ENCOUNTER)
     if knows_claims and re.search(rf"{name_pattern(SNAKE_NAME)}|\bclaims\b", speech, re.I) and re.search(
             r"\bi['’]?(?:ve| have)?\s+(?:heard nothing|haven['’]t heard anything|have not heard anything)\b", speech, re.I):
         raise ValueError("The speaker has firsthand knowledge of the claims being made; preserve that experience while allowing skepticism.")
@@ -515,32 +495,15 @@ def validate_continuity(text, *, day, situation, knows_claims=False, listener_is
             raise ValueError("No earlier encounter or firsthand hearing is supplied for this speaker. Describe the present uncertainty without inventing a meeting.")
 
 
-def apple_price_mentions(text):
-    """Recognize explicit bargain terms without deciding whether anyone accepts."""
+def validate_apple_roles(text, *, giver, receiver, speaker, apple_received=False):
     speech = unquoted_speech(text)
-    prices = set()
-    if re.search(r"\b(?:memor(?:y|ies)|recollection|private (?:story|account|information))\b", speech, re.I):
-        prices.add("secret")
-    if re.search(r"\bendorse(?:ment|ments|s|d)?\b|\bpublic(?:ly)?\s+support\b|"
-                 r"\bsupport\b[^.!?]{0,45}\b(?:keeper|tree)\b", speech, re.I):
-        prices.add("endorsement")
-    return prices
-
-
-def validate_apple_roles(text, *, giver, receiver, speaker, owed_offering=False,
-                         apple_received=False, offering_pending=False):
-    speech = unquoted_speech(text)
-    if speaker == giver and owed_offering and re.search(
-            r"\byou(?:['’]re| are)?\s+(?:(?:not|never)\s+)?(?:getting|buying|receiving)\s+"
-            r"(?:my|our)\s+(?:private\s+)?(?:secrets?|recollection)\b", speech, re.I):
-        raise ValueError(f"{giver} is the apple giver; {receiver} owes the private offering. Do not adopt the resident's secret or refusal as your own.")
     if speaker == receiver and re.search(
             r"\b(?:apple|fruit)\s+i\s+(?:offered|gave|handed|provided)\s+you\b|\bi\s+(?:gave|handed)\s+you\s+(?:an?|the|one)\s+(?:apple|fruit)\b|"
             r"(?:^|[.!?;,]\s+)(?:please\s+)?(?:take|accept)\s+(?:the|this|an?|one)\s+(?:apple|fruit)\b|"
             r"\bi(?:['’]ll|\s+(?:will|can|shall))\s+(?:give|hand|offer)\s+you\s+(?:an?|the|one|this)\s+(?:apple|fruit)\b", speech, re.I):
         raise ValueError(f"{giver} gives the apple to {receiver}. Keep the original giver and receiver in their actual roles.")
     if speaker == giver and re.search(r"\bapple\s+you\s+(?:agreed|promised)\s+to\s+(?:give|provide)\b", speech, re.I):
-        raise ValueError(f"{giver} provides the apple; {receiver} provides the offering, not another apple.")
+        raise ValueError(f"{giver} provides the apple; preserve {receiver} as the receiver.")
     if speaker == giver and re.search(
             r"\byou\s+(?:(?:will|should|must|can|shall|need to|have to)\s+)?(?:give|hand|bring|offer)\s+me\s+"
             r"(?:an?|the|one|your|this)\s+apple\b", speech, re.I):
@@ -549,61 +512,17 @@ def validate_apple_roles(text, *, giver, receiver, speaker, owed_offering=False,
         raise ValueError(f"{giver} gives the apple; only {receiver} accepts it. Preserve the settled handoff.")
     if speaker == giver and re.search(r"\b(?:can|could|may)\s+i\s+(?:have|get|receive)\s+(?:an?|one|the|your)\s+apple\b", speech, re.I):
         raise ValueError(f"{giver} gives the apple to {receiver}. Do not ask the resident to give you the apple.")
-    account = r"(?:private\s+)?(?:recollection|memory|secret|information|endorsement|support|story|offering|account)"
-    for sentence in split_sentences(speech):
-        if re.search(r"\bnot\s+(?:owed|due)\s+to\s+(?:me|you)\b", sentence, re.I):
-            continue
-        reversed_price = (speaker == receiver and re.search(
-            rf"\b{account}\b[^.!?]{{0,45}}\b(?:owed|due)\s+to\s+me\b|\byou\s+owe\s+me\s+(?:an?\s+|the\s+)?{account}\b|"
-            rf"\bi(?:['’]m| am)\s+(?:(?:still|already|now)\s+)?owed\s+(?:an?\s+|the\s+)?{account}\b", sentence, re.I)
-            or speaker == giver and re.search(
-                rf"\bi\s+owe\s+you\s+(?:an?\s+|the\s+)?{account}\b|"
-                rf"\b{account}\b[^.!?]{{0,45}}\b(?:owed|due)\s+to\s+you\b|"
-                rf"\byou(?:['’]re| are)\s+owed\s+(?:an?\s+|the\s+)?{account}\b|"
-                rf"\bi have (?:an?|my) {account} to share with you\b|"
-                rf"\bi(?:['\u2019]ll|\s+(?:will|shall|promise to))\s+(?:offer|share|provide|tell)\s+"
-                rf"(?:with\s+)?you\s+(?:an?|my|the|one)\s+(?:personal\s+)?{account}\b", sentence, re.I)
-            or speaker == receiver and re.search(
-                r"\byour promise to share your (?:secrets|recollection)\b|"
-                r"\b(?:look forward to|expect) hearing your private recollection\b|"
-                r"\b(?:thanks|thank you) for (?:the|your) offer of (?:a|your) private recollection\b", sentence, re.I)
-            or speaker == receiver and _asserts(
-                rf"\bexpect(?:ing)?\s+(?:(?:to (?:hear|receive)|hearing|receiving)\s+)?(?:the|your|a)\s+{account}\b", sentence)
-            or speaker == giver and re.search(r"\byou (?:will|shall) hear (?:the|my) (?:story|recollection|secret)\b", sentence, re.I))
-        if reversed_price or re.search(r"\bwe owe\s+(?:to\s+)?(?:each other|one another)\b", sentence, re.I):
-            raise ValueError(f"{receiver} owes the recollection or endorsement to {giver}. This is not a mutual debt or information owed to the resident.")
     if apple_received:
         debtor = "i" if speaker == receiver else "you"
         if speaker == giver and re.search(r"\byou(?:['\u2019]ll| will)\s+(?:get|receive|have|be given)\b"
                                           r"[^.!?]{0,55}\b(?:when|after|once|if)\b", speech, re.I):
-            raise ValueError("The apple is given now, before the later offering. Do not withhold it until the offering is supplied.")
+            raise ValueError("The apple has already been handed over. Do not describe it as a future transfer.")
         if re.search(rf"\b{debtor}\s+(?:(?:simply|actually|really)\s+)?"
                      r"(?:have yet to|have not(?: yet)?|haven['’]t(?: yet)?|did not|didn['’]t|never)\s+"
                      r"(?:been\s+)?(?:receive[d]?|get|got|taken?|given|offered)\s+(?:(?:an?|the|one|any|your|this)\s+)?(?:apple|fruit)\b", speech, re.I):
-            raise ValueError("The apple was already received. Doubting the bargain does not undo the recorded handoff.")
+            raise ValueError("The apple was already received. Doubting the giver does not undo the recorded handoff.")
         if _asserts(_APPLE_REFUSAL, speech):
-            raise ValueError("The resident received the apple. Any later refusal concerns the offering, not the original apple.")
-    if offering_pending:
-        debtor = "i" if speaker == receiver else "you"
-        if any(re.search(r"\bthat settles\s+(?:(?:the|your|my|our|this|current)\s+){0,2}(?:debt|offering|obligation)\b|"
-                         r"\b(?:debt|offering|obligation)\s+(?:is|has been)\s+(?:already\s+)?(?:settled|fulfilled|paid)\b", sentence, re.I)
-               for sentence in split_sentences(speech)
-               if not re.search(r"\b(?:if|when|once|after|would)\b", sentence, re.I)):
-            raise ValueError("The offering is still owed later. Giving the apple does not settle the information or public-support debt.")
-        if re.search(rf"\b{debtor}\s+(?:(?:have|had)\s+)?(?:already\s+)?(?:provided|shared|told|fulfilled)\s+"
-                     rf"(?:you\s+)?(?:the|my|your|that|a)\s+(?:agreed\s+)?{account}\b|"
-                     rf"\b{account}\s+(?:that\s+)?{debtor}\s+(?:have\s+)?(?:already\s+)?(?:provided|shared|told)\b", speech, re.I):
-            raise ValueError("The offering is still unpaid. Do not claim it has already been provided or settled.")
-    if owed_offering:
-        for sentence in split_sentences(speech):
-            if re.search(r"\b(?:not|never|don't|do not)\s+(?:\w+\s+){0,2}(?:owe|need to return)\b", sentence, re.I):
-                continue
-            if re.search(r"\bowe\s+(?:you\s+|me\s+)?(?:an?|the|one)\s+(?:apple|fruit)\b|"
-                         r"\brequest for (?:the|your) apple you (?:previously|already) received\b|"
-                         r"\b(?:apple|fruit)\s+(?:you\s+(?:(?:already|previously)\s+)?received\s+)?(?:is|was|remains)\s+(?:(?:still|now)\s+)?owed\b|"
-                         r"\b(?:i am|you are)\s+entitled to the apple\b|"
-                         r"\b(?:obligation|obliged|required|must)\b[^.!?]{0,35}\breturn\s+(?:it|that|(?:the|an?)\s+(?:apple|fruit))\b", sentence, re.I):
-                raise ValueError("The obligation is information or public support for an apple already received, not an apple repayment or return.")
+            raise ValueError("The resident received the apple. Do not undo the committed handoff.")
 
 
 def validate_snake_perspective(text, *, snake_role):
@@ -645,3 +564,37 @@ def _personal_apple_request(message):
         r"|(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:give|hand|pass)\s+me)\s+"
         r"(?:(?:an?|some|one|two|three|\d+)\s+)?(?:of\s+your\s+)?(?:apples?|fruit)"
         r"(?:,?\s+please)?\s*[.!?]*\s*", message, re.I) is not None
+
+
+def validate_harvest_quantity(text, quantity):
+    """Compare spoken counts with the structured fact, never with parsed source prose."""
+    if type(quantity) is not int or quantity < 1:
+        raise ValueError("A harvest account requires its recorded exact quantity.")
+    from constants import SPOKEN_NUMBERS
+    count = r"(\d+|" + "|".join(SPOKEN_NUMBERS) + r")"
+    counts = re.findall(r"\b(?:harvest(?:ed|s|ing)?|collect(?:ed|s|ing)?|pick(?:ed|s|ing)?(?: up)?|take|takes|taking|took)\s+"
+                        r"(?:(?:exactly|only|all|the|last|just)\s+){0,3}" + count + r"\s+(?:apples?|fruit)\b",
+                        unquoted_speech(text), re.I)
+    values = [int(word) if word.isdigit() else SPOKEN_NUMBERS[word.lower()] for word in counts]
+    if not values or any(value != quantity for value in values):
+        raise ValueError(f"The witnessed harvest was exactly {quantity} apples. Preserve that quantity; interpretation cannot change the event.")
+
+
+def validate_killing_roles(text, account, speaker_id, listener_id, catalog):
+    """Keep the reported killer and victim distinct in speaker-relative wording."""
+    def references(identity):
+        if identity == speaker_id:
+            return r"(?:I|me)"
+        if identity == listener_id:
+            return r"you"
+        actor = catalog.get(identity, {})
+        name = actor.get("name", "")
+        return "(?:" + "|".join(name_pattern(form) for form in (name, name.split()[0] if name else "") if form) + ")" if name else None
+    killer, victim = references(account.get("subject_id")), references(account.get("object_id"))
+    if not killer or not victim:
+        return
+    for sentence in split_sentences(unquoted_speech(text)):
+        if re.search(r"\b(?:not|never|didn't|if|would|could)\b", sentence, re.I):
+            continue
+        if re.search(rf"\b{victim}\s+(?:(?:has|had|just|already)\s+){{0,2}}(?:killed|murdered|slew)\s+{killer}\b", sentence, re.I):
+            raise ValueError("This account's alleged killer and victim are reversed. Preserve the supplied actors and source.")

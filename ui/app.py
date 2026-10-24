@@ -524,9 +524,8 @@ class Application:
                     npc.sprite_size = self.character.renderer.render(npc.character, npc.facing, CHARACTER_SCALE).get_size()
             conversations = [npc.conversation for npc in self.npcs
                              if npc.conversation is not None and npc.conversation.initiator is npc]
-            from snake import PlayerSnakeEncounter
-            if self.simulation.snake.encounter and not isinstance(self.simulation.snake.encounter, PlayerSnakeEncounter):
-                conversations.append(self.simulation.snake.encounter)
+            if self.simulation.snake.conversation:
+                conversations.append(self.simulation.snake.conversation)
             # Player conversations get the first free slot. While composing,
             # leave one slot free and let other conversations use the rest.
             composing = self.screen == "game" and self.game.prompt_input.active and not self.simulation.phase_pending

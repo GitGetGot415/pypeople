@@ -12,25 +12,27 @@ COMMAND_LABELS = {
 
 def normalize_action(intent, snapshot, *, verbal=False):
     """Resolve a verbal label or structured ID once, before generating a reply."""
+    if snapshot.get("actor_kind") == "python":
+        return ActionIntent(action="SAY")
     result = ActionIntent.model_validate(intent.model_dump(include=set(ActionIntent.model_fields)) if isinstance(intent, ActionIntent) else intent)
     if result.action not in ("TALK_TO_NPC", "GIVE_ITEM"):
         result.target = ""
     else:
         candidates = snapshot.get("other_npcs", [])
-        exact = [p for p in candidates if p["npc_id"] == result.target]
-        matches = exact or [p for p in candidates if p["npc_name"].casefold() == result.target.strip().casefold()]
+        exact = [p for p in candidates if p["actor_id"] == result.target]
+        matches = exact or [p for p in candidates if p["name"].casefold() == result.target.strip().casefold()]
         if len(matches) != 1:
             raise ValueError("Choose one specific recipient; that reference is missing or ambiguous.")
         target = matches[0]
         if verbal and target.get("kind") != "player":
             text = snapshot.get("_player_message", "").casefold()
-            base = re.sub(r"\s+\(\d+\)$", "", target["npc_name"]).casefold()
+            base = re.sub(r"\s+\(\d+\)$", "", target["name"]).casefold()
             first = base.split()[0]
             references = [p for p in candidates if p.get("kind") != "player"
-                          and p["npc_name"].split()[0].casefold() == first]
-            numbered = [p for p in references if re.sub(r"\s+\(\d+\)$", "", p["npc_name"]).casefold() == base]
-            specific = [p for p in references if p["npc_name"].casefold() in text]
-            exact_numbered = [p for p in specific if re.search(r"\(\d+\)$", p["npc_name"])]
+                          and p["name"].split()[0].casefold() == first]
+            numbered = [p for p in references if re.sub(r"\s+\(\d+\)$", "", p["name"]).casefold() == base]
+            specific = [p for p in references if p["name"].casefold() in text]
+            exact_numbered = [p for p in specific if re.search(r"\(\d+\)$", p["name"])]
             if (len(numbered) > 1 and base in text and not exact_numbered
                     or len(references) > 1 and re.search(r"\b" + re.escape(first) + r"\b", text) and not specific):
                 raise ValueError("That name identifies more than one resident. Ask which person is intended.")
@@ -38,7 +40,7 @@ def normalize_action(intent, snapshot, *, verbal=False):
             return ActionIntent(action="SAY")
         if not target.get("available_to_talk", True):
             raise ValueError("That person is currently unavailable.")
-        result.target = target["npc_id"]
+        result.target = target["actor_id"]
     if result.action != "GIVE_ITEM":
         result.item, result.quantity = "", 0
     else:
@@ -74,7 +76,7 @@ def validate_action(world, npc, intent, *, accepting=False):
 
 def action_description(intent, snapshot):
     label = COMMAND_LABELS[intent.action]
-    target = next((p["npc_name"] for p in snapshot.get("other_npcs", []) if p["npc_id"] == intent.target), "")
+    target = next((p["name"] for p in snapshot.get("other_npcs", []) if p["actor_id"] == intent.target), "")
     if intent.action == "TALK_TO_NPC":
         return f"{label}: {target}"
     if intent.action == "GIVE_ITEM":

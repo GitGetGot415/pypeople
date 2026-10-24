@@ -20,7 +20,7 @@ class ParticipantReservation:
 class ParticipantReservations:
     """Transient participant ownership; progress stays in the owning domains.
 
-    Visits, meetings and tree service may contain an exchange. Acquisition does
+    Visits and meetings may contain an exchange. Acquisition does
     not decide availability: each entry point retains its purpose-specific rules.
     Releasing a parent never silently commits or interrupts its child.
     """
@@ -37,8 +37,7 @@ class ParticipantReservations:
                 continue
             entries = self._actors.setdefault(actor.id, {})
             parent_kinds = {"conversation": ("visit",), "handoff": ("player", "visit"),
-                            "snake": ("tree",), "player": ("snake", "visit"),
-                            "tree": ("visit",)}.get(kind, ())
+                            "player": ("visit",)}.get(kind, ())
             parent = next((entries[k].owner for k in parent_kinds if k in entries), None)
             entries[kind] = ParticipantReservation(kind, owner, parent)
 
@@ -55,8 +54,7 @@ class ParticipantReservations:
         return released
 
     def exchange(self, actor_id):
-        return (self.get(actor_id, "conversation") or self.get(actor_id, "handoff")
-                or self.get(actor_id, "snake"))
+        return self.get(actor_id, "conversation") or self.get(actor_id, "handoff")
 
     def held(self, actor_id, *kinds):
         return any(self.get(actor_id, kind) is not None for kind in kinds)
@@ -127,7 +125,7 @@ def release_resident(world, kind, owner, resident, state, *cooldown_ids, preserv
     """Late cleanup must release the expected owner before restoring its activity."""
     if not world.reservations.release(kind, owner, resident):
         return False
-    if resident.world.npc_by_id(resident.id) is not resident:
+    if resident.world.actor_by_id(resident.id) is not resident or resident.departure:
         return False
     resident.restore_after_interaction(state, *cooldown_ids, preserve_facing=preserve_facing)
     return True
@@ -170,27 +168,25 @@ def observe_active_conversations(world):
     observe_visit(world)
     meetings = {id(n.conversation or n.gift): n.conversation or n.gift for n in world.npcs
                 if n.conversation or n.gift and n.gift.thanks}
-    if world.snake.encounter:
-        meetings[id(world.snake.encounter)] = world.snake.encounter
+    if world.snake.conversation:
+        meetings[id(world.snake.conversation)] = world.snake.conversation
     for meeting in meetings.values():
-        if meeting.active and meeting.arrived and getattr(meeting, "stage", "dialogue") not in ("condemned_approach", "eating"):
+        if meeting.active and meeting.arrived:
             observe_conversation(world, meeting.record, meeting.initiator, meeting.recipient)
-        if meeting.active and getattr(meeting, "stage", None) == "eating":
-            collect_eating_witnesses(world, meeting.recipient, record=meeting.record)
     for actor in world.npcs:
         if actor.eating and not actor.resume_pending:
             collect_eating_witnesses(world, actor)
     interaction = world.player_interaction
-    if interaction and interaction.kind == "resident" and interaction.stage == "conversation" and interaction.record_id:
-        npc = world.npc_by_id(interaction.npc_id)
+    if interaction and interaction.kind in ("resident", "snake") and interaction.stage == "conversation" and interaction.record_id:
+        npc = world.actor_by_id(interaction.npc_id)
         if npc:
             observe_conversation(world, world.record_by_id(interaction.record_id), world.player, npc)
 
 
-def collect_eating_witnesses(world, actor, *, record=None):
+def collect_eating_witnesses(world, actor):
     from locations import observers
-    witnesses = record.eating_witness_ids if record else actor.eating_witness_ids
-    for observer in observers(world, actor, *([world.snake] if record else [])):
+    witnesses = actor.eating_witness_ids
+    for observer in observers(world, actor):
         if observer.id not in witnesses:
             witnesses.append(observer.id)
 

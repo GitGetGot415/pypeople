@@ -3,10 +3,9 @@
 import math
 import re
 
-from constants import (APARTMENT_FLOORS, ROOMS_PER_FLOOR, JUDY_ROOM_NUMBER, STARTING_PHASE, SNAKE_NAME,
-                       ROOM_BED_RECT, ROOM_EXIT, ELEVATOR_ARRIVAL, HALLWAY_EXIT,
-                       GARDEN_BUILDING_POINT, GARDEN_BRIDGE_RECT, APARTMENT_RECT, TREE_BASE_OFFSET,
-                       SPATIAL_NEAR_DISTANCE)
+from constants import (APARTMENT_FLOORS, ROOMS_PER_FLOOR, JUDY_ROOM_NUMBER, STARTING_PHASE,
+    ROOM_BED_RECT, ROOM_EXIT, ELEVATOR_ARRIVAL, HALLWAY_EXIT, GARDEN_BUILDING_POINT, GARDEN_BRIDGE_RECT,
+    APARTMENT_RECT, TREE_BASE_OFFSET, SPATIAL_NEAR_DISTANCE)
 
 
 AREA_KNOWLEDGE_INSTRUCTION = """The supplied area_knowledge describes the finished, known layout.
@@ -44,11 +43,11 @@ Never guess directions from an earlier reply or a listener's mistaken wording.
 
 def known_layout():
     return dict(
-        garden="A rectangular floating grassy island with one living apple tree that is very sturdy, unshakable, and unbreakable. A narrow wooden bridge at its northwestern edge crosses the open gap to the apartment entrance. The island has an exposed earthen underside, and the apartment has a separate underside with visible pipes. Open sky surrounds them; no other accessible land or places are visible.",
+        garden="A rectangular floating grassy island with one living apple tree that is sturdy and unbreakable. A narrow wooden bridge at its northwestern edge crosses the open gap to the apartment entrance. The island has an exposed earthen underside, and the apartment has a separate underside with visible pipes. Open sky surrounds them; no other accessible land or places are visible.",
         apartment=f"A cream-colored building with muted green trim, rows of windows and a brown entrance door. It has {APARTMENT_FLOORS} floors, with {ROOMS_PER_FLOOR} rooms per floor. The elevator serves every floor, even when rooms are vacant. There are no stairs.",
         hallway=f"A long, narrow hallway with a tan floor, cream wall and muted green trim. The elevator is at the western end; {ROOMS_PER_FLOOR} brown room doors line the north wall. Only floor 1 has the garden exit, at the southwestern end beside the elevator.",
         room="A narrow private room with a tan floor, cream wall and muted green trim. A wood-framed bed with a pale pillow and muted green blanket is against the north wall. One doorway at the south end leads back to that floor's hallway. No other furnishings or exits are present.",
-        apple_access=f"Residents can ask {SNAKE_NAME}, the python guarding the apple tree, for an apple. When stock is available, it may exchange one immediately for information it values. The tree being unshakable and unbreakable does not prevent obtaining apples through the guard. Carried apples can be given to and received from other people, even when the tree is empty. A request or spoken offer alone does not transfer an apple.",
+        apple_access="Living residents and the player can harvest available tree apples locally without permission, payment or quotas. Stock is finite and replenishes at each day/night change. Harvesting briefly shakes the tree. Visiting is travel only; speech never transfers apples. Carried apples can be given to others even when the tree is empty.",
         routes="From a room, use the south doorway to its hallway. On floors above 1, take the elevator to floor 1. Use the garden exit at the southwestern end of floor 1, then cross the wooden bridge to the grass. This exits the building, not this world.")
 
 
@@ -146,13 +145,13 @@ def validate_area_speech(text, knowledge, *, question=""):
                 raise ValueError("Use I/my for the speaker's own observation. Explain the speaker's own walk and that no other places were visible. Do not attribute that walk to the listener or answer how the listener knows.")
     for sentence in split_sentences(unquoted_speech(text)):
         tree = r"(?:the|this|that|our) (?:living )?(?:apple )?tree"
-        force = r"(?:shake|shakes|shaking|shook|shaken|move|moves|moving|moved|break|breaks|breaking|broke|broken|damage|damages|damaged|damaging|destroy|destroys|destroyed|destroying|burn|burns|burned|burning|cut down|cuts down|cutting down)"
+        force = r"(?:move|moves|moving|moved|break|breaks|breaking|broke|broken|damage|damages|damaged|damaging|destroy|destroys|destroyed|destroying|burn|burns|burned|burning|cut down|cuts down|cutting down)"
         modifiers = r"(?:(?:gently|easily|actually|physically|completely|forcibly)\s+)*"
         tree_effect = re.search(rf"\b{force}\s+{modifiers}{tree}\b|"
                                 rf"\b{tree}\s+(?:is|was|can|could|has|will)\s+(?:(?:be|been)\s+)?{modifiers}{force}\b", sentence, re.I)
         if (tree_effect and not sentence.rstrip().endswith("?")
                 and not re.search(r"\b(?:not|no|never|cannot|can['\u2019]t|couldn['\u2019]t|won['\u2019]t|wouldn['\u2019]t|isn['\u2019]t|wasn['\u2019]t|doesn['\u2019]t|don['\u2019]t|hasn['\u2019]t|impossible|unshakable|unbreakable|wish|imagine|former life|past life|used to)\b", sentence, re.I)):
-            raise ValueError("The living apple tree is very sturdy, unshakable, and unbreakable. Do not claim it can be moved, shaken, damaged, or destroyed.")
+            raise ValueError("The living apple tree is sturdy and unbreakable. Do not claim it can be moved, damaged, or destroyed.")
         if (not sentence.rstrip().endswith("?") and re.search(r"\b(?:stairs|staircase|stairwell)\b", sentence, re.I)
                 and not re.search(r"\b(?:no|not|never|aren['’]t|isn['’]t|if|imagine|wish|remember|used to|former life)\b", sentence, re.I)):
             raise ValueError("There are no stairs in this building. Use the elevator for travel between floors and the floor-one garden exit to go outside.")

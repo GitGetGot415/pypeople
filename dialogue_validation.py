@@ -1,6 +1,5 @@
 """Provider-independent speech, captured choices and accepted-prefix validation."""
 
-import json
 import re
 import unicodedata
 from copy import deepcopy
@@ -9,8 +8,7 @@ from validation_errors import (DialogueValidationError, RecoveryKind, DialogueRe
                               DialogueSpeakerError)
 from dialogue import (AcceptedProposal, ActionIntent, ActionResponse, ConversationPart, ConversationResponse,
                      ConversationTurn, DialoguePartsResponse, LeverageUse, PlayerIntent, ResidentAssessment,
-                     ResidentGift, ResidentTurnResponse, SnakeDecision, SnakePlayerResponse,
-                     SnakeResidentResponse, SnakeResponse, ThirdPartyOpinion)
+                     ResidentGift, ResidentTurnResponse, ThirdPartyOpinion)
 from constants import (RESIDENT_TURN_COUNT, CONVERSATION_MAX_TURNS, DIALOGUE_REPEAT_PHRASE_WORDS,
                       DIALOGUE_REPEAT_SENTENCE_WORDS, DIALOGUE_REPEAT_TURN_WORDS,
                       PLAYER_LABEL,
@@ -22,76 +20,12 @@ from dialogue_rules import (is_name_reference, mentions_account, mentions_privat
                            validate_continuity, validate_base_prose, validate_claim_source, validate_english,
                            validate_opinion_reason, validate_environment_speech, validate_speaker_identity,
                            _personal_apple_request, _short_player_answer, validate_snake_perspective)
-from social import phase_index, validate_agreements, resident_information, resident_effect_limits, proposals_from_snapshot
-from actor_identity import (account_references, name_forms, actor_id, forms, own_name)
+from social import (phase_index, validate_agreements, resident_information, resident_effect_limits,
+    proposals_from_snapshot)
+from actor_identity import account_references, actor_id, forms, own_name
 from social import (orientation_speech, validate_orientation)
-from dialogue_context import (_actor_name, _snake_turn_snapshot, _validate_speaker)
+from dialogue_context import (_actor_name, _validate_speaker)
 from transfers import validate_player_transfer, validate_resident_gift
-
-
-def snake_disclosure_accounts(snapshot):
-    return snapshot.get("snake", {}).get("known_accounts", [])
-
-
-def validate_snake_decision(result, snapshot):
-    if ((result.interaction_id != snapshot.get("interaction_id", "") and not (isinstance(result, SnakePlayerResponse) and not result.interaction_id))
-            or result.decision not in snapshot.get("permitted_decisions", ["talk"])):
-        raise ValueError("Use this encounter's identity and a locally permitted decision.")
-    if result.decision == "give_apple" and not snapshot["can_give_apple"]:
-        raise ValueError("No apple is available for this exchange.")
-    accounts = {a["claim_id"] for a in snapshot.get("offering_accounts", [])}
-    if snapshot.get("request_kind") == "snake_decision" and result.account_id != (snapshot.get("disclosed_account") or {}).get("claim_id", ""):
-        raise ValueError("Select only the account actually disclosed in this exchange.")
-    if result.account_id and result.account_id not in accounts:
-        raise ValueError("The resident can disclose only an account they actually know.")
-    known = {a["claim_id"] for a in snake_disclosure_accounts(snapshot)}
-    if result.snake_account_id and result.snake_account_id not in known:
-        raise ValueError("The guard can discuss only a supplied known account.")
-    if result.decision in ("warn", "eat"):
-        speech = snapshot.get("_player_message", "") or " ".join(
-            t["text"] for t in snapshot.get("heard_turns", []) if t["role"] == "recipient")
-        if not result.accusation.strip() or not result.evidence.strip() or result.evidence not in speech:
-            raise ValueError("An accusation requires an exact quote from this person's actual response.")
-    if result.decision == "eat" and not snapshot.get("known_warning"):
-        raise ValueError("Condemnation requires an earlier warning and a subsequent response.")
-    if result.decision == "give_apple" and snapshot.get("request_kind") != "snake_player" and not result.account_id:
-        speech = next((t["text"] for t in reversed(snapshot.get("heard_turns", [])) if t["role"] == "recipient"), "")
-        if (not result.evidence.strip() or result.evidence not in speech
-                or contains_question(result.evidence)
-                or (_short_player_answer(result.evidence) and not snapshot.get("question_account_id"))):
-            raise ValueError("An apple for a new present report requires an exact quote from the resident's accepted answer.")
-
-
-def validate_snake_response(result, snapshot, *, dialogue_validation=None):
-    if dialogue_validation is None:
-        dialogue_validation = snapshot.get("_dialogue_validation", True)
-    if result.outcome_turn >= len(result.turns):
-        raise ValueError("The guard must perform the outcome after the resident's actual answer.")
-    if result.decision == "give_apple" and (result.outcome_turn + 1 >= len(result.turns)
-            or result.turns[result.outcome_turn + 1].speaker != "recipient"):
-        raise ValueError("Let the resident accept or decline the offered apple before ending the exchange.")
-    validate_snake_decision(result, {**snapshot, "heard_turns": [dict(role=t.speaker, text=t.text) for t in result.turns[:result.outcome_turn]]})
-    if dialogue_validation:
-        _validate_base_presentation(result, snapshot)
-        validate_dialogue_format(result.turns)
-        validate_dialogue_completion(result.turns)
-        if len(result.turns) == CONVERSATION_MAX_TURNS and contains_question(result.turns[-1].text):
-            raise ValueError("At the turn limit, finish with an answer or closing rather than a new question.")
-    for i, turn in enumerate(result.turns):
-        if turn.speaker != ("initiator" if i % 2 == 0 else "recipient"):
-            raise ValueError("Alternate snake and resident speech, beginning with the snake.")
-        if dialogue_validation:
-            validate_snake_perspective(turn.text, snake_role="speaker" if turn.speaker == "initiator" else "listener")
-            state = _snake_turn_snapshot(snapshot, result, result.turns[:i], outcome_turn=result.outcome_turn)
-            if turn.speaker == "recipient" and "permitted_accounts" in state["speaker"]:
-                _validate_response(json.dumps({"parts": [p.model_dump() for p in turn.parts],
-                    "account_id": result.account_id if i == result.outcome_turn - 1 else ""}), state, SnakeResidentResponse)
-            else:
-                validate_speech_grounding(turn.text, state)
-    if dialogue_validation:
-        validate_dialogue_speakers(result.turns, {
-            "initiator": snapshot["snake"]["name"], "recipient": snapshot["resident"]["npc_name"]})
-        validate_dialogue_repetition(result.turns, actor_references=_repetition_references(snapshot))
 
 
 def validate_dialogue_speakers(turns, names, *, start_index=0):
@@ -338,34 +272,45 @@ def validate_speech_grounding(text, snapshot):
     knows_claims = bool(situation.get("prior_snake_encounters", 0)) or any(
         a.get("kind") == "snake_claim" and a.get("basis") == "firsthand" for a in firsthand)
     validate_continuity(text, day=snapshot.get("day"), situation=situation, knows_claims=knows_claims,
-                        listener_is_guard=listener_name == SNAKE_NAME)
+                        listener_is_snake=listener_name == SNAKE_NAME)
     if knows_claims:
         validate_claim_source(text, names=names, speaker=_actor_name(speaker), listener=listener_name,
                               actor_references=account_references(snapshot.get("_name_actors", {})))
-    transaction = snapshot.get("transaction")
-    if transaction:
-        validate_apple_roles(text, giver=transaction["apple_giver"], receiver=transaction["apple_receiver"],
-                             speaker=_actor_name(speaker), apple_received=transaction.get("apple_already_received", False))
+    if snapshot.get("request_kind") == "handoff_thanks":
+        gift = snapshot.get("_draft", {}).get("gift")
+        if gift is None or gift.item == "fruit":
+            validate_apple_roles(text, giver=listener_name, receiver=_actor_name(speaker),
+                                 speaker=_actor_name(speaker), apple_received=True)
+    from dialogue_rules import validate_killing_roles
+    for account in firsthand:
+        if account.get("kind") == "killing":
+            validate_killing_roles(text, account, actor_id(speaker),
+                actor_id(listener) if isinstance(listener, dict) else None, snapshot.get("_name_actors", {}))
+    for sentence in split_sentences(unquoted_speech(text)):
+        if not re.search(r"\b(?:if|would|could|imagine)\b", sentence, re.I) and re.search(
+                r"\bi\s+(?:(?:have|just|already)\s+){0,2}(?:killed|murdered)\s+you\b|\byou are dead\b", sentence, re.I):
+            raise ValueError("Speech cannot establish the living listener's death. Threats remain intentions, never completed actions.")
     account = snapshot.get("account_to_share")
+    focus = account or speaker.get("account_focus")
+    if focus and focus.get("kind") == "harvest":
+        from dialogue_rules import validate_harvest_quantity
+        from constants import SPOKEN_NUMBERS
+        count_pattern = r"(?:\d+|" + "|".join(SPOKEN_NUMBERS) + r")"
+        relation = focus.get("subject_relation")
+        subject = (r"I" if relation == "speaker" else r"you" if relation == "listener" else
+                   name_pattern(focus.get("subject_name", "")))
+        for sentence in split_sentences(unquoted_speech(text)):
+            if re.search(rf"\b{subject}\s+(?:(?:has|had|just|already)\s+){{0,2}}"
+                         r"(?:harvest(?:ed|s)?|collect(?:ed|s)?|pick(?:ed|s)?|took|take)\s+"
+                         r"(?:(?:only|exactly|the|last|just)\s+){0,3}" + count_pattern + r"\b", sentence, re.I):
+                validate_harvest_quantity(sentence, focus.get("quantity"))
     if account:
         account_names = [value for key, value in account.items() if key.endswith("_name") and value]
         validate_account_speech(text, account["assertion"], names=(*names, *account_names),
-                                speaker=_actor_name(speaker), listener=listener_name, kind=account.get("kind"),
+                                speaker=_actor_name(speaker), listener=listener_name, kind=account.get("kind"), quantity=account.get("quantity"),
                                 firsthand=account.get("basis") == "firsthand",
                                 actor_references=account_references(snapshot.get("_name_actors", {})),
                                 known_events=[event for event in firsthand if event.get("basis") == "firsthand"])
-    if snapshot.get("request_kind") != "snake_turn":
-        return
-    for report in ([account] if account else []) + speaker.get("heard_accounts", []):
-        validate_snake_account_roles(text, report, speaker, listener)
-    if snapshot["speaker_role"] == "initiator":
-        validate_immediate_snake_speech(text, transaction["selected_outcome"]
-            if snapshot["turn_index"] == transaction.get("outcome_turn", 2) else "talk", listener=listener_name)
-        for heard in speaker.get("known_accounts", []):
-            if (heard.get("kind") == "former_life" and heard.get("subject_id") != speaker["actor_id"]
-                    and mentions_private_recollection(text, heard["assertion"], names)
-                    and re.search(r"\bi (?:remember|recall|worked|kept|helped|planted|repaired|used to)\b", unquoted_speech(text), re.I)):
-                raise ValueError("The apple giver must not adopt the resident's recollection as its own.")
 
 
 def validate_snake_account_roles(text, report, speaker, listener):
@@ -384,47 +329,11 @@ def validate_snake_account_roles(text, report, speaker, listener):
             raise ValueError("The listener made these claims. Address the guard's claims as your claims; do not adopt them as my claims.")
 
 
-def validate_immediate_snake_speech(text, outcome, *, listener=""):
-    speech = unquoted_speech(text).replace("\u2019", "'")
-    if re.search(r"\b(?:you owe me|offering (?:is |still )?owed|pay me later|endorsement owed)\b", speech, re.I):
-        raise ValueError("This is an immediate exchange; no offering or debt remains.")
-    # Direct address can interrupt a handoff: "Here, Judy Judge, is one apple."
-    for name in sorted({listener, listener.split()[0] if listener else ""}, key=len, reverse=True):
-        if name:
-            speech = re.sub(rf",\s*{name_pattern(name)}\s*,", " ", speech, flags=re.I)
-    apple = r"(?:your|an?|one|the|this|that)(?:\s+one)?\s+apple"
-    handoff_pattern = (rf"\b(?:here(?: is|'s)\s+{apple}|take\s+{apple}|"
-        rf"i\s+(?:give|am giving|hand|am handing)\s+you\s+{apple}|"
-        rf"i(?: am|'m)?\s+(?:hand(?:ing)? over|giving)\s+{apple}(?=\s*(?:now\b|[.!;,]|$))|"
-        rf"i(?: am|'m)\s+(?:giving|handing)(?: over)?\s+{apple}\s+to you|"
-        rf"i'm\s+(?:giving|handing)\s+you\s+{apple}|i hand(?: over)?\s+{apple}\s+to you)\b")
-    handoff = False
-    for sentence in split_sentences(speech):
-        # A question, future offer or refusal does not perform a present handoff.
-        if contains_question(sentence):
-            continue
-        for clause in sentence.split(";"):
-            if re.search(r"\b(?:if|once|tomorrow|later)\b", clause, re.I):
-                continue
-            for match in re.finditer(handoff_pattern, clause, re.I):
-                if not re.search(r"\b(?:not|never|don't|won't|cannot|can't|would|could|will|i'll|refuse to|decline to)\s+"
-                                 r"(?:\w+\s+){0,2}$", clause[:match.start()], re.I):
-                    handoff = True
-    if outcome != "give_apple" and handoff:
-        raise ValueError("No apple is transferred by this reply.")
-    if outcome == "give_apple" and not handoff:
-        raise ValueError("Explicitly hand over the apple now in the generated speech.")
-    if outcome == "warn" and not re.search(r"\b(?:warn|eat|eaten|devour|condemn)\b", speech, re.I):
-        raise ValueError("Make the warning and physical danger explicit and allow an answer.")
-    if outcome == "eat" and not re.search(r"\b(?:eat|eaten|devour|condemn)\b", speech, re.I):
-        raise ValueError("Announce the selected condemnation.")
-
-
 def validate_resident_grounding(result, snapshot):
     _validate_base_presentation(result, snapshot)
     info = snapshot.get("_information_validation") or {}
     options = {a["id"]: a for a in info.get("options", [])}
-    names = [snapshot[role]["npc_name"] for role in ("initiator", "recipient")]
+    names = [snapshot[role]["name"] for role in ("initiator", "recipient")]
     names.extend(actor["name"] for actor in snapshot.get("_name_actors", {}).values())
     names.append(SNAKE_NAME)
     for role in ("initiator", "recipient"):
@@ -434,19 +343,22 @@ def validate_resident_grounding(result, snapshot):
     known = {role: {options[b["claim_id"]]["fact_id"] for b in info.get("beliefs", {}).get(role, [])
                      if b["claim_id"] in options} for role in ("initiator", "recipient")}
     for index, turn in enumerate(result.turns):
+        for role in ("initiator", "recipient"):
+            if snapshot[role].get("kind") == "python":
+                validate_snake_perspective(turn.text, snake_role="speaker" if turn.speaker == role else "listener")
         speaker = snapshot[turn.speaker]
         validate_environment_speech(turn.text, location=speaker.get("location", "garden"))
         other_role = "recipient" if turn.speaker == "initiator" else "initiator"
         private = speaker.get("private_context", {})
         recent_memories = [options[entry.claim_id] for entry in result.disclosures
                            if entry.turn == index - 1 and entry.claim_id in options]
-        validate_memory_ownership(turn.text, options.values(), speaker_id=speaker["npc_id"],
+        validate_memory_ownership(turn.text, options.values(), speaker_id=speaker["actor_id"],
                                   names=names, recent_accounts=recent_memories)
         validate_speech_grounding(turn.text, {
             "_name_actors": snapshot.get("_name_actors", {}),
-            "speaker": {"name": speaker["npc_name"], "situation": private.get("situation", {}),
+            "speaker": {"name": speaker["name"], "situation": private.get("situation", {}),
                         "firsthand_events_with_listener": private.get("permitted_accounts", private.get("known_accounts", []))},
-            "listener": snapshot["recipient" if turn.speaker == "initiator" else "initiator"]["npc_name"],
+            "listener": snapshot["recipient" if turn.speaker == "initiator" else "initiator"]["name"],
             "day": speaker.get("day"), "known_actor_names": names})
         # General beliefs can also be formed in the current discussion. Match
         # concrete recollections separately, including sentences in older accounts.
@@ -454,16 +366,16 @@ def validate_resident_grounding(result, snapshot):
                             for sentence in split_sentences(a["assertion"])
                             if not re.search(r"\b(?:believe[sd]?|beliefs|like[sd]? to think)\b", sentence, re.I)
                             and mentions_private_recollection(turn.text, sentence, names)]
-        own_memories = [a for a in private_accounts if a["subject_id"] == speaker["npc_id"]]
+        own_memories = [a for a in private_accounts if a["subject_id"] == speaker["actor_id"]]
         disclosed = {options[d.claim_id]["fact_id"] for d in result.disclosures if d.turn == index and d.claim_id in options}
         for account in private_accounts:
             own_support = any(mentions_account(a["assertion"], account["assertion"], names) for a in own_memories)
             if account["fact_id"] not in known[turn.speaker] and not own_support:
                 raise ValueError("The speaker uses another person's private account before learning it. Keep each biography and motive with its owner.")
-            if account["subject_id"] != speaker["npc_id"] and not own_support and re.search(
+            if account["subject_id"] != speaker["actor_id"] and not own_support and re.search(
                     r"\bi\s+(?:once\s+)?(?:worked|kept|helped|was an?|used to|remember working|recall working)\b", unquoted_speech(turn.text), re.I):
                 raise ValueError("The speaker adopts another person's remembered life as their own. Respond to that person's account without changing its owner.")
-            if (account["subject_id"] == speaker["npc_id"] and account["fact_id"] not in known[other_role]
+            if (account["subject_id"] == speaker["actor_id"] and account["fact_id"] not in known[other_role]
                     and account["fact_id"] not in disclosed):
                 raise DialogueValidationError("A new private recollection is spoken without its disclosure entry. Record the actual account on this turn or omit its private details.", RecoveryKind.MISSING_DISCLOSURE)
         known[other_role].update(disclosed)
@@ -471,10 +383,10 @@ def validate_resident_grounding(result, snapshot):
         owner, entry = snapshot[role], getattr(result, role + "_opinion", None)
         if entry is None:  # Incomplete prefixes have no final assessments yet.
             continue
-        validate_english(entry.reason, (owner["npc_name"], entry.person))
-        validate_opinion_reason(entry.reason, owner["npc_name"], entry.person)
+        validate_english(entry.reason, (owner["name"], entry.person))
+        validate_opinion_reason(entry.reason, owner["name"], entry.person)
     for entry in getattr(result, "third_party_opinions", []):
-        owner = snapshot[result.turns[entry.turn].speaker]["npc_name"]
+        owner = snapshot[result.turns[entry.turn].speaker]["name"]
         target = snapshot.get("_name_actors", {}).get(entry.subject_id, {}).get("name", "")
         validate_english(entry.reason, (owner, target))
         validate_opinion_reason(entry.reason, owner, target)
@@ -495,15 +407,15 @@ def _validate_base_presentation(result, snapshot):
                          if isinstance(snapshot.get(key), dict)],
               *snapshot.get("other_npcs", [])]
     for person in people:
-        name = person.get("npc_name", person.get("name", person.get("character", {}).get("Name", "")))
+        name = person.get("name", person.get("name", person.get("character", {}).get("Name", "")))
         if name:
             names.update((name, name.split()[0]))
     texts = []
-    if isinstance(result, (ConversationResponse, SnakeResponse)):
+    if isinstance(result, ConversationResponse):
         texts.extend(turn.text for turn in result.turns)
     elif isinstance(result, DialoguePartsResponse):
         texts.append(" ".join(part.text for part in result.parts))
-    elif isinstance(result, (ActionResponse, SnakePlayerResponse)):
+    elif isinstance(result, ActionResponse):
         texts.append(result.reply)
     if isinstance(result, ConversationResponse):
         texts.extend((result.initiator_opinion.reason, result.recipient_opinion.reason))
@@ -515,8 +427,6 @@ def _validate_base_presentation(result, snapshot):
         texts.append(result.opinion.reason)
     elif isinstance(result, ActionResponse):
         texts.extend(entry.reason for entry in result.opinion_updates)
-    if isinstance(result, (SnakeDecision, SnakeResidentResponse)) and result.attitudes is not None:
-        texts.extend(value for key, value in result.attitudes.model_dump().items() if key.endswith("_reason"))
     for text in texts:
         validate_base_prose(text, names)
         validate_environment_speech(text, location=snapshot.get("location", snapshot.get("initiator", {}).get("location", "garden")))
@@ -530,17 +440,6 @@ def _validate_response(raw, snapshot, model):
     if isinstance(result, ResidentAssessment):
         _apply_resident_candidate(snapshot["_baseline"], snapshot["_draft"], result, snapshot)
         return result
-    if isinstance(result, SnakeResidentResponse):
-        accounts = snapshot["speaker"]["permitted_accounts"]
-        if result.account_id and result.account_id not in {a["claim_id"] for a in accounts}:
-            raise ValueError("Select only an account this resident actually knows, or leave account_id empty.")
-        snapshot = {**snapshot, "account_to_share": next((a for a in accounts if a["claim_id"] == result.account_id), None)}
-        if check_dialogue:
-            text = " ".join(p.text for p in result.parts)
-            for account in accounts:
-                if (account["kind"] in ("former_life", "private_motive") and account["claim_id"] != result.account_id
-                        and mentions_private_recollection(text, account["assertion"], name_forms(snapshot.get("_name_actors", {})))):
-                    raise DialogueValidationError("The spoken recollection needs its actual account_id, not an unrelated selection or an empty field.", RecoveryKind.MISSING_DISCLOSURE)
     if isinstance(result, DialoguePartsResponse):
         current = ConversationTurn(speaker=snapshot.get("speaker_role", "initiator"), parts=result.parts)
         if not check_dialogue:
@@ -548,6 +447,11 @@ def _validate_response(raw, snapshot, model):
                 _apply_resident_candidate(snapshot["_baseline"], snapshot["_draft"], result, snapshot)
             return result
         validate_dialogue_format([current])
+        if isinstance(result, ResidentTurnResponse) and result.disclosures:
+            selected = next((a for a in snapshot["speaker"].get("permitted_accounts", [])
+                             if a["claim_id"] == result.disclosures[0].claim_id), None)
+            if selected:
+                snapshot = {**snapshot, "account_to_share": selected}
         validate_speech_grounding(current.text, snapshot)
         if snapshot.get("request_kind") == "handoff_thanks":
             draft = deepcopy(snapshot["_draft"])
@@ -579,32 +483,6 @@ def _validate_response(raw, snapshot, model):
                                         participant_ids={role: actor_id(snapshot[who]) for role, who in
                                             ((current.speaker, "speaker"), ("recipient" if current.speaker == "initiator" else "initiator", "listener"))
                                             if isinstance(snapshot.get(who), dict)})
-        return result
-    if isinstance(result, SnakeResponse):
-        validate_snake_response(result, snapshot)
-        return result
-    if isinstance(result, SnakePlayerResponse):
-        from snake import validate_player_snake_decision
-        if "permitted_decisions" in snapshot and "decision" not in result.model_fields_set:
-            raise ValueError("Return the immediate decision and generated reply together.")
-        validate_player_snake_decision(result, snapshot)
-        if check_dialogue:
-            validate_player_reply_repetition(result.reply, snapshot)
-            validate_english(result.reply, (SNAKE_NAME,))
-            from area_knowledge import validate_area_speech
-            validate_area_speech(result.reply, snapshot.get("snake", {}).get("area_knowledge", {}))
-            validate_dialogue_format([ConversationTurn(speaker="initiator", parts=[ConversationPart(text=result.reply)])])
-            validate_snake_perspective(result.reply, snake_role="speaker")
-            _validate_speaker(result.reply, SNAKE_NAME, PLAYER_LABEL)
-            validate_immediate_snake_speech(result.reply, result.decision, listener=PLAYER_LABEL)
-            if result.snake_account_id:
-                account = next(a for a in snake_disclosure_accounts(snapshot) if a["claim_id"] == result.snake_account_id)
-                validate_account_speech(result.reply, account["assertion"], speaker=SNAKE_NAME, listener=PLAYER_LABEL,
-                                        kind=account["kind"], names=name_forms(snapshot.get("_name_actors", {})))
-                validate_snake_account_roles(result.reply, account, snapshot["snake"], {"actor_id": snapshot["player_id"]})
-        return result
-    if isinstance(result, SnakeDecision):
-        validate_snake_decision(result, snapshot)
         return result
     if isinstance(result, PlayerIntent):
         # Observations and questions cannot issue commands, even if the model
@@ -643,6 +521,8 @@ def _validate_response(raw, snapshot, model):
             raise ValueError("Empty reply")
         if isinstance(result, ActionResponse):
             validate_player_transfer(result, snapshot)
+            if snapshot.get("actor_kind") == "python":
+                validate_snake_perspective(result.reply, snake_role="speaker")
             if check_dialogue:
                 validate_speaker_identity(result.reply, own_name(snapshot), PLAYER_NAME_TAG)
         if isinstance(result, ActionResponse) and check_dialogue:
@@ -650,8 +530,8 @@ def _validate_response(raw, snapshot, model):
             validate_speech_grounding(result.reply, {
                 "_name_actors": snapshot.get("_name_actors", {}),
                 "_player_message": snapshot.get("_player_message", ""),
-                "speaker": {"name": snapshot.get("npc_name", ""),
-                            "npc_id": actor_id(snapshot),
+                "speaker": {"name": snapshot.get("name", ""),
+                            "actor_id": actor_id(snapshot),
                             "known_accounts": snapshot.get("private_context", {}).get("known_accounts", []),
                             "area_knowledge": snapshot.get("area_knowledge", {}),
                             "situation": snapshot.get("private_context", {}).get("situation", {})},
@@ -659,7 +539,7 @@ def _validate_response(raw, snapshot, model):
             })
             validate_dialogue_format([ConversationTurn(speaker="initiator", parts=[ConversationPart(text=result.reply)])])
             for entry in result.opinion_updates:
-                validate_opinion_reason(entry.reason, snapshot.get("npc_name", snapshot.get("character", {}).get("Name", "")), entry.person)
+                validate_opinion_reason(entry.reason, snapshot.get("name", snapshot.get("character", {}).get("Name", "")), entry.person)
         if (check_dialogue and isinstance(result, ActionResponse) and result.end_conversation
                 and contains_question(result.reply)):
             raise ValueError(
@@ -672,10 +552,12 @@ def _validate_response(raw, snapshot, model):
         if (result.target, result.item, result.quantity) != (normalized.target, normalized.item, normalized.quantity):
             raise ValueError("Use the normalized recipient identity and possession from the request.")
     elif isinstance(result, ConversationResponse):
+        from social import validate_escalation_snapshot
+        validate_escalation_snapshot(result.escalation, snapshot, result.turns, result.initiator_opinion.opinion)
         validate_resident_gift(result.gift, result.turns, snapshot)
         resident_information(snapshot, vars(result), incomplete=False)
         validate_agreements(result.accepted_proposals, proposals_from_snapshot(snapshot),
-                            result.turns, snapshot["initiator"]["npc_id"], snapshot["recipient"]["npc_id"],
+                            result.turns, snapshot["initiator"]["actor_id"], snapshot["recipient"]["actor_id"],
                             current_phase=phase_index(snapshot["initiator"].get("day", 1),
                                                       snapshot["initiator"].get("time_of_day", "day")),
                             dialogue_validation=check_dialogue)
@@ -696,10 +578,10 @@ def _validate_response(raw, snapshot, model):
                 thanks = ConversationTurn(speaker="initiator", parts=result.handoff_thanks)
                 validate_dialogue_format([thanks])
                 validate_dialogue_completion([thanks])
-                validate_english(thanks.text, people)
+                validate_english(thanks.text, [snapshot[role]["name"] for role in ("initiator", "recipient")])
                 validate_resident_grounding(SimpleNamespace(turns=[*result.turns, thanks], disclosures=result.disclosures), snapshot)
                 _validate_speaker(" ".join(part.text for part in result.handoff_thanks),
-                                  snapshot["initiator"]["npc_name"], snapshot["recipient"]["npc_name"])
+                                  snapshot["initiator"]["name"], snapshot["recipient"]["name"])
         elif len(result.turns) < RESIDENT_TURN_COUNT or result.food_outcome or (result.handoff_thanks and not (result.gift and result.gift.accept_turn is not None)):
             raise ValueError("Chats need at least four turns and cannot include a food outcome or handoff thanks.")
         if check_dialogue and len(result.turns) == CONVERSATION_MAX_TURNS and contains_question(result.turns[-1].text):
@@ -708,10 +590,10 @@ def _validate_response(raw, snapshot, model):
             (result.initiator_opinion, snapshot["recipient"]),
             (result.recipient_opinion, snapshot["initiator"]),
         ):
-            if entry.person.strip().casefold() != partner["npc_name"].casefold():
+            if entry.person.strip().casefold() != partner["name"].casefold():
                 raise ValueError("Conversation opinions must refer to the other participant.")
         if check_dialogue:
-            validate_dialogue_speakers(result.turns, {role: snapshot[role]["npc_name"] for role in ("initiator", "recipient")})
+            validate_dialogue_speakers(result.turns, {role: snapshot[role]["name"] for role in ("initiator", "recipient")})
             validate_dialogue_repetition(result.turns, history.get("recent_dialogue", []),
                                         factual_context=_resident_repetition_facts(snapshot, result),
                                         actor_references=_repetition_references(snapshot),
@@ -735,13 +617,19 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
         entry = next(d for d in projected["disclosures"] if d.turn == reaction.disclosure_turn)
         entry.listener_stance = reaction.stance
     if isinstance(candidate, ResidentAssessment):
+        from social import validate_escalation_snapshot
+        validate_escalation_snapshot(candidate.escalation,
+            {"purpose": snapshot.get("purpose"), "escalation_choices": state.get("escalation_choices")},
+            draft["turns"], candidate.opinion.opinion)
+        if role == "initiator":
+            projected["escalation"] = candidate.escalation
         other = "recipient" if role == "initiator" else "initiator"
-        if candidate.opinion.person != snapshot[other]["npc_name"]:
+        if candidate.opinion.person != snapshot[other]["name"]:
             raise ValueError("Assess only your conversation partner using the supplied opinion record name.")
         if snapshot.get("_dialogue_validation", True):
             validate_english(candidate.opinion.reason, (own_name(snapshot[role]), own_name(snapshot[other])))
             validate_base_prose(candidate.opinion.reason, (own_name(snapshot[role]), own_name(snapshot[other])))
-            validate_opinion_reason(candidate.opinion.reason, snapshot[role]["npc_name"], snapshot[other]["npc_name"])
+            validate_opinion_reason(candidate.opinion.reason, snapshot[role]["name"], snapshot[other]["name"])
         projected["opinions"][role] = candidate.opinion
         resident_information(snapshot, projected)
         return projected
@@ -807,7 +695,7 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
         raise ValueError("The complete conversation exceeds its offer limit.")
     resident_information(snapshot, projected)
     validate_agreements(projected["accepted_proposals"], proposals_from_snapshot(snapshot), projected["turns"],
-                        snapshot["initiator"]["npc_id"], snapshot["recipient"]["npc_id"],
+                        snapshot["initiator"]["actor_id"], snapshot["recipient"]["actor_id"],
                         current_phase=phase_index(snapshot[role].get("day", 1), snapshot[role].get("time_of_day", "day")),
                         dialogue_validation=snapshot.get("_dialogue_validation", True))
     if snapshot.get("_dialogue_validation", True):

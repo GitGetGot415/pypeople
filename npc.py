@@ -4,7 +4,7 @@ from copy import deepcopy
 from typing import Annotated, Literal
 from pydantic import Field
 from dialogue import (AcceptedProposal, ConversationPart, DisclosureChoice, LeverageUse, ResidentGift,
-                     ThirdPartyOpinion)
+                     ThirdPartyOpinion, EscalationChoice)
 from social import (ConcernKind, ConversationConcern, Goal, OpinionEffect, Belief, check_relationship_goals, commit_agreements,
                    commit_concern_use, commit_information, concern_description, concern_topic,
                    conversation_references, dialogue_failure_cooldown, information_views,
@@ -20,21 +20,19 @@ from uuid import uuid4
 from character_data import DIRECTIONS, PROFILE_FIELDS, normalize_opinions
 from creations import CreativeJob
 from emotions import portrait_expression
-from purgatory import initial_attitudes
 from conversation_history import (ConversationRecord, Memory, describe_opinion_change, relevant_memories, remember,
                                  shared_conversation_history)
-from constants import (MAX_RESIDENTS, PLAYER_CALL_COOLDOWN, REST_SECONDS_RANGE, CREATION_WORK_SECONDS_RANGE,
-                       OUTDOOR_COOLDOWN_SECONDS, BEDTIME_DELAY_RANGE, WAKE_DELAY_RANGE, APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DEFAULT_CHARACTER_NAME,
-                       DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, CONVERSATION_PAUSE_RANGE,
-                       CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, MOVEMENT_SPEED,
-                       NPC_RADIUS, PARTNER_COOLDOWN, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED,
-                       WANDER_PAUSE, FOOT_MARGIN, STARTING_DAY, STARTING_FACING, STARTING_NPC_FRUIT, JUDY_ROOM_NUMBER,
-                       STARTING_NPC_GENEROSITY_RANGE, STARTING_NPC_POSITION, STARTING_NPC_SATISFACTION_RANGE,
-                       STARTING_NPC_SOCIABILITY_RANGE, STARTING_TREE_POSITION, STARTING_FATIGUE_RANGE,
-                       EXCHANGE_FATIGUE, CONVERSATION_CANCELLED, CONVERSATION_DIALOGUE_READY,
-                       CONVERSATION_ENDED_BEFORE_DIALOGUE, CONVERSATION_ENDED_BEFORE_SHARING,
-                       CONVERSATION_FAILED, CONVERSATION_FINISHED, CONVERSATION_WAITING_FOR_DIALOGUE,
-                       CONVERSATION_WALKING_TO_MEET)
+from constants import (MAX_RESIDENTS, PLAYER_CALL_COOLDOWN, REST_SECONDS_RANGE,
+    CREATION_WORK_SECONDS_RANGE, OUTDOOR_COOLDOWN_SECONDS, BEDTIME_DELAY_RANGE, WAKE_DELAY_RANGE,
+    APPLE_SATISFACTION, COMPANY_MAX_SECONDS, DECISION_SECONDS, DEFAULT_CHARACTER_NAME,
+    DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE,
+    FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, MOVEMENT_SPEED, NPC_RADIUS, PARTNER_COOLDOWN, SNAKE_NAME,
+    SOCIAL_RADIUS, SOCIAL_RECOVERED, WANDER_PAUSE, FOOT_MARGIN, STARTING_DAY, STARTING_NPC_FRUIT,
+    JUDY_ROOM_NUMBER, STARTING_NPC_GENEROSITY_RANGE, STARTING_NPC_POSITION,
+    STARTING_NPC_SATISFACTION_RANGE, STARTING_NPC_SOCIABILITY_RANGE, STARTING_TREE_POSITION,
+    STARTING_FATIGUE_RANGE, EXCHANGE_FATIGUE, CONVERSATION_CANCELLED, CONVERSATION_DIALOGUE_READY,
+    CONVERSATION_ENDED_BEFORE_DIALOGUE, CONVERSATION_ENDED_BEFORE_SHARING, CONVERSATION_FAILED,
+    CONVERSATION_FINISHED, CONVERSATION_WAITING_FOR_DIALOGUE, CONVERSATION_WALKING_TO_MEET)
 from social import (NPC_ARRIVAL_MEMORY, validate_orientation)
 from actor_identity import (actor_catalog, name_forms)
 from transfers import Handoff
@@ -49,21 +47,12 @@ class Tree:
     y: float = STARTING_TREE_POSITION[1]
     id: str = "fruit-tree"
     fruit: int = 0
-    reserved_by: "NPC | None" = field(default=None, repr=False, compare=False)
+    shake_remaining: float = field(default=0.0, repr=False, compare=False)
 
     @property
     def interaction_point(self):
         return (self.x - 60.0, self.y + 50.0)
 
-    def reserve(self, npc):
-        if self.reserved_by is not None and self.reserved_by is not npc:
-            return False
-        self.reserved_by = npc
-        return True
-
-    def release(self, npc):
-        if self.reserved_by is npc:
-            self.reserved_by = None
 
 
 @dataclass
@@ -98,7 +87,6 @@ class ResidentValues(ActivitySnapshot):
     player_call_cooldown: Annotated[float, Field(ge=0, le=PLAYER_CALL_COOLDOWN)] = 0.0
     resolved_player_calls: list[str] = field(default_factory=list)
     command_revision: Annotated[int, Field(ge=0)] = 0
-    attitudes: dict = field(default_factory=initial_attitudes)
     arrival_day: Annotated[int, Field(ge=1)] = STARTING_DAY
     departure: dict | None = None
 
@@ -115,12 +103,107 @@ class ResidentValues(ActivitySnapshot):
     journey: Journey | None = None
 
 
+class ConversationActor:
+    """Shared participant state; each actor owns its movement and capabilities."""
+
+    def activity_state(self):
+        return ActivitySnapshot.capture(self)
+
+    def restore_activity(self, state):
+        ActivitySnapshot.restore(self, state)
+
+    def suspend_activity(self, reason):
+        """Save progress and release physical claims before an interaction."""
+        state = self.activity_state()
+        if not self.creative_job:
+            self.command_revision += 1
+        self.behavior, self.owner = Behavior.WAIT, "autonomous"
+        self.destination = self.target_id = None
+        self.activity_elapsed = 0.0
+        self.eating_witness_ids = []
+        self.resume_pending = False
+        self.reason = reason
+        return state
+
+    def restore_after_interaction(self, state, *cooldown_ids, preserve_facing=False):
+        facing = self.facing
+        self.restore_activity(state)
+        if preserve_facing:
+            self.facing = facing
+        self.cooldowns.update(dict.fromkeys(cooldown_ids, PARTNER_COOLDOWN))
+        # Reacquire physical claims on the next simulation tick.
+        self.resume_pending = True
+        if self.creative_job:
+            self.creative_job.revision = self.command_revision
+
+    def pause_after_conversation(self, completed):
+        self.conversation_pause_remaining = (self.rng.uniform(*CONVERSATION_PAUSE_RANGE)
+                                             if completed else FAILURE_COOLDOWN)
+        if completed:
+            self.social_fatigue = min(100.0, self.social_fatigue + EXCHANGE_FATIGUE)
+            self.conversation_return_remaining = CONVERSATION_RETURN_PAUSE
+
+    def update_cooldowns(self, dt):
+        self.decision_remaining = max(0.0, self.decision_remaining - dt)
+        if self.interaction is None and not self.interaction_blocked and not self.player_reply.closing:
+            self.conversation_pause_remaining = max(0.0, self.conversation_pause_remaining - dt)
+            self.conversation_return_remaining = max(0.0, self.conversation_return_remaining - dt)
+            if self.current_concern:
+                self.current_concern.remaining = max(0.0, self.current_concern.remaining - dt)
+        self.cooldowns = {key: value - dt for key, value in self.cooldowns.items() if value > dt}
+        interaction = self.conversation or self.gift
+        if interaction is not None:
+            suspended = suspended_activity(self.gift or interaction, self)
+            suspended.decision_remaining = max(0.0, suspended.decision_remaining - dt)
+            suspended.cooldowns = {key: value - dt for key, value in suspended.cooldowns.items() if value > dt}
+
+    def can_reach(self, point):
+        from locations import clamp_point
+        return tuple(point) == clamp_point(self.location, point)
+
+    def named_opinions(self):
+        actors = {actor.id: actor.name for actor in self.world.actors} if self.world else {}
+        bound_names = {actors[key] for key in self.opinions if key in actors}
+        result = {name: entry.copy() for name, entry in self.character.get("Opinions", {}).items()
+                  if name not in bound_names}
+        result.update({actors[key]: entry.copy() for key, entry in self.opinions.items() if key in actors})
+        return result
+
+    def opinion_score(self, actor_id, default=0):
+        return self.opinions.get(actor_id, {}).get("opinion", default)
+
+    def remember_opinion(self, actor_id, opinion, reason):
+        self.remember_opinions({actor_id: {"opinion": opinion, "reason": reason}})
+
+    def remember_opinions(self, updates):
+        updates = normalize_opinions(updates)
+        for actor_id, entry in updates.items():
+            target = self.world.participant_by_id(actor_id) if self.world else None
+            if target is None or target is self or target is self.world.player:
+                raise ValueError("The opinion target is no longer available.")
+            outcomes = [p.outcome for p in self.world.promises if p.status != "pending"
+                        and {p.promisor_id, p.recipient_id} == {self.id, target.id}]
+            if outcomes and outcomes[-1] not in entry["reason"]:
+                entry["reason"] = (outcomes[-1] + " Current impression: " + entry["reason"])[:400]
+        if all(self.opinions.get(key) == value for key, value in updates.items()):
+            return
+        self.opinions.update(updates)
+        interaction = self.conversation or self.gift
+        check_relationship_goals(self.world, self, interaction.record if interaction else None)
+
+
 @dataclass
-class NPC(ResidentValues):
+class NPC(ResidentValues, ConversationActor):
     rng: random.Random = field(default_factory=random.Random, repr=False)
     selected: bool = False
     player_reply: PlayerReplyProgress = field(default_factory=PlayerReplyProgress, repr=False, compare=False)
     world: object = field(default=None, repr=False, compare=False)
+
+    @property
+    def last_killing_phase(self):
+        from social import phase_index
+        return max((phase_index(n.departure["day"], n.departure["phase"])
+                    for n in self.world.archived if n.departure["attacker_id"] == self.id), default=None)
 
     @property
     def indoors(self):
@@ -133,10 +216,6 @@ class NPC(ResidentValues):
     @property
     def gift(self):
         return self.world.reservations.get(self.id, "handoff") if self.world else None
-
-    @property
-    def snake_encounter(self):
-        return self.world.reservations.get(self.id, "snake") if self.world else None
 
     @property
     def interaction(self):
@@ -167,56 +246,11 @@ class NPC(ResidentValues):
     def waiting_for_done(self):
         return self.action_pending and self.player_reply.closing and self.selected
 
-    def can_reach(self, point):
-        from locations import clamp_point
-        return tuple(point) == clamp_point(self.location, point)
-
-    def activity_state(self):
-        return ActivitySnapshot.capture(self)
-
-    def restore_activity(self, state):
-        ActivitySnapshot.restore(self, state)
-
-    def suspend_activity(self, reason):
-        """Save progress and release physical claims before an interaction."""
-        state = self.activity_state()
-        self.release_claims(self.world)
-        if not self.creative_job:
-            self.command_revision += 1
-        self.behavior, self.owner = Behavior.WAIT, "autonomous"
-        self.destination = self.target_id = None
-        self.activity_elapsed = 0.0
-        self.eating_witness_ids = []
-        self.resume_pending = False
-        self.reason = reason
-        return state
-
-    def restore_after_interaction(self, state, *cooldown_ids, preserve_facing=False):
-        facing = self.facing
-        self.restore_activity(state)
-        if preserve_facing:
-            self.facing = facing
-        self.cooldowns.update(dict.fromkeys(cooldown_ids, PARTNER_COOLDOWN))
-        # Reacquire physical claims on the next simulation tick.
-        self.resume_pending = True
-        if self.creative_job:
-            self.creative_job.revision = self.command_revision
-
-    def pause_after_conversation(self, completed):
-        self.conversation_pause_remaining = (self.rng.uniform(*CONVERSATION_PAUSE_RANGE)
-                                             if completed else FAILURE_COOLDOWN)
-        if completed:
-            self.social_fatigue = min(100.0, self.social_fatigue + EXCHANGE_FATIGUE)
-            self.conversation_return_remaining = CONVERSATION_RETURN_PAUSE
-
-    def release_claims(self, world):
-        world.tree.release(self)
 
     def finish_activity(self, world, failed=False):
         target = self.target_id
         if target is not None and (failed or self.behavior == Behavior.COMPANY):
             self.cooldowns[target] = FAILURE_COOLDOWN if failed else PARTNER_COOLDOWN
-        self.release_claims(world)
         self.behavior = Behavior.WAIT
         self.destination = None
         self.target_id = None
@@ -228,7 +262,6 @@ class NPC(ResidentValues):
         self.reason = "Target unavailable; choosing another activity" if failed else "Finished; choosing what to do next"
 
     def begin_activity(self, behavior, world, target=None, reason="", owner="autonomous"):
-        self.release_claims(world)
         if behavior != Behavior.GO_HOME:
             self.home_reason = None
             self.bedtime_remaining = None
@@ -241,13 +274,12 @@ class NPC(ResidentValues):
         self.decision_remaining = DECISION_SECONDS
         if behavior == Behavior.EAT:
             self.facing = 4
-        elif behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE):
+        elif behavior == Behavior.GO_TO_TREE:
             if self.location != "garden":
                 from locations import start_journey
                 start_journey(self, "garden", world.tree.interaction_point, purpose="tree", fast=False)
                 return
-            if not world.join_tree(self, "bargain" if behavior == Behavior.HARVEST else "introduction"):
-                self.finish_activity(world, failed=True)
+            self.destination = world.tree.interaction_point
         elif behavior == Behavior.COMPANY:
             partner = world.npc_by_id(target)
             self.destination = company_point(self, partner) if partner is not None else None
@@ -255,7 +287,7 @@ class NPC(ResidentValues):
                 self.finish_activity(world, failed=True)
 
     def resume_activity(self, world):
-        """Reacquire suspended claims on a simulation tick, preserving committed progress."""
+        """Resume suspended activity on a simulation tick, preserving committed progress."""
         self.resume_pending = False
         if self.behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE):
             self.begin_activity(self.behavior, world, world.tree.id, self.reason, self.owner)
@@ -266,19 +298,6 @@ class NPC(ResidentValues):
             else:
                 self.destination = company_point(self, partner)
 
-    def update_cooldowns(self, dt):
-        self.decision_remaining = max(0.0, self.decision_remaining - dt)
-        if self.interaction is None and not self.interaction_blocked and not self.player_reply.closing:
-            self.conversation_pause_remaining = max(0.0, self.conversation_pause_remaining - dt)
-            self.conversation_return_remaining = max(0.0, self.conversation_return_remaining - dt)
-            if self.current_concern:
-                self.current_concern.remaining = max(0.0, self.current_concern.remaining - dt)
-        self.cooldowns = {key: value - dt for key, value in self.cooldowns.items() if value > dt}
-        interaction = self.conversation or self.gift
-        if interaction is not None:
-            suspended = suspended_activity(self.gift or interaction, self)
-            suspended.decision_remaining = max(0.0, suspended.decision_remaining - dt)
-            suspended.cooldowns = {key: value - dt for key, value in suspended.cooldowns.items() if value > dt}
 
     @property
     def portrait_emotion(self):
@@ -322,13 +341,6 @@ class NPC(ResidentValues):
                 return self.reason
         if self.journey:
             return f"Travelling to {self.journey.destination}"
-        if self.world and self.world.tree_has_actor(self.id) and self.snake_encounter is None:
-            if self.world.tree_current and self.world.tree_current.actor_id == self.id:
-                return "Approaching the front of the tree line"
-            position = next(i for i, e in enumerate(self.world.tree_queue, 1) if e.actor_id == self.id)
-            return f"Waiting in the tree line ({position})"
-        if self.snake_encounter is not None:
-            return f"With {SNAKE_NAME}: {self.snake_encounter.record.status}"
         if self.gift is not None:
             if self.thanking:
                 return f"Thanking {self.gift.initiator.name}"
@@ -349,7 +361,7 @@ class NPC(ResidentValues):
         return {
             Behavior.WANDER: "Wandering",
             Behavior.GO_TO_TREE: "Walking to tree",
-            Behavior.HARVEST: "Walking to the guarded tree",
+            Behavior.HARVEST: "Collecting apples at the tree",
             Behavior.EAT: "Eating an apple",
             Behavior.COMPANY: "Seeking company" if self.destination else "Spending time together",
             Behavior.WAIT: "Waiting",
@@ -376,8 +388,8 @@ class NPC(ResidentValues):
         state = {
             "location": self.location,
             "environment": environment(self.location),
-            "npc_id": self.id,
-            "npc_name": self.name,
+            "actor_id": self.id,
+            "name": self.name,
             "character": {key: value for key, value in self.character.items() if key != "Opinions"},
             "_name_actors": actor_catalog(self.world, self.location) if self.world else {},
             "facing": DIRECTIONS[self.facing],
@@ -392,7 +404,6 @@ class NPC(ResidentValues):
             "tree_interaction_point": list(tree.interaction_point),
             "tree_fruit": tree.fruit,
             "tree_available_fruit": self.world.available_fruit if self.world else tree.fruit,
-            "tree_occupied": tree.reserved_by is not None,
             "day": self.world.day if self.world else 1,
             "living_count": self.world.population if self.world else 1,
             "time_of_day": self.world.phase if self.world else "day",
@@ -414,7 +425,6 @@ class NPC(ResidentValues):
             if starting_experience:
                 state["private_context"]["starting_experience"] = starting_experience
             state["private_context"]["opinions"] = self.named_opinions()
-            state["private_context"]["snake_attitudes"] = self.attitudes.copy()
             encounters = [record for record in self.world.history if record.includes(self) and record.turns]
             state["private_context"]["situation"] = {
                 "days_here": self.world.day - self.arrival_day,
@@ -423,25 +433,22 @@ class NPC(ResidentValues):
                 "prior_conversations": len(encounters),
                 "prior_snake_encounters": (sum(self.world.snake.id in record.participant_ids for record in encounters)
                                            + int(starting_encounter(self.world, self.id) is not None)),
-                "received_snake_apple": any(fact.kind == "bargain" and fact.subject_id == self.world.snake.id
-                                            and fact.object_id == self.id for fact in self.world.facts),
                 "known_danger": [account for account in state["private_context"]["known_accounts"]
-                                 if account["kind"] in ("eating", "judgment", "defiance")][:3],
+                                 if account["kind"] == "killing"][:3],
             }
         else:
             state.pop("_name_actors", None)
             state["character"].pop("Opinions", None)
-            for field in PROFILE_FIELDS:
-                state["character"].pop(field, None)
+            for profile_field in PROFILE_FIELDS:
+                state["character"].pop(profile_field, None)
             for key in ("last_reply", "activity_reason"):
                 state.pop(key, None)
             # A visible person is not an invitation to inspect their task, travel
             # destination, biography, satisfaction, or player control state.
-            state = {key: state[key] for key in ("location", "npc_id", "npc_name", "character", "position", "facing")}
+            state = {key: state[key] for key in ("location", "actor_id", "name", "character", "position", "facing")}
             state["activity"] = "Moving" if self.journey or self.destination else "Eating an apple" if self.eating else "Present"
             return state
         state["arrival_day"] = self.arrival_day
-        state["tree_guarded"] = True
         if self.indoors:
             for key in [key for key in state if key.startswith("tree_")]:
                 state.pop(key)
@@ -460,35 +467,6 @@ class NPC(ResidentValues):
                 unresolved[person] = entry.copy()
         self.character = {**self.character, "Opinions": unresolved}
 
-    def named_opinions(self):
-        actors = {actor.id: actor.name for actor in self.world.actors} if self.world else {}
-        bound_names = {actors[key] for key in self.opinions if key in actors}
-        result = {name: entry.copy() for name, entry in self.character.get("Opinions", {}).items()
-                  if name not in bound_names}
-        result.update({actors[key]: entry.copy() for key, entry in self.opinions.items() if key in actors})
-        return result
-
-    def opinion_score(self, actor_id, default=0):
-        return self.opinions.get(actor_id, {}).get("opinion", default)
-
-    def remember_opinion(self, actor_id, opinion, reason):
-        self.remember_opinions({actor_id: {"opinion": opinion, "reason": reason}})
-
-    def remember_opinions(self, updates):
-        updates = normalize_opinions(updates)
-        for actor_id, entry in updates.items():
-            target = self.world.participant_by_id(actor_id) if self.world else None
-            if target is None or target is self or target is self.world.player:
-                raise ValueError("The opinion target is no longer available.")
-            outcomes = [p.outcome for p in self.world.promises if p.status != "pending"
-                        and {p.promisor_id, p.recipient_id} == {self.id, target.id}]
-            if outcomes and outcomes[-1] not in entry["reason"]:
-                entry["reason"] = (outcomes[-1] + " Current impression: " + entry["reason"])[:400]
-        if all(self.opinions.get(key) == value for key, value in updates.items()):
-            return
-        self.opinions.update(updates)
-        interaction = self.conversation or self.gift
-        check_relationship_goals(self.world, self, interaction.record if interaction else None)
 
     def _face_when_still(self):
         point = self.world.tree.interaction_point if self.world else None
@@ -570,7 +548,7 @@ class NPC(ResidentValues):
         if (self.owner == "autonomous" and self.behavior in (Behavior.WANDER, Behavior.WAIT)
                 and not self.journey and awaiting_arrival_greeting(self, self.world) and self.interaction is None):
             return
-        if owns_resident(self.world, self) or self.world.tree_has_actor(self.id):
+        if owns_resident(self.world, self):
             return
         if self.journey:
             from locations import update_journey
@@ -607,8 +585,18 @@ class NPC(ResidentValues):
                 if self._move(movement_dt):
                     self.destination = None
                     self.pause_remaining = WANDER_PAUSE
-        elif behavior in (Behavior.GO_TO_TREE, Behavior.HARVEST):
-            self.begin_activity(behavior, world, tree.id, self.reason, self.owner)
+        elif behavior == Behavior.GO_TO_TREE:
+            if self.destination is None:
+                self.destination = tree.interaction_point
+            if self._move(dt):
+                self.finish_activity(world)
+        elif behavior == Behavior.HARVEST:
+            try:
+                world.harvest(self, 1)
+            except ValueError:
+                self.finish_activity(world, failed=True)
+                return
+            self.finish_activity(world)
         elif behavior == Behavior.COMPANY:
             partner = world.npc_by_id(self.target_id)
             self.activity_elapsed += dt
@@ -673,7 +661,7 @@ class ResidentProgress:
     accepted_gift: ResidentGift | None
     id: Annotated[str, Field(min_length=1)]
     origin: Literal['player', 'autonomous']
-    purpose: Literal['chat', 'food_request']
+    purpose: Literal['chat', 'food_request', 'confrontation']
     opening_kind: ConcernKind | Literal["orientation"] | None  # Orientation is only Judy's first welcome.
     goal_id: str | None
     focus_claim_id: str | None
@@ -691,6 +679,8 @@ class ResidentProgress:
     accepted_disclosures: Annotated[list[DisclosureChoice], Field(max_length=4)]
     third_party_opinions: Annotated[list[ThirdPartyOpinion], Field(max_length=4)]
     leverage_uses: Annotated[list[LeverageUse], Field(max_length=2)]
+    escalation: EscalationChoice | None
+    accepted_revisions: dict[str, Annotated[int, Field(strict=True, ge=0)]]
 
 
 class Conversation(ResidentProgress):
@@ -710,8 +700,13 @@ class Conversation(ResidentProgress):
                 or not available_outdoors(initiator) or not available_outdoors(recipient)
                 or not colocated(initiator, recipient)):
             raise ValueError("Choose another NPC who is free to talk.")
-        if purpose not in ("chat", "food_request"):
+        if purpose not in ("chat", "food_request", "confrontation"):
             raise ValueError("Resident meetings use chat or food_request.")
+        if purpose == "confrontation":
+            from social import grievance_against
+            if (not isinstance(initiator, NPC) or not isinstance(recipient, NPC)
+                    or not focus_claim_id or grievance_against(initiator, recipient) != focus_claim_id):
+                raise ValueError("A confrontation requires two human residents and a specific retained, unresolved grievance.")
         if focus_claim_id and not any(b.claim_id == focus_claim_id for b in initiator.beliefs):
             raise ValueError("The initiator does not know the required account.")
         self.initiator = initiator
@@ -724,6 +719,8 @@ class Conversation(ResidentProgress):
         self.opening_kind = opening_kind
         self.focus_claim_id = focus_claim_id  # Required task account; an ordinary concern is optional.
         self.goal_id = goal_id
+        self.escalation = None
+        self.accepted_revisions = {}
         self.dialogue = DialogueProgress()
         self.food_outcome = ""
         self.food_reason = ""
@@ -735,7 +732,8 @@ class Conversation(ResidentProgress):
         self.active = True
         self.record = ConversationRecord((initiator.name, recipient.name), topic, CONVERSATION_WALKING_TO_MEET,
                                          origin=origin, purpose=purpose, id=self.id,
-                                         participant_ids=[initiator.id, recipient.id])
+                                         participant_ids=[initiator.id, recipient.id],
+                                         grievance_id=focus_claim_id if purpose == "confrontation" else None)
         self.record.intended_subjects = {
             npc.name: concern_description(npc, self.concerns[role])
             for role, npc in (("initiator", initiator), ("recipient", recipient))}
@@ -777,22 +775,12 @@ class Conversation(ResidentProgress):
         self.dialogue, self.saved_states = restored["dialogue"], restored["saved_states"]
         self.proposals, self.information_context = restored["proposals"], restored["information_context"]
         self.concerns, self.name_actors, self.active = restored["concerns"], {}, True
-        if self.opening_kind == "orientation":
-            # Earlier saves used this opening for every resident's adjustment chats.
-            # Keep it only for Judy's actual first welcome to a later arrival.
-            first_welcome = (
-                initiator.room_number == JUDY_ROOM_NUMBER and recipient.arrival_day > STARTING_DAY
-                and not any(record is not self.record and record.between(initiator, recipient)
-                            and any(turn.speaker_id == initiator.id for turn in record.turns)
-                            for record in initiator.world.history)
-            )
-            if not first_welcome:
-                self.opening_kind = "surroundings"
-                if not self.social_effects_applied:
-                    self.topic = concern_topic(initiator, ConversationConcern("surroundings", None, 0.0))
-                    self.record.topic = self.topic
         self.dialogue.retry_after_restore()
         initiator.world.reservations.acquire("conversation", self, initiator, recipient)
+
+    @property
+    def grievance_id(self):
+        return self.record.grievance_id
 
     def other(self, npc):
         return self.recipient if npc is self.initiator else self.initiator
@@ -824,6 +812,9 @@ class Conversation(ResidentProgress):
             raise ValueError("The resident roster changed while dialogue was being prepared. Retry this meeting.")
         if any(n.command_revision != self.request_actor_revisions[n.id] for n in (self.initiator, self.recipient)):
             raise ValueError("The participants changed activities before the reply arrived.")
+        if self.initiator is self.initiator.world.snake or self.recipient is self.initiator.world.snake:
+            if response.gift or response.accepted_proposals or response.handoff_thanks or response.escalation or response.leverage:
+                raise ValueError("Snake meetings allow speech and sourced disclosures only.")
         validate_live_agreements(self, response, dialogue_validation=dialogue_validation)
         from transfers import validate_resident_gift
         validate_resident_gift(response.gift, response.turns, {
@@ -849,6 +840,11 @@ class Conversation(ResidentProgress):
             self.record.dialogue_errors = list(dict.fromkeys([
                 *response._dialogue_errors,
                 *dialogue_validation_errors(response, self.snapshot(self.initiator.world.tree, self.initiator.world.npcs))]))
+        from social import validate_escalation
+        validate_escalation(self, response)
+        self.escalation = response.escalation
+        self.accepted_revisions = ({n.id: n.command_revision for n in (self.initiator, self.recipient)}
+                                   if self.escalation and self.escalation.action == "attack" else {})
         self.handoff_thanks = response.handoff_thanks
         self.accepted_gift = response.gift if response.gift and response.gift.accept_turn is not None else None
         self.rewritten_handoff_thanks = list(rewritten_parts[-1]) if rewritten_parts and response.handoff_thanks else []
@@ -861,6 +857,8 @@ class Conversation(ResidentProgress):
             )
             for npc, partner, entry in opinions
         ]
+        if self.escalation:
+            self.record.outcomes.append(f"Confrontation decision: {self.escalation.action}. Grievance: {self.grievance_id}.")
         self.record.status = CONVERSATION_DIALOGUE_READY
         self.record.orientation_discussed = orientation_discussed
         self.accepted_proposals = list(response.accepted_proposals)
@@ -890,8 +888,9 @@ class Conversation(ResidentProgress):
     def accepts_response(self):
         world = self.initiator.world
         return (self.active and self.dialogue.dialogue_state in ("waiting", "pending")
-                and world.npc_by_id(self.initiator.id) is self.initiator
-                and world.npc_by_id(self.recipient.id) is self.recipient
+                and not self.initiator.departure and not self.recipient.departure
+                and world.actor_by_id(self.initiator.id) is self.initiator
+                and world.actor_by_id(self.recipient.id) is self.recipient
                 and self.initiator.location == self.recipient.location)
 
     def fail_dialogue(self, reason, *, failed_turns=()):
@@ -932,7 +931,7 @@ class Conversation(ResidentProgress):
         if not self.active:
             return
         if self.initiator.location != self.recipient.location:
-            self.fail_dialogue("The participants are no longer in the same location.")
+            self.cancel("The participants are no longer in the same location.")
             return
         if self.arrived:
             from interactions import observe_conversation
@@ -943,6 +942,10 @@ class Conversation(ResidentProgress):
                 if self.dialogue.wait_elapsed >= DIALOGUE_TIMEOUT_SECONDS:
                     self.fail_dialogue("Dialogue generation timed out. No dialogue was generated.")
             elif dialogue_finished(self, dt, reading=reading):
+                if self.escalation and self.escalation.action == "attack":
+                    self.initiator.world.commit_killing(self)
+                    if not self.active:
+                        return
                 if self.accepted_gift or self.purpose == "food_request" and self.food_outcome == "accepted":
                     self.handoff(self.accepted_gift)
                 else:
@@ -1002,6 +1005,7 @@ class Conversation(ResidentProgress):
             "arrival_focus": self.opening_kind == "orientation",
             "arrival_welcome": (self.opening_kind == "orientation" and self.initiator.room_number == JUDY_ROOM_NUMBER
                                 and self.recipient.arrival_day > STARTING_DAY),
+            "escalation_choices": self.initiator.world.escalation_choices(self),
             "food_request": {"item": "fruit", "quantity": 1, "outcome": self.food_outcome,
                              "reason": self.food_reason, "transferred": False} if self.purpose == "food_request" else None,
             "initiator": initiator,
@@ -1051,6 +1055,7 @@ class Conversation(ResidentProgress):
         """Interrupt the meeting without replaying accepted speech or effects."""
         if not self.active:
             return
+        self.escalation = None
         self.record.pending_witness_ids.clear()
         self.active = False
         self.record.status, self.record.error = CONVERSATION_CANCELLED, reason
@@ -1069,7 +1074,7 @@ class Conversation(ResidentProgress):
                 npc.command_revision += 1
 
     def handoff(self, gift=None):
-        """Reverse the roles without restoring activities or reacquiring tree claims."""
+        """Reverse the roles while preserving suspended activity progress."""
         if not self.active:
             return
         intent = gift or TransferIntent(self.recipient.id, self.initiator.id, "fruit", 1)
@@ -1096,6 +1101,9 @@ def validate_saved_conversations(conversations, history, live, live_ids, facts, 
             if live[pair[0]].location != live[pair[1]].location:
                 raise ValueError("Conversation participants must share a location.")
             validate_activity_target(activity, live[index], tree_id, live_ids)
+            if activity.destination is not None:
+                from locations import validate_destination
+                validate_destination(activity.destination, location=live[index].location)
         record = history[interaction.record]
         if set(record.participant_ids) != set(pair):
             raise ValueError("An interaction must match its record.")
@@ -1115,6 +1123,9 @@ def validate_saved_conversations(conversations, history, live, live_ids, facts, 
         if len(record.turns) > CONVERSATION_MAX_TURNS:
             raise ValueError("A resident conversation exceeds its accepted turn budget.")
         ready = interaction.dialogue_state == "ready"
+        statuses = (CONVERSATION_DIALOGUE_READY,) if ready else (CONVERSATION_WALKING_TO_MEET, CONVERSATION_WAITING_FOR_DIALOGUE)
+        if record.status not in statuses:
+            raise ValueError("A completed, failed or cancelled record cannot restore an active conversation.")
         if record.id != interaction.id or ready != bool(record.generated_turns()) or ready != interaction.social_effects_applied:
             raise ValueError("Invalid conversation commit progress.")
         if interaction.information_context:
@@ -1123,7 +1134,8 @@ def validate_saved_conversations(conversations, history, live, live_ids, facts, 
                 raise ValueError("Invalid information speakers.")
             if context.focus_claim_id != interaction.focus_claim_id:
                 raise ValueError("The required meeting account must match its information snapshot.")
-            if any(o.fact_id not in facts for o in context.options):
+            if any(o.fact_id not in facts or o.quantity != facts[o.fact_id].quantity
+                   or o.kind != facts[o.fact_id].kind or o.subject_id != facts[o.fact_id].subject_id for o in context.options):
                 raise ValueError("Missing snapshot facts.")
         validate_agreements(interaction.accepted_proposals, interaction.proposals, record.generated_turns(), live[pair[0]].id, live[pair[1]].id)
         if ready:
@@ -1138,7 +1150,7 @@ def validate_saved_conversations(conversations, history, live, live_ids, facts, 
             validate_resident_gift(interaction.accepted_gift, record.generated_turns(), {
                 "purpose": interaction.purpose, "arrival_focus": interaction.opening_kind == "orientation",
                 **{
-                role: {"npc_id": live[index].id, "inventory": live[index].inventory,
+                role: {"actor_id": live[index].id, "inventory": live[index].inventory,
                        "owned_works": [{"id": w.id, "title": w.title} for w in creations
                                        if w.owner_id == live[index].id]}
                 for role, index in zip(("initiator", "recipient"), pair)}})

@@ -48,7 +48,7 @@ class ConversationRecord:
     outcomes: list[str] = field(default_factory=list)
     error: str = ""
     origin: Literal["player", "autonomous"] = "player"
-    purpose: Literal["chat", "orientation", "food_request", "gossip", "bargain", "judgment", "introduction", "snake_player"] = "chat"
+    purpose: Literal["chat", "orientation", "food_request", "gossip", "confrontation"] = "chat"
     id: Annotated[str, Field(min_length=1)] = field(default_factory=lambda: uuid4().hex)
     failed_turns: list[dict] = field(default_factory=list)
     name_forms: list[str] = field(default_factory=list)
@@ -61,8 +61,8 @@ class ConversationRecord:
     authorization_id: str | None = None
     transfer_intent: TransferIntent | None = None
     player_promise_offers: list[PlayerPromiseOffer] = field(default_factory=list)
+    grievance_id: str | None = None
     pending_witness_ids: list[str] = field(default_factory=list)
-    eating_witness_ids: list[str] = field(default_factory=list)
 
     @property
     def transcript(self):
@@ -171,7 +171,7 @@ class Memory:
     partner_id: str
     kind: Literal["gave_fruit", "received_fruit", "refused", "kept_fruit", "conversation",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
-                  "claim_shared", "heard_claim", "claim_opinion", "leverage", "arrival", "departure", "apple_eaten", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "gave_work", "received_work", "visit"]
+                  "claim_shared", "heard_claim", "claim_opinion", "leverage", "arrival", "departure", "apple_eaten", "harvest", "killing", "snake_claim", "goal_cancelled", "gave_work", "received_work", "visit"]
     summary: Annotated[str, Field(max_length=400)]
     weight: Annotated[float, Field(ge=-12, le=12)]
 
@@ -182,7 +182,7 @@ class WorldEvent:
     phase: Literal["day", "night"]
     kind: Literal["phase", "food_requested", "food_refused", "fruit_shared", "conversation_completed", "interaction_failed",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
-                  "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "departure", "apple_eaten", "conversation_seen", "bargain", "endorsement", "defiance", "snake_claim", "judgment", "pardon", "eating", "goal_cancelled", "promise_cancelled", "work_shared", "player_call", "player_conversation", "tree_queue", "travel_failed", "visit"]
+                  "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "departure", "apple_eaten", "conversation_seen", "harvest", "killing", "snake_claim", "goal_cancelled", "promise_cancelled", "work_shared", "player_call", "player_conversation", "travel_failed", "visit"]
     participants: list[str]
     text: str
     history: str | None = None
@@ -215,11 +215,11 @@ def relevant_memories(npc, partner_id=None):
         from social import claim_by_id, fact_by_id
         for belief in npc.beliefs:
             fact = fact_by_id(npc.world, claim_by_id(npc.world, belief.claim_id).fact_id)
-            if fact.kind in ("eating", "judgment", "defiance"):
+            if fact.kind in ("killing",):
                 danger_ids.add(fact.source_id)
                 danger_ids.update(d.event_id for d in npc.world.disclosures if d.id == belief.disclosure_id)
     ranked = sorted(enumerate(npc.memories), key=lambda entry: (
-        entry[1].kind in ("eating", "judgment", "defiance") or entry[1].id in danger_ids,
+        entry[1].kind in ("killing",) or entry[1].id in danger_ids,
         entry[1].partner_id in partners and entry[1].kind in ("promise_created", "promise_broken"),
         entry[1].kind in ("heard_claim", "claim_opinion", "leverage"),
         entry[1].partner_id == partner_id, entry[1].partner_id == goal_target,
@@ -279,7 +279,7 @@ def describe_opinion_change(person, target, previous, opinion, reason):
 
 
 def validate_history_record(record, history, ids, player_id):
-    for witnesses in (record.pending_witness_ids, record.eating_witness_ids):
+    for witnesses in (record.pending_witness_ids,):
         if len(set(witnesses)) != len(witnesses) or not set(witnesses) <= ids - {player_id}:
             raise ValueError("Conversation witnesses require unique known knowledge owners.")
     if set(record.pending_witness_ids) & set(record.participant_ids):

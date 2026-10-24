@@ -2,12 +2,12 @@
 
 import re
 from copy import deepcopy
-from constants import (PLAYER_NAME_TAG, SNAKE_NAME, FOOD_REQUEST_TURN_COUNT, SNAKE_TURN_COUNT)
+from constants import PLAYER_NAME_TAG, SNAKE_NAME, FOOD_REQUEST_TURN_COUNT
 from dialogue_rules import (is_name_reference, name_pattern,
                            named_context, validate_base_prose, validate_opinion_reason,
                            validate_speaker_identity)
 from dialogue_text import split_sentences, contains_question
-from social import (NPC_ARRIVAL_MEMORY, build_account_view, resident_turn_choices, snake_speaker_accounts)
+from social import NPC_ARRIVAL_MEMORY, resident_turn_choices
 from actor_identity import actor_id, own_name, forms
 
 
@@ -115,7 +115,7 @@ def _base_preceding_turns(turns, names=()):
 
 def garden_environment():
     return {"place": "The known floating grassy garden island",
-            "objects": ["One very sturdy, unshakable, unbreakable living apple tree", "A wooden bridge to the apartment entrance", "One apartment building with residents' rooms"],
+            "objects": ["One sturdy, unbreakable living apple tree", "A wooden bridge to the apartment entrance", "One apartment building with residents' rooms"],
             "tree_present": True, "other_venues": []}
 
 
@@ -132,7 +132,7 @@ def local_environment(location="garden"):
 
 
 def _orientation_world_context(snapshot, *, correction=False):
-    """A present concern must not compete with private goals or a menu of bargains."""
+    """A present concern must not compete with private goals."""
     context = {"request_kind": "conversation", "purpose": "chat", "arrival_focus": True,
                "environment": local_environment(snapshot["initiator"].get("location", "garden")),
                "day": snapshot["initiator"].get("day", 1),
@@ -141,13 +141,13 @@ def _orientation_world_context(snapshot, *, correction=False):
         person, partner = snapshot[role], snapshot[other]
         private = person.get("private_context", {})
         context[role] = {
-            "npc_id": actor_id(person), "opinion_record_name": person["npc_name"],
+            "actor_id": actor_id(person), "opinion_record_name": person["name"],
             "location": person.get("location", "garden"),
             "character": {"Name": own_name(person), "personality": character_context(person["character"])["personality"]},
             "partner_name_tag": own_name(partner),
-            "opinion_of_partner": _base_opinions(private.get("opinions", {}), person["npc_name"]).get(partner["npc_name"]),
+            "opinion_of_partner": _base_opinions(private.get("opinions", {}), person["name"]).get(partner["name"]),
             "private_context": {"situation": {key: value for key, value in private.get("situation", {}).items()
-                                             if key not in ("known_danger", "apple_bargain")},
+                                             if key not in ("known_danger",)},
                                 "concern": deepcopy(private.get("concern"))},
             "area_knowledge": person.get("area_knowledge", {}),
         }
@@ -167,7 +167,7 @@ def world_context(snapshot, *, correction=False):
     """Supply relevant state without exposing other NPCs' private knowledge."""
     if snapshot.get("request_kind") == "conversation" and snapshot.get("arrival_focus", False):
         return _orientation_world_context(snapshot, correction=correction)
-    if snapshot.get("request_kind") in ("snake_turn", "conversation_closing", "resident_turn", "resident_assessment", "handoff_thanks"):
+    if snapshot.get("request_kind") in ("conversation_closing", "resident_turn", "resident_assessment", "handoff_thanks"):
         context = {k: v for k, v in snapshot.items() if not k.startswith("_")}
         context["environment"] = local_environment(snapshot.get("location", "garden"))
         if snapshot.get("location", "garden") == "garden":
@@ -188,8 +188,8 @@ def world_context(snapshot, *, correction=False):
     fact_ids = {option["id"]: option["fact_id"] for option in info.get("options", [])}
     people = [snapshot, *[snapshot[key] for key in ("initiator", "recipient", "resident", "snake") if key in snapshot],
               *snapshot.get("other_npcs", [])]
-    actor_names = {person.get("npc_id", person.get("actor_id")): person.get("npc_name", person.get("name"))
-                   for person in people if person.get("npc_id", person.get("actor_id"))}
+    actor_names = {person.get("actor_id"): person.get("name")
+                   for person in people if person.get("actor_id")}
 
     def person_context(person, include_reply=False):
         person = {key: value for key, value in person.items() if not key.startswith("_")}
@@ -197,14 +197,14 @@ def world_context(snapshot, *, correction=False):
             person["character"] = character_context(person["character"])
         if not include_reply:
             person.pop("last_reply", None)
-        elif person.get("last_reply") and not _ordinary_context_prose(person["last_reply"], (person.get("npc_name", ""), SNAKE_NAME)):
+        elif person.get("last_reply") and not _ordinary_context_prose(person["last_reply"], (person.get("name", ""), SNAKE_NAME)):
             person.pop("last_reply", None)
         if "memories" in person:
             person["memories"] = [memory for memory in person["memories"]
-                                  if _ordinary_context_prose(memory.get("summary", ""), (person.get("npc_name", ""), SNAKE_NAME))]
-        if conversation or snapshot.get("request_kind") in ("snake_encounter", "snake_decision"):
+                                  if _ordinary_context_prose(memory.get("summary", ""), (person.get("name", ""), SNAKE_NAME))]
+        if conversation :
             # Rendering and movement bookkeeping do not help write a conversation.
-            fields = {"npc_id", "npc_name", "character", "activity", "satisfaction", "inventory",
+            fields = {"actor_id", "name", "character", "activity", "satisfaction", "inventory",
                       "memories", "private_context", "arrival_day", "location", "area_knowledge",
                       "tree_fruit", "tree_available_fruit", "living_count"}
             person = {key: value for key, value in person.items() if key in fields}
@@ -236,21 +236,13 @@ def world_context(snapshot, *, correction=False):
                 person["private_context"] = private
         if "private_context" in person:
             private = person["private_context"] = person["private_context"].copy()
-            private["opinions"] = _base_opinions(private.get("opinions", {}), person["npc_name"])
-            if "snake_attitudes" in private:
-                private["snake_attitudes"] = {key: value for key, value in private["snake_attitudes"].items()
-                    if not key.endswith("_reason") or _ordinary_context_prose(value, (person["npc_name"], SNAKE_NAME))}
-            private["promises"] = [
-                {**promise, "giver_name": actor_names.get(promise["promisor_id"], promise["promisor_id"]),
-                 "receiver_name": actor_names.get(promise["recipient_id"], promise["recipient_id"])}
-                for promise in private.get("promises", [])]
+            private["opinions"] = _base_opinions(private.get("opinions", {}), person["name"])
         return person
 
-    snake_request = snapshot.get("request_kind") in ("snake_encounter", "snake_decision", "snake_player")
-    context = snapshot.copy() if conversation or snake_request else person_context(snapshot, include_reply=True)
+    context = snapshot.copy() if conversation else person_context(snapshot, include_reply=True)
     context = {key: value for key, value in context.items() if not key.startswith("_")}
     context.pop("_information_validation", None)
-    current = snapshot["initiator"] if conversation else snapshot["snake"] if snake_request else snapshot
+    current = snapshot["initiator"] if conversation else snapshot
     context["environment"] = local_environment(current.get("location", "garden"))
     if current.get("location", "garden") == "garden":
         context["environment"]["people"] = f"The listed residents, {SNAKE_NAME}, and the player"
@@ -264,13 +256,9 @@ def world_context(snapshot, *, correction=False):
         if focus:
             context["discussion_focus"] = {key: focus[key] for key in ("assertion", "kind")}
             context["discussion_focus"]["subject_name"] = actor_names.get(focus["subject_id"])
-            if "offering remained unpaid" in focus["assertion"].casefold() and focus["affirmed"]:
-                context["discussion_focus"].update(what_was_received="one apple upfront",
-                                                   what_was_refused=refused_offering(focus["assertion"]),
-                                                   remaining_obligation="unpaid")
         if context.get("shared_history"):
             history = context["shared_history"] = context["shared_history"].copy()
-            names = {snapshot[role]["npc_name"] for role in ("initiator", "recipient")}
+            names = {snapshot[role]["name"] for role in ("initiator", "recipient")}
             recent = []
             for entry in history.get("recent_dialogue", []):
                 try:
@@ -289,16 +277,6 @@ def world_context(snapshot, *, correction=False):
     for key in ("initiator", "recipient", "resident"):
         if key in context:
             context[key] = person_context(context[key])
-    if snake_request:
-        context["snake"] = {key: value for key, value in context["snake"].items()
-                            if not key.startswith("_") and key != "doctrine"}
-        context["transaction"] = snapshot["transaction"] if "transaction" in snapshot else {
-            "apple_giver": snapshot["snake"]["name"], "apple_receiver": snapshot["resident"]["npc_name"],
-            "can_give_apple": snapshot["can_give_apple"], "immediate_exchange": True}
-        if snapshot.get("request_kind") == "snake_decision":
-            # The guard assesses accepted speech, never the resident's private biography.
-            context.pop("resident", None)
-            context.pop("offering_accounts", None)
     for key in ("other_npcs",):
         if key in context:
             context[key] = [person_context(person) for person in context[key]]
@@ -321,7 +299,7 @@ def world_context(snapshot, *, correction=False):
 
 
 def _actor_name(actor):
-    return actor if isinstance(actor, str) else actor.get("name", actor.get("npc_name", ""))
+    return actor if isinstance(actor, str) else actor.get("name", "")
 
 
 def _validate_speaker(text, speaker, listener):
@@ -353,12 +331,12 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
     owned_context = world_context(snapshot)
     owned = owned_context[role]
     private = owned.get("private_context", {})
-    speaker = dict(npc_id=actor_id(person), name=own_name(person), kind="human resident", location=person.get("location", "garden"),
-                   opinion_record_name=person["npc_name"], personality=character_context(person["character"]).get("personality", ""),
+    speaker = dict(actor_id=actor_id(person), name=own_name(person), kind=person.get("kind", "human resident"), location=person.get("location", "garden"),
+                   opinion_record_name=person["name"], personality=character_context(person["character"]).get("personality", ""),
                    situation=private.get("situation", {}), concern=deepcopy(private.get("concern")),
-                   opinion_of_listener=private.get("opinions", {}).get(partner["npc_name"]))
+                   opinion_of_listener=private.get("opinions", {}).get(partner["name"]))
     speaker["area_knowledge"] = person.get("area_knowledge", {})
-    listener = dict(npc_id=actor_id(partner), name=own_name(partner), kind="human resident", location=partner.get("location", "garden"))
+    listener = dict(actor_id=actor_id(partner), name=own_name(partner), kind=partner.get("kind", "human resident"), location=partner.get("location", "garden"))
     if not assessment and speaker["opinion_of_listener"]:
         # Reasons are private assessments, often long or written in third person;
         # feeding their wording into speech teaches the model to recite them.
@@ -369,7 +347,8 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
     state = dict(request_kind="resident_assessment" if assessment else "handoff_thanks" if thanks else "resident_turn",
                  speaker_role=role, turn_index=index, purpose=snapshot.get("purpose", "chat"),
                  interaction_id=snapshot.get("interaction_id"), arrival_focus=orientation, speaker=speaker, listener=listener,
-                 opinion_target=partner["npc_name"], pending_reactions=pending, choices=choices,
+                 social_only=any(snapshot[r].get("kind") == "python" for r in ("initiator", "recipient")),
+                 opinion_target=partner["name"], pending_reactions=pending, choices=choices,
                  day=person.get("day", 1), time_of_day=person.get("time_of_day", "day"),
                  environment=local_environment(person.get("location", "garden")), location=person.get("location", "garden"),
                  preceding_turns=preceding, shared_history=deepcopy(owned_context.get("shared_history", {})),
@@ -390,7 +369,7 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
         speaker["firsthand_events_with_listener"] = [a for a in accounts if a.get("basis") == "firsthand"
             and a["kind"] not in ("former_life", "private_motive")
             and {a["subject_id"], a.get("object_id")} == {actor_id(person), actor_id(partner)}]
-        for field in ("goal", "promises", "snake_attitudes", "immediate_objective"):
+        for field in ("goal", "promises", "immediate_objective", "dangerous_partner"):
             if field in private:
                 if field == "goal" and private[field] and private[field].get("status", "active") != "active":
                     continue
@@ -409,6 +388,11 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
                          if index == 0 else
                          "Answer the partner's actual point about arrival or surroundings and respond to their practical suggestion. "
                          "Use visible name tags without requiring introductions.")
+    elif snapshot.get("purpose") == "confrontation":
+        state["task"] = ("Ask the listener to answer the specific sourced grievance in account_focus. "
+                         "Keep hearsay uncertain and allow explanation, apology and reconciliation. "
+                         "Threats are speech only; never narrate a completed attack or death. "
+                         if index == 0 else "Answer the actual grievance or reply, allowing peaceful resolution. Never narrate an uncommitted killing.")
     elif snapshot.get("purpose") == "food_request":
         state["food_request"] = deepcopy(snapshot["food_request"])
         state["task"] = ("Request one carried apple; no handoff has happened." if role == "initiator" else
@@ -427,6 +411,8 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
         elif index == 0 and snapshot.get("opening_kind") in ("recollection", "news"):
             state["task"] += (" Lead with your concern's selected account in your own words, retaining its actual owner, source and stance. "
                               "Discuss the account itself rather than promising a later story. Record a disclosure only if actually spoken.")
+    if assessment and role == "initiator":
+        state["escalation_choices"] = deepcopy(snapshot.get("escalation_choices"))
     if assessment:
         state["task"] = "Assess your partner from the fixed transcript and your own knowledge. Resolve only your pending heard disclosures. Add no speech or other effects."
     elif thanks:
@@ -436,7 +422,7 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
             state["task"] = "Thank the listener briefly for the one apple just successfully handed to you. This speech is reserved for the actual handoff."
             state["food_request"]["transferred"] = True
             speaker["inventory"]["fruit"] = speaker["inventory"].get("fruit", 0) + 1
-        for field in ("permitted_accounts", "account_focus", "goal", "promises", "snake_attitudes", "immediate_objective", "concern"):
+        for field in ("permitted_accounts", "account_focus", "goal", "promises", "immediate_objective", "concern"):
             speaker.pop(field, None)
     elif closing:
         state["question_to_answer"] = _last_question(draft["turns"][-1].text)
@@ -449,130 +435,4 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
     if assessment or thanks:
         for field in ("choices", "permitted_proposals", "pending_offers"):
             state.pop(field, None)
-    return state
-
-
-def _snake_turn_snapshot(snapshot, decision, turns, *, outcome_turn=2):
-    """One speaker's knowledge; reward selection happens only after the resident speaks."""
-    snake, resident = snapshot["snake"], snapshot["resident"]
-    index = len(turns)
-    role = "initiator" if index % 2 == 0 else "recipient"
-    guard = dict(actor_id=snake["actor_id"], name=snake["name"], kind="python")
-    human = dict(actor_id=resident["npc_id"], name=resident["npc_name"], kind="human resident")
-    speaker, listener = (guard.copy(), human) if role == "initiator" else (human.copy(), guard)
-    speaker["area_knowledge"] = (snake if role == "initiator" else resident).get("area_knowledge", {})
-    accounts = snake_speaker_accounts(snapshot, decision, turns, role, outcome_turn=outcome_turn)
-    def speech_account(account):
-        projected = build_account_view(account, None, snapshot.get("_name_actors", {}),
-                                       speaker["actor_id"], listener["actor_id"])
-        view = {key: projected[key] for key in account if key in (
-            "claim_id", "assertion", "kind", "subject_id", "subject_name", "object_id", "object_name",
-            "original_speaker_name", "immediate_source_name", "basis", "stance", "event_time")}
-        for field in ("subject", "object", "original_speaker", "immediate_source"):
-            if field + "_relation" in projected:
-                view[field + "_relation"] = projected[field + "_relation"]
-        if account["kind"] == "private_motive":
-            view.pop("object_name", None)
-        return view
-
-    pair = {guard["actor_id"], human["actor_id"]}
-    firsthand = [a for a in accounts if a.get("basis") == "firsthand"
-        and a.get("kind") not in ("former_life", "private_motive")
-        and {a.get("subject_id"), a.get("object_id")} == pair]
-    speaker["firsthand_events_with_listener"] = [speech_account(a) for a in firsthand]
-    voluntary_reply = role == "recipient" and (index == 1 or (index == 3
-        and (index < outcome_turn or decision.decision == "talk" and not decision.account_id)
-        and snapshot["can_give_apple"] and snapshot["purpose"] != "introduction"))
-    if voluntary_reply:
-        permitted = accounts if snapshot["purpose"] != "introduction" else []
-        speaker["permitted_accounts"] = [speech_account(a) for a in permitted]
-        # One private menu is enough. Unselected biographies are not a second speech task.
-        speaker["known_accounts"] = [speech_account(a) for a in firsthand]
-    else:
-        public = accounts if role == "initiator" else [a for a in accounts
-            if a["kind"] not in ("former_life", "private_motive") or a["claim_id"] == decision.account_id]
-        speaker["known_accounts"] = [speech_account(a) for a in public]
-    if role == "recipient" and index >= 1 and decision.snake_account_id:
-        heard = next((a for a in snake["known_accounts"] if a["claim_id"] == decision.snake_account_id), None)
-        if heard:
-            speaker["heard_accounts"] = [speech_account({**heard, "basis": "hearsay",
-                "immediate_source_id": guard["actor_id"], "immediate_source_name": guard["name"]})]
-    speaker["first_meeting"] = snapshot["first_meeting"]
-    if role == "recipient":
-        private = resident["private_context"]
-        speaker.update(situation=private.get("situation", {}), inventory=resident["inventory"],
-                       view_of_listener=private["snake_attitudes"])
-    from snake import SNAKE_BEHAVIOR, apple_reward_accepted
-    direction = SNAKE_BEHAVIOR if role == "initiator" else character_context(resident["character"])["personality"]
-    selected = decision.snake_account_id if role == "initiator" else (decision.account_id if index == outcome_turn - 1 else "")
-    account = next((a.copy() for a in accounts if a["claim_id"] == selected), None)
-    account = speech_account(account) if account else None
-    if index == 0:
-        task = "Ask what the visitor wishes to discuss. Do not invent their thoughts or a witnessed arrival."
-        if snapshot["can_give_apple"] and snapshot["purpose"] != "introduction":
-            task = ("Explicitly offer one apple in exchange for useful information now, then ask one concrete question "
-                    "about the visitor's own interests, experiences or news. Include the apple offer in your spoken words. "
-                    "An offer is not a handoff or a reward already earned. Do not invent a witnessed arrival.")
-        if decision.snake_account_id:
-            task = ("Discuss only account_to_share in this opening. Tell its concrete content first, preserving "
-                    "who made the claim and who heard it; then ask the visitor for their own view or relevant knowledge. "
-                    "Do not substitute a general greeting, stock report, or question about what to discuss. "
-                    "Your own past claims remain yours; a person who heard you is not their author. "
-                    "State your divine role confidently when relevant, without treating your own authority as hearsay.")
-            if snapshot["can_give_apple"] and snapshot["purpose"] != "introduction":
-                task += " Explicitly offer one apple for useful relevant information in their answer; include the offer in your spoken words."
-        if snapshot.get("known_warning"):
-            task += " Ask the visitor to answer this unresolved warning before judging: " + snapshot["warning_record"]
-    elif voluntary_reply:
-        task = ("Answer the guard's actual words using your own personality and knowledge. "
-                "Choose whether to share an account from speaker.permitted_accounts together with your speech. "
-                "You may instead decline, ask a question, or express uncertainty with empty account_id. "
-                "Do not invent a memory or promise later payment. The listener is the tree guard claiming divine authority; "
-                "do not adopt its role, its first-person statements or its memories as your own.")
-    elif index in (2, outcome_turn):
-        outcome = decision.decision if index >= outcome_turn else "talk"
-        task = {"talk": "Respond to the visitor's actual point and explain what information would interest you. Give no apple now.",
-                "give_apple": "Hand over one apple now for the information just heard; no further payment is owed.",
-                "warn": "State the sourced accusation and explicitly warn of being eaten; invite an answer.",
-                "eat": "Announce condemnation for the supplied accusation after the earlier warning and response."}[outcome]
-        if (index == 2 and outcome == "talk" and not decision.account_id and snapshot["can_give_apple"]
-                and snapshot["purpose"] != "introduction"):
-            task += (" Ask one specific follow-up inviting information about their own interests, experiences or relevant news. "
-                     "Make clear that useful information now can earn one apple. A refusal is safe; do not demand a secret or a future service.")
-        if decision.accusation:
-            task += " Accusation: " + decision.accusation
-    else:
-        task = "Answer the latest point naturally, preserving the recorded outcome; no additional transfer or punishment."
-    if role == "recipient" and index == outcome_turn + 1 and decision.decision == "give_apple":
-        task = ("The guard is offering you one apple for the information already supplied. "
-                "Choose whether to accept or decline, and say your choice clearly in your own words. "
-                "You have not received the apple yet. You may decline without penalty or further payment.")
-    if snapshot["purpose"] == "introduction":
-        task += " Discuss practical help using the known layout. Do not suggest exploration, initiate an apple bargain or demand private information."
-    preceding = [dict(name=snake["name"] if t.speaker == "initiator" else resident["npc_name"],
-                      role=t.speaker, text=t.text) for t in turns]
-    speaker["earlier_speech"] = [t["text"] for t in preceding if t["role"] == role]
-    transaction = dict(apple_giver=snake["name"], apple_receiver=resident["npc_name"],
-                       immediate_exchange=True, can_give_apple=snapshot["can_give_apple"],
-                       selected_outcome=decision.decision if index >= outcome_turn else "talk", outcome_turn=outcome_turn)
-    environment = world_context(snapshot)["environment"]
-    if index > outcome_turn and decision.decision == "give_apple":
-        accepted = apple_reward_accepted(turns, outcome_turn)
-        transaction.update(can_give_apple=False, apple_offered=True, apple_accepted=accepted)
-        if accepted:
-            transaction["apple_already_received"] = True
-            if role == "recipient":
-                speaker["inventory"] = {**resident["inventory"], "fruit": resident["inventory"].get("fruit", 0) + 1}
-            environment["tree"] = {**environment["tree"], "fruit": environment["tree"]["fruit"] - 1}
-        elif index > outcome_turn + 1:
-            task += " The resident did not accept the apple. No apple changed hands; respect their choice."
-    state = dict(request_kind="snake_turn", turn_index=index, speaker_role=role,
-        interaction_id=snapshot["interaction_id"], _name_actors=snapshot.get("_name_actors", {}),
-        _dialogue_validation=snapshot.get("_dialogue_validation", True), speaker=speaker, listener=listener,
-        day=snake["day"], time_of_day=snake["phase"], environment=environment,
-        transaction=transaction, task=task, accusation=snapshot["accusation"],
-        account_to_share=account if index == 0 or index == outcome_turn - 1 else None, preceding_turns=preceding[-1:],
-        _preceding_turns=preceding, _speaker_behavior=direction)
-    if index >= SNAKE_TURN_COUNT and turns:
-        state["question_to_answer"] = _last_question(turns[-1].text)
     return state

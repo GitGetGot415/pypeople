@@ -4,10 +4,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 from constants import (DIALOGUE_MAX_PARTS, CONVERSATION_MAX_TURNS, CONVERSATION_MAX_AGREEMENTS,
-                       CONVERSATION_MAX_DISCLOSURES, CONVERSATION_MAX_REPUTATION_EFFECTS,
-                       CONVERSATION_MAX_LEVERAGE, SNAKE_TURN_COUNT, FOOD_REQUEST_TURN_COUNT, REPUTATION_FACT_LIMIT)
+    CONVERSATION_MAX_DISCLOSURES, CONVERSATION_MAX_REPUTATION_EFFECTS, CONVERSATION_MAX_LEVERAGE,
+    FOOD_REQUEST_TURN_COUNT, REPUTATION_FACT_LIMIT)
 from dialogue_text import contains_question
-from purgatory import Attitudes
 
 
 class StrictResponse(BaseModel):
@@ -189,40 +188,21 @@ class ResidentTurnResponse(DialoguePartsResponse):
     leverage: list[LeverageChoice] = Field(default_factory=list, max_length=CONVERSATION_MAX_LEVERAGE)
 
 
+class EscalationChoice(StrictResponse):
+    action: Literal["leave", "attack"]
+    target_id: str
+    grievance_id: str
+    evidence: str = Field(max_length=400)
+
+
 class ResidentAssessment(StrictResponse):
+    escalation: EscalationChoice | None = None
     opinion: OpinionUpdate
     reactions: list[AccountReaction] = Field(default_factory=list, max_length=CONVERSATION_MAX_DISCLOSURES)
 
 
-class SnakeResidentResponse(DialoguePartsResponse):
-    account_id: str = ""
-    attitudes: Attitudes | None = None
-
-
-class SnakeDecision(StrictResponse):
-    interaction_id: str
-    decision: Literal["talk", "give_apple", "warn", "eat"]
-    account_id: str = ""
-    snake_account_id: str = ""
-    account_stance: Literal["uncertain", "believed", "disbelieved"] = "uncertain"
-    accusation: str = ""
-    evidence: str = ""
-    attitudes: Attitudes | None = None
-
-
-class SnakeResponse(SnakeDecision):
-    turns: list[ConversationTurn] = Field(min_length=SNAKE_TURN_COUNT, max_length=CONVERSATION_MAX_TURNS)
-    outcome_turn: Literal[2, 4] = 2
-
-
-class SnakePlayerResponse(SnakeDecision):
-    interaction_id: str = ""
-    decision: Literal["talk", "give_apple", "warn", "eat"] = "talk"
-    reply: str = Field(min_length=1)
-    disclosure_evidence: str = ""
-
-
 class ConversationResponse(StrictResponse):
+    escalation: EscalationChoice | None = None
     gift: ResidentGift | None = None
     turns: list[ConversationTurn] = Field(min_length=FOOD_REQUEST_TURN_COUNT, max_length=CONVERSATION_MAX_TURNS,
         description="Conversation in chronological order. Each turn is one uninterrupted stretch of speech before the partner replies.")

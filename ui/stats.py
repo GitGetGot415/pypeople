@@ -277,16 +277,11 @@ class StatsScreen:
         gap()
         if npc is app.simulation.snake:
             add(f"Activity: {npc.status}")
-            add(f"Eaten today: {npc.eaten_today}; recovery: {npc.recovery_remaining:.1f}s")
-            add(f"Tree stock: {app.tree.fruit}; unreserved: {app.simulation.available_fruit}")
-            add(f"{SNAKE_NAME} claims divine authority. Claims about destinations and other zones are unverified.", app.small_font, MUTED)
-            gap()
-            add("Warnings", app.heading_font)
-            for actor_id in npc.offenses:
-                add(f"{app.simulation.actor_by_id(actor_id).name}: warned of being eaten.")
+            add(f"Tree stock: {app.tree.fruit}")
+            add(f"{SNAKE_NAME} seeks influence through known accounts. Religious explanations remain its claims.", app.small_font, MUTED)
             gap()
             add("Known accounts (observer inspection)", app.heading_font)
-            for account in npc.snapshot()["known_accounts"]:
+            for account in npc.snapshot()["private_context"]["known_accounts"]:
                 add(account["assertion"], app.small_font)
                 add(f"Source: {account['immediate_source_name']}; original: {account['original_speaker_name']}", app.small_font, MUTED)
             return lines
@@ -305,9 +300,9 @@ class StatsScreen:
             add(f"Room {npc.room_number} / {npc.location} / fatigue {npc.social_fatigue:.0f}/100")
             add(f"Creations: {sum(work.creator_id == npc.id for work in app.simulation.creations)}")
             if npc.departure:
-                source = next(f for f in app.simulation.facts if f.source_id == npc.departure["event_id"] and f.kind == "eating")
+                source = next(f for f in app.simulation.facts if f.source_id == npc.departure["event_id"] and f.kind == "killing")
                 top = height()
-                add("View departure encounter", app.small_font, ACCENT)
+                add(f"Killed by {app.simulation.participant_by_id(npc.departure['attacker_id']).name}. View confrontation", app.small_font, ACCENT)
                 self.promise_links.append((top, height(), source.conversation_id))
             add(f"Why: {npc.decision_reason}")
             add(f"Control: {npc.owner.replace('_', ' ')}", app.small_font, MUTED)
@@ -333,11 +328,6 @@ class StatsScreen:
             self.private_toggle_top = height()
             add(f"{'Hide' if self.show_private else 'Show'} private details (observer only)", app.small_font, ACCENT)
             if self.show_private:
-                add(f"Attitudes toward {SNAKE_NAME}", app.heading_font)
-                for field in ("belief", "trust", "authority"):
-                    add(f"{field.title()}: {npc.attitudes[field]}")
-                    add(npc.attitudes[field + "_reason"], app.small_font, MUTED)
-                gap()
                 if goal:
                     add(f"Motive: {goal.motive}")
                     add(f"Approach: {goal.approach}")

@@ -57,8 +57,10 @@ class ActivitySnapshot:
             from locations import validate_destination
             validate_destination(self.destination, location=getattr(self, "location", None))
         player_behaviors = (Behavior.GO_TO_TREE,)
-        if self.behavior != Behavior.EAT and (self.owner == "player_task") != (self.behavior in player_behaviors):
+        if self.behavior != Behavior.EAT and self.owner == "player_task" and self.behavior not in player_behaviors:
             raise ValueError("Invalid player task.")
+        if self.behavior == Behavior.HARVEST and self.destination is not None:
+            raise ValueError("Harvesting is a local action; use GO_TO_TREE for travel.")
         if self.behavior == Behavior.EAT and (self.destination is not None or self.activity_elapsed >= EAT_SECONDS):
             raise ValueError("Invalid eating progress.")
         return self

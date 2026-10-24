@@ -47,13 +47,13 @@ class PlayerInteraction:
         """
         values = asdict(self)
         names = ("id", "kind", "npc_id", "location", "stage", "incoming", "mover_id", "point", "elapsed",
-                 "saved_state", "record_id", "gift", "knock_room") if self.kind == "resident" else (
+                 "saved_state", "record_id", "gift", "knock_room") if self.kind in ("resident", "snake") else (
                  ("id", "kind", "stage", "target", "location", "npc_id", "record_id") if self.kind == "door" else
                  ("id", "kind", "stage", "npc_id", "record_id", "location"))
         saved = {name: values[name] for name in names}
         if self.pending_request is not None:
             saved["pending_request"] = values["pending_request"]
-        if self.kind == "resident" and self.incoming and self.stage == "approach":
+        if self.kind in ("resident", "snake") and self.incoming and self.stage == "approach":
             # Prepared but unspoken replies are transient. Reprepare after loading.
             saved["stage"], saved["elapsed"] = "thinking", 0.0
         return saved
@@ -109,7 +109,7 @@ def owns_conversation(world, npc, *, stages=("conversation",)):
 
 def can_claim(world):
     return active_player(world) and not (world.player_interaction or world.player.journey
-        or world.tree_has_actor(world.player.id) or world.player_menu_blocked
+        or world.player_menu_blocked
         or world.visit and world.visit.stage == "travel")
 
 
@@ -141,11 +141,11 @@ def start_approach(world, npc, *, incoming=False, gift=None, knock_room=None):
     if arrival_greeting_reserved(npc, world):
         raise ValueError("Judy is welcoming a new arrival. Let them finish their first conversation.")
     available_to_player = available(npc) or (not incoming and npc.journey is not None and npc.departure is None)
-    if not can_claim(world) or world.npc_by_id(npc.id) is not npc or not available_to_player:
+    if not can_claim(world) or world.actor_by_id(npc.id) is not npc or not available_to_player:
         raise ValueError("The player or resident is unavailable.")
     interrupt = not incoming and can_interrupt_approach(npc)
     if (npc.busy and not interrupt or npc.interaction_blocked
-            or incoming and (world.tree_has_actor(npc.id) or npc.journey)):
+            or incoming and (npc.journey)):
         raise ValueError("The resident is occupied.")
     if not colocated(world.player, npc) and knock_room is None:
         raise ValueError("You must be in the same location.")
@@ -154,10 +154,10 @@ def start_approach(world, npc, *, incoming=False, gift=None, knock_room=None):
     if point is None:
         raise ValueError("There is no reachable place to meet.")
     reason = "The player intercepted the resident to talk."
-    if interrupt or not incoming and world.tree_has_actor(npc.id):
+    if interrupt:
         world.interrupt_resident(npc, reason, mode="approach")
     state = npc.suspend_activity("Meeting the player")
-    world.player_interaction = PlayerInteraction(id=uuid4().hex, kind="resident", npc_id=npc.id,
+    world.player_interaction = PlayerInteraction(id=uuid4().hex, kind="snake" if npc is world.snake else "resident", npc_id=npc.id,
         location=world.player.location, stage="thinking" if incoming else "approach", incoming=incoming, mover_id=mover.id,
         point=tuple(point), elapsed=0.0, saved_state=state, record_id=None,
         gift=gift, knock_room=knock_room)
@@ -173,7 +173,7 @@ def end_interaction(world, reason="Conversation ended."):
     if not interaction:
         return
     world.player.journey = None
-    npc = world.npc_by_id(interaction.npc_id)
+    npc = world.actor_by_id(interaction.npc_id)
     record = next((r for r in world.history if r.id == interaction.record_id), None)
     if record:
         record.pending_witness_ids.clear()
@@ -199,9 +199,9 @@ def update_interaction(world, dt):
     from interactions import face_each_other, move_toward
     from locations import colocated
     interaction = world.player_interaction
-    if not interaction or interaction.kind != "resident":
+    if not interaction or interaction.kind not in ("resident", "snake"):
         return
-    npc = world.npc_by_id(interaction.npc_id)
+    npc = world.actor_by_id(interaction.npc_id)
     if (not active_player(world) or npc is None or npc.departure
             or not interaction.knock_room and not colocated(world.player, npc)):
         end_interaction(world, "The participants are no longer available together.")
@@ -521,7 +521,7 @@ def validate_saved_calls(residents, npcs, player, facts, history, creations, pro
         raise ValueError("Too many simultaneous player calls.")
 
 
-def validate_saved_interaction(interaction, player, by_id, records, player_encounter, layout):
+def validate_saved_interaction(interaction, player, by_id, records, layout):
     import json
     from locations import validate_feet, floor_for_room, targets
     from activity import ActivitySnapshot
@@ -531,7 +531,7 @@ def validate_saved_interaction(interaction, player, by_id, records, player_encou
             raise ValueError("Invalid player interaction owner.")
         if interaction.location != player.location:
             raise ValueError("Player ownership must follow its current location.")
-        if interaction.kind == "resident":
+        if interaction.kind in ("resident", "snake"):
             if player.journey:
                 raise ValueError("A player cannot travel during a resident interaction.")
             npc = by_id.get(interaction.npc_id)
@@ -553,8 +553,6 @@ def validate_saved_interaction(interaction, player, by_id, records, player_encou
                     or set(records[interaction.record_id].participant_ids) != {player.id, npc.id}):
                 raise ValueError("Player conversation ownership needs its actual source record.")
             exclusive.add(npc.id)
-        elif interaction.kind == "snake" and not player_encounter:
-            raise ValueError("Player snake ownership needs a service encounter.")
         elif interaction.kind == "door":
             normalize = lambda value: json.loads(json.dumps(value))
             if normalize(interaction.target) not in [normalize(t) for t in targets(layout, player.location)]:
@@ -562,11 +560,10 @@ def validate_saved_interaction(interaction, player, by_id, records, player_encou
     return exclusive
 
 
-def validate_saved_player_mode(mode, player, interaction, visit, player_encounter, npcs, tree_queue, tree_current):
+def validate_saved_player_mode(mode, player, interaction, visit, npcs):
     live_player = mode == "player" and player.alive
     if not player.alive and mode != "spectator":
         raise ValueError("A dead player must remain in spectator mode.")
-    if not live_player and (interaction or player.journey or visit or player_encounter
-            or any(n.player_call for n in npcs) or any(e.actor_id == player.id for e in tree_queue)
-            or tree_current and tree_current.actor_id == player.id):
+    if not live_player and (interaction or player.journey or visit
+            or any(n.player_call for n in npcs)):
         raise ValueError("Spectator mode cannot own physical player interactions.")

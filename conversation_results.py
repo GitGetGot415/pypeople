@@ -12,14 +12,11 @@ from player_records import PlayerCall, PlayerReplyCall
 from dataclasses import dataclass
 from apartments import offer_invitation, pending_invitation
 from conversation_history import describe_opinion_change
-from dialogue import ConversationTurn, ConversationPart
-from interactions import record_failed_dialogue
 from actor_identity import (actor_catalog, name_forms)
 from social import orientation_speech
 from activity import Behavior
 from player import owns_conversation
 from simulation import PendingAction
-from snake import PlayerSnakeEncounter
 
 
 @dataclass
@@ -44,39 +41,14 @@ def accept_generated_dialogue(conversation, result, error, failed_turns, rewritt
     return None
 
 
-def accept_snake_reply(world, request, result, error, failed_turns, rewritten):
-    npc, record = request.actor, request.record
-    encounter = world.snake.encounter
-    npc.player_reply.complete()
-    if not owns_conversation(world, npc) or not isinstance(encounter, PlayerSnakeEncounter):
-        error = "This player tree exchange ended before its result arrived."
-    if not error:
-        try:
-            encounter.accept_player_response(result, request.snapshot, request.message,
-                                             rewritten=rewritten[0] if rewritten else ())
-        except ValueError as exc:
-            error = str(exc)
-    npc.reply = f"Request failed: {error}" if error else result.reply
-    npc.player_reply.closing = bool(not error and encounter.outcome == "eat")
-    npc.rewritten_reply = rewritten[0][0] if not error and rewritten else ""
-    if error:
-        if isinstance(encounter, PlayerSnakeEncounter) and encounter.record is record:
-            drafts = failed_turns
-            if not drafts and result is not None:
-                drafts = [ConversationTurn(speaker="recipient", parts=[ConversationPart(text=result.reply)])]
-            record_failed_dialogue(encounter, drafts)
-        record.status, record.error = CONVERSATION_FAILED, error
-    return AcceptedReply(error)
-
-
 def remember_response_opinions(world, npc, response, snapshot):
     updates = {}
     for entry in response.opinion_updates:
         actor_id = response._opinion_targets.get(entry.person)
         permitted = [actor for actor in snapshot.get("other_npcs", []) if actor.get("kind") != "player"
-                     and actor["npc_name"].casefold() == entry.person.strip().casefold()]
-        if (len(permitted) != 1 or permitted[0].get("npc_id") != actor_id
-                or world.npc_by_id(actor_id) is None):
+                     and actor["name"].casefold() == entry.person.strip().casefold()]
+        if (len(permitted) != 1 or permitted[0].get("actor_id") != actor_id
+                or world.actor_by_id(actor_id) is None):
             return "I couldn't identify that person to remember my opinion. Please try again."
         updates[actor_id] = {"opinion": entry.opinion, "reason": entry.reason}
     if updates:
@@ -115,6 +87,10 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
                 validate_transfer(world, npc, world.player, offer.item, offer.quantity)
         except ValueError as exc:
             error = str(exc)
+    if not error and npc is world.snake:
+        if (result.action != "SAY" or result.gift_offer or result.gift_acceptance or result.apple_promise
+                or result.invitation or result.invitation_acceptance or result.invitation_resolution):
+            error = "The snake can speak but cannot carry out resident tasks, gifts or invitations."
     if not error and dialogue_validation:
         try:
             from constants import PLAYER_NAME_TAG
@@ -186,10 +162,9 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
         if visible:
             pending_offer = ({**result.gift_offer.model_dump(), "npc_id": npc.id,
                 "revision": npc.command_revision, "record_id": record.id} if result.gift_offer else None)
-        elif snapshot.get("request_kind") != "player_acknowledgment":
+        elif npc is not world.snake and snapshot.get("request_kind") != "player_acknowledgment":
             npc.player_call = PlayerReplyCall(kind="reply", reference=record.id, closing=closes_dialogue,
                 gift_offer=result.gift_offer)
-            npc.release_claims(world)
             npc.resume_pending = True
     npc.reply = f"Request failed: {error}" if error else result.reply
     npc.rewritten_reply = rewritten[0][0] if not error and rewritten else ""

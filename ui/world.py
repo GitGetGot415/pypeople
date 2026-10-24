@@ -179,7 +179,8 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     if world and world.mode == "player" and world.player.alive and world.player.location == location:
         npcs.append(world.player)
     _draw_objects(surface, npcs, tree if location == "garden" else None, font, character_renderer,
-                  camera_offset, phase, zoom, snake if location == "garden" else None)
+                  camera_offset, phase, zoom, snake if location == "garden" else None,
+                  bodies=[body for body in world.bodies if body["location"] == location] if world else ())
     surface.set_clip(previous_clip)
 
 
@@ -208,7 +209,7 @@ def _draw_scene(surface, tree, phase):
     _draw_shadow(surface, pygame.Rect(tree_x - 43, round(tree.y) + 50 - GARDEN_FLOOR_OFFSET[1], 86, 20))
 
 
-def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, phase, zoom, snake=None):
+def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, phase, zoom, snake=None, *, bodies=()):
     def screen_point(point):
         return (round(point[0] * zoom + camera_offset[0]),
                 round(point[1] * zoom + camera_offset[1]))
@@ -226,10 +227,21 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
     objects = ([tree] if tree is not None else []) + list(npcs)
     if snake is not None:
         objects.append(snake)
-    objects.sort(key=lambda obj: tree.y + TREE_BASE_OFFSET if obj is tree else obj.y)
+    objects.extend(bodies)
+    objects.sort(key=lambda obj: obj["y"] if isinstance(obj, dict) else tree.y + TREE_BASE_OFFSET if obj is tree else obj.y)
     for obj in objects:
+        if isinstance(obj, dict):
+            from constants import BODY_SECONDS, BODY_FADE_SECONDS, BODY_ROTATION
+            original = character_renderer.render(obj["appearance"], obj["facing"])
+            image = resized(pygame.transform.rotate(original, BODY_ROTATION), CHARACTER_SCALE * zoom).copy()
+            remaining = BODY_SECONDS - obj["elapsed"]
+            image.set_alpha(round(255 * min(1.0, remaining / BODY_FADE_SECONDS)))
+            surface.blit(image, image.get_rect(midbottom=screen_point((obj["x"], obj["y"]))))
+            continue
         if obj is tree:
-            tree_x = tree.x
+            import math
+            from constants import TREE_SHAKE_OFFSET, TREE_SHAKE_FREQUENCY
+            tree_x = tree.x + (math.sin(tree.shake_remaining * TREE_SHAKE_FREQUENCY) * TREE_SHAKE_OFFSET if tree.shake_remaining else 0)
             base_y = tree.y + TREE_BASE_OFFSET
             image = resized(tree_image, TREE_SCALE * zoom)
             rect = image.get_rect(midbottom=screen_point((tree_x, base_y)))
@@ -250,9 +262,6 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
             tags.append((snake.name, image, rect))
             label = label_font.render(snake.status, True, label_color)
             surface.blit(label, label.get_rect(midtop=screen_point((snake.x, snake.y + 30))))
-            if snake.activity == "eating":
-                bubble = resized(interaction_bubble("Eating"), zoom)
-                surface.blit(bubble, bubble.get_rect(bottomleft=screen_point((snake.x + 26, snake.y - 30))))
             continue
         npc = obj
         position = screen_point((npc.x, npc.y))

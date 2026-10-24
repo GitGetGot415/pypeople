@@ -370,7 +370,7 @@ def validate_player_transfer(result, snapshot):
         if promise.deadline not in [p["deadline"] for p in snapshot.get("apple_promise_choices", [])]:
             raise ValueError("Use an available apple deadline.")
         now = snapshot.get("phase_index", 0)
-        if promise.giver_id == snapshot.get("npc_id"):
+        if promise.giver_id == snapshot.get("actor_id"):
             validate_apple_offer(result.reply, promise.deadline, current_phase=now)
         elif promise.giver_id == snapshot.get("player_id"):
             validate_apple_promise(snapshot.get("_player_message", ""), result.reply, promise.deadline, current_phase=now)
@@ -485,5 +485,5 @@ def validate_saved_handoffs(handoffs, history, live, live_ids, player, ownership
                 or any(not text.strip() for text in handoff.rewritten_thanks)):
             raise ValueError("Rewritten thanks must match the original parts.")
         reserved.update(residents_in_pair)
-        for actor_id, activity in handoff.saved_states.items():
-            validate_activity_target(activity, live[actor_id], tree_id, live_ids)
+        for participant_id, activity in handoff.saved_states.items():
+            validate_activity_target(activity, live[participant_id], tree_id, live_ids)

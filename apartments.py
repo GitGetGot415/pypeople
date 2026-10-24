@@ -119,7 +119,6 @@ def enter(npc, world):
     from constants import ROOM_ARRIVAL
     npc.location = room_location(npc.room_number)
     npc.x, npc.y = ROOM_ARRIVAL
-    npc.release_claims(world)
     npc.destination = npc.target_id = None
     npc.activity_elapsed = 0.0
     npc.command_revision += 1
@@ -149,7 +148,7 @@ def home_priority(npc, world, dt):
     from autonomy import arrival_greeting_reserved
     if arrival_greeting_reserved(npc, world):
         return
-    if (owns_resident(world, npc) or world.tree_has_actor(npc.id) or npc.journey
+    if (owns_resident(world, npc) or npc.journey
             or world.visit and world.visit.host_id == npc.id or npc.interaction):
         return
     if npc.behavior in INDOOR_BEHAVIORS:
@@ -352,7 +351,6 @@ def update_visit(world, dt):
         visit.observation_id = fact.id
         if visit.destination == "tree":
             finish_visit(world)
-            world.join_tree(world.player, "introduction")
     elif world.player.location != visit.location or host.location != visit.location:
         finish_visit(world)
     else:

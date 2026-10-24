@@ -1,18 +1,15 @@
 """A small world with player-controlled day phases."""
 
-from activity import ActivitySnapshot
 
 import math
 from dataclasses import dataclass
 from typing import Annotated, Literal
 from pydantic import Field
 from uuid import uuid4
-from constants import (COMPANY_SOCIAL_RECOVERY, CROWD_LIMIT, DECISION_SECONDS, SNAKE_INTERACTION_DISTANCE,
-                       MAX_SIMULATION_STEP_SECONDS, PROTECTED_POPULATION, RECOVERY_SECONDS,
-                       SATISFACTION_PHASE_LOSS, SOCIAL_RADIUS, SNAKE_NAME, STARTING_DAY, STARTING_PAUSED,
-                       STARTING_PHASE, COMPANY_FATIGUE_PER_SECOND, CONVERSATION_CANCELLED,
-                       CONVERSATION_EATEN_PLAYER, CONVERSATION_EATEN_RESIDENT,
-                       CONVERSATION_PENDING_REPLY_STATUSES)
+from constants import (COMPANY_SOCIAL_RECOVERY, DECISION_SECONDS, MAX_SIMULATION_STEP_SECONDS,
+    PROTECTED_POPULATION, SATISFACTION_PHASE_LOSS, SOCIAL_RADIUS, STARTING_DAY, STARTING_PAUSED,
+    STARTING_PHASE, COMPANY_FATIGUE_PER_SECOND, CONVERSATION_CANCELLED,
+    CONVERSATION_PENDING_REPLY_STATUSES)
 
 
 @dataclass
@@ -25,15 +22,6 @@ class PendingAction:
     record: str | None = None
     item: str = ""
     quantity: Annotated[int, Field(ge=0)] = 0
-
-
-@dataclass
-class TreeCustomer:
-    actor_id: str
-    purpose: Literal["bargain", "judgment", "introduction"]
-    reason: str
-    saved_state: ActivitySnapshot | None
-    elapsed: float = 0.0
 
 
 class Simulation:
@@ -65,9 +53,7 @@ class Simulation:
         self.player_invitations = []
         self.player_claims = []
         self.visit = None
-        self.tree_queue = []
-        self.tree_current = None
-        self._tree_exit_targets = {}
+        self.bodies = []
         self.player_menu_blocked = False
         self.player_call_check = 0.0
         self.player_acknowledgments = []
@@ -149,6 +135,12 @@ class Simulation:
         return phase_index(self.day, self.phase)
 
     @property
+    def last_killing_phase(self):
+        from social import phase_index
+        return max((phase_index(n.departure["day"], n.departure["phase"])
+                    for n in self.archived), default=None)
+
+    @property
     def phase_label(self):
         return f"Day {self.day} / {self.phase.title()}"
 
@@ -175,7 +167,7 @@ class Simulation:
     def finish_phase_change(self):
         """Commit one clock request only after existing speech and handoffs finish."""
         from social import advance_social_phase
-        if (not self.phase_pending or self.paused or self.player_attention_pending or self.snake.encounter is not None
+        if (not self.phase_pending or self.paused or self.player_attention_pending or self.snake.conversation is not None
                 or self.snake.interaction_blocked or self.pending_actions
                 or any(npc.interaction is not None or npc.interaction_blocked
                        or npc.selected and npc.player_reply.closing for npc in self.npcs)):
@@ -186,7 +178,6 @@ class Simulation:
         else:
             self.phase = "day"
             self.day += 1
-            self.snake.eaten_today = 0
             from locations import npc_capacity
             if (len(self.npcs) < npc_capacity(self) and self.day not in self.pending_arrival_days
                     and self.day not in self.processed_arrival_days):
@@ -229,7 +220,7 @@ class Simulation:
             raise ValueError("The new arrival must speak with Judy first.")
         if self.phase_pending and origin == "autonomous":
             raise ValueError("Waiting for the pending time change before starting another automatic conversation.")
-        if not colocated(initiator, recipient) or any(self.npc_by_id(p.id) is not p or not available_outdoors(p) for p in (initiator, recipient)):
+        if not colocated(initiator, recipient) or any(self.actor_by_id(p.id) is not p or not available_outdoors(p) for p in (initiator, recipient)):
             raise ValueError("Only living residents can begin this conversation.")
         interaction = Conversation(initiator, recipient, topic, self.tree, spacing, origin=origin, purpose=purpose,
                                    opening_kind=opening_kind, focus_claim_id=focus_claim_id, goal_id=goal_id)
@@ -329,7 +320,7 @@ class Simulation:
         from autonomy import arrival_greeting_reserved
         return (self.npc_by_id(npc.id) is npc and available_outdoors(npc)
                 and (allow_arrival or not arrival_greeting_reserved(npc, self))
-                and not self.reservations.held(npc.id, "player", "tree", "visit", "conversation", "handoff", "snake")
+                and not self.reservations.held(npc.id, "player", "visit", "conversation", "handoff")
                 and not npc.selected and not npc.interaction_blocked
                 and (allow_player_call or not npc.player_call)
                 and npc.owner == "autonomous" and not npc.resume_pending
@@ -337,7 +328,7 @@ class Simulation:
                 and npc.behavior in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY))
 
     def step(self, dt, *, viewed_conversation=None):
-        from autonomy import greet_arrivals, lone_introduction, reconsider, social_pair
+        from autonomy import greet_arrivals, reconsider, social_pair
         from social import refresh_concern
         from activity import Behavior
         from interactions import observe_active_conversations
@@ -350,12 +341,12 @@ class Simulation:
         if self.player.journey:
             update_journey(self.player, dt)
         update_visit(self, dt)
-        clearing_tree = self.update_tree_queue(dt)
+        from constants import BODY_SECONDS
+        self.tree.shake_remaining = max(0.0, self.tree.shake_remaining - dt)
+        for body in self.bodies:
+            body["elapsed"] += dt
+        self.bodies[:] = [body for body in self.bodies if body["elapsed"] < BODY_SECONDS]
         self.deliver_arrivals()
-        encounter = self.snake.encounter
-        if encounter is not None:
-            self.snake.update(dt)
-            encounter.update(dt, reading=encounter is viewed_conversation)
         for npc in self.npcs:
             npc.update_cooldowns(dt)
             if npc.pending_social_opinions and npc.decision_remaining == 0:
@@ -373,15 +364,10 @@ class Simulation:
         greet_arrivals(self)
         from apartments import home_priority
         for npc in self.npcs:
-            if npc.id not in clearing_tree:
-                home_priority(npc, self, dt)
-        if encounter is None:
-            # Free residents establish bedtime intent before a new snake follow-up.
-            self.snake.update(dt)
+            home_priority(npc, self, dt)
+        self.snake.update(dt)
         # Check necessary work for every actor before an idle initiator can reserve them.
         for npc in self.npcs:
-            if npc.id in clearing_tree:
-                continue
             if npc.resume_pending and npc.interaction is None and not npc.player_call:
                 npc.resume_activity(self)
             reconsider(npc, self, pressing_only=True)
@@ -402,10 +388,6 @@ class Simulation:
             due.difference_update((initiator.id, recipient.id))
             self.social_rotation = (self.npcs.index(initiator) + 1) % len(self.npcs)
         for npc in self.npcs:
-            if npc.id in clearing_tree:
-                continue
-            if npc.id in due:
-                lone_introduction(npc, self)
             reconsider(npc, self)
             npc.update(dt, self.tree)
         observe_active_conversations(self)
@@ -432,7 +414,7 @@ class Simulation:
 
     @property
     def population(self):
-        """Living human residents, including the active player and excluding the guard."""
+        """Living human residents, including the active player and excluding the snake."""
         from player import active_player
         return len(self.npcs) + int(active_player(self))
 
@@ -455,145 +437,108 @@ class Simulation:
 
     @property
     def available_fruit(self):
-        encounter = self.snake.encounter
-        return max(0, self.tree.fruit - int(bool(encounter and encounter.active and encounter.reserved)))
+        return self.tree.fruit
 
-    def tree_has_actor(self, actor_id):
-        return self.reservations.held(actor_id, "tree")
+    def harvest(self, actor, quantity=1):
+        """The only stock-to-inventory commit, shared by residents and player."""
+        from constants import HARVEST_DISTANCE, TREE_SHAKE_SECONDS
+        from player import active_player, can_claim
+        from locations import available
+        human = self.npc_by_id(actor.id) is actor and not actor.departure
+        player = actor is self.player and active_player(self)
+        if (not (human or player) or actor.location != "garden" or actor.journey
+                or math.dist((actor.x, actor.y), self.tree.interaction_point) > HARVEST_DISTANCE
+                or human and (not available(actor) or actor.busy or actor.interaction_blocked or actor.player_call
+                              or actor.resume_pending or actor.creative_job
+                              or self.reservations.held(actor.id, "player", "visit"))
+                or player and not can_claim(self)):
+            raise ValueError("Harvesting requires a living, available collector at the tree.")
+        if type(quantity) is not int or not 1 <= quantity <= self.tree.fruit:
+            raise ValueError(f"Choose a positive whole amount up to the {self.tree.fruit} apples remaining.")
+        self.tree.fruit -= quantity
+        actor.inventory["fruit"] = actor.inventory.get("fruit", 0) + quantity
+        self.tree.shake_remaining = TREE_SHAKE_SECONDS
+        from social import add_fact, harvest_summary
+        from locations import observers
+        text = harvest_summary(actor.name, quantity)
+        event = self.publish("harvest", (actor,), text)
+        add_fact(self, "harvest", actor, None, event.id, None, text, observers(self, actor),
+                 quantity=quantity, location="garden")
+        return event
 
-    def can_leave_tree(self, actor_id):
-        return self.tree_has_actor(actor_id) and not (self.snake.encounter and self.snake.encounter.recipient.id == actor_id)
+    def escalation_choices(self, meeting):
+        from constants import CONFRONTATION_OPINION, KILLING_COOLDOWN_PHASES, GRIEVANCE_FACT_KINDS
+        from social import claim_by_id, fact_by_id
+        first, target = meeting.initiator, meeting.recipient
+        if (meeting.purpose != "confrontation" or self.npc_by_id(first.id) is not first
+                or self.npc_by_id(target.id) is not target
+                or not meeting.grievance_id):
+            return None
+        actions = ["leave"]
+        belief = next((b for b in first.beliefs if b.claim_id == meeting.grievance_id), None)
+        claim = claim_by_id(self, meeting.grievance_id)
+        fact = fact_by_id(self, claim.fact_id)
+        # Frozen information proves the grievance was retained before this meeting.
+        retained = (meeting.information_context is None or any(
+            b.claim_id == meeting.grievance_id and b.stance == "believed"
+            for b in meeting.information_context.beliefs["initiator"]))
+        if (belief and belief.stance == "believed" and claim.affirmed and fact.subject_id == target.id
+                and fact.kind in GRIEVANCE_FACT_KINDS
+                and retained and first.opinion_score(target.id) <= CONFRONTATION_OPINION
+                and self.population > PROTECTED_POPULATION and self.last_killing_phase != self.phase_index
+                and (first.last_killing_phase is None or self.phase_index - first.last_killing_phase >= KILLING_COOLDOWN_PHASES)
+                and (fact.kind != "killing" or belief.phase < self.phase_index)):
+            actions.append("attack")
+        return {"target_id": target.id, "grievance_id": meeting.grievance_id, "actions": actions}
 
-    def tree_can_admit(self, actor):
-        from constants import TREE_NPC_ADMISSION_LIMIT
-        from player import active_player, owns_resident
-        from autonomy import arrival_greeting_reserved
-        if not self.is_outdoors(actor) or self.tree_has_actor(actor.id):
+    def commit_killing(self, meeting):
+        from constants import (KILLING_DISTANCE, KILLING_WITNESS_PENALTY, KILLING_RELIEF_OPINION, KILLING_RELIEF_CHANCE, KILLING_WITNESS_MAX_PENALTY, KILLING_WITNESS_SOCIAL_RANGE, KILLING_FRIENDSHIP_DIVISOR, KILLING_RELIEF_DELTA)
+        from locations import observers, available
+        from social import add_fact, claim_by_id
+        decision = meeting.escalation
+        attacker, victim = meeting.initiator, meeting.recipient
+        choices = self.escalation_choices(meeting)
+        valid = (meeting.active and meeting.arrived and meeting.dialogue.dialogue_state == "ready"
+                 and meeting.social_effects_applied and decision is not None and decision.action == "attack"
+                 and choices and "attack" in choices["actions"]
+                 and decision.target_id == victim.id and decision.grievance_id == meeting.grievance_id
+                 and bool(decision.evidence.strip()) and any(t.speaker == "recipient" and decision.evidence in t.text for t in meeting.turns)
+                 and attacker.location == victim.location
+                 and math.dist((attacker.x, attacker.y), (victim.x, victim.y)) <= KILLING_DISTANCE
+                 and all(self.reservations.get(n.id, "conversation") is meeting
+                         and meeting.accepted_revisions.get(n.id) == n.command_revision
+                         and not n.departure and available(n) and not n.interaction_blocked
+                         and not n.player_call for n in (attacker, victim)))
+        meeting.escalation = None
+        if not valid:
+            meeting.record.outcomes.append("The accepted attack was cancelled because eligibility or ownership changed.")
             return False
-        if actor is self.player:
-            return active_player(self) and not (self.player_interaction or actor.journey)
-        return (len(self.tree_queue) + bool(self.tree_current) < TREE_NPC_ADMISSION_LIMIT
-                and not arrival_greeting_reserved(actor, self)
-                and not owns_resident(self, actor) and not actor.busy and not actor.interaction_blocked
-                and not actor.journey and not actor.player_call)
-
-    def join_tree(self, actor, purpose="bargain", reason=""):
-        if not self.tree_can_admit(actor):
-            return False
-        if purpose == "bargain" and self.available_fruit < 1:
-            return False
-        from activity import Behavior
-        saved = None if actor is self.player else actor.suspend_activity("Waiting in the tree line")
-        if saved:
-            saved.behavior, saved.target_id, saved.destination, saved.owner = Behavior.WAIT, None, None, "autonomous"
-        entry = TreeCustomer(actor_id=actor.id, purpose=purpose, reason=reason, saved_state=saved, elapsed=0.0)
-        self.tree_queue.append(entry)
-        self.reservations.acquire("tree", entry, actor)
+        witnesses = observers(self, attacker, victim)
+        text = f"{attacker.name} killed {victim.name}."
+        event = self.publish("killing", (attacker, victim), text, meeting.record)
+        fact = add_fact(self, "killing", attacker, victim, event.id, meeting.record, text, witnesses,
+                        location=victim.location)
+        meeting.outcome_event_id = event.id
+        meeting.record.outcomes.append(text)
+        from conversation_history import remember
+        for witness in witnesses:
+            remember(witness, victim if witness is attacker else attacker, event, "killing", text, 0)
+        for witness in witnesses:
+            if witness in (attacker, victim):
+                continue
+            belief = next(b for b in witness.beliefs if claim_by_id(self, b.claim_id).fact_id == fact.id)
+            belief.assessed = True  # One firsthand consequence; reports cannot repeat it.
+            friend = witness.opinion_score(victim.id)
+            low, high = KILLING_WITNESS_SOCIAL_RANGE
+            severity = round(KILLING_WITNESS_PENALTY * (low + witness.preferences["sociability"] * (high - low)))
+            delta = -min(KILLING_WITNESS_MAX_PENALTY, severity + max(0, friend) // KILLING_FRIENDSHIP_DIVISOR)
+            # A hostile relationship can make relief possible, never universal.
+            if friend < KILLING_RELIEF_OPINION and witness.rng.random() < KILLING_RELIEF_CHANCE:
+                delta = KILLING_RELIEF_DELTA
+            witness.remember_opinion(attacker.id, max(-100, min(100, witness.opinion_score(attacker.id) + delta)),
+                                     f"Witnessed {text} My relationship with {victim.name} informed my reaction.")
+        self.depart_resident(victim, event, meeting, attacker)
         return True
-
-    def leave_tree(self, actor_id, reason="Left the tree line."):
-        entry = next((e for e in self.tree_queue if e.actor_id == actor_id), None)
-        if entry:
-            self.tree_queue.remove(entry)
-        elif self.tree_current and self.tree_current.actor_id == actor_id:
-            entry, self.tree_current = self.tree_current, None
-        if not entry:
-            return
-        self.reservations.release("tree", entry)
-        actor = self.participant_by_id(actor_id)
-        if actor is None:
-            return
-        self.tree.release(actor)
-        if actor is not self.player and entry.saved_state:
-            actor.restore_after_interaction(entry.saved_state, self.tree.id, self.snake.id)
-        self.publish("tree_queue", (actor,), reason)
-
-    def update_tree_queue(self, dt):
-        from constants import TREE_QUEUE_SPACING, TREE_QUEUE_FACING, MOVEMENT_SPEED, PLAYER_APPROACH_MULTIPLIER, PLAYER_APPROACH_TIMEOUT
-        from interactions import move_toward
-        from locations import clamp_point
-        from player import owns_resident
-        for entry in [*self.tree_queue, *([self.tree_current] if self.tree_current else [])]:
-            actor = self.participant_by_id(entry.actor_id)
-            unavailable = (actor is None or not self.is_outdoors(actor)
-                or entry.purpose == "bargain"
-                and self.available_fruit < 1 and not (self.snake.encounter and self.snake.encounter.recipient is actor))
-            if unavailable:
-                self.leave_tree(entry.actor_id, "Tree service became unavailable.")
-        if self.tree_current is None and self.tree_queue and self.snake.encounter is None and not self.snake.recovery_remaining:
-            self.tree_current = self.tree_queue.pop(0)
-        ordered = ([self.tree_current] if self.tree_current else []) + self.tree_queue
-        if not ordered:
-            self._tree_exit_targets.clear()
-            return set()
-        points = [clamp_point("garden", (self.tree.interaction_point[0] - index * TREE_QUEUE_SPACING,
-                                         self.tree.interaction_point[1])) for index in range(len(ordered))]
-        customers = [self.participant_by_id(entry.actor_id) for entry in ordered]
-        neighbors = self.outdoor_npcs
-        if self.is_outdoors(self.player):
-            neighbors.append(self.player)
-        queue_positions = {entry.actor_id: index for index, entry in enumerate(ordered)}
-        clearing_ids = set()
-        self._tree_exit_targets = {key: point for key, point in self._tree_exit_targets.items()
-                                   if any(actor.id == key for actor in neighbors)}
-        # Finish a departing customer's sidestep before resuming their saved
-        # activity. Passersby keep their normal movement instead of being pushed.
-        for actor in neighbors:
-            position = queue_positions.get(actor.id)
-            eligible = (position is not None if actor is self.player else
-                not (actor.busy or actor.journey or owns_resident(self, actor) or actor.player_call
-                     or actor.interaction_blocked)
-                and (position is not None or actor.resume_pending))
-            if not eligible or position == 0:
-                self._tree_exit_targets.pop(actor.id, None)
-                continue
-            obstructed = points if position is None else [p for ahead, p in zip(customers[:position], points[:position])
-                if math.dist((ahead.x, ahead.y), p) > 1e-6]
-            point = next((p for p in obstructed if math.dist((actor.x, actor.y), p) < TREE_QUEUE_SPACING - 1e-6), None)
-            if point is None:
-                self._tree_exit_targets.pop(actor.id, None)
-                continue
-            def clear(p):
-                return (all(math.dist(p, slot) >= TREE_QUEUE_SPACING - 1e-6 for slot in points)
-                    and all(other is actor or math.dist(p, (other.x, other.y)) >= TREE_QUEUE_SPACING - 1e-6
-                            for other in neighbors))
-            exit_point = self._tree_exit_targets.get(actor.id)
-            if exit_point is None or not clear(exit_point):
-                exits = [clamp_point("garden", (point[0] + dx, point[1] + dy))
-                         for dx, dy in ((0, TREE_QUEUE_SPACING), (0, -TREE_QUEUE_SPACING), (TREE_QUEUE_SPACING, 0))]
-                exit_point = next((p for p in exits if clear(p)), None)
-            if exit_point is not None:
-                self._tree_exit_targets[actor.id] = exit_point
-                clearing_ids.add(actor.id)
-                if move_toward(actor, exit_point, dt, MOVEMENT_SPEED * (PLAYER_APPROACH_MULTIPLIER if actor is self.player else 1)):
-                    self._tree_exit_targets.pop(actor.id, None)
-        for index, (actor, entry, point) in enumerate(zip(customers, ordered, points)):
-            if actor.id in clearing_ids or self.snake.encounter and self.snake.encounter.recipient is actor:
-                continue
-            if math.dist((actor.x, actor.y), point) > 1e-6 and any(
-                    other is not actor and math.dist(point, (other.x, other.y)) < TREE_QUEUE_SPACING - 1e-6
-                    for other in neighbors):
-                continue  # Keep FIFO positions while a previous occupant clears them.
-            arrived = move_toward(actor, point, dt, MOVEMENT_SPEED * (PLAYER_APPROACH_MULTIPLIER if actor is self.player else 1))
-            if arrived:
-                actor.facing = TREE_QUEUE_FACING
-            if index != 0 or self.tree_current is not entry:
-                continue
-            entry.elapsed += dt
-            if entry.elapsed > PLAYER_APPROACH_TIMEOUT:
-                self.leave_tree(actor.id, "The tree approach timed out.")
-            elif arrived:
-                try:
-                    from snake import SnakeEncounter, PlayerSnakeEncounter
-                    cls = PlayerSnakeEncounter if actor is self.player else SnakeEncounter
-                    if actor is not self.player:
-                        actor.resume_pending = False
-                    encounter = cls(self, actor, entry.purpose, entry.reason,
-                                    origin="player" if actor is self.player else "autonomous")
-                    self.tree.reserved_by = actor
-                except ValueError as exc:
-                    self.leave_tree(actor.id, str(exc))
-        return clearing_ids
 
     def observed_event(self, kind, subject, target, text, record=None, *, witnesses=None):
         """Explicit visual event, or an explicitly selected private participant account."""
@@ -610,130 +555,8 @@ class Simulation:
             if actor is self.snake or kind in ("apple_given", "work_given", "conversation_seen"):
                 continue
             partner = target if actor is subject and target else subject
-            remember(actor, partner, event, kind, text, -4 if kind == "eating" else 0)
+            remember(actor, partner, event, kind, text, 0)
         return event, fact
-
-    def witness_eating(self, target, encounter):
-        """Commit sight and attitude effects before removing either kind of victim."""
-        from locations import observers
-        witnesses = {p.id: p for p in observers(self, self.snake, target)}
-        witnesses.update({actor_id: self.participant_by_id(actor_id) for actor_id in encounter.record.eating_witness_ids})
-        event, _ = self.observed_event("eating", self.snake, target,
-            f"{SNAKE_NAME} ate {target.name}.", encounter.record, witnesses=list(witnesses.values()))
-        for witness in witnesses.values():
-            if witness in (self.snake, target):
-                continue
-            friend = witness.opinion_score(target.id) if target is not self.player else witness.player_opinion.opinion
-            adjustment = -6 if friend > 0 or witness.attitudes["authority"] == "rejected" else 2 if witness.attitudes["belief"] == "believed" else -3
-            witness.attitudes["trust"] = max(-100, min(100, witness.attitudes["trust"] + adjustment))
-            witness.attitudes["trust_reason"] = f"Witnessed {SNAKE_NAME} eat {target.name} on day {self.day}."
-        encounter.record.eating_witness_ids.clear()
-        return event
-
-    def eating_permitted(self, target=None, *, encounter=None, reachable=False):
-        if self.population <= PROTECTED_POPULATION or self.snake.recovery_remaining > 0:
-            return False
-        if self.snake.eaten_today >= 1 and self.population <= CROWD_LIMIT:
-            return False
-        if target is not None:
-            if not self.is_outdoors(target):
-                return False
-            if reachable and math.dist((self.snake.x, self.snake.y), (target.x, target.y)) > 32:
-                return False
-        if encounter is not None:
-            return (encounter.active and encounter is self.snake.encounter and encounter.committed
-                    and encounter.outcome == "eat" and encounter.stage == "eating")
-        return True
-
-    def commit_snake_response(self, encounter, response):
-        from social import learn_account, add_fact
-        npc, snake = encounter.recipient, self.snake
-        decision = response.decision
-        if not encounter.accepts_response or encounter.committed or not encounter.arrived:
-            raise ValueError("This encounter is no longer available.")
-        if decision not in encounter.request_context["permitted_decisions"]:
-            raise ValueError("That decision is unavailable.")
-        player_encounter = npc is self.player
-        answer_turn = 1 if player_encounter else response.outcome_turn - 1
-        if decision == "give_apple":
-            if (not encounter.reserved or self.tree.fruit < 1
-                    or math.dist((npc.x, npc.y), self.tree.interaction_point) > 8
-                    or math.dist((npc.x, npc.y), (snake.x, snake.y)) > SNAKE_INTERACTION_DISTANCE):
-                raise ValueError("An apple requires stock and the present tree customer.")
-            if player_encounter:
-                if not response.disclosure_evidence or response.disclosure_evidence not in encounter.request_context["_player_message"]:
-                    raise ValueError("The player must actually supply information now.")
-            elif not response.account_id and (not response.evidence.strip() or response.evidence not in response.turns[answer_turn].text):
-                raise ValueError("An apple requires an actual disclosure or quoted present report.")
-        if not player_encounter and response.account_id:
-            allowed = {a["claim_id"] for a in encounter.request_context["offering_accounts"]}
-            if response.account_id not in allowed or not any(b.claim_id == response.account_id for b in npc.beliefs):
-                raise ValueError("The disclosed account is not owned by this resident.")
-        if response.snake_account_id and (not any(b.claim_id == response.snake_account_id for b in snake.beliefs)
-                or response.snake_account_id not in {a["claim_id"] for a in encounter.request_context["snake"]["known_accounts"]}):
-            raise ValueError("The guard cannot disclose an unknown account.")
-        if decision == "eat" and (not self.eating_permitted(npc)
-                or not encounter.request_context.get("known_warning")
-                or snake.offenses.get(npc.id) != encounter.request_context["known_warning"]):
-            raise ValueError("Condemnation requires the existing warning and current eating permission.")
-        reward_declined = False
-        if not player_encounter and decision == "give_apple":
-            from snake import apple_reward_accepted
-            reward_declined = not apple_reward_accepted(response.turns, response.outcome_turn)
-            if reward_declined:
-                decision = "talk"
-        encounter.committed, encounter.outcome, encounter.reserved = True, decision, False
-        # Disclosures survive refusal of a reward. They never become verified truth.
-        if not player_encounter and response.account_id:
-            learn_account(self, npc, snake, response.account_id, encounter.record, answer_turn, "uncertain", private=True)
-        if response.snake_account_id and not player_encounter:
-            known = next(a for a in encounter.request_context["snake"]["known_accounts"] if a["claim_id"] == response.snake_account_id)
-            # Preserve the reply as testimony about a report, never rewrite the original fact.
-            add_fact(self, "report", npc, snake, encounter.id + ":answer", encounter.record,
-                     f"{npc.name} answered about this account: {known['assertion']} "
-                     f"Their response: {response.turns[answer_turn].text} This response is not independently verified.", [npc, snake])
-            learn_account(self, snake, npc, response.snake_account_id, encounter.record, 0, "uncertain")
-        if not player_encounter and response.decision == "give_apple" and not response.account_id:
-            add_fact(self, "report", npc, snake, encounter.id + ":report", encounter.record,
-                     f"{npc.name} reported: {response.turns[answer_turn].text} This is their account, not independently verified.", [npc, snake])
-        if player_encounter and response.disclosure_evidence:
-            current = encounter.request_context["current_claim"]
-            add_fact(self, "report", npc, snake, current["id"], encounter.record,
-                     f"{npc.name} reported: {encounter.request_context['_player_message']} "
-                     + (f"In response to this sourced account: {encounter.request_context['questioned_account']['assertion']} "
-                        if encounter.request_context.get("questioned_account") else "")
-                     + "This is their account, not independently verified.", [snake])
-        if decision == "give_apple":
-            self.tree.fruit -= 1
-            npc.inventory["fruit"] = npc.inventory.get("fruit", 0) + 1
-            text = f"{SNAKE_NAME} gave {npc.name} one apple for information supplied in this conversation. No further payment is owed."
-            event, _ = self.observed_event("bargain", snake, npc, text, encounter.record, witnesses=[snake, npc])
-            self.observed_event("apple_given", snake, npc, f"{SNAKE_NAME} gave {npc.name} one apple.", encounter.record)
-            encounter.outcome_event_id = event.id
-        elif decision == "warn":
-            text = f"{SNAKE_NAME} warned {npc.name} of being eaten: {response.accusation} Evidence from their response: {response.evidence} This is an accusation, not established guilt."
-            event, fact = self.observed_event("judgment", snake, npc, text, encounter.record, witnesses=[snake, npc])
-            snake.offenses[npc.id] = fact.id
-            encounter.outcome_event_id = event.id
-        elif decision == "eat":
-            encounter.accusation = response.accusation
-            event, _ = self.observed_event("judgment", snake, npc,
-                f"{SNAKE_NAME} condemned {npc.name} after an earlier warning and subsequent response: {response.accusation}", encounter.record, witnesses=[snake, npc])
-            encounter.outcome_event_id = event.id
-        elif npc.id in snake.offenses:
-            # A satisfactory response resolves the warning without a separate pardon system.
-            snake.offenses.pop(npc.id)
-        if not player_encounter and response.attitudes is not None:
-            updated = response.attitudes.model_dump()
-            updated["trust"] = max(npc.attitudes["trust"] - 6, min(npc.attitudes["trust"] + 6, updated["trust"]))
-            npc.attitudes = updated
-        if encounter.request_context["first_meeting"]:
-            self.observed_event("snake_claim", snake, npc,
-                f"{npc.name} heard {SNAKE_NAME}'s claims about authority and the garden; these remain unverified.", encounter.record, witnesses=[snake, npc])
-        outcome = "One apple transferred." if decision == "give_apple" else "No apple transferred."
-        if reward_declined:
-            outcome = "The resident did not accept the offered apple. No apple transferred."
-        encounter.record.outcomes.append(f"Decision: {decision}. " + outcome)
 
     def interrupt_resident(self, target, reason, *, mode="cancel"):
         """Coordinate outcome-specific cleanup without replaying committed effects."""
@@ -752,7 +575,7 @@ class Simulation:
             target.journey = None
             return
         if mode in ("approach", "session"):
-            interaction = target.conversation or target.gift or target.snake_encounter
+            interaction = target.conversation or target.gift
             if interaction is target.conversation and interaction is not None:
                 if mode == "session":
                     interaction.finish(self.tree)
@@ -762,15 +585,12 @@ class Simulation:
                 interaction.finish(reason)
             elif interaction is not None:
                 interaction.finish(error=reason if mode == "approach" else "")
-            if mode == "approach":
-                self.leave_tree(target.id, reason)
             return
         if owns_resident(self, target):
             end_interaction(self, reason)
         if self.visit and self.visit.host_id == target.id:
             from apartments import finish_visit
             finish_visit(self)
-        self.leave_tree(target.id, reason)
         interaction = target.conversation or target.gift
         from player import clear_call
         clear_call(target)
@@ -780,10 +600,6 @@ class Simulation:
             interaction = None
         if interaction:
             interaction.cancel(reason)
-        encounter = target.snake_encounter
-        if encounter:
-            encounter.finish(error=reason)
-        self.tree.release(target)
         for record in self.history:
             if record.includes(target) and self.player.id in record.participant_ids and record.status in CONVERSATION_PENDING_REPLY_STATUSES:
                 record.status, record.error = CONVERSATION_CANCELLED, reason
@@ -796,9 +612,7 @@ class Simulation:
                             for p in self.npcs if p.conversation or p.gift}
             states = [state for interaction in interactions.values()
                       for state in interaction.activity_snapshots()]
-            if self.snake.encounter is not None and self.snake.encounter.saved_state is not None:
-                states.extend(self.snake.encounter.activity_snapshots())
-            for owner in (self.player_interaction, self.visit, self.tree_current, *self.tree_queue):
+            for owner in (self.player_interaction, self.visit):
                 if owner is not None and owner.saved_state is not None:
                     states.append(owner.saved_state)
             for state in states:
@@ -846,29 +660,38 @@ class Simulation:
             target.player_reply.release()
             target.begin_activity(Behavior.WAIT, self, reason=reason)
 
-    def depart_resident(self, target, encounter):
-        if target is self.player:
-            return self.kill_player(encounter)
+    def depart_resident(self, target, event, source, attacker):
+        """Archive a committed victim and release unfinished work through its owners."""
+        from copy import deepcopy
         from social import resolve_goal
-        if target.departure or not self.eating_permitted(target, encounter=encounter, reachable=True):
+        if (self.npc_by_id(target.id) is not target or target.departure or event.kind != "killing"
+                or event.history != source.record.id or source.purpose != "confrontation"
+                or not any(f.kind == "killing" and f.source_id == event.id and f.subject_id == attacker.id
+                           and f.object_id == target.id for f in self.facts)):
             return False
-        event = self.witness_eating(target, encounter)
-        # Mark before cleanup so a second call cannot remove or count this actor twice.
-        target.departure = {"day": self.day, "phase": self.phase, "cause": "eaten by the snake", "event_id": ""}
-        reason = f"Cancelled because {target.name} was eaten; this is not a deliberate betrayal."
-        # The eating encounter is the preserved source, not an abandoned bargain.
-        self.reservations.release("snake", encounter, target)
+        record = source.record
+        target.departure = {"day": self.day, "phase": self.phase, "cause": "killed by resident",
+                            "event_id": event.id, "attacker_id": attacker.id, "conversation_id": record.id}
+        self.bodies.append({"appearance": deepcopy(target.character), "x": target.x, "y": target.y,
+                            "location": target.location, "facing": target.facing, "elapsed": 0.0})
+        # The source is accepted and complete; mark death before any release can re-enter.
+        source.finish(self.tree)
+        source.outcome_event_id = event.id
+        reason = f"Cancelled because {target.name} died; this is not a deliberate betrayal."
         for promise in self.promises:
             if promise.status == "pending" and target.id in (promise.promisor_id, promise.recipient_id):
                 promise.status, promise.resolved_phase, promise.outcome = "cancelled", self.phase_index, reason
-                event = self.publish("promise_cancelled", (self.participant_by_id(promise.promisor_id), self.participant_by_id(promise.recipient_id)), reason,
+                cancellation = self.publish("promise_cancelled", (self.participant_by_id(promise.promisor_id), self.participant_by_id(promise.recipient_id)), reason,
                                      next(r for r in self.history if r.id == promise.conversation_id))
-                promise.resolution_event_id = promise.consequence_event_id = event.id
+                promise.resolution_event_id = promise.consequence_event_id = cancellation.id
         for person in self.npcs:
             goal = person.goal
             if goal and goal.status == "active" and (person is target or target.id in (goal.target_id, goal.third_npc_id)):
-                resolve_goal(person, self, "cancelled", reason, encounter.record)
+                resolve_goal(person, self, "cancelled", reason, record)
         self.interrupt_resident(target, reason, mode="departure")
+        for invitation in self.player_invitations:
+            if invitation.speaker_id == target.id and invitation.status == "offered":
+                invitation.status = "withdrawn"
         target.home_remaining = 0.0
         self.npcs[:] = [p for p in self.npcs if p is not target]
         self.archived.append(target)
@@ -876,45 +699,6 @@ class Simulation:
         self.introductions[:] = [i for i in self.introductions if i != target.id]
         self.social_rotation %= max(1, len(self.npcs))
         target.departure["event_id"] = event.id
-        self.snake.eaten_today += 1
-        self.snake.recovery_remaining = RECOVERY_SECONDS
-        self.snake.offenses.pop(target.id, None)
-        if self.snake.retry_request and self.snake.retry_request["resident_id"] == target.id:
-            self.snake.retry_request = None
-        encounter.outcome_event_id = event.id
-        encounter.finish()
-        encounter.record.status = CONVERSATION_EATEN_RESIDENT
-        encounter.record.outcomes.append(f"{target.name} departed on day {self.day}. Their destination is unverified.")
-        return True
-
-    def kill_player(self, encounter):
-        if not self.player.alive or not self.eating_permitted(self.player, encounter=encounter, reachable=True):
-            return False
-        event = self.witness_eating(self.player, encounter)
-        from player import end_interaction
-        from apartments import finish_visit
-        self.player.alive = False
-        self.mode = "spectator"
-        reason = "The player was eaten; outstanding obligations ended with their death."
-        end_interaction(self, reason)
-        finish_visit(self)
-        self.player.journey = None
-        self.leave_tree(self.player.id, reason)
-        for npc in self.npcs:
-            npc.player_call = None
-        for promise in self.promises:
-            if promise.status == "pending" and self.player.id in (promise.promisor_id, promise.recipient_id):
-                promise.status, promise.resolved_phase, promise.outcome = "cancelled", self.phase_index, reason
-                event = self.publish("promise_cancelled", (self.player,), reason, encounter.record)
-                promise.resolution_event_id = promise.consequence_event_id = event.id
-        self.snake.offenses.pop(self.player.id, None)
-        self.snake.eaten_today += 1
-        self.snake.recovery_remaining = RECOVERY_SECONDS
-        self.player_acknowledgments.clear()
-        encounter.outcome_event_id = event.id
-        encounter.finish()
-        encounter.record.status = CONVERSATION_EATEN_PLAYER
-        self.roster_revision += 1
         return True
 
     def deliver_arrivals(self):
@@ -964,26 +748,6 @@ class Simulation:
         return npc
 
 
-def validate_saved_tree_queue(entries, player, interaction, by_id, pending_actions, exclusive):
-    from activity import ActivitySnapshot
-    from constants import PLAYER_APPROACH_TIMEOUT
-    if len({e.actor_id for e in entries}) != len(entries):
-        raise ValueError("Tree customers must be unique and ordered.")
-    for entry in entries:
-        actor = by_id.get(entry.actor_id)
-        if not actor or actor.location != "garden" or actor.journey or actor.id in exclusive or entry.purpose not in ("bargain", "judgment", "introduction"):
-            raise ValueError("A tree customer must be available in the garden.")
-        if not isinstance(entry.elapsed, (int, float)) or not math.isfinite(entry.elapsed) or not 0 <= entry.elapsed <= PLAYER_APPROACH_TIMEOUT:
-            raise ValueError("Invalid front-customer approach progress.")
-        if actor is player and interaction and interaction.kind != "snake":
-            raise ValueError("A queued player cannot own another interaction.")
-        if any(a.npc_id == actor.id for a in pending_actions):
-            raise ValueError("A queued customer cannot have another pending action.")
-        if actor is not player:
-            ActivitySnapshot.validate(entry.saved_state)
-        exclusive.add(actor.id)
-
-
 def validate_saved_actions(npcs, player, mode, tree, pending_actions, live_ids, indoor_ids, reserved, history, creation_ids):
     from activity import Behavior, validate_activity_target
     from transfers import transfer_matches
@@ -992,9 +756,6 @@ def validate_saved_actions(npcs, player, mode, tree, pending_actions, live_ids, 
             validate_activity_target(npc, npc, tree.id, live_ids)
         if npc.id in reserved and npc.behavior != Behavior.WAIT:
             raise ValueError("Encounter participants must wait.")
-    reference = tree.reserved_by
-    if reference is not None and (reference not in live_ids | ({player.id} if player.alive and mode == "player" else set()) or reference in indoor_ids):
-        raise ValueError("A tree reservation requires a living owner.")
     pending_owners = set()
     for action in pending_actions:
         if action.target_id == player.id and action.action != "GIVE_ITEM":

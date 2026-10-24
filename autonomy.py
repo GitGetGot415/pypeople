@@ -4,10 +4,10 @@ import math
 from activity import Behavior
 from conversation_history import memory_bias
 from constants import (APPLE_SATISFACTION, DECISION_SECONDS, MOVEMENT_SPEED, SOCIAL_PARTNER_RANDOMNESS,
-                      SOCIAL_START, SNAKE_NAME, STARTING_DAY, JUDY_ROOM_NUMBER, SOCIAL_RADIUS)
+    SOCIAL_START, STARTING_DAY, JUDY_ROOM_NUMBER, SOCIAL_RADIUS)
 from interactions import company_point
 from social import (concern_topic, goal_attempt_cooling_down, last_conversation_partner, pair_objective,
-                   pending_promises, repeat_partner_paused)
+                   pending_promises, repeat_partner_paused, regards_as_dangerous)
 
 
 def arrival_greeter(world):
@@ -16,7 +16,7 @@ def arrival_greeter(world):
 
 def awaiting_arrival_greeting(npc, world):
     greeter = arrival_greeter(world)
-    return (greeter is not None and npc is not greeter and npc.arrival_day > STARTING_DAY
+    return (npc is not world.snake and greeter is not None and npc is not greeter and npc.arrival_day > STARTING_DAY
             and not any(greeter.id in record.participant_ids and npc.id in record.participant_ids
                         and any(turn.speaker_id == greeter.id for turn in record.turns)
                         for record in world.history))
@@ -68,8 +68,8 @@ def target_valid(npc, world):
     if npc.behavior == Behavior.EAT:
         return npc.inventory.get("fruit", 0) > 0
     if npc.behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE):
-        return (npc.target_id == world.tree.id and world.tree_has_actor(npc.id)
-                and world.available_fruit > 0
+        return (npc.target_id == world.tree.id
+                and (npc.behavior == Behavior.GO_TO_TREE or world.available_fruit > 0)
                 and npc.can_reach(world.tree.interaction_point))
     if npc.behavior == Behavior.COMPANY:
         partner = world.npc_by_id(npc.target_id)
@@ -78,24 +78,12 @@ def target_valid(npc, world):
     return True
 
 
-def lone_introduction(npc, world):
-    if (world.phase_pending or world.population != 1 or not world.company_available(npc) or npc.conversation_pause_remaining
-            or any(r.turns and r.includes(npc) and (r.orientation_discussed or r.purpose == "introduction")
-                   for r in world.history)):
-        return
-    snake = world.snake
-    if (snake.encounter or snake.selected or snake.interaction_blocked or snake.recovery_remaining
-            or snake.id in npc.cooldowns or not npc.can_reach(world.tree.interaction_point)):
-        return
-    world.join_tree(npc, "introduction", f"Meet {SNAKE_NAME}, the python guarding the apple tree")
-
-
 def reconsider(npc, world, *, pressing_only=False):
     from apartments import HOME_BEHAVIORS
     from player import owns_resident
     if arrival_greeting_reserved(npc, world):
         return
-    if owns_resident(world, npc) or world.tree_has_actor(npc.id) or npc.journey or world.visit and world.visit.host_id == npc.id:
+    if owns_resident(world, npc) or npc.journey or world.visit and world.visit.host_id == npc.id:
         return
     if (world.phase_pending or npc.interaction is not None or npc.resume_pending or npc.player_call or npc.behavior in HOME_BEHAVIORS
             or npc.home_reason == "night"):
@@ -113,13 +101,16 @@ def reconsider(npc, world, *, pressing_only=False):
         return
     if npc.decision_remaining > 0:
         return
-    if npc.behavior in (Behavior.HARVEST, Behavior.EAT):
+    if npc.behavior in (Behavior.GO_TO_TREE, Behavior.HARVEST, Behavior.EAT):
         return
 
     obligations = sorted(pending_promises(world, npc.id), key=lambda promise: (promise.deadline, promise.created_phase))
     goal = npc.goal if npc.goal and npc.goal.status == "active" else None
     delivery_targets = [(promise.recipient_id, "Delivering a promised apple") for promise in obligations]
-    if goal and goal.kind == "help_with_apple":
+    goal_target = world.npc_by_id(goal.target_id) if goal else None
+    from constants import DANGEROUS_OPTIONAL_GIFT_CHANCE
+    if (goal and goal.kind == "help_with_apple" and goal_target and
+            (not regards_as_dangerous(npc, goal_target) or npc.rng.random() < DANGEROUS_OPTIONAL_GIFT_CHANCE)):
         delivery_targets.append((goal.target_id, "Giving an apple to complete my objective"))
     if npc.inventory.get("fruit", 0) > 0 and world.company_available(npc):
         for target_id, reason in delivery_targets:
@@ -135,11 +126,14 @@ def reconsider(npc, world, *, pressing_only=False):
     apples_needed = len({target_id for target_id, _ in delivery_targets})
     needs_apple = npc.inventory.get("fruit", 0) < apples_needed
     tree = world.tree
-    tree_available = (world.is_outdoors(npc) and world.available_fruit > 0 and world.tree_can_admit(npc)
+    tree_available = (world.is_outdoors(npc) and world.available_fruit > 0
                       and tree.id not in npc.cooldowns and npc.can_reach(tree.interaction_point))
+    from constants import HARVEST_DISTANCE
+    collection_behavior = (Behavior.HARVEST if npc.location == "garden" and
+        math.dist((npc.x, npc.y), tree.interaction_point) <= HARVEST_DISTANCE else Behavior.GO_TO_TREE)
     if pressing_only:
         if obligations and needs_apple and tree_available:
-            npc.begin_activity(Behavior.HARVEST, world, tree.id, "Seeking an apple bargain to fulfill a commitment")
+            npc.begin_activity(collection_behavior, world, tree.id, "Collecting an apple to fulfill a commitment")
         return
     npc.decision_remaining = DECISION_SECONDS
     if actionable_obligation(npc, world):
@@ -154,11 +148,12 @@ def reconsider(npc, world, *, pressing_only=False):
     if npc.inventory.get("fruit", 0) > apples_needed and npc.social <= 100 - APPLE_SATISFACTION:
         candidates.append((130 - npc.social, Behavior.EAT, None, "Eating an apple to improve satisfaction"))
     if tree_available:
-        score = 24 - sum(npc.inventory.values()) * 4 - distance(tree.interaction_point) + (110 if needs_apple else 0)
-        candidates.append((score, Behavior.HARVEST, tree.id,
-                           "Seeking an apple bargain to help someone" if needs_apple else f"Seeking an apple bargain with {SNAKE_NAME}"))
+        score = 12 + (100 - npc.social) * 0.2 + npc.preferences["generosity"] * 8 - sum(npc.inventory.values()) * 4 - distance(tree.interaction_point) + (110 if needs_apple else 0)
+        candidates.append((score, collection_behavior, tree.id,
+                           "Harvesting an apple to help someone" if needs_apple else "Harvesting apples from the tree"))
     if npc.social <= SOCIAL_START:
         partners = [other for other in world.npcs if other is not npc and world.company_available(other)
+                    and not regards_as_dangerous(npc, other)
                     and other.id not in npc.cooldowns and company_point(npc, other) is not None]
         if partners:
             def company_score(other):
@@ -190,9 +185,11 @@ def donor_choice(donor, requester):
     if fruit < 1:
         return "unavailable", "Sharing is no longer possible because the inventories changed."
     opinion = donor.opinion_score(requester.id)
+    from constants import DANGEROUS_GIFT_PENALTY
     score = ((donor.social - 50) * 0.12 + (fruit - 1) * 6
              + (donor.preferences["generosity"] - 0.5) * 10
-             + opinion * 0.12 + memory_bias(donor, requester.id))
+             + opinion * 0.12 + memory_bias(donor, requester.id)
+             - DANGEROUS_GIFT_PENALTY * regards_as_dangerous(donor, requester))
     if fruit == 1 and donor.social <= SOCIAL_START:
         score -= 8
     if score >= 0:
@@ -222,7 +219,7 @@ def actionable_obligation(npc, world):
                    and target.id not in npc.cooldowns and npc.id not in target.cooldowns
                    and company_point(npc, target) is not None for p in obligations)
     tree = world.tree
-    return (world.available_fruit > 0 and tree.reserved_by in (None, npc)
+    return (world.available_fruit > 0
             and tree.id not in npc.cooldowns and npc.can_reach(tree.interaction_point))
 
 
@@ -240,10 +237,23 @@ def social_pair(world, *, due=None):
                 and company_point(npc, other, allow_vertical=True) is not None]
 
     def rank(npc, other):
-        return (npc.opinion_score(other.id) * 0.08
+        from social import regards_as_dangerous
+        from constants import DANGEROUS_COMPANY_PENALTY
+        return (-DANGEROUS_COMPANY_PENALTY * regards_as_dangerous(npc, other) + npc.opinion_score(other.id) * 0.08
                 + memory_bias(npc, other.id) - math.dist((npc.x, npc.y), (other.x, other.y)) / MOVEMENT_SPEED
                 + npc.rng.uniform(0, SOCIAL_PARTNER_RANDOMNESS))
 
+    from social import grievance_against, confrontation_topic
+    for npc in available:
+        if due is not None and npc.id not in due:
+            continue
+        for other in partners(npc):
+            if repeat_partner_paused(npc, other):
+                continue
+            grievance = grievance_against(npc, other)
+            if grievance:
+                topic = confrontation_topic(npc, grievance)
+                return npc, other, "confrontation", topic, f"Demanding an explanation from {other.name}", "news", grievance, None
     purposeful = []
     for npc in available:
         for other in partners(npc):
@@ -272,7 +282,7 @@ def social_pair(world, *, due=None):
             if donors:
                 donor = max(donors, key=lambda other: rank(npc, other))
                 tree = world.tree
-                if not (world.available_fruit > 0 and tree.reserved_by is None and npc.can_reach(tree.interaction_point)
+                if not (world.available_fruit > 0 and npc.can_reach(tree.interaction_point)
                         and math.dist((npc.x, npc.y), tree.interaction_point)
                         < math.dist((npc.x, npc.y), (donor.x, donor.y))):
                     return npc, donor, "food_request", "An apple", f"Asking {donor.name} for an apple", None, None, None

@@ -8,10 +8,12 @@ from pydantic import ValidationError
 from constants import CREATIVE_REQUEST_SECONDS, DIALOGUE_TIMEOUT_SECONDS, MAX_LLM_REQUESTS
 from model_transport import MODEL
 from generation_errors import InvalidResponseError, RequestError
-from llm import VoiceRewriteValidationError, request_response, request_voice_rewrite, validate_response, validate_voice_rewrite, voice_rewrite_snapshot
+from llm import (VoiceRewriteValidationError, request_response, request_voice_rewrite,
+    validate_response, validate_voice_rewrite, voice_rewrite_snapshot)
 from dialogue import ConversationTurn, VoiceRewriteResponse
 from ollama_manager import DEFAULT_OLLAMA_MODEL
-from model_debug import DebugLogs, ProviderAdmission, RequestLog, RequestCancelled, RequestControl, capture_output, record_output
+from model_debug import (DebugLogs, ProviderAdmission, RequestLog, RequestCancelled, RequestControl,
+    capture_output, record_output)
 
 
 @dataclass
@@ -35,14 +37,11 @@ def _request_description(snapshot):
         return snapshot["author"]["Name"], "Painting" if kind == "create_art" else "Composing"
     if kind == "conversation":
         initiator, recipient = snapshot["initiator"], snapshot["recipient"]
-        participants = f"{initiator['npc_name']} & {recipient['npc_name']}"
+        participants = f"{initiator['name']} & {recipient['name']}"
         purpose = snapshot.get("purpose", "chat").replace("_", " ").title()
         topic = initiator.get("private_context", {}).get("immediate_objective") or snapshot.get("topic", "")
         return participants, f"{purpose}: {topic}" if topic else purpose
-    if kind == "snake_encounter":
-        return (f"{snapshot['snake']['name']} & {snapshot['resident']['npc_name']}",
-                snapshot["purpose"].replace("_", " ").title())
-    name = snapshot["snake"]["name"] if kind == "snake_player" else snapshot.get("npc_name", "NPC")
+    name = snapshot.get("name", "NPC")
     return f"You & {name}", "Player conversation"
 
 
