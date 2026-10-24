@@ -260,6 +260,17 @@ def validate_feet(location, value):
         raise ValueError("Feet position is outside its map.")
 
 
+def validate_destination(value, *, location=None):
+    import math
+    # Suspended activities have no location of their own. Their destination
+    # must still belong to one of the game's physical maps.
+    maps = (location,) if location is not None else (GARDEN_LOCATION, "hallway:1", "room:1")
+    if (not isinstance(value, (tuple, list)) or len(value) != 2
+            or not all(isinstance(coordinate, (int, float)) and math.isfinite(coordinate) for coordinate in value)
+            or not any(tuple(value) == clamp_point(area, value) for area in maps)):
+        raise ValueError(f"Invalid destination {value!r} for {location or 'the available maps'}.")
+
+
 def validate_saved_locations(actors, layout, player, visit):
     for actor in actors:
         if not valid_location(layout, actor.location):

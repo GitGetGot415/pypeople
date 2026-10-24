@@ -18,14 +18,14 @@ from interactions import DialogueProgress
 from character_data import normalize_character, normalize_opinions
 from constants import (CONCERN_LIFETIME_RANGE, CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE,
                        FAILURE_COOLDOWN, SHAKE_SECONDS, RECOVERY_SECONDS, SNAKE_FRAME_SECONDS, SNAKE_NAME,
-                       WORLD_HEIGHT, WORLD_WIDTH, GARDEN_BUILDING_POINT, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_RANGE,
+                       WORLD_HEIGHT, WORLD_WIDTH, GARDEN_LOCATION, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_RANGE,
                        OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE, WAKE_DELAY_RANGE, PLAYER_LABEL,
                        PLAYER_NAME_TAG, PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, TRAVEL_STEP_TIMEOUT,
                        PLAYER_APPROACH_TIMEOUT, CONVERSATION_REPLY_PENDING_WHEN_SAVED, MAX_RESIDENTS)
 from creations import Creation, CreativeJob
 from apartments import (Invitation, HostedVisit,
                         validate_saved_visit, validate_saved_invitations, validate_saved_home)
-from locations import Journey, RouteStep, validate_saved_locations
+from locations import Journey, RouteStep, validate_saved_locations, validate_destination, validate_feet
 from player_records import (PlayerOpinion, PlayerCall, PlayerReplyCall, PlayerReport,
                             PlayerPromiseOffer, PlayerAcknowledgment, validate_player_reports)
 from conversation_history import (RecordedTurn, ConversationRecord, Memory, WorldEvent,
@@ -220,8 +220,9 @@ class NPCState(ActivityState):
     id: str = Field(min_length=1)
     character: dict
     display_name: str | None
-    x: float = Field(ge=0, le=WORLD_WIDTH)
-    y: float = Field(ge=GARDEN_BUILDING_POINT[1], le=WORLD_HEIGHT)
+    # Exact positions are checked against each resident's map in validate_saved_locations.
+    x: float
+    y: float
     reply: str
     rewritten_reply: str
     emotion: EmotionReaction
@@ -348,8 +349,8 @@ class SnakeRetryState(SaveModel):
 
 class SnakeState(SaveModel):
     id: str = Field(min_length=1)
-    x: float = Field(ge=0, le=WORLD_WIDTH)
-    y: float = Field(ge=GARDEN_BUILDING_POINT[1], le=WORLD_HEIGHT)
+    x: float
+    y: float
     destination: tuple[float, float] | None
     facing: int = Field(ge=0, le=7)
     pause_remaining: float = Field(ge=0)
@@ -369,9 +370,14 @@ class SnakeState(SaveModel):
     @field_validator("destination")
     @classmethod
     def validate_destination(cls, value):
-        if value is not None and not (0 <= value[0] <= WORLD_WIDTH and GARDEN_BUILDING_POINT[1] <= value[1] <= WORLD_HEIGHT):
-            raise ValueError("Invalid snake destination.")
+        if value is not None:
+            validate_destination(value, location=GARDEN_LOCATION)
         return value
+
+    @model_validator(mode="after")
+    def validate_position(self):
+        validate_feet(GARDEN_LOCATION, (self.x, self.y))
+        return self
 
 
 class SnakeEncounterState(saved_record(SnakeProgress), ActiveDialogueState):

@@ -1,7 +1,7 @@
 import pygame
 
 from .button import Button
-from .text import draw_centered_text, draw_wrapped_text
+from .text import draw_centered_text, draw_wrapped_text, wrap_text
 from .text_input import TextInput
 from constants import INK, MUTED, PAPER
 
@@ -33,15 +33,18 @@ class SaveSimScreen:
                 self.name_input.focus()
 
     def draw(self, app):
+        hint = self.message or self.name_input.error or "Creates a new JSON file. Existing saves are kept."
+        extra_height = min(max(0, len(wrap_text(hint, app.small_font, 440)) * app.small_font.get_linesize() - 48),
+                           max(0, app.window.get_height() - 505))
+        self.save_button.rect.y = self.cancel_button.rect.y = 435 + extra_height
         app.game.draw(app)
         overlay = pygame.Surface(app.window.get_size(), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 140))
         app.window.blit(overlay, (0, 0))
-        pygame.draw.rect(app.window, PAPER, (390, 225, 500, 280))
+        pygame.draw.rect(app.window, PAPER, (390, 225, 500, 280 + extra_height))
         draw_centered_text(app.window, "Save simulation as", app.heading_font, 250)
         app.window.blit(app.small_font.render("Save name", True, INK), (420, 290))
         self.name_input.draw(app.window, app.font)
-        hint = self.message or self.name_input.error or "Creates a new JSON file. Existing saves are kept."
-        draw_wrapped_text(app.window, hint, app.small_font, MUTED, (420, 378, 440, 48))
+        draw_wrapped_text(app.window, hint, app.small_font, MUTED, (420, 378, 440, 48 + extra_height))
         self.save_button.draw(app.window, app.font)
         self.cancel_button.draw(app.window, app.font)

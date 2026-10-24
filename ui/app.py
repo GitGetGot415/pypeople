@@ -1,6 +1,8 @@
 import os
 import math
 import pygame
+import traceback
+from pydantic import ValidationError
 from dotenv import load_dotenv
 from pathlib import Path
 from time import monotonic
@@ -32,6 +34,7 @@ from .fonts import UnicodeFont
 
 
 STARTING_CHARACTER_PATH = Path(__file__).resolve().parent.parent / STARTING_CHARACTER_FILE
+SAVE_ERROR_LOG = Path(__file__).resolve().parent.parent / "logs" / "save_error.log"
 
 
 class Application:
@@ -235,8 +238,30 @@ class Application:
             self.save_sim.message = str(error)
             self.game.show_save_message(str(error))
             return False
-        except (OSError, ValueError):
-            message = "Could not save. Check the file and folder permissions, then try again."
+        except (OSError, ValueError) as error:
+            details = traceback.format_exc()
+            if isinstance(error, ValidationError):
+                for issue in error.errors(include_url=False):
+                    value = issue.get("input")
+                    if isinstance(value, dict):
+                        actor = {key: value[key] for key in ("id", "display_name", "location", "x", "y", "behavior", "destination")
+                                 if key in value}
+                        if actor:
+                            details += f"\nInvalid state at {issue['loc']}: {actor!r}\n"
+            try:
+                SAVE_ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
+                SAVE_ERROR_LOG.write_text(details, encoding="utf-8")
+            except OSError:
+                print(details)
+            if isinstance(error, ValidationError):
+                issue = error.errors(include_input=False, include_url=False)[0]
+                location = ".".join(str(part) for part in issue["loc"])
+                reason = issue["msg"].removeprefix("Value error, ")
+                message = f"Could not save: {location + ': ' if location else ''}{reason}"
+            elif isinstance(error, OSError):
+                message = f"Could not write the save file: {error.strerror or error}"
+            else:
+                message = f"Could not save: {error}"
             self.save_sim.message = message
             self.game.show_save_message(message)
             return False
