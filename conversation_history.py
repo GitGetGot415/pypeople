@@ -212,7 +212,7 @@ def relevant_memories(npc, partner_id=None):
     partners = {p.recipient_id if p.promisor_id == npc.id else p.promisor_id for p in promises}
     danger_ids = set()
     if npc.world:
-        from social import claim_by_id, fact_by_id
+        from social_records import claim_by_id, fact_by_id
         for belief in npc.beliefs:
             fact = fact_by_id(npc.world, claim_by_id(npc.world, belief.claim_id).fact_id)
             if fact.kind in ("killing",):
@@ -325,7 +325,7 @@ def validate_history_turns(turns):
 
 
 def validate_history_events(events, history, ids, now):
-    from social import phase_index
+    from social_records import phase_index
     for event in events:
         if not set(event.participants) <= ids or phase_index(event.day, event.phase) > now:
             raise ValueError("Invalid event actors or date.")

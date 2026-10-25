@@ -1,6 +1,7 @@
 """Player action identities and availability, shared by both input routes."""
 
 import re
+from actor_identity import speech_only
 from dialogue import ActionIntent
 
 
@@ -12,7 +13,7 @@ COMMAND_LABELS = {
 
 def normalize_action(intent, snapshot, *, verbal=False):
     """Resolve a verbal label or structured ID once, before generating a reply."""
-    if snapshot.get("actor_kind") == "python":
+    if speech_only(snapshot):
         return ActionIntent(action="SAY")
     result = ActionIntent.model_validate(intent.model_dump(include=set(ActionIntent.model_fields)) if isinstance(intent, ActionIntent) else intent)
     if result.action not in ("TALK_TO_NPC", "GIVE_ITEM"):

@@ -1,4 +1,7 @@
-"""Provider-independent speech, captured choices and accepted-prefix validation."""
+"""Snapshot-level validation of generated responses: speakers, repetition, accepted prefixes and chosen effects.
+
+Text-only rules are in dialogue_rules, which this module builds on.
+"""
 
 import re
 import unicodedata
@@ -19,11 +22,12 @@ from dialogue_rules import (is_name_reference, mentions_account, mentions_privat
                            unquoted_speech, validate_account_speech, validate_apple_roles, validate_memory_ownership,
                            validate_continuity, validate_base_prose, validate_claim_source, validate_english,
                            validate_opinion_reason, validate_environment_speech, validate_speaker_identity,
-                           _personal_apple_request, _short_player_answer, validate_snake_perspective)
-from social import (phase_index, validate_agreements, resident_information, resident_effect_limits,
-    proposals_from_snapshot)
-from actor_identity import account_references, actor_id, forms, own_name
-from social import (orientation_speech, validate_orientation)
+                           personal_apple_request, short_player_answer, validate_snake_perspective)
+from social_records import phase_index
+from information import resident_information, resident_effect_limits
+from social import validate_agreements, proposals_from_snapshot
+from actor_identity import account_references, actor_id, forms, own_name, speech_only
+from information import orientation_speech, validate_orientation
 from dialogue_context import (_actor_name, _validate_speaker)
 from transfers import validate_player_transfer, validate_resident_gift
 
@@ -489,11 +493,11 @@ def _validate_response(raw, snapshot, model):
     if isinstance(result, PlayerIntent):
         # Observations and questions cannot issue commands, even if the model
         # also supplied an action or irrelevant recipient/item fields.
-        result = (ActionIntent(action="SAY") if result.message_type != "COMMAND" or _short_player_answer(snapshot.get("_player_message", "")) else
+        result = (ActionIntent(action="SAY") if result.message_type != "COMMAND" or short_player_answer(snapshot.get("_player_message", "")) else
                   ActionIntent.model_validate(result.model_dump(exclude={"message_type"})))
         # A first-person apple request has no third-party recipient. Resolve its
         # pronoun before the reply is generated or any gift is authorized.
-        if result.action == "GIVE_ITEM" and _personal_apple_request(snapshot.get("_player_message", "")):
+        if result.action == "GIVE_ITEM" and personal_apple_request(snapshot.get("_player_message", "")):
             result.target = PLAYER_LABEL
         if result.action == "TALK_TO_NPC" and result.target.strip().casefold() == PLAYER_LABEL.casefold():
             # The player is already here talking. No new trip or task is needed.
@@ -523,7 +527,7 @@ def _validate_response(raw, snapshot, model):
             raise ValueError("Empty reply")
         if isinstance(result, ActionResponse):
             validate_player_transfer(result, snapshot)
-            if snapshot.get("actor_kind") == "python":
+            if speech_only(snapshot):
                 validate_snake_perspective(result.reply, snake_role="speaker")
             if check_dialogue:
                 validate_speaker_identity(result.reply, own_name(snapshot), PLAYER_NAME_TAG)

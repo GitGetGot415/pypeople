@@ -11,7 +11,7 @@ from activity import ActivitySnapshot
 from interactions import PlayerReplyProgress, move_toward
 from player_records import PlayerOpinion
 from conversation_history import Memory
-from social import Belief, ConversationConcern, OpinionEffect
+from social_records import Belief, ConversationConcern, OpinionEffect
 
 SNAKE_VOICE_BRIEF = "Calm, confident, ceremonious and concise, with occasional dry humor."
 SNAKE_BEHAVIOR = (
@@ -56,6 +56,7 @@ class Snake(SnakeValues, ConversationActor):
     selected: bool = False
     player_reply: PlayerReplyProgress = field(default_factory=PlayerReplyProgress, repr=False, compare=False)
     rng: random.Random = field(default_factory=random.Random, repr=False, compare=False)
+    speech_only = True
     location = "garden"
     sprite_size = (64, 58)
     departure = journey = home_reason = goal = player_call = creative_job = None
@@ -155,8 +156,9 @@ class Snake(SnakeValues, ConversationActor):
         return state
 
     def update(self, dt):
-        from social import (apply_opinion_effects, claim_by_id, fact_by_id,
-                            ConversationConcern, repeat_partner_paused, witnessed_harvests)
+        from social_records import claim_by_id, fact_by_id, ConversationConcern
+        from information import witnessed_harvests
+        from social import apply_opinion_effects, repeat_partner_paused
         from player import owns_resident
         if dt <= 0:
             return

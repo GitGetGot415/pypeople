@@ -11,6 +11,11 @@ def own_name(person):
     return person.get("name", "")
 
 
+def speech_only(person):
+    """The snake's snapshots are marked kind "python": it speaks and shares accounts but never acts."""
+    return person.get("kind") == "python"
+
+
 def forms(name):
     return {name, *name.split()} if name else set()
 

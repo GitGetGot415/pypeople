@@ -143,7 +143,7 @@ def finish_generated_dialogue(interaction, *, reading=False):
 def observe_conversation(world, record, first, second, *, accepted=False):
     """Collect sight while met; only accepted speech establishes an exchange."""
     from locations import observers
-    from social import add_fact
+    from information import add_fact
     # Neither side of a closed door can see the hidden conversation partner.
     if first.location != second.location:
         return

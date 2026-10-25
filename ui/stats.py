@@ -6,7 +6,9 @@ from conversation_history import (has_failed_voice_rewrite, usable_rewrite, uses
                                  voice_rewrite_errors)
 from emotions import portrait_expression
 from npc import NPC
-from social import assertion_text, claim_by_id, concern_description, fact_by_id, phase_label, selected_beliefs
+from social_records import claim_by_id, fact_by_id, phase_label
+from information import assertion_text, selected_beliefs
+from social import concern_description
 from .creations import CreationsGallery
 from .button import Button
 from .text import paginate_turn, wrap_text, scrollbar_rects, ScrollbarDrag

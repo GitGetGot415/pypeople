@@ -8,8 +8,8 @@ from pydantic import ValidationError
 from constants import CREATIVE_REQUEST_SECONDS, DIALOGUE_TIMEOUT_SECONDS, MAX_LLM_REQUESTS
 from model_transport import MODEL
 from generation_errors import InvalidResponseError, RequestError
-from llm import (VoiceRewriteValidationError, request_response, request_voice_rewrite,
-    validate_response, validate_voice_rewrite, voice_rewrite_snapshot)
+from llm import request_response, request_voice_rewrite, validate_response
+from voice_rewrite import VoiceRewriteValidationError, validate_voice_rewrite, voice_rewrite_snapshot
 from dialogue import ConversationTurn, VoiceRewriteResponse
 from ollama_manager import DEFAULT_OLLAMA_MODEL
 from model_debug import (DebugLogs, ProviderAdmission, RequestLog, RequestCancelled, RequestControl,

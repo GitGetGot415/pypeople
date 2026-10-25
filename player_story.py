@@ -46,7 +46,7 @@ def starting_dialogue_context(world, resident_id):
 
 def prepare_player_start(world):
     """Give Judy her prior day here before assigning current-day goals."""
-    from social import add_fact
+    from information import add_fact
 
     resident = world.npcs[0]
     add_fact(world, "snake_claim", world.snake, resident, PLAYER_START_ENCOUNTER, None,
@@ -120,7 +120,7 @@ def player_question_opening(world, npc):
 
 
 def validate_starting_history(world, residents):
-    from social import phase_index
+    from social_records import phase_index
 
     encounter = starting_encounter(world)
     if encounter is not None:

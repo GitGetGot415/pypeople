@@ -2,7 +2,7 @@
 
 def remember_description(npc):
     """Only authored Background supplies former-life knowledge."""
-    from social import add_fact
+    from information import add_fact
     from dialogue_text import split_sentences
 
     description = npc.character["Background"]

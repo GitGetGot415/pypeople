@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from apartments import offer_invitation, pending_invitation
 from conversation_history import describe_opinion_change
 from actor_identity import (actor_catalog, name_forms)
-from social import orientation_speech
+from information import orientation_speech
 from activity import Behavior
 from player import owns_conversation
 from simulation import PendingAction
@@ -87,7 +87,7 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
                 validate_transfer(world, npc, world.player, offer.item, offer.quantity)
         except ValueError as exc:
             error = str(exc)
-    if not error and npc is world.snake:
+    if not error and npc.speech_only:
         if (result.action != "SAY" or result.gift_offer or result.gift_acceptance or result.apple_promise
                 or result.invitation or result.invitation_acceptance or result.invitation_resolution):
             error = "The snake can speak but cannot carry out resident tasks, gifts or invitations."
@@ -162,7 +162,7 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
         if visible:
             pending_offer = ({**result.gift_offer.model_dump(), "npc_id": npc.id,
                 "revision": npc.command_revision, "record_id": record.id} if result.gift_offer else None)
-        elif npc is not world.snake and snapshot.get("request_kind") != "player_acknowledgment":
+        elif not npc.speech_only and snapshot.get("request_kind") != "player_acknowledgment":
             npc.player_call = PlayerReplyCall(kind="reply", reference=record.id, closing=closes_dialogue,
                 gift_offer=result.gift_offer)
             npc.resume_pending = True

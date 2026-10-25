@@ -131,12 +131,12 @@ class Simulation:
 
     @property
     def phase_index(self):
-        from social import phase_index
+        from social_records import phase_index
         return phase_index(self.day, self.phase)
 
     @property
     def last_killing_phase(self):
-        from social import phase_index
+        from social_records import phase_index
         return max((phase_index(n.departure["day"], n.departure["phase"])
                     for n in self.archived), default=None)
 
@@ -203,7 +203,7 @@ class Simulation:
         reference = record.id if record is not None else None
         event = WorldEvent(self.day, self.phase, kind, [npc.id for npc in participants], text, reference)
         self.events.append(event)
-        from social import record_event_fact
+        from information import record_event_fact
         record_event_fact(self, event, record)
         del self.events[:-200]
         return event
@@ -458,7 +458,7 @@ class Simulation:
         self.tree.fruit -= quantity
         actor.inventory["fruit"] = actor.inventory.get("fruit", 0) + quantity
         self.tree.shake_remaining = TREE_SHAKE_SECONDS
-        from social import add_fact, harvest_summary
+        from information import add_fact, harvest_summary
         from locations import observers
         text = harvest_summary(actor.name, quantity)
         event = self.publish("harvest", (actor,), text)
@@ -468,7 +468,7 @@ class Simulation:
 
     def escalation_choices(self, meeting):
         from constants import CONFRONTATION_OPINION, KILLING_COOLDOWN_PHASES, GRIEVANCE_FACT_KINDS
-        from social import claim_by_id, fact_by_id
+        from social_records import claim_by_id, fact_by_id
         first, target = meeting.initiator, meeting.recipient
         if (meeting.purpose != "confrontation" or self.npc_by_id(first.id) is not first
                 or self.npc_by_id(target.id) is not target
@@ -494,7 +494,8 @@ class Simulation:
     def commit_killing(self, meeting):
         from constants import (KILLING_DISTANCE, KILLING_WITNESS_PENALTY, KILLING_RELIEF_OPINION, KILLING_RELIEF_CHANCE, KILLING_WITNESS_MAX_PENALTY, KILLING_WITNESS_SOCIAL_RANGE, KILLING_FRIENDSHIP_DIVISOR, KILLING_RELIEF_DELTA)
         from locations import observers, available
-        from social import add_fact, claim_by_id
+        from social_records import claim_by_id
+        from information import add_fact
         decision = meeting.escalation
         attacker, victim = meeting.initiator, meeting.recipient
         choices = self.escalation_choices(meeting)
@@ -542,7 +543,7 @@ class Simulation:
 
     def observed_event(self, kind, subject, target, text, record=None, *, witnesses=None):
         """Explicit visual event, or an explicitly selected private participant account."""
-        from social import add_fact
+        from information import add_fact
         from conversation_history import remember
         from locations import observers
         if witnesses is None:
@@ -748,7 +749,10 @@ class Simulation:
         return npc
 
 
-def validate_saved_actions(npcs, player, mode, tree, pending_actions, live_ids, indoor_ids, reserved, history, creation_ids):
+def validate_saved_actions(ctx):
+    state = ctx.state
+    npcs, player, tree, pending_actions = state.npcs, state.player, state.tree, state.pending_actions
+    live_ids, reserved, history, creation_ids = ctx.live_ids, ctx.reserved, ctx.history, ctx.creation_ids
     from activity import Behavior, validate_activity_target
     from transfers import transfer_matches
     for index, npc in enumerate(npcs):

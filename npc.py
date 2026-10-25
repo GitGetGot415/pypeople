@@ -5,11 +5,11 @@ from typing import Annotated, Literal
 from pydantic import Field
 from dialogue import (AcceptedProposal, ConversationPart, DisclosureChoice, LeverageUse, ResidentGift,
                      ThirdPartyOpinion, EscalationChoice)
-from social import (ConcernKind, ConversationConcern, Goal, OpinionEffect, Belief, check_relationship_goals, commit_agreements,
-                   commit_concern_use, commit_information, concern_description, concern_topic,
-                   conversation_references, dialogue_failure_cooldown, information_views,
-                   permitted_proposals, phase_label, prepare_information, private_context,
-                   validate_live_agreements)
+from social_records import ConcernKind, ConversationConcern, Goal, OpinionEffect, Belief, phase_label
+from information import information_views, prepare_information
+from social import (check_relationship_goals, commit_agreements, commit_concern_use, commit_information,
+    concern_description, concern_topic, conversation_references, dialogue_failure_cooldown,
+    permitted_proposals, private_context, validate_live_agreements)
 from interactions import (DialogueProgress, PlayerReplyProgress, company_point, conversation_points,
                          dialogue_finished, face_each_other, face_toward, finish_generated_dialogue,
                          move_toward, record_failed_dialogue, record_generated_turns,
@@ -33,7 +33,7 @@ from constants import (MAX_RESIDENTS, PLAYER_CALL_COOLDOWN, REST_SECONDS_RANGE,
     STARTING_FATIGUE_RANGE, EXCHANGE_FATIGUE, CONVERSATION_CANCELLED, CONVERSATION_DIALOGUE_READY,
     CONVERSATION_ENDED_BEFORE_DIALOGUE, CONVERSATION_ENDED_BEFORE_SHARING, CONVERSATION_FAILED,
     CONVERSATION_FINISHED, CONVERSATION_WAITING_FOR_DIALOGUE, CONVERSATION_WALKING_TO_MEET)
-from social import (NPC_ARRIVAL_MEMORY, validate_orientation)
+from information import NPC_ARRIVAL_MEMORY, validate_orientation
 from actor_identity import (actor_catalog, name_forms)
 from transfers import Handoff
 from transfer_records import TransferIntent
@@ -105,6 +105,8 @@ class ResidentValues(ActivitySnapshot):
 
 class ConversationActor:
     """Shared participant state; each actor owns its movement and capabilities."""
+
+    speech_only = False  # True: may talk and share accounts, but cannot carry out tasks, gifts or invitations
 
     def activity_state(self):
         return ActivitySnapshot.capture(self)
@@ -201,7 +203,7 @@ class NPC(ResidentValues, ConversationActor):
 
     @property
     def last_killing_phase(self):
-        from social import phase_index
+        from social_records import phase_index
         return max((phase_index(n.departure["day"], n.departure["phase"])
                     for n in self.world.archived if n.departure["attacker_id"] == self.id), default=None)
 
@@ -812,7 +814,7 @@ class Conversation(ResidentProgress):
             raise ValueError("The resident roster changed while dialogue was being prepared. Retry this meeting.")
         if any(n.command_revision != self.request_actor_revisions[n.id] for n in (self.initiator, self.recipient)):
             raise ValueError("The participants changed activities before the reply arrived.")
-        if self.initiator is self.initiator.world.snake or self.recipient is self.initiator.world.snake:
+        if self.initiator.speech_only or self.recipient.speech_only:
             if response.gift or response.accepted_proposals or response.handoff_thanks or response.escalation or response.leverage:
                 raise ValueError("Snake meetings allow speech and sourced disclosures only.")
         validate_live_agreements(self, response, dialogue_validation=dialogue_validation)
@@ -1088,10 +1090,16 @@ class Conversation(ResidentProgress):
              thanks=self.handoff_thanks, rewritten_thanks=self.rewritten_handoff_thanks)
 
 
-def validate_saved_conversations(conversations, history, live, live_ids, facts, claims, creations, reserved, tree_id):
+def validate_saved_conversations(ctx):
+    state = ctx.state
+    conversations, history, facts, claims, creations, reserved, tree_id = (
+        state.conversations, ctx.history, ctx.facts, ctx.claims, state.creations, ctx.reserved, state.tree.id)
+    live, live_ids = {**ctx.live, state.snake.id: state.snake}, ctx.live_ids | {state.snake.id}
     from constants import CONVERSATION_MAX_TURNS
     from activity import validate_activity_target
-    from social import validate_saved_concern, validate_agreements, validate_information
+    from information import validate_information
+    from social_saves import validate_saved_concern
+    from social import validate_agreements
     from types import SimpleNamespace
     for interaction in conversations:
         pair = (interaction.initiator, interaction.recipient)

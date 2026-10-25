@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Annotated, Literal, ClassVar
 from types import SimpleNamespace
 from pydantic import Field, field_validator, model_validator
-from records import SaveModel, saved_record, restore_record
+from records import SaveContext, SaveModel, saved_record, restore_record
 from interactions import DialogueProgress
 from character_data import normalize_character, normalize_opinions
 from constants import (CONCERN_LIFETIME_RANGE, SNAKE_NAME, WORLD_HEIGHT, WORLD_WIDTH, GARDEN_LOCATION,
@@ -31,9 +31,9 @@ from simulation import PendingAction, Simulation, validate_saved_actions
 from player import (Player, PlayerInteraction, validate_saved_calls, validate_saved_interaction,
                     validate_saved_player_mode)
 from player_story import validate_starting_history, resident_arrival_days
-from social import (Belief, Claim, ConversationConcern, Disclosure, Fact, Goal, OpinionEffect,
-                   Promise, Proposal, ClaimOption, InformationContext, phase_index,
-                   validate_social_records, validate_saved_promises)
+from social_records import (Belief, Claim, ConversationConcern, Disclosure, Fact, Goal, OpinionEffect,
+    Promise, Proposal, ClaimOption, InformationContext, phase_index)
+from social_saves import validate_social_records, validate_saved_promises
 
 
 SAVE_DIRECTORY = Path(__file__).resolve().parent / "saves"
@@ -397,7 +397,6 @@ class SimulationState(SaveModel):
         residents = [*self.npcs, *self.archived]
         live = {npc.id: npc for npc in self.npcs}
         live_ids = set(live)
-        indoor_ids = {n.id for n in self.npcs if n.location != "garden"}
         history = {h.id: h for h in self.history}
         events = {e.id: e for e in self.events}
         facts = {f.id: f for f in self.facts}
@@ -408,15 +407,18 @@ class SimulationState(SaveModel):
         except (KeyError, TypeError, AttributeError, IndexError) as exc:
             raise ValueError("Invalid physical state: required ownership, location or source data is missing.") from exc
         owner_ids = {self.player.id, *[n.id for n in residents]}
-        creation_ids = validate_saved_home(residents, self.creations, self.player, self.mode, self.day, self.phase,
-                                          live_ids, owner_ids, self.visit, physical, self.conversations)
+        ctx = SaveContext(state=self, residents=residents, live=live, live_ids=live_ids,
+                          history=history, events=events, facts=facts, claims=claims, disclosures=disclosures,
+                          owner_ids=owner_ids, physical=physical)
+        ctx.creation_ids = validate_saved_home(ctx)
         actors = {n.id: (n.display_name or n.character["Name"]) for n in residents}
         actors[self.snake.id] = SNAKE_NAME
         ids = set(actors)
         for npc in [*residents, self.snake]:
             if any(target not in ids or target == npc.id for target in npc.opinions):
                 raise ValueError("Runtime opinions require distinct resident or snake actor IDs.")
-        now = phase_index(self.day, self.phase)
+        ctx.ids, ctx.now = ids, phase_index(self.day, self.phase)
+        now = ctx.now
         if len(ids) != len(residents) + 1 or self.tree.id in ids or len({v.casefold() for v in actors.values()}) != len(ids):
             raise ValueError("Actor IDs and stable display names must be unique.")
         if (self.player.id in ids or self.tree.id == self.player.id
@@ -434,7 +436,7 @@ class SimulationState(SaveModel):
             elif command.target:
                 raise ValueError("Unexpected saved command recipient.")
             if command.action == "GIVE_ITEM":
-                if command.quantity < 1 or command.item != "fruit" and (command.item not in creation_ids or command.quantity != 1):
+                if command.quantity < 1 or command.item != "fruit" and (command.item not in ctx.creation_ids or command.quantity != 1):
                     raise ValueError("A saved gift request needs its actual quantity and possession identity.")
             elif command.item or command.quantity:
                 raise ValueError("Unexpected saved command possession.")
@@ -456,19 +458,13 @@ class SimulationState(SaveModel):
         if len({(f.source_id, f.kind) for f in self.facts}) != len(self.facts):
             raise ValueError("Duplicate fact sources.")
         validate_history_events(self.events, history, ids, now)
-        validate_transfer_history(history, self.creations, self.promises, self.player_acknowledgments,
-                                  owner_ids, live_ids, self.player.id, now, creation_ids, ids)
-        validate_social_records(facts, claims, disclosures, events, history, residents, self.snake,
-                                ids, live_ids, self.day, now)
-        validate_saved_promises(self.promises, history, ids, live_ids, self.player.id, now)
-        reserved = set()
-        validate_saved_handoffs(self.handoffs, history, live, live_ids, self.player, physical,
-                                self.mode, creation_ids, events, reserved, self.tree.id)
-        validate_saved_conversations(self.conversations, history, {**live, self.snake.id: self.snake}, live_ids | {self.snake.id}, facts, claims,
-                                     self.creations, reserved, self.tree.id)
+        validate_transfer_history(ctx)
+        validate_social_records(ctx)
+        validate_saved_promises(ctx)
+        validate_saved_handoffs(ctx)
+        validate_saved_conversations(ctx)
         self.validate_killings(now, facts, history)
-        validate_saved_actions(self.npcs, self.player, self.mode, self.tree, self.pending_actions,
-                               live_ids, indoor_ids, reserved, history, creation_ids)
+        validate_saved_actions(ctx)
         pending, processed = self.pending_arrival_days, self.processed_arrival_days
         arrival_days = resident_arrival_days(self)
         if (pending != sorted(set(pending)) or processed != sorted(set(processed)) or set(pending) & set(processed)
@@ -479,8 +475,7 @@ class SimulationState(SaveModel):
             raise ValueError("Completed arrivals must match their preserved residents.")
         if not set(self.introductions) <= live_ids:
             raise ValueError("Invalid introduction identity.")
-        validate_saved_calls(residents, self.npcs, self.player, self.facts, history, self.creations,
-                             self.promises, self.pending_actions, physical, live_ids, reserved, creation_ids)
+        validate_saved_calls(ctx)
         return self
 
 
@@ -548,7 +543,7 @@ class SimulationState(SaveModel):
                 collector = next((a for a in [*self.npcs, *self.archived, self.player] if a.id == fact.subject_id), None)
                 if collector is None or fact.location != "garden":
                     raise ValueError("A harvest requires a human collector in the garden.")
-                from social import harvest_summary
+                from information import harvest_summary
                 name = (Player.name.fget(collector) if collector is self.player
                         else collector.display_name or collector.character["Name"])
                 if fact.summary != harvest_summary(name, fact.quantity):

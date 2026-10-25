@@ -1,4 +1,8 @@
-"""Conservative checks connecting newly generated speech to conversation effects."""
+"""Text-level checks on generated speech: identity, grounding, continuity and promises.
+
+These rules need only the text and a few names, so social, information and the prompt builders can use them.
+Validation that needs a whole snapshot or accepted draft lives in dialogue_validation, which builds on this module.
+"""
 
 import re
 import unicodedata
@@ -694,12 +698,12 @@ def validate_snake_perspective(text, *, snake_role):
             "your partner's actions as though another participant performed them.")
 
 
-def _short_player_answer(message):
+def short_player_answer(message):
     return bool(re.fullmatch(r"\s*(?:yes(?: please)?|no(?: thanks| thank you| not really)?|yep|yup|nope|nah|sure|"
                              r"ok(?:ay)?|absolutely|sounds good|thanks|thank you)\s*[.!?]*\s*", message, re.I))
 
 
-def _personal_apple_request(message):
+def personal_apple_request(message):
     """Resolve the recipient of a complete, unambiguous first-person request."""
     return re.fullmatch(
         r"\s*(?:please\s+)?(?:(?:can|could|may|might)\s+i\s+(?:please\s+)?(?:have|get|receive)"

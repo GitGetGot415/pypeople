@@ -7,7 +7,7 @@ from constants import (APPLE_SATISFACTION, DECISION_SECONDS, MOVEMENT_SPEED, SOC
     SOCIAL_START, STARTING_DAY, JUDY_ROOM_NUMBER, SOCIAL_RADIUS)
 from interactions import company_point
 from social import (concern_topic, goal_attempt_cooling_down, last_conversation_partner, pair_objective,
-                   pending_promises, repeat_partner_paused, regards_as_dangerous)
+    pending_promises, repeat_partner_paused, regards_as_dangerous)
 
 
 def arrival_greeter(world):

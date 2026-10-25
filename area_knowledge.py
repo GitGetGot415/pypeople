@@ -52,7 +52,7 @@ def known_layout():
 
 
 def familiarity(npc):
-    from social import phase_index
+    from social_records import phase_index
     world = npc.world
     greeter = next((p for p in [*world.npcs, *world.archived] if p.room_number == JUDY_ROOM_NUMBER), None)
     name = greeter.name if greeter else "Judy Judge"

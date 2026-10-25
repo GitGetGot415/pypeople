@@ -340,7 +340,7 @@ def accept_player_evidence(world, npc, record, message, response, *, opening=Fal
 
 
 def accept_player_promises(world, npc, record, response, message, *, opening=False):
-    from social import Promise, phase_label
+    from social_records import Promise, phase_label
     from dialogue_rules import validate_apple_promise
     for pending in record.player_promise_offers:
         if pending.status != "offered":
@@ -471,7 +471,11 @@ def update_calls(world, dt):
             break
 
 
-def validate_saved_calls(residents, npcs, player, facts, history, creations, promises, pending_actions, interaction, live_ids, reserved, creation_ids):
+def validate_saved_calls(ctx):
+    state = ctx.state
+    residents, npcs, player, facts, history, creations = ctx.residents, state.npcs, state.player, state.facts, ctx.history, state.creations
+    promises, pending_actions, interaction = state.promises, state.pending_actions, ctx.physical
+    live_ids, reserved, creation_ids = ctx.live_ids, ctx.reserved, ctx.creation_ids
     from activity import Behavior
     from constants import PLAYER_CALL_LIMIT
     from conversation_history import source_record

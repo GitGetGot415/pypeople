@@ -7,8 +7,8 @@ from dialogue_rules import (is_name_reference, name_pattern,
                            named_context, validate_base_prose, validate_opinion_reason,
                            validate_speaker_identity)
 from dialogue_text import split_sentences, contains_question
-from social import NPC_ARRIVAL_MEMORY, resident_turn_choices
-from actor_identity import actor_id, own_name, forms
+from information import NPC_ARRIVAL_MEMORY, resident_turn_choices
+from actor_identity import actor_id, own_name, forms, speech_only
 
 
 NAME_TAG_INSTRUCTION = f"""Every character has a readable name tag floating above their head.
@@ -347,7 +347,7 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
     state = dict(request_kind="resident_assessment" if assessment else "handoff_thanks" if thanks else "resident_turn",
                  speaker_role=role, turn_index=index, purpose=snapshot.get("purpose", "chat"),
                  interaction_id=snapshot.get("interaction_id"), arrival_focus=orientation, speaker=speaker, listener=listener,
-                 social_only=any(snapshot[r].get("kind") == "python" for r in ("initiator", "recipient")),
+                 social_only=any(speech_only(snapshot[r]) for r in ("initiator", "recipient")),
                  opinion_target=partner["name"], pending_reactions=pending, choices=choices,
                  day=person.get("day", 1), time_of_day=person.get("time_of_day", "day"),
                  environment=local_environment(person.get("location", "garden")), location=person.get("location", "garden"),

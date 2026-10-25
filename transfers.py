@@ -96,7 +96,7 @@ def commit_transfer(world, interaction):
     event = world.publish("fruit_shared" if item == "fruit" else "work_shared", (giver, recipient),
                           f"{giver.name} gave {description} to {recipient.name}.", record)
     from locations import observers
-    from social import add_fact
+    from information import add_fact
     add_fact(world, "apple_given" if item == "fruit" else "work_given", giver, recipient,
              event.id, record, event.text, observers(world, giver, recipient))
     interaction.outcome_event_id = event.id
@@ -405,9 +405,13 @@ def validate_player_transfer(result, snapshot):
             raise ValueError("A SAY reply cannot promise an unsupported creative commission.")
 
 
-def validate_transfer_history(history, creations, promises, acknowledgments, owner_ids, live_ids, player_id, now, creation_ids, ids):
+def validate_transfer_history(ctx):
+    state = ctx.state
+    history, creations, promises, acknowledgments = ctx.history, state.creations, state.promises, state.player_acknowledgments
+    owner_ids, live_ids, player_id, now, creation_ids, ids = ctx.owner_ids, ctx.live_ids, state.player.id, ctx.now, ctx.creation_ids, ctx.ids
     from conversation_history import validate_history_record
-    from social import phase_index, validate_player_promise_offers
+    from social_records import phase_index
+    from social_saves import validate_player_promise_offers
     transfer_ids, transfer_order, player_offer_ids = set(), [], set()
     for record in history.values():
         validate_player_promise_offers(record, promises, owner_ids, player_id, now, player_offer_ids)
@@ -446,7 +450,10 @@ def transfer_matches(intent, giver_id, recipient_id, item, quantity):
         giver_id, recipient_id, item, quantity)
 
 
-def validate_saved_handoffs(handoffs, history, live, live_ids, player, ownership, mode, creation_ids, events, reserved, tree_id):
+def validate_saved_handoffs(ctx):
+    state = ctx.state
+    handoffs, history, live, live_ids, player = state.handoffs, ctx.history, ctx.live, ctx.live_ids, state.player
+    ownership, mode, creation_ids, events, reserved, tree_id = ctx.physical, state.mode, ctx.creation_ids, ctx.events, ctx.reserved, state.tree.id
     from activity import validate_activity_target
     from conversation_history import source_record
     for handoff in handoffs:

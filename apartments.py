@@ -360,7 +360,8 @@ def update_visit(world, dt):
 def observe_visit(world):
     """An entrant can notice the current meeting, without its invitation or terms."""
     from locations import observers
-    from social import add_fact, fact_by_id
+    from social_records import fact_by_id
+    from information import add_fact
     visit = world.visit
     if not visit or visit.stage != "hosting":
         return
@@ -433,10 +434,13 @@ def validate_saved_invitations(invitations, records, residents, player_id, inter
         raise ValueError("Only the current speaker can keep a live invitation.")
 
 
-def validate_saved_home(residents, creations, player, mode, day, phase, live_ids, owner_ids, visit, interaction, conversations):
+def validate_saved_home(ctx):
+    state = ctx.state
+    residents, creations, player, mode, day, phase = ctx.residents, state.creations, state.player, state.mode, state.day, state.phase
+    live_ids, owner_ids, visit, interaction, conversations = ctx.live_ids, ctx.owner_ids, state.visit, ctx.physical, state.conversations
     from types import SimpleNamespace
     from locations import player_has_room
-    from social import phase_index
+    from social_records import phase_index
     layout = SimpleNamespace(residents=residents, mode=mode, player=player)
     living = [n for n in residents if n.departure is None]
     if len({n.room_number for n in living}) != len(living):

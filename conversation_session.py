@@ -225,7 +225,7 @@ class ConversationSession:
         from player import work_choices, requested_work_id
         snapshot = npc.snapshot(self.tree, self.simulation.player.id)
         from apartments import invitation_choices, pending_invitation
-        snapshot["invitation_choices"] = invitation_choices(self.simulation, npc) if npc is not self.simulation.snake else []
+        snapshot["invitation_choices"] = invitation_choices(self.simulation, npc) if not npc.speech_only else []
         invitation = pending_invitation(self.simulation)
         snapshot["pending_invitation"] = asdict(invitation) if invitation else None
         interaction = self.simulation.player_interaction
@@ -234,13 +234,12 @@ class ConversationSession:
         snapshot["player_claims"] = relevant_claims(self.simulation, npc.id, message)
         snapshot.update(player_id=self.simulation.player.id, player_inventory=self.player_target(),
                         owned_works=work_choices(self.simulation, npc.id, message))
-        from social import phase_label
+        from social_records import phase_label
         snapshot.update(_player_message=message, phase_index=self.simulation.phase_index,
             apple_promise_choices=[dict(deadline=self.simulation.phase_index + step,
                 label=phase_label(self.simulation.phase_index + step)) for step in PLAYER_PROMISE_DEADLINE_STEPS])
-        if npc is self.simulation.snake:
+        if npc.speech_only:
             snapshot["apple_promise_choices"] = []
-            snapshot["actor_kind"] = "python"
         snapshot["resolved_work_id"] = requested_work_id(self.simulation, npc.id, message)
         from locations import available
         snapshot["other_npcs"] = [{**other.snapshot(self.tree, private=False),

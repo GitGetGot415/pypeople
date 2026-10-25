@@ -66,7 +66,7 @@ class PlayerAcknowledgment:
 
 
 def validate_player_reports(reports, records, player_id, now):
-    from social import phase_index
+    from social_records import phase_index
     claim_ids = set()
     for claim in reports:
         record = records.get(claim.conversation_id)
