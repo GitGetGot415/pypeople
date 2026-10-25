@@ -1,5 +1,6 @@
 """Session records of dialogue and its outcomes."""
 
+import re
 from player_records import PlayerPromiseOffer
 from transfer_records import TransferIntent, TransferReceipt
 from dataclasses import dataclass, field
@@ -278,6 +279,23 @@ def describe_opinion_change(person, target, previous, opinion, reason):
     before = "Not recorded" if previous is None else f"{previous:+d}"
     change = "" if previous is None else f" ({opinion - previous:+d})"
     return f"{person}'s opinion of {target}: {before} -> {opinion:+d}{change}\nReason: {reason}"
+
+
+def split_opinion_outcome(text):
+    """Return (summary, reason, direction) for an opinion-change outcome, or None for any other outcome.
+
+    Direction is the sign of the change; with no recorded earlier opinion it is the sign of the new one."""
+    header, separator, reason = text.partition("\nReason: ")
+    if separator and "'s opinion of " in header and "\n" not in header:
+        match = re.search(r" -> ([+-]\d+)(?: \(([+-]\d+)\))?$", header)
+        if match:
+            value = int(match.group(2) or match.group(1))
+            return header, reason, (value > 0) - (value < 0)
+    match = re.fullmatch(r"(.+'s opinion of .+ changed ([+-]\d+)) after assessing an allegation\. (.*)", text, re.DOTALL)
+    if match:
+        value = int(match.group(2))
+        return match.group(1), match.group(3), (value > 0) - (value < 0)
+    return None
 
 
 def validate_history_record(record, history, ids, player_id):

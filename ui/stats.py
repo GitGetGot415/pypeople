@@ -2,8 +2,8 @@ import pygame
 from interactions import player_request_pending
 from time import monotonic
 from character_data import DEFAULT_COLORS, IDENTITY_FIELDS, PROFILE_FIELDS
-from conversation_history import (has_failed_voice_rewrite, usable_rewrite, uses_original_dialogue,
-                                 voice_rewrite_errors)
+from conversation_history import (has_failed_voice_rewrite, split_opinion_outcome, usable_rewrite,
+                                 uses_original_dialogue, voice_rewrite_errors)
 from emotions import portrait_expression
 from npc import NPC, ConversationActor
 from social_records import claim_by_id, fact_by_id, phase_label
@@ -236,24 +236,29 @@ class StatsScreen:
             add(f"{record.origin.title()} / {record.purpose.replace('_', ' ')}", app.small_font, MUTED)
             gap()
             add(f"Topic / request: {record.topic}")
-            gap()
+            rule()
             add("What they wanted to discuss", app.heading_font)
             if record.intended_subjects:
                 for name in record.participants:
                     if name in record.intended_subjects:
-                        add(name, color=ACCENT)
-                        add(record.intended_subjects[name])
+                        key = ("subject", record.id, name)
+                        opened = key in self.expanded
+                        top = height()
+                        add(f"{'-' if opened else '+'} {name}", color=ACCENT)
+                        self.expand_links.append((top, height(), key))
+                        if opened:
+                            add(record.intended_subjects[name])
                         gap()
-                add("Interests at the start; the conversation may follow another subject.", app.small_font, MUTED)
+                add("Click a name to reveal their interest at the start; the conversation may follow another subject.", app.small_font, MUTED)
             else:
                 add("Individual subjects were not recorded for this exchange.", app.small_font, MUTED)
-            gap()
+            rule()
             if record.dialogue_errors:
                 add("Base dialogue validation", app.heading_font)
                 for reason in record.dialogue_errors:
                     add(reason, app.small_font, FAILED_CONVERSATION_SELECTED_COLOR)
                 add("Validation was off; dialogue accepted and outcomes applied.", app.small_font, MUTED)
-                gap()
+                rule()
             rewrite_errors = {}
             for index, speaker, reason in voice_rewrite_errors(record):
                 rewrite_errors.setdefault(reason, []).append(f"{speaker} (turn {index + 1})")
@@ -263,18 +268,36 @@ class StatsScreen:
                     add(", ".join(affected), app.small_font, MUTED)
                     add(reason, app.small_font, REWRITE_FAILED_CONVERSATION_SELECTED_COLOR)
                     gap()
+                rule()
             add("Outcome", app.heading_font)
             if record.error:
                 add(record.error, color=FAILED_CONVERSATION_SELECTED_COLOR)
                 gap()
-            for outcome in record.outcomes:
+            for index, outcome in enumerate(record.outcomes):
                 if record.error and " ".join(outcome.split()) == " ".join(record.error.split()):
                     continue
-                add(outcome)
+                change = split_opinion_outcome(outcome)
+                if change is None:
+                    add(outcome)
+                    gap()
+                    continue
+                summary, reason, direction = change
+                key = ("outcome", record.id, index)
+                opened = key in self.expanded
+                top = height()
+                add(f"{'-' if opened else '+'} {summary}",
+                    color=OPINION_POSITIVE_COLOR if direction > 0 else OPINION_NEGATIVE_COLOR if direction < 0 else INK)
+                self.expand_links.append((top, height(), key))
+                if opened:
+                    add(reason, app.small_font, MUTED, 16)
                 gap()
             if not record.outcomes and not record.error:
                 add("No outcome recorded yet.", color=MUTED)
                 gap()
+            elif any(split_opinion_outcome(outcome) for outcome in record.outcomes):
+                add("Click an opinion change to read the reasoning.", app.small_font, MUTED)
+                gap()
+            rule()
             add("Dialogue", app.heading_font)
             gap()
             available = [usable_rewrite(turn.parts, turn.rewritten)
@@ -290,6 +313,7 @@ class StatsScreen:
                 message(turn,
                         original=uses_original_dialogue(turn.parts, turn.rewritten, original=app.original_dialogue))
             if record.failed_turns:
+                rule()
                 add("Generated draft (not applied)", app.heading_font)
                 add("Generation failed. These words did not change the simulation.", app.small_font, MUTED)
                 gap()
