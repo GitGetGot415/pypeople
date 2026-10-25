@@ -9,7 +9,7 @@ from uuid import uuid4
 from pydantic import Field
 from dialogue import ConversationTurn
 from dialogue_text import contains_serialized_dialogue, contains_speaker_label
-from dialogue_rules import validate_rewrite_identity
+from dialogue_rules import validate_rewrite_additions, validate_rewrite_identity
 
 
 class RecordedPart(TypedDict):
@@ -113,7 +113,7 @@ def _part_text(part):
     return part[0] if isinstance(part, tuple) else part.text
 
 
-def rewrite_validation_error(parts, rewritten, *, speaker="", listener="", names=()):
+def rewrite_validation_error(parts, rewritten, *, speaker="", listener="", names=(), mannerisms=""):
     """Report a failed rewrite check without replacing any generated words."""
     if not rewritten:
         return ""
@@ -127,6 +127,8 @@ def rewrite_validation_error(parts, rewritten, *, speaker="", listener="", names
         try:
             validate_rewrite_identity(" ".join(_part_text(part) for part in parts), " ".join(rewritten),
                                       speaker=speaker, listener=listener, names=names)
+            validate_rewrite_additions(" ".join(_part_text(part) for part in parts), " ".join(rewritten),
+                                       speaker=speaker, mannerisms=mannerisms)
         except ValueError as exc:
             return str(exc)
     return ""

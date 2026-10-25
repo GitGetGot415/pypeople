@@ -67,10 +67,13 @@ class OpinionUpdate(StrictResponse):
 OpinionChangeLabel = Literal[tuple(OPINION_CHANGES)]
 
 
-class OpinionChange(StrictResponse):
-    """An assessment's reason comes first, then the direction it moves the current opinion."""
+class OpinionReason(StrictResponse):
+    """An assessment writes only the reason; a separate step reads it to choose the direction."""
     person: str = Field(min_length=1)
     reason: str = Field(min_length=1, max_length=400)
+
+
+class OpinionDirection(StrictResponse):
     change: OpinionChangeLabel
 
 
@@ -175,11 +178,10 @@ class AccountReaction(StrictResponse):
     stance: Literal["uncertain", "believed", "disbelieved"]
 
 
-class ReputationChoice(StrictResponse):
+class ReputationReason(StrictResponse):
     claim_id: str
     subject_id: str
     reason: str = Field(min_length=1, max_length=400)
-    change: OpinionChangeLabel
 
 
 class LeverageChoice(StrictResponse):
@@ -194,7 +196,6 @@ class ResidentTurnResponse(DialoguePartsResponse):
     acceptances: list[str] = Field(default_factory=list, max_length=CONVERSATION_MAX_AGREEMENTS)
     disclosures: list[AccountDisclosure] = Field(default_factory=list, max_length=1)
     reactions: list[AccountReaction] = Field(default_factory=list, max_length=CONVERSATION_MAX_DISCLOSURES)
-    third_party_opinions: list[ReputationChoice] = Field(default_factory=list, max_length=CONVERSATION_MAX_REPUTATION_EFFECTS)
     leverage: list[LeverageChoice] = Field(default_factory=list, max_length=CONVERSATION_MAX_LEVERAGE)
 
 
@@ -207,9 +208,9 @@ class EscalationChoice(StrictResponse):
 
 class ResidentAssessment(StrictResponse):
     escalation: EscalationChoice | None = None
-    opinion: OpinionChange
+    opinion: OpinionReason
     reactions: list[AccountReaction] = Field(default_factory=list, max_length=CONVERSATION_MAX_DISCLOSURES)
-    third_party_opinions: list[ReputationChoice] = Field(default_factory=list, max_length=CONVERSATION_MAX_REPUTATION_EFFECTS)
+    third_party_opinions: list[ReputationReason] = Field(default_factory=list, max_length=CONVERSATION_MAX_REPUTATION_EFFECTS)
 
 
 class ConversationResponse(StrictResponse):

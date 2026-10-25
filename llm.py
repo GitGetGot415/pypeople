@@ -14,9 +14,9 @@ import dialogue_validation
 from actor_identity import account_references, actor_id, name_forms, speech_only
 from constants import (CONVERSATION_MAX_TURNS, DIALOGUE_REPEAT_PHRASE_WORDS, DIALOGUE_STAGE_ATTEMPTS,
     DIALOGUE_TIMEOUT_SECONDS, FOOD_REQUEST_TURN_COUNT, MODEL_DEFAULT_CONTEXT_TOKENS, MODEL_DIALOGUE_CONTEXT_TOKENS,
-    RESIDENT_TURN_COUNT, VOICE_REWRITE_TEMPERATURE)
+    OPINION_CHANGES, RESIDENT_TURN_COUNT, VOICE_REWRITE_TEMPERATURE)
 from dialogue import ActionResponse, ConversationResponse, ConversationTurn, DialoguePartsResponse, DisclosureChoice
-from dialogue_rules import mentions_private_recollection, validate_account_speech
+from dialogue_rules import copied_share, mentions_private_recollection, validate_account_speech
 from dialogue_text import contains_question
 from generation_errors import InvalidResponseError, RequestError, StreamRepetitionError
 from llm_contracts import intent_snapshot, prepare_request, response_model
@@ -184,7 +184,7 @@ def _deduplicate_dialogue_parts(turn):
 def _resident_draft():
     """Private worker state. Pending stances are never a saved/provider contract."""
     return dict(turns=[], offers={}, gift=None, accepted_proposals=[], disclosures=[],
-                third_party_opinions=[], leverage=[], opinions={})
+                third_party_opinions=[], leverage=[], opinions={}, assessments={})
 
 
 def _assemble_resident(snapshot, draft, thanks):
@@ -229,7 +229,7 @@ def transport_settings(snapshot, *, correction=""):
         # Greedy decoding encouraged small models to replay the supplied history.
         # Corrections need fresh wording too; intent routing stays deterministic.
         options["temperature"] = 0.7
-    elif correction or snapshot.get("request_kind") == "intent":
+    elif correction or snapshot.get("request_kind") in ("intent", "opinion_direction"):
         options["temperature"] = 0
     return TransportSettings(
         min(DIALOGUE_TIMEOUT_SECONDS, snapshot.get("_timeout", DIALOGUE_TIMEOUT_SECONDS)),
@@ -266,6 +266,8 @@ def _stage_correction(state, exc):
                   "Correct the error using your supplied choices and own knowledge. "
                   "Keep accepted preceding speech and effects unchanged. Write shorter complete sentences. "
                   "Do not read internal records aloud or write the listener's answer.")
+    if kind == "opinion_direction":
+        return f"The previous choice was rejected: {exc} Read the reason again and return only the change JSON."
     if kind == "resident_assessment":
         owner, target = state["speaker"]["name"], state["opinion_target"]
         correction = (f"You are {owner}. Assess only {target}, your conversation partner. "
@@ -316,6 +318,7 @@ def _corrected_request(state, request, report):
     kind = state.get("request_kind")
     activity = (f"turn {state['turn_index'] + 1} for {state['speaker']['name']}" if kind == "resident_turn" else
                 f"assessment for {state['speaker']['name']}" if kind == "resident_assessment" else
+                f"opinion direction for {state['owner']}" if kind == "opinion_direction" else
                 {"conversation_closing": "closing answer",
                  "handoff_thanks": "reserved handoff thanks", "intent": "player intent"}.get(kind, "reply"))
     correction = ""
@@ -420,10 +423,25 @@ def _resident_exchange(snapshot, request, retain, report):
         draft.update(accepted)
 
     _exchange_turns(snapshot, draft, turn, retain, budget=budget, limit=limit)
+    def direction(state, target, reason, labels):
+        # A finished reason is classified on its own; small models ignore a label chosen alongside long prose.
+        try:
+            return request(dialogue_context.opinion_direction_snapshot(state, target, reason, labels=labels)).change
+        except RequestError:
+            return "unchanged"
+
     for role in ("initiator", "recipient"):
         state = dialogue_context._resident_turn_snapshot(snapshot, draft, role=role, assessment=True)
         assessment = request(state)
         draft = dialogue_validation._apply_resident_candidate(snapshot, draft, assessment, state)
+        stored = (state["speaker"].get("opinion_of_listener") or {}).get("reason", "")
+        # Restating the view already held is no new reason to move it again.
+        change = ("unchanged" if stored and copied_share(assessment.opinion.reason, [stored]) >= 0.8 else
+                  direction(state, state["opinion_target"], assessment.opinion.reason, list(OPINION_CHANGES)))
+        gossip = [direction(state, snapshot["_name_actors"][entry.subject_id]["name"], entry.reason,
+                            dialogue_validation.gossip_labels(snapshot, draft, role, entry.claim_id))
+                  for entry in assessment.third_party_opinions]
+        draft = dialogue_validation.apply_opinion_directions(snapshot, draft, state, change, gossip)
     thanks = []
     if snapshot.get("purpose") == "food_request" and snapshot["food_request"]["outcome"] == "accepted":
         state = dialogue_context._resident_turn_snapshot(snapshot, draft, role="initiator", thanks=True)

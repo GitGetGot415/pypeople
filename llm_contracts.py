@@ -13,14 +13,13 @@ from constants import (CONVERSATION_MAX_REPUTATION_EFFECTS, DIALOGUE_CLOSING_WOR
     DIALOGUE_PART_TARGET_CHARACTERS, DIALOGUE_PARTS_PER_TURN, PLAYER_NAME_TAG, PLAYER_REPLY_CONTEXT_TURN_LIMIT,
     SNAKE_NAME)
 from dialogue import (ActionResponse, ConversationResponse, DialoguePartsResponse, DialogueRepairResponse,
-    EmotionReaction, PlayerIntent, ResidentAssessment, ResidentTurnResponse, VoiceRewriteResponse)
+    EmotionReaction, OpinionDirection, PlayerIntent, ResidentAssessment, ResidentTurnResponse, VoiceRewriteResponse)
 from dialogue_context import NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION, PLAYER_TAG_INSTRUCTION, account_speech_context
 from dialogue_rules import is_name_reference, name_pattern, named_references
 from llm_prompts import (CONVERSATION_HISTORY_INSTRUCTION, DIALOGUE_VARIETY_INSTRUCTION, EMOTION_INSTRUCTION,
     GARDEN_INSTRUCTION, INTENT_INSTRUCTION, ORIENTATION_SPEAKING_BRIEF, PLAYER_POSSESSIONS_INSTRUCTION,
     SPEAKING_BRIEF, WORLD_INSTRUCTION, build_system_instruction)
-from information import (information_from_dict, related_beliefs, reputation_labels, resident_effect_capacity,
-    resident_information)
+from information import information_from_dict, resident_effect_capacity
 from voice_rewrite import VOICE_REWRITE_INSTRUCTION, voice_rewrite_parts
 
 
@@ -137,16 +136,13 @@ def _resident_stage_model(kind):
 
 
 def _reputation_items(snapshot, item):
-    """One schema branch per eligible heard account, fixing its absent subject and permitted deltas."""
+    """One schema branch per eligible heard account, fixing its absent subject."""
     options = {o.id: o for o in information_from_dict(snapshot["_baseline"]["_information_validation"]).options}
-    beliefs, _, _ = resident_information(snapshot["_baseline"], snapshot["_draft"])
     branches = []
     for claim_id in snapshot["choices"]["third_party_opinions"]:
         branch = deepcopy(item)
         branch["properties"]["claim_id"] = {"type": "string", "enum": [claim_id]}
         branch["properties"]["subject_id"] = {"type": "string", "enum": [options[claim_id].subject_id]}
-        related = related_beliefs(options[claim_id], beliefs[snapshot["speaker_role"]].values(), options)
-        branch["properties"]["change"] = {"type": "string", "enum": reputation_labels(related)}
         branches.append(branch)
     return branches[0] if len(branches) == 1 else {"anyOf": branches}
 
@@ -203,6 +199,8 @@ def _resident_contract(snapshot, *, correction=False):
             properties.pop("gift_offer", None)
             properties.pop("accept_gift", None)
         for field, limit in resident_effect_capacity(draft).items():
+            if field == "third_party_opinions":
+                continue  # Hearsay is judged only in the closing assessment.
             if field == "disclosures":
                 limit = min(1, limit)
             properties[field]["maxItems"] = max(0, limit) if choices[field] else 0
@@ -214,8 +212,6 @@ def _resident_contract(snapshot, *, correction=False):
                     item["enum"] = choices[field]
                 else:
                     item["properties"]["claim_id"] = {"type": "string", "enum": choices[field]}
-                    if field == "third_party_opinions":
-                        properties[field]["items"] = _reputation_items(snapshot, item)
         if snapshot.get("_disclosure_repair"):
             properties["disclosures"]["items"]["properties"]["claim_id"]["enum"] = [snapshot["_disclosure_repair"]]
             properties["disclosures"]["minItems"] = 1
@@ -286,18 +282,15 @@ def _resident_contract(snapshot, *, correction=False):
             "An attack is intentionally lethal and requires exact evidence from the target's accepted answer; "
             "it requests a later local action, never an accomplished death. Do not invent motives or narrate a killing.")
     if assessment:
-        instruction += ("\nThe transcript is fixed. First write a first-person reason in plain prose about how opinion_target's "
-                        "words or conduct in this exchange affected you, not a summary of your own personality, interests, confusion, or behavior. "
-                        "Use I/my for yourself; do not describe yourself by name. Then choose change: how this exchange moves your current "
-                        "opinion_of_listener (none means neutral). Choose a worse change when they seemed selfish, dishonest, unkind, "
-                        "pushy or manipulative, a better change when they seemed kind, honest or helpful, and unchanged when nothing mattered. "
-                        "The change must agree with your reason. Resolve pending_reactions using only their allowed stances. "
+        instruction += ("\nThe transcript is fixed. Write a first-person reason in plain prose, in your own words, saying how "
+                        "opinion_target's words or conduct in this exchange made you feel about them: better, worse or no different, and why. "
+                        "It is not a summary of the conversation or of your own personality, interests, confusion, or behavior. "
+                        "Use I/my for yourself; do not describe yourself by name. Resolve pending_reactions using only their allowed stances. "
                         "Add no dialogue, introductions or other effects, and never revise an accepted stance.")
         if "third_party_opinions" in properties:
             instruction += (" You believed an account about an absent person in this exchange. For each one, add a third_party_opinions "
-                            "entry: first a first-person reason about that absent person based on what you heard, then the change it makes "
-                            "to your view of them. Use a worse change when it shows selfishness, greed or harm to you or others, "
-                            "a better change when it shows generosity. The change must agree with your reason.")
+                            "entry whose reason says, in your own words, whether what you heard makes you think better, worse or no "
+                            "differently of that absent person, and why.")
     elif not thanks:
         instruction += ("\nReply to the listener first. Personality is private behavioral guidance, never text to recite "
                         "or attribute to the listener. Do not read objectives or account menus aloud.")
@@ -329,9 +322,6 @@ def _resident_contract(snapshot, *, correction=False):
                             "Omit offers/acceptances when your speech makes no such commitment.")
         if "reactions" in properties:
             instruction += " Resolve your pending heard accounts using only their permitted stances before choosing this reply's effects."
-        if "third_party_opinions" in properties:
-            instruction += (" Reputation effects can cite only eligible earlier heard accounts about their actual absent subject; "
-                            "each gives a reason, then a change that agrees with it.")
         if "leverage" in properties:
             instruction += " Leverage is explicit pressure using an already known account; ordinary requests need no leverage."
         if any(field in properties for field in ("offers", "acceptances", "disclosures", "reactions", "third_party_opinions", "leverage")):
@@ -385,7 +375,7 @@ def response_model(snapshot):
     if resident is not None:
         return resident
     return {"conversation": ConversationResponse,
-            "conversation_closing": DialogueRepairResponse,
+            "conversation_closing": DialogueRepairResponse, "opinion_direction": OpinionDirection,
             "intent": PlayerIntent, "voice_rewrite": VoiceRewriteResponse}.get(kind, ActionResponse)
 
 
@@ -550,9 +540,22 @@ def _request_context(message, snapshot, correction):
         return instruction, schema, content
     if snapshot.get("request_kind") == "conversation":
         raise ValueError("Autonomous conversations must use the worker's sequential turn loop.")
+    if snapshot.get("request_kind") == "opinion_direction":
+        owner, target = snapshot["owner"], snapshot["target"]
+        instruction = (f"{owner} wrote the reason below about {target}. Decide only how it changes {owner}'s opinion of {target}. "
+            f"Choose a worse change when the reason describes {target} as selfish, dishonest, unkind, manipulative or untrustworthy, "
+            f"or says {owner} feels wary, hurt, disappointed or uneasy about them. Choose a better change when it describes {target} "
+            f"as kind, honest, generous, helpful or pleasant, or says {owner} feels appreciative, comfortable or close to them. "
+            "Choose unchanged when the reason is neutral, only restates events without judging them, or is about someone else. "
+            "Use slightly_worse or slightly_better for a mild view, worse or better for a clear one, and much_worse or much_better "
+            "for a strong one. Return only the change JSON."
+            + ("\n" + correction if correction else ""))
+        schema = {"type": "object", "properties": {"change": {"type": "string", "enum": snapshot["labels"]}}, "required": ["change"]}
+        return instruction, schema, {"owner": owner, "target": target, "reason": snapshot["reason"]}
     if snapshot.get("request_kind") == "voice_rewrite":
         speakers = snapshot["speakers"]
         parts = {key: {
+            "your_own_name": speakers[part["speaker"]]["name"],
             "speaker_name": speakers[part["speaker"]]["name"],
             "listener_name": part.get("listener_name", speakers[part["speaker"]]["listener_name"]),
             "Voice": speakers[part["speaker"]]["Voice"],

@@ -168,6 +168,17 @@ def validate_speaker_identity(text, speaker, listener, *, allow_third_person=Fal
                     "Names are allowed for direct address, introductions, and explicit quotations.")
 
 
+def validate_rewrite_additions(original, rewritten, *, speaker, mannerisms=""):
+    """Diagnose an invented self-name or a Mannerisms description read aloud; never used to reject a rewrite."""
+    own = {form.casefold() for form in (speaker, *speaker.split()) if form}
+    for match in re.finditer(r"\b(?:I,\s*|my name is\s+|I am\s+|I['’]m\s+|call me\s+)([A-Z][a-z]+)\b", rewritten):
+        if match.group(1).casefold() not in own and match.group(0) not in original:
+            raise ValueError(f"The voice rewrite names the speaker {match.group(1)}, but the speaker is {speaker}.")
+    if mannerisms and (_word_runs(first_person_text(rewritten), 6) & _word_runs(first_person_text(mannerisms), 6)
+                       ) - _word_runs(first_person_text(original), 6):
+        raise ValueError("The voice rewrite reads the Mannerisms description aloud instead of applying it.")
+
+
 def validate_rewrite_identity(original, rewritten, *, speaker, listener, names=()):
     """A display voice may use third person, but cannot address itself as its partner."""
     validate_speaker_identity(rewritten, speaker, listener, allow_third_person=True)
@@ -176,8 +187,11 @@ def validate_rewrite_identity(original, rewritten, *, speaker, listener, names=(
     if not names:
         return
     pattern = "|".join(name_pattern(name) for name in names)
+    own = {form.casefold() for form in (speaker, *speaker.split()) if form}
     def references(text):
-        return Counter(match.group() for match in re.finditer(pattern, text, re.I) if is_name_reference(match, text))
+        # A Voice may ask for self-reference by name; only other people's names must stay exactly as written.
+        return Counter(match.group() for match in re.finditer(pattern, text, re.I)
+                       if is_name_reference(match, text) and match.group().casefold() not in own)
     before = references(original)
     after = references(rewritten)
     if before != after:
@@ -234,23 +248,37 @@ def validate_opinion_reason(reason, owner, target=""):
 _HOSTILE_VIEW = re.compile(
     r"\b(?:selfish\w*|greed\w*|hoard\w*|stingy|dishonest\w*|untrustworth\w*|distrust\w*|manipulat\w*|"
     r"inconsiderate|thoughtless|unkind|rude|pushy|only cares? about|cares? (?:nothing|little) (?:for|about)|"
-    r"did(?:n['’]t| not) share|refused to share)\b", re.I)
+    r"did(?:n['’]t| not) share|refused to share|wary|warier|suspicious|doubts?|uneasy|unease|distrustful|cautious|"
+    r"self-cent(?:ered|red)|thinks? only (?:of|about)|only (?:thinks|cares|looks out) (?:of|about|for)|"
+    r"hiding something|ulterior|hidden (?:motive|agenda)s?|disappoint\w*|upset|annoy\w*|frustrat\w*)\b", re.I)
+_WARM_VIEW = re.compile(
+    r"\b(?:appreciat\w*|grateful|thankful|kind|kindness|generous|generosity|honest|honesty|trustworth\w*|thoughtful|"
+    r"refreshing|relatable|solidarity|supportive|friendly|pleasant|comfort(?:ing|able)|at ease|admir\w*|respect\w*|"
+    r"resonat\w*|inspir\w*|genuine|caring|warm|enjoy\w*|seen and heard|feel seen|like (?:her|him|them))\b", re.I)
 _VIEW_NEGATED = re.compile(r"\b(?:not|never|no|isn['’]t|wasn['’]t|aren['’]t|don['’]t|doesn['’]t|didn['’]t|hardly)\b(?:\W+\w+){0,4}\W*$", re.I)
 _VIEW_REPORTED = re.compile(r"\b(?:says?|said|claims?|claimed|insists?|insisted|thinks|called|accus\w+|wants? me to)\b", re.I)
 
 
-def validate_opinion_direction(reason, delta):
-    """A better view cannot rest on a reason that calls the person selfish or untrustworthy."""
-    if delta <= 0:
-        return
+def _owner_view(pattern, reason):
+    """Whether the reason holds this view itself, apart from denials, reported accusations and contrasts."""
     for sentence in split_sentences(unquoted_speech(reason)):
-        for match in _HOSTILE_VIEW.finditer(sentence):
+        for match in pattern.finditer(sentence):
             before, after = sentence[:match.start()], sentence[match.end():]
-            # Denials, someone else's accusation, or a contrasting clause are not the owner's own hostile view.
-            if _VIEW_NEGATED.search(before) or _VIEW_REPORTED.search(before) or re.search(r"\b(?:but|however|though|yet)\b", after, re.I):
-                continue
-            raise ValueError("Your reason describes a worse view of this person, but the change you chose is better. "
-                             "Choose a change that agrees with your reason, or explain what actually improved your view.")
+            if not (_VIEW_NEGATED.search(before) or _VIEW_REPORTED.search(before)
+                    or re.search(r"\b(?:but|however|though|yet)\b", after, re.I)):
+                return True
+    return False
+
+
+def validate_opinion_direction(reason, delta):
+    """The chosen direction must agree with a one-sided reason; mixed reasons may go either way."""
+    hostile, warm = _owner_view(_HOSTILE_VIEW, reason), _owner_view(_WARM_VIEW, reason)
+    if delta > 0 and hostile and not warm:
+        raise ValueError("The reason describes a worse view of this person, but the change chosen is better. "
+                         "Choose a change that agrees with the reason.")
+    if delta < 0 and warm and not hostile:
+        raise ValueError("The reason describes a better view of this person, but the change chosen is worse. "
+                         "Choose a change that agrees with the reason.")
 
 
 _CONTENT_NOISE = set("""a an the and or but so if while to of in on at by for with from as into
@@ -665,6 +693,17 @@ def validate_harvest_grounding(text, accounts, *, speaker_id, listener_id, curre
                     rf"\b{subject}\s+(?:did not|didn['\u2019]t|has not|hasn['\u2019]t|had not|hadn['\u2019]t|never)\s+"
                     r"(?:take|taken|harvest|harvested|collect|collected|pick|picked)\s+all\s+(?:of\s+)?(?:the\s+)?(?:apples|fruit)\b", sentence, re.I):
                 raise ValueError(f"{name} took the entire phase's tree stock. Do not deny that they took all of it.")
+            extent = extents.get(identity, {})
+            # The reverse inflation: a majority or part of the stock is not all of it.
+            if extent.get("share") in ("most", "some") and (
+                    re.search(rf"\b{subject}\b", sentence, re.I)
+                    or identity == focal_id and re.search(r"\b(?:him|her|them)\b", sentence, re.I)) and re.search(
+                    r"\b(?:took|taken|taking|takes|harvested|collected|picked)\s+(?:all|every|everything|the (?:whole|entire))\b"
+                    r"(?!\s+(?:of\s+)?(?:his|her|their|my|your)\b)|\b(?:without leaving (?:any|one)|leaving (?:none|nothing|no apples)|"
+                    r"left (?:none|nothing|no apples)|emptied the tree|stripped the tree)\b", sentence, re.I) and not re.search(
+                    r"\b(?:not|never|didn['’]t|did not|wasn['’]t)\b", sentence, re.I):
+                raise ValueError(f"{name} took {row['quantity']} of the phase's {extent['phase_stock']} apples, not all of them; "
+                                 "someone else harvested the rest. Do not say they took everything or left none.")
             pattern = (rf"\b{subject}(?:['\u2019](?:ve|s|d)|\s+(?:has|have|had))?\s+"
                 r"(?:(?:just|already|recently|only)\s+){0,3}"
                 r"(?:harvest(?:ed|s)?|collect(?:ed|s)?|pick(?:ed|s)?(?: up)?|took|take|takes)\s+"
@@ -692,11 +731,25 @@ _ACCUSATION = re.compile(
 
 
 def first_person_text(text):
-    """Compare recited text regardless of whether it was rewritten from you/your into I/my."""
+    """Compare recited text regardless of contractions or of being rewritten from you/your into I/my."""
     text = text.casefold().replace("’", "'")
-    for pattern, replacement in ((r"\byou're\b", "i'm"), (r"\byours\b", "mine"), (r"\byour\b", "my"), (r"\byou\b", "i")):
+    for pattern, replacement in ((r"n't\b", " not"), (r"'ve\b", " have"), (r"'re\b", " are"), (r"'m\b", " am"),
+                                 (r"'ll\b", " will"), (r"'d\b", " would"), (r"\byou are\b", "i am"), (r"\byou were\b", "i was"),
+                                 (r"\byours\b", "mine"), (r"\byour\b", "my"), (r"\byou\b", "i")):
         text = re.sub(pattern, replacement, text)
     return text
+
+
+def copied_share(text, sources, *, run=5):
+    """Fraction of the text's word runs that appear in the sources, after first_person_text."""
+    def runs(value):
+        words = re.findall(r"[a-z']+", first_person_text(value or ""))
+        return [tuple(words[i:i + run]) for i in range(len(words) - run + 1)]
+    own = runs(text)
+    if not own:
+        return 0.0
+    known = {gram for source in sources for gram in runs(source)}
+    return sum(gram in known for gram in own) / len(own)
 
 
 def _word_runs(text, run):
@@ -707,12 +760,17 @@ def _word_runs(text, run):
 def validate_private_recital(text, *, personality="", motives=(), run=6):
     """Speech acts on private personality and motives; it never reads their wording or record fields aloud."""
     speech = unquoted_speech(text)
-    if re.search(r"\b[A-Za-z]+_[A-Za-z_]+\b", speech):
-        raise ValueError("Speech reads an internal record field aloud. Say only natural spoken words, never field names.")
-    # Motives are never spoken, in either person. A character may voice their own trait,
-    # but personality wording kept in the second person describes the listener with it.
+    if re.search(r"\b[A-Za-z]+_[A-Za-z_]+\b", speech) or re.search(
+            r"\b(?:current (?:listener|speaker|task)|private (?:motive|context|accounts?)|immediate objective|"
+            r"(?:my|your) goal is to|claims? database|(?:with )?an intensity of \d+|permitted accounts?|the transcript)\b",
+            speech, re.I):
+        raise ValueError("Speech reads internal instructions or record fields aloud. Say only natural spoken words.")
+    # Motives are never spoken, in either person. A character may briefly voice their own trait,
+    # but personality wording kept in the second person describes the listener with it,
+    # and a long verbatim run recites the profile rather than speaking from it.
     recited = any(_word_runs(first_person_text(speech), run) & _word_runs(first_person_text(motive or ""), run) for motive in motives)
     recited = recited or any({"you", "your"} & set(words) for words in _word_runs(speech, run) & _word_runs(personality or "", run))
+    recited = recited or bool(_word_runs(first_person_text(speech), 12) & _word_runs(first_person_text(personality or ""), 12))
     if recited:
         raise ValueError("Speech recites your private personality or motive. Let it guide what you do and say "
                          "in your own words; never read it aloud or describe the listener with it.")
@@ -739,6 +797,24 @@ def validate_addressee(text, *, speaker_name, listener_name, names):
                     or re.search(rf"\b[a-z][a-z'’]*,\s*(?i:{ref})\s*,\s*(?i:and|but|so|i|you|we)\b", speech)):
                 raise ValueError(f"You are speaking to {listener_name}. Address {listener_name} as you; "
                                  f"do not greet or address {form}, who is not your listener.")
+
+
+def validate_unheard_quote(text, name):
+    """Claims about what someone said need an account heard from them; witnessing conduct is not hearing words."""
+    refs = "|".join(name_pattern(form) for form in dict.fromkeys((name, name.split()[0])) if form)
+    if re.search(rf"(?:{refs})\s+(?:(?:did|even|once|also|actually)\s+)?(?:say|said|says|told|tells|mentioned|claimed|"
+                 r"admitted|bragged|talked about)\b", unquoted_speech(text), re.I):
+        raise ValueError(f"You never heard {name} say anything about this. Report only what you witnessed "
+                         f"{name} do; do not invent what {name} said or meant.")
+
+
+def validate_leverage_speech(text):
+    """Recorded pressure needs pressure in the words themselves, not just a remembered account."""
+    if not re.search(r"\b(?:unless|or else|if you (?:don['’]t|do not|won['’]t|refuse)|you owe|owe me|"
+                     r"i know (?:that |what |about )?you|i (?:will|['’]ll|could|might) tell|keep (?:it|this|that) (?:quiet|secret|between us)|"
+                     r"remember (?:when|that|how) you|after what you|you promised)\b", unquoted_speech(text), re.I):
+        raise ValueError("Leverage needs explicit pressure in your words, such as reminding them what they owe or what you know. "
+                         "For an ordinary request or remark, omit leverage.")
 
 
 def validate_snake_accusation(text, subject_name, *, subject_is_listener=False):

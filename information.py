@@ -782,7 +782,12 @@ def resident_turn_choices(snapshot, draft, role, private, *, closing=False, asse
         if info:
             beliefs, acquired, heard = projection
             seen = {(draft["turns"][d.turn].speaker, d.claim_id) for d in draft["disclosures"]}
-            choices["disclosures"] = [a["claim_id"] for a in accounts if (role, a["claim_id"]) not in seen]
+            # Telling an account back to the person it came from is an echo, not news for them.
+            echoed = {options[d.claim_id].fact_id for d in draft["disclosures"] if draft["turns"][d.turn].speaker == other}
+            required = (snapshot.get("_information_validation") or {}).get("focus_claim_id") if role == "initiator" and index == 0 else None
+            choices["disclosures"] = [a["claim_id"] for a in accounts if (role, a["claim_id"]) not in seen
+                                      and (a["claim_id"] == required or options[a["claim_id"]].fact_id not in echoed
+                                           and a.get("immediate_source_id") != actor_id(partner))]
             # Pending reactions are chosen before this reply's effects are checked.
             # A closing assessment is recorded on the assessor's own last spoken turn.
             cutoff = assessment_turn(draft, role) if assessment else index
@@ -791,7 +796,8 @@ def resident_turn_choices(snapshot, draft, role, private, *, closing=False, asse
             if not assessment:
                 heard_ids.update(p["claim_id"] for p in pending)
             pending_stances = {p["claim_id"]: p["stances"] for p in pending}
-            for account in accounts:
+            # Hearsay is judged once, after the exchange; the python's own views of residents drive nothing.
+            for account in (accounts if assessment and person.get("kind") != "python" else []):
                 claim_id = account["claim_id"]
                 option = options[claim_id]
                 related = related_beliefs(option, beliefs[role].values(), options)

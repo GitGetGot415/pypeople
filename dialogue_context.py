@@ -443,3 +443,9 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
         # The only effect left to choose is a view of absent people in believed accounts.
         state["choices"] = dict(third_party_opinions=choices["third_party_opinions"])
     return state
+
+
+def opinion_direction_snapshot(state, target, reason, *, labels):
+    """A small classification of one finished reason; it sees nothing but the reason and the two names."""
+    return dict(request_kind="opinion_direction", owner=state["speaker"]["name"], target=target, reason=reason,
+                labels=list(labels), _dialogue_validation=state.get("_dialogue_validation", True))

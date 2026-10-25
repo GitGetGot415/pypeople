@@ -36,7 +36,8 @@ Keep names_to_preserve EXACTLY, in the same slot.
 These names are literal protected spans: do not translate, transliterate, respell,
 or replace them with emoji. All surrounding text follows the requested delivery.
 Internal role descriptions are context, never names or greetings to add to speech.
-Do not add a name absent from that original, even your own name or the listener's.
+Do not add a name absent from that original, even the listener's. The only exception is
+your_own_name, used exactly, when Voice asks you to refer to yourself by name; never invent another.
 Keep every original person's name and exact form intact.
 When Voice asks for third-person self-reference or titles, apply it only where it
 can preserve the original names and identity. These preservation rules take priority.
@@ -104,7 +105,8 @@ def validate_voice_rewrite(raw, turns, *, speakers=None):
     for original, rewritten in zip(turns, result.turns):
         speaker = speakers[original["speaker"]] if speakers is not None else {}
         error = rewrite_validation_error(original["parts"], rewritten, speaker=speaker.get("name", ""),
-                                         listener=speaker.get("listener_name", ""), names=original.get("name_forms", ()))
+                                         listener=speaker.get("listener_name", ""), names=original.get("name_forms", ()),
+                                         mannerisms=speaker.get("Mannerisms", ""))
         if error:
             raise VoiceRewriteValidationError(error, result)
     return result
