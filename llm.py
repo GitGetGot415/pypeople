@@ -439,7 +439,17 @@ def _resident_exchange(snapshot, request, retain, report):
     roles = ("recipient", "initiator") if snapshot["initiator"].get("kind") == "python" else ("initiator", "recipient")
     for role in roles:
         state = dialogue_context._resident_turn_snapshot(snapshot, draft, role=role, assessment=True)
-        assessment = request(state)
+        try:
+            assessment = request(state)
+        except RequestError:
+            # A verdict whose written reason never passed its checks must not discard the whole accepted exchange.
+            assessment = dialogue_validation.fallback_assessment(snapshot, state)
+            draft = dialogue_validation._apply_resident_candidate({**snapshot, "_dialogue_validation": False}, draft, assessment, state)
+            verdict = state.get("snake_verdict")
+            settled = [dialogue_validation.gossip_labels(snapshot, draft, role, entry.claim_id) for entry in assessment.third_party_opinions]
+            draft = dialogue_validation.apply_opinion_directions(snapshot, draft, state, verdict["change"] if verdict else "unchanged",
+                                                                 [labels[0] if len(labels) == 1 else "unchanged" for labels in settled])
+            continue
         draft = dialogue_validation._apply_resident_candidate(snapshot, draft, assessment, state)
         stored = (state["speaker"].get("opinion_of_listener") or {}).get("reason", "")
         verdict = state.get("snake_verdict")

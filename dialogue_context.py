@@ -405,7 +405,13 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
         state["task"] = ("Ask the listener to answer the specific sourced grievance in account_focus. "
                          "Keep hearsay uncertain and allow explanation, apology and reconciliation. "
                          "Threats are speech only; never narrate a completed attack or death. "
-                         if index == 0 else "Answer the actual grievance or reply, allowing peaceful resolution. Never narrate an uncommitted killing.")
+                         if index == 0 else
+                         "Answer the actual reply, allowing peaceful resolution. What you saw yourself stays true however "
+                         "confidently it is denied; a denial is not proof. Never narrate an uncommitted killing."
+                         if role == "initiator" else
+                         "Answer the grievance honestly: explain, apologize or justify what you did. Deny it only with your "
+                         "recorded deliberate denial, if you have one; a witness will know it is a lie. "
+                         "Allow peaceful resolution and never narrate an uncommitted killing.")
     elif snapshot.get("purpose") == "food_request":
         state["food_request"] = deepcopy(snapshot["food_request"])
         state["task"] = ("Request one carried apple; no handoff has happened." if role == "initiator" else
@@ -458,7 +464,8 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
             options = {o.id: o for o in info.options}
             state["believed_accounts"] = [dict(claim_id=a["claim_id"], subject_name=a.get("subject_name", ""), account=a["assertion"],
                                                told_by=listener["name"], saw_it_yourself=a.get("fact_id") in seen,
-                                               **({"your_view_of_them": "worse"} if snake_accusation(snapshot, role, options[a["claim_id"]]) else {}))
+                                               **({"your_view_of_them": "worse"} if snake_accusation(snapshot, role, options[a["claim_id"]])
+                                                  and a.get("fact_id") not in seen else {}))
                                           for a in accounts if a["claim_id"] in choices["third_party_opinions"]]
         if person.get("kind") == "python":
             state["snake_verdict"] = snake_verdict(snapshot, draft, role)

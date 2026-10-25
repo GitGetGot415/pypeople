@@ -9,9 +9,10 @@ from copy import deepcopy
 from types import SimpleNamespace
 from validation_errors import (DialogueValidationError, RecoveryKind, DialogueRepetitionError,
                               DialogueSpeakerError)
-from dialogue import (AcceptedProposal, ActionIntent, ActionResponse, ConversationPart, ConversationResponse,
-                     ConversationTurn, DialoguePartsResponse, LeverageUse, OpinionDirection, OpinionUpdate, PlayerIntent, ResidentAssessment,
-                     ResidentGift, ResidentTurnResponse, ThirdPartyOpinion)
+from dialogue import (AcceptedProposal, AccountReaction, ActionIntent, ActionResponse, ConversationPart, ConversationResponse,
+                     ConversationTurn, DialoguePartsResponse, EscalationChoice, LeverageUse, OpinionDirection, OpinionReason,
+                     OpinionUpdate, PlayerIntent, ReputationReason, ResidentAssessment, ResidentGift, ResidentTurnResponse,
+                     ThirdPartyOpinion)
 from constants import (RESIDENT_TURN_COUNT, CONVERSATION_MAX_TURNS, DIALOGUE_REPEAT_PHRASE_WORDS,
                       DIALOGUE_REPEAT_SENTENCE_WORDS, DIALOGUE_REPEAT_TURN_WORDS,
                       PLAYER_LABEL,
@@ -27,7 +28,7 @@ from dialogue_rules import (is_name_reference, mentions_account, mentions_privat
                            validate_unheard_quote, leverage_pressure, validate_reason_subject, validate_reason_voice,
                            validate_tree_permanence, validate_name_tag_talk, validate_self_name, validate_echo,
                            validate_own_memory_person, validate_snake_stance, validate_reason_belief, validate_snake_conviction,
-                           validate_hostile_warmth, validate_own_apples, validate_own_harvest)
+                           validate_hostile_warmth, validate_own_apples, validate_own_harvest, validate_memory_firm, denies_conduct)
 from social_records import phase_index
 from information import (assessment_turn, information_from_dict, related_beliefs, reputation_labels,
                          resident_information, resident_effect_limits, snake_accusation, opinion_change)
@@ -338,6 +339,29 @@ def validate_snake_account_roles(text, report, speaker, listener):
             raise ValueError("The listener made these claims. Address the guard's claims as your claims; do not adopt them as my claims.")
 
 
+def _validate_denial(result, index, turn, speaker, options, info):
+    """Someone accused of what they know they did may only deny it as a recorded lie, which a witness then sees through."""
+    done = {options[b["claim_id"]]["fact_id"] for b in info.get("beliefs", {}).get(turn.speaker, [])
+            if b["claim_id"] in options and b["direct"] and options[b["claim_id"]]["affirmed"]}
+    accused = [options[d.claim_id] for d in result.disclosures if d.turn < index and d.claim_id in options
+               and result.turns[d.turn].speaker != turn.speaker and options[d.claim_id]["affirmed"]
+               and options[d.claim_id]["subject_id"] == speaker["actor_id"] and options[d.claim_id]["fact_id"] in done]
+    if not accused or not denies_conduct(turn.text):
+        return
+    facts = {a["fact_id"] for a in accused}
+    if any(d.turn == index and d.intent == "lie" and d.claim_id in options and options[d.claim_id]["fact_id"] in facts
+           for d in result.disclosures):
+        return
+    denial = next((o for o in options.values() if o.get("creator_id") == speaker["actor_id"] and not o["affirmed"]
+                   and o["fact_id"] in facts and o["id"] in info.get("allowed", {}).get(turn.speaker, [])), None)
+    if denial:
+        raise ValueError(f"You did this, and you know it: {accused[0]['assertion']} To deny it anyway, record your deliberate "
+                         f"denial on this reply with disclosures [{{\"claim_id\": \"{denial['id']}\", \"intent\": \"lie\"}}]; "
+                         "anyone who saw it will know you are lying. Otherwise answer honestly: explain, apologize or justify.")
+    raise ValueError(f"You did this, and you know it: {accused[0]['assertion']} Do not deny it or make it smaller. "
+                     "Answer honestly: explain, apologize or justify what you did.")
+
+
 def validate_resident_grounding(result, snapshot):
     _validate_base_presentation(result, snapshot)
     info = snapshot.get("_information_validation") or {}
@@ -377,6 +401,9 @@ def validate_resident_grounding(result, snapshot):
         validate_name_tag_talk(turn.text, previous)
         validate_self_name(turn.text, speaker["name"])
         validate_echo(turn.text, previous)
+        validate_memory_firm(turn.text)
+        if speaker.get("kind") != "python":
+            _validate_denial(result, index, turn, speaker, options, info)
         for account in options.values():
             if account["kind"] == "former_life" and account["subject_id"] == speaker["actor_id"]:
                 validate_own_memory_person(turn.text, account["assertion"])
@@ -568,6 +595,7 @@ def _validate_response(raw, snapshot, model):
                 validate_snake_perspective(result.reply, snake_role="speaker")
             if check_dialogue:
                 validate_speaker_identity(result.reply, own_name(snapshot), PLAYER_NAME_TAG)
+                validate_memory_firm(result.reply)
         if isinstance(result, ActionResponse) and check_dialogue:
             validate_player_reply_repetition(result.reply, snapshot)
             validate_speech_grounding(result.reply, {
@@ -696,13 +724,43 @@ def _believed_from_partner(draft, role, state):
             if draft["turns"][d.turn].speaker != role and d.listener_stance == "believed"}
 
 
+def fallback_assessment(snapshot, state):
+    """A plainly recorded verdict for when no written reason passed its checks, so the accepted exchange is kept.
+
+    The python's verdict still follows its partner's answer; everyone else's view is left unchanged.
+    """
+    target, verdict = state["opinion_target"], state.get("snake_verdict")
+    reason = ({"better": f"{target} agreed with my accusation against {verdict['accused']}.",
+               "worse": f"{target} would not accept my accusation against {verdict['accused']}.",
+               "unchanged": f"{target} heard my accusation against {verdict['accused']} without changing their view."}[verdict["change"]]
+              if verdict else "No clear view formed in this exchange.")
+    options = {o.id: o for o in information_from_dict(snapshot["_information_validation"]).options} if snapshot.get("_information_validation") else {}
+    gossip, facts = [], set()
+    for claim_id in state["choices"]["third_party_opinions"]:
+        if options[claim_id].fact_id not in facts and len(gossip) < resident_effect_limits()["third_party_opinions"]:
+            facts.add(options[claim_id].fact_id)
+            gossip.append(ReputationReason(claim_id=claim_id, subject_id=options[claim_id].subject_id,
+                                           reason="No clear view formed from this account."))
+    choices = state.get("escalation_choices")
+    return ResidentAssessment(
+        escalation=EscalationChoice(action="leave", target_id=choices["target_id"], grievance_id=choices["grievance_id"], evidence="")
+        if choices else None,
+        opinion=OpinionReason(person=target, reason=reason),
+        reactions=[AccountReaction(disclosure_turn=entry["disclosure_turn"],
+                                   stance="uncertain" if "uncertain" in entry["stances"] else entry["stances"][0])
+                   for entry in state["pending_reactions"]],
+        third_party_opinions=gossip)
+
+
 def gossip_labels(snapshot, draft, role, claim_id):
     """Directions for one heard account, within its per-fact limit; unchanged leaves the subject's standing alone."""
     options = {o.id: o for o in information_from_dict(snapshot["_information_validation"]).options}
     beliefs, _, _ = resident_information(snapshot, draft)
-    allowed = {"unchanged", *reputation_labels(related_beliefs(options[claim_id], beliefs[role].values(), options), options[claim_id])}
-    if snake_accusation(snapshot, role, options[claim_id]) and "worse" in allowed:
-        return ["worse"]  # The python's accusation was believed, so it worked.
+    related = related_beliefs(options[claim_id], beliefs[role].values(), options)
+    allowed = {"unchanged", *reputation_labels(related, options[claim_id])}
+    if snake_accusation(snapshot, role, options[claim_id]) and "worse" in allowed and not any(b.direct for b in related):
+        # The python persuaded someone who had not seen it, so it worked. A witness believes it regardless and still judges it.
+        return ["worse"]
     return [label for label in OPINION_CHANGES if label in allowed]
 
 
@@ -768,6 +826,7 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
             validate_reason_voice(reason, snapshot[role]["name"])
             validate_reason_subject(reason, target=snapshot[other]["name"], people=_reason_people(snapshot, role))
             validate_reason_originality(reason, state)
+            validate_memory_firm(reason)
             if believed:
                 validate_reason_belief(reason, firsthand=any(believed.values()))
             if verdict and verdict["accused"]:
@@ -787,6 +846,7 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
                 subject = snapshot.get("_name_actors", {}).get(entry.subject_id, {}).get("name", "")
                 validate_reason_voice(entry.reason, snapshot[role]["name"])
                 validate_reason_belief(entry.reason, firsthand=believed.get(entry.claim_id, False))
+                validate_memory_firm(entry.reason)
                 if subject:
                     # Here "you" is the partner who told the account, not the absent person it is about.
                     validate_reason_subject(entry.reason, target=subject, people=_reason_people(snapshot, role),

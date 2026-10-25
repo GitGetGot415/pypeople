@@ -1033,6 +1033,33 @@ def validate_own_harvest(text, harvested):
                          "and use you/your when that person is your listener.")
 
 
+# Giving up one's own recollection: "I must have misremembered", "I miscounted", "my eyes were playing tricks".
+_CONCEDE = re.compile(
+    r"\b(?:misremember\w*|mis-remember\w*|miscount\w*|(?:must|might|may|could) have (?:been mistaken|been wrong|got(?:ten)? (?:it|that) wrong|"
+    r"imagined (?:it|that|the)|mixed (?:it|that|things) up|confused (?:it|that|the))(?!\s+about\s+(?:you|your|him|her|them|their|his)\b)|"
+    r"(?:i was|i am|i['’]m) (?:wrong|mistaken) about (?:what|the|that|how many)|my (?:memory|eyes) (?:is|was|were|must be|must have been|"
+    r"(?:is|are|were) playing) (?:wrong|failing|playing tricks|deceiving me|tricks)|(?:i was|i am|i['’]m) confused about what (?:i saw|happened))\b", re.I)
+# Denying one's own conduct: "I didn't harvest 9 apples", "I only picked a few", "that never happened".
+_DENIAL = re.compile(
+    r"\bi\s+(?:didn['’]t|did not|never|haven['’]t|have not)\s+(?:even\s+|actually\s+|really\s+)?(?:harvest\w*|take|took|taken|pick\w*|"
+    r"gather\w*|collect\w*|eat|ate|eaten|give|gave|given|refuse\w*|miss\w*|break|broke|broken|kill\w*|touch\w*)\b|"
+    r"\bi\s+only\s+(?:took|picked|harvested|gathered|collected)\s+(?:a few|one|two|three|some|a couple|a little)\b|"
+    r"\b(?:that|it|this)\s+(?:never|didn['’]t|did not)\s+happen", re.I)
+
+
+def validate_memory_firm(text):
+    """What a resident saw is certain; no denial or pressure makes them say they misremembered it."""
+    if _CONCEDE.search(unquoted_speech(text)):
+        raise ValueError("What you saw yourself is certain. Do not say you misremembered, miscounted or were mistaken about "
+                         "it, however confidently it is denied; hold to your own account in your own words.")
+
+
+def denies_conduct(text):
+    """Whether speech denies or shrinks something the speaker did, or calls an account untrue."""
+    speech = unquoted_speech(text)
+    return bool(_DENIAL.search(speech) or _DISBELIEF.search(speech))
+
+
 def validate_reason_belief(reason, *, firsthand=False):
     """A view formed after believing an account cannot deny or doubt that account."""
     if _DISBELIEF.search(unquoted_speech(reason)):

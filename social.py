@@ -649,6 +649,12 @@ def opinion_causes(npc, partner):
     if world is None:
         return []
     harvests, causes = {}, []
+    claims = {claim.id: claim for claim in world.claims}
+    seen = {claims[b.claim_id].fact_id for b in npc.beliefs if b.direct and b.claim_id in claims}
+    for told in world.disclosures:
+        if (told.intent == "lie" and (told.speaker_id, told.listener_id) == (partner.id, npc.id) and told.claim_id in claims
+                and claims[told.claim_id].fact_id in seen):
+            causes.append(f"{partner.name} lied to you, denying what you saw yourself: {fact_by_id(world, claims[told.claim_id].fact_id).summary}")
     for fact in world.facts:
         if fact.kind == "harvest" and fact.subject_id == partner.id and npc.id in fact.witness_ids:
             harvests[fact.phase] = harvests.get(fact.phase, 0) + fact.quantity

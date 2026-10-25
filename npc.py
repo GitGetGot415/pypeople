@@ -890,6 +890,18 @@ class Conversation(ResidentProgress):
             self.social_effects_applied = True
         for npc, partner, entry in opinions:
             npc.remember_opinion(partner.id, entry.opinion, entry.reason)
+        from information import caught_lies, opinion_change
+        people = {"initiator": self.initiator, "recipient": self.recipient}
+        for liar_role, listener_role, truth in caught_lies(self.information_context, response):
+            # Being lied to about something one saw firsthand sours the view of the liar, on top of the exchange itself.
+            liar, listener = people[liar_role], people[listener_role]
+            if listener is self.initiator.world.snake:
+                continue
+            before = listener.opinion_score(liar.id)
+            after = max(-100, before + opinion_change("worse"))
+            reason = f"Caught {liar.name} denying what I saw myself: {truth}"[:400]
+            listener.remember_opinion(liar.id, after, reason)
+            self.record.outcomes.append(describe_opinion_change(listener.name, liar.name, before, after, reason))
         self.reactions = [
             (entry.reason, max(-4.0, min(4.0, entry.opinion / 20)))
             for entry in (response.initiator_opinion, response.recipient_opinion)

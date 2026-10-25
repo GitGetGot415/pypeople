@@ -232,6 +232,13 @@ def prepare_information(conversation):
         if can_deceive(npc):
             bases = [claim_by_id(world, belief.claim_id) for belief in selected
                      if belief.stance == "believed" and claim_by_id(world, belief.claim_id).affirmed]
+            if conversation.purpose == "confrontation" and role == "recipient" and conversation.focus_claim_id:
+                # The accused may deny the grievance itself; a denial is recorded as a lie and a witness sees through it.
+                grievance = claim_by_id(world, conversation.focus_claim_id).fact_id
+                own = next((claim_by_id(world, b.claim_id) for b in npc.beliefs if b.stance == "believed"
+                            and claim_by_id(world, b.claim_id).affirmed and claim_by_id(world, b.claim_id).fact_id == grievance), None)
+                if own:
+                    bases = [own, *[base for base in bases if base.fact_id != grievance]]
             for index, base in enumerate(bases[:2]):
                 fact = fact_by_id(world, base.fact_id)
                 option_id = f"{conversation.id}:deny_{role}_{index}"
@@ -378,6 +385,11 @@ def listener_stances(option, beliefs, options, *, firsthand_source=False):
     stances = ["uncertain", "believed", "disbelieved"]
     if (not firsthand_source and any(options[b.claim_id].affirmed == option.affirmed
                                     and b.stance != "believed" for b in related)):
+        stances.remove("believed")
+    # A confident contradiction from someone who did not see the event cannot overturn a believed account;
+    # at most it raises doubt. Only a witness's word can change the listener's mind outright.
+    if ("believed" in stances and not firsthand_source
+            and any(options[b.claim_id].affirmed != option.affirmed and b.stance == "believed" for b in related)):
         stances.remove("believed")
     return stances
 
@@ -729,6 +741,25 @@ def assessment_turn(draft, role):
     return next((i for i in reversed(range(len(draft["turns"]))) if draft["turns"][i].speaker == role), None)
 
 
+def caught_lies(context, response):
+    """Recorded lies told to someone who saw the event themselves: (liar_role, listener_role, denied fact's true assertion)."""
+    if context is None:
+        return []
+    options = {option.id: option for option in context.options}
+    caught = []
+    for entry in response.disclosures:
+        option = options.get(entry.claim_id)
+        liar = response.turns[entry.turn].speaker
+        listener = "recipient" if liar == "initiator" else "initiator"
+        if option is None or entry.intent != "lie":
+            continue
+        seen = next((options[b.claim_id] for b in context.beliefs[listener] if b.direct and b.claim_id in options
+                     and options[b.claim_id].fact_id == option.fact_id and options[b.claim_id].affirmed != option.affirmed), None)
+        if seen is not None:
+            caught.append((liar, listener, seen.assertion))
+    return caught
+
+
 def snake_accusation(snapshot, role, option):
     """Whether this role heard the account as an accusation from the python; believing one always worsens its subject."""
     other = "recipient" if role == "initiator" else "initiator"
@@ -820,8 +851,10 @@ def resident_turn_choices(snapshot, draft, role, private, *, closing=False, asse
             # Telling an account back to the person it came from is an echo, not news for them.
             echoed = {options[d.claim_id].fact_id for d in draft["disclosures"] if draft["turns"][d.turn].speaker == other}
             required = (snapshot.get("_information_validation") or {}).get("focus_claim_id") if role == "initiator" and index == 0 else None
+            # A deliberate denial answers what the partner just told, so it is never an echo.
             choices["disclosures"] = [a["claim_id"] for a in accounts if (role, a["claim_id"]) not in seen
-                                      and (a["claim_id"] == required or options[a["claim_id"]].fact_id not in echoed
+                                      and (a["claim_id"] == required or options[a["claim_id"]].creator_id == actor_id(person)
+                                           or options[a["claim_id"]].fact_id not in echoed
                                            and a.get("immediate_source_id") != actor_id(partner))]
             # Pending reactions are chosen before this reply's effects are checked.
             # A closing assessment is recorded on the assessor's own last spoken turn.
