@@ -315,13 +315,14 @@ def _resident_contract(snapshot, *, correction=False):
             instruction += (f" {accused} promised to make this right, so your view of them is no different for now. "
                             if settled["promised"] else
                             f" {accused} made no promise to make this right; an apology or explanation alone does not repair it, "
-                            "so you think worse of them. ") + "Say why in your own words."
+                            "so you think " + ("far " if settled["change"] == "terrible" else "") + "worse of them. ") + "Say why in your own words."
         verdict = snapshot.get("snake_verdict")
         if verdict:
             accused = verdict["accused"]
             instruction += {
                 "better": f" {snapshot['opinion_target']} came to think worse of {accused} after your accusation, so you think better of them.",
                 "worse": f" {snapshot['opinion_target']} did not accept your accusation against {accused}, so you think worse of them.",
+                "terrible": f" {snapshot['opinion_target']} did not accept your accusation against {accused}, so you think far worse of them.",
                 "unchanged": f" {snapshot['opinion_target']} heard your accusation against {accused} without changing their view, "
                              "so your view of them is no different.",
             }[verdict["change"]] + (f" Say why in your own words. You remain certain {accused} acted selfishly: never doubt, "
@@ -579,7 +580,10 @@ def _request_context(message, snapshot, correction):
         owner, target = snapshot["owner"], snapshot["target"]
         instruction = (f"{owner} wrote the reason below about {target}. Decide only how it changes {owner}'s opinion of {target}. "
             f"Choose a worse change when the reason describes {target} as selfish, dishonest, unkind, manipulative or untrustworthy, "
-            f"or says {owner} feels wary, hurt, disappointed or uneasy about them. Choose a better change when it describes {target} "
+            f"or says {owner} feels wary, hurt, disappointed or uneasy about them. "
+            + (f"Choose a terrible change, instead of worse, only when the reason describes something so grave that worse is not enough, "
+               f"such as betrayal, cruelty, threats or violence by {target}. " if "terrible" in snapshot["labels"] else "")
+            + f"Choose a better change when it describes {target} "
             f"as kind, honest, generous, helpful or pleasant, or says {owner} feels appreciative, comfortable or close to them. "
             f"Choose unchanged when the reason is neutral, only restates events without judging them, says {owner} feels no "
             f"different, or judges someone other than {target}. Return only the change JSON."

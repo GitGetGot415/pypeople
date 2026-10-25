@@ -732,6 +732,7 @@ def fallback_assessment(snapshot, state):
     target, verdict, settled = state["opinion_target"], state.get("snake_verdict"), state.get("confrontation_verdict")
     reason = ({"better": f"{target} agreed with my accusation against {verdict['accused']}.",
                "worse": f"{target} would not accept my accusation against {verdict['accused']}.",
+               "terrible": f"{target} would not accept my accusation against {verdict['accused']}, and that is unforgivable.",
                "unchanged": f"{target} heard my accusation against {verdict['accused']} without changing their view."}[verdict["change"]]
               if verdict else
               (f"{target} promised to make this right." if settled["promised"] else f"{target} made no promise to make this right.")
@@ -762,7 +763,7 @@ def gossip_labels(snapshot, draft, role, claim_id):
     allowed = {"unchanged", *reputation_labels(related, options[claim_id])}
     if snake_accusation(snapshot, role, options[claim_id]) and "worse" in allowed and not any(b.direct for b in related):
         # The python persuaded someone who had not seen it, so it worked. A witness believes it regardless and still judges it.
-        return ["worse"]
+        return ["terrible" if options[claim_id].kind == "killing" and "terrible" in allowed else "worse"]
     return [label for label in OPINION_CHANGES if label in allowed]
 
 
@@ -857,8 +858,9 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
                     # Here "you" is the partner who told the account, not the absent person it is about.
                     validate_reason_subject(entry.reason, target=subject, people=_reason_people(snapshot, role),
                                             you=snapshot[other]["name"])
-                    if gossip_labels(snapshot, projected, role, entry.claim_id) == ["worse"]:
-                        validate_opinion_direction(entry.reason, OPINION_CHANGES["worse"][0], target=subject,
+                    labels = gossip_labels(snapshot, projected, role, entry.claim_id)
+                    if labels in (["worse"], ["terrible"]):
+                        validate_opinion_direction(entry.reason, OPINION_CHANGES[labels[0]][0], target=subject,
                                                    people=_reason_people(snapshot, role), you=snapshot[other]["name"])
         projected["assessments"][role] = dict(person=candidate.opinion.person, reason=reason,
                                                              gossip=list(candidate.third_party_opinions))

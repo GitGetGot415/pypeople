@@ -243,13 +243,15 @@ DIALOGUE_REPEAT_TURN_WORDS = 4
 CONVERSATION_MAX_AGREEMENTS = 2
 CONVERSATION_MAX_DISCLOSURES = 4
 CONVERSATION_MAX_REPUTATION_EFFECTS = 4
-REPUTATION_FACT_LIMIT = 15
 # Assessments name only a direction; small models pick the strongest intensity for any warm reason.
 # Each direction moves an opinion by a random amount in its inclusive range. Talk sours a view faster than
 # it warms one; large moves come from deeds such as harvests and promises.
-OPINION_CHANGES = {"worse": (-12, -8), "unchanged": (0, 0), "better": (3, 5)}
+# "terrible" is for conduct too grave for "worse", such as betrayal, threats or violence.
+OPINION_CHANGES = {"terrible": (-30, -20), "worse": (-12, -8), "unchanged": (0, 0), "better": (3, 5)}
 # Largest change one conversation makes to an opinion of the partner. It is applied on top of the opinion
 # as it stands when the conversation is accepted, so a harvest seen mid-conversation is kept.
+# One heard account can move a view of its subject as far as one conversation can.
+REPUTATION_FACT_LIMIT = max(abs(delta) for bounds in OPINION_CHANGES.values() for delta in bounds)
 CONVERSATION_OPINION_STEP = max(abs(delta) for bounds in OPINION_CHANGES.values() for delta in bounds)
 # How a resident feels about someone, by opinion score. Speech takes its tone from the band; from hostile down,
 # warm talk toward that person is rejected, a grievance can start a confrontation, and very hostile permits an attack.

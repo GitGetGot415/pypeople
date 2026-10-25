@@ -768,7 +768,11 @@ def confrontation_verdict(snapshot, draft, role):
     accused = snapshot["recipient"]
     promisors = {row["id"]: row["promisor_id"] for row in snapshot.get("permitted_proposals", [])}
     promised = any(promisors.get(a.proposal_id) == actor_id(accused) for a in draft["accepted_proposals"])
-    return dict(change="unchanged" if promised else "worse", accused=accused["name"], promised=promised)
+    info = snapshot.get("_information_validation")
+    kind = next((o.kind for o in information_from_dict(info).options if o.id == info.get("focus_claim_id")), None) if info else None
+    # An unanswered killing is too grave for an ordinary worse view.
+    change = "unchanged" if promised else "terrible" if kind == "killing" else "worse"
+    return dict(change=change, accused=accused["name"], promised=promised)
 
 
 def snake_accusation(snapshot, role, option):
@@ -793,8 +797,9 @@ def snake_verdict(snapshot, draft, role):
         return None
     option = next(o for o in information_from_dict(info).options if o.id == focus)
     views = [e.delta for e in draft["third_party_opinions"] if turns[e.turn].speaker != role]
+    rejected = bool(views) or any(d.listener_stance != "believed" for d in told)
     change = ("better" if any(delta < 0 for delta in views) else
-              "worse" if views or any(d.listener_stance != "believed" for d in told) else "unchanged")
+              ("terrible" if option.kind == "killing" else "worse") if rejected else "unchanged")
     return dict(change=change, accused=snapshot.get("_name_actors", {}).get(option.subject_id, {}).get("name", ""))
 
 
