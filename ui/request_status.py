@@ -16,6 +16,7 @@ class RequestStatus:
         self.header = pygame.Rect(self.rect.x, self.rect.y, self.rect.width, HUD_HEADER_HEIGHT)
         self.collapsed = True
         self.slot_scroll = 0
+        self.row_of = {}
         self.scrollbar = ScrollbarDrag()
         self.set_capacity(max_requests)
 
@@ -27,6 +28,21 @@ class RequestStatus:
         if max_requests > self.visible_slots:
             self.expanded_height += 20
         self.rect.height = HUD_HEADER_HEIGHT if self.collapsed else self.expanded_height
+
+    def layout(self, workers):
+        """Show at most max_requests exchanges, packed into the lowest rows; the rest are queued."""
+        live = {id(worker): worker for worker in workers}
+        previous = {key: slot for key, slot in self.row_of.items() if key in live}
+        rows = {}
+        for key, _ in sorted(previous.items(), key=lambda item: item[1]):
+            if len(rows) < self.max_requests:
+                rows[key] = len(rows) + 1
+        for worker in sorted(workers, key=lambda worker: (worker.started_at, worker.slot)):
+            if id(worker) not in rows and len(rows) < self.max_requests:
+                rows[id(worker)] = len(rows) + 1
+        self.row_of = rows
+        shown = {slot: live[key] for key, slot in rows.items()}
+        return shown, len(live) - len(shown)
 
     def output_button(self, slot):
         y = self.rect.y + HUD_HEADER_HEIGHT + 8 + (slot - 1 - self.slot_scroll) * LLM_SLOT_HEIGHT
@@ -59,13 +75,14 @@ class RequestStatus:
             self.slot_scroll = max(0, min(self.max_requests - self.visible_slots, self.slot_scroll - event.y))
             return True
         if not self.collapsed:
-            for worker in app.requests.statuses():
-                if not self.slot_scroll < worker.slot <= self.slot_scroll + self.visible_slots:
+            shown, _ = self.layout(app.requests.statuses())
+            for slot, worker in shown.items():
+                if not self.slot_scroll < slot <= self.slot_scroll + self.visible_slots:
                     continue
-                if self.cancel_button(worker.slot).clicked(event):
+                if self.cancel_button(slot).clicked(event):
                     app.cancel_model_request(worker.session_id, worker.request_id)
                     return True
-                if worker.log is not None and self.output_button(worker.slot).clicked(event):
+                if worker.log is not None and self.output_button(slot).clicked(event):
                     app.open_stats()
                     app.stats.open_log(worker.log)
                     return True
@@ -76,14 +93,16 @@ class RequestStatus:
 
     def draw(self, app):
         manager = app.requests
-        workers = {worker.slot: worker for worker in manager.statuses()}
-        self.set_capacity(max(manager.max_requests, max(workers, default=0)))
+        self.set_capacity(manager.max_requests)
+        workers, queued = self.layout(manager.statuses())
         surface, font = app.window, app.small_font
         now = monotonic()
         pygame.draw.rect(surface, PAPER, self.rect)
         pygame.draw.rect(surface, INK, self.rect, width=1)
         pygame.draw.rect(surface, ACCENT, self.header)
-        title = f"{'+' if self.collapsed else '-'} LLM calls: {manager.admission.active}/{manager.max_requests}; exchanges: {len(workers)}"
+        title = f"{'+' if self.collapsed else '-'} LLM calls: {manager.admission.active}/{manager.max_requests}; exchanges: {len(workers) + queued}"
+        if queued:
+            title += f"; Queued: {queued}"
         surface.blit(font.render(title, True, PAPER), (self.rect.x + 10, self.rect.y + 6))
         if self.collapsed:
             return
