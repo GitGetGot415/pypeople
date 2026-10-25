@@ -211,6 +211,14 @@ def face_toward(actor, point):
 
 def move_toward(actor, point, dt, speed):
     """Move without overshooting, facing the direction of actual movement."""
+    if hasattr(actor, "location"):
+        # An unreachable destination would leave the actor walking toward it forever.
+        from locations import clamp_point
+        reachable = clamp_point(actor.location, point)
+        if tuple(point) != reachable:
+            if getattr(actor, "destination", None) is not None and tuple(actor.destination) == tuple(point):
+                actor.destination = reachable
+            point = reachable
     dx, dy = point[0] - actor.x, point[1] - actor.y
     distance = math.hypot(dx, dy)
     step = speed * max(0.0, dt)
@@ -264,6 +272,7 @@ def company_point(npc, partner, spacing=0, *, allow_vertical=False):
 
 def conversation_points(first, second, spacing=0):
     """Choose two reachable positions near the midpoint, preferring a clear area."""
+    from locations import clamp_point
     world = first.world
     midpoint = ((first.x + second.x) / 2, (first.y + second.y) / 2)
     sizes = [actor.sprite_size or (NPC_RADIUS * 2, NPC_RADIUS) for actor in (first, second)]
@@ -305,6 +314,11 @@ def conversation_points(first, second, spacing=0):
             radius = math.hypot(dx, dy)
             for center in centers:
                 points = tuple((center[0] + ox, center[1] + oy) for ox, oy in offsets)
+                # The garden's walkable area is not its bounding box: the strip above it is only the bridge.
+                snapped = tuple(clamp_point(actor.location, point) for actor, point in zip((first, second), points))
+                if any(math.dist(point, fixed) > 1e-6 for point, fixed in zip(points, snapped)):
+                    continue
+                points = snapped
                 candidates.append(points)
                 if all(math.dist(center, other) >= radius + clearance for other, clearance in occupied):
                     clear.append(points)

@@ -20,7 +20,7 @@ from constants import (CONCERN_LIFETIME_RANGE, SNAKE_NAME, WORLD_HEIGHT, WORLD_W
 from creations import Creation
 from apartments import (Invitation, HostedVisit,
                         validate_saved_visit, validate_saved_invitations, validate_saved_home)
-from locations import Journey, RouteStep, validate_saved_locations, validate_destination, validate_feet
+from locations import Journey, RouteStep, clamp_point, validate_saved_locations, validate_destination, validate_feet
 from player_records import (PlayerOpinion, PlayerCall, PlayerReplyCall, PlayerReport,
                             PlayerPromiseOffer, PlayerAcknowledgment, validate_player_reports)
 from conversation_history import (RecordedTurn, ConversationRecord, Memory, WorldEvent,
@@ -747,6 +747,10 @@ def capture_resident(npc):
 
 def capture_simulation(world, *, camera_offset, camera_zoom):
     """Capture main-thread state, including accepted actions awaiting a tick."""
+    for actor in (*world.npcs, world.snake):
+        if actor.destination is not None:
+            # A destination outside the walkable map must never block saving; the actor resumes at the nearest valid point.
+            actor.destination = clamp_point(actor.location, actor.destination)
     records = {id(record): record.id for record in world.history}
     history = [HistoryState.capture(record) for record in world.history]
     unread_records = {npc.unread_player_reply.reference for npc in world.npcs if npc.unread_player_reply}

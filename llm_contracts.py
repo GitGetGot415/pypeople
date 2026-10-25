@@ -229,6 +229,9 @@ def _resident_contract(snapshot, *, correction=False):
             "An offer needs your spoken apple commitment and deadline; acceptance needs your spoken agreement. "
             "Keep all accepted effects fixed.\nPersonality: " + snapshot["speaker"].get("personality", "")
             + "\nCurrent task: " + snapshot["task"])
+        if snapshot.get("discussion_focus_claim_id") and snapshot["turn_index"] == 0 and not assessment:
+            instruction += (" Your sentence must state the concrete event of the required account in your own words: "
+                            "who did what, and how many apples if it is a harvest.")
         if snapshot.get("_closing"):
             instruction += f" Answer question_to_answer in at most {DIALOGUE_CLOSING_WORD_LIMIT} words and end without a question."
         return instruction, schema, model

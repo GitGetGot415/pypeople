@@ -115,12 +115,18 @@ def area_knowledge(actor, listener=None):
         if listener is not None and listener.location == actor.location:
             row["from_listener"] = relative_position(listener, point)
         spatial.append(row)
-    result = dict(layout=known_layout(), current_location=actor.location,
+    layout = known_layout()
+    if getattr(actor, "speech_only", False):
+        # The python has only ever lived in the garden: it sees the building from outside and has no resident familiarity.
+        layout = {key: layout[key] for key in ("garden", "apple_access")}
+        layout["apartment"] = ("A cream-colored building with muted green trim, rows of windows and a brown entrance door, "
+                               "across the wooden bridge. What lies inside is unknown to you.")
+    result = dict(layout=layout, current_location=actor.location,
                   facing=("north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest")[actor.facing],
                   spatial_view=spatial)
     if listener is not None:
         result["listener_name"] = listener.name
-    if actor is not world.snake:
+    if not getattr(actor, "speech_only", False):
         result["familiarity"] = familiarity(actor)
     return result
 

@@ -611,6 +611,13 @@ def validate_harvest_grounding(text, accounts, *, speaker_id, listener_id, curre
                 raise ValueError("No apples remain on the tree. Do not claim this harvest left some tree fruit for others.")
         if pickup or historical and scope == current_time:
             continue
+        if totals and listener_id not in totals and re.search(
+                r"\byou(?:['\u2019](?:ve|d)|\s+(?:have|had))?\s+(?:(?:just|already|recently|only)\s+){0,3}"
+                r"(?:harvest(?:ed)?|collect(?:ed)?|pick(?:ed)?(?: up)?|took|take)\s+(?:(?:only|exactly|all|the|last|just|at least|more than)\s+){0,3}"
+                rf"{number}\s+(?:apples?|fruit)\b", sentence, re.I):
+            collectors = " and ".join(row["subject_name"] for row in totals.values())
+            raise ValueError(f"In this account's phase the harvest was by {collectors}, not by the listener. "
+                             "Attribute it to the actual collector; do not tell the listener they harvested.")
         for identity, row in totals.items():
             name = row["subject_name"]
             refs = [name_pattern(name)]
@@ -670,10 +677,34 @@ def validate_python_harvest(text, *, snake_role=None):
                 "Keep the actual resident or player as the harvester, using the supplied subject and source.")
 
 
+RX_HYPO = r"\b(?:if|imagine|suppose|wish|would|could|might)\b"
+RX_ARRIVAL_A = r"\bI(?:['\u2019]ve| have)?(?: too| also)? (?:woke|awoke|arrived|came|rode|(?:remember|recall) (?:waking|arriving|the elevator|being in (?:the|an|that) elevator))\b[^.!?]{0,80}\b(?:elevator|first floor)\b|\bI(?:['\u2019]ve| have)?(?: too| also)? (?:remember|recall) (?:waking|arriving|the elevator|being in (?:the|an|that) elevator)\b"
+RX_ARRIVAL_B = r"\b(?:my|our)(?: own)? (?:elevator|arrival)\b"
+RX_ARRIVAL_C = r"\bwe all (?:share|remember|have|woke|arrived|came)\b[^.!?]{0,80}\b(?:elevator|arrival|memory)\b"
+RX_INSIDE = r"\bI(?:['\u2019]ve| have| had)?(?: (?:often|once|never|already|personally))? (?:lived|live|stayed|walked|went|visited|slept|entered)\b[^.!?]{0,40}\b(?:in|inside|into|through|up|around)(?: the| this| that)? (?:apartment|building|hallway|elevator|room|rooms|floor)\b|\bmy (?:room|apartment|floor)\b"
+
+
+def validate_snake_origin(text):
+    """The python has always lived in the garden: no elevator arrival, no knowledge of the building's interior."""
+    unquoted = unquoted_speech(text)
+    for sentence in split_sentences(unquoted):
+        if sentence.rstrip().endswith("?") or re.search(RX_HYPO, sentence, re.I):
+            continue
+        if (re.search(RX_ARRIVAL_A, sentence, re.I) or re.search(RX_ARRIVAL_B, sentence, re.I)
+                or re.search(RX_ARRIVAL_C, sentence, re.I)):
+            raise ValueError(f"{SNAKE_NAME} has always lived in the garden and never rode an elevator. "
+                             "Do not claim an elevator arrival or a shared arrival memory; only residents have one.")
+        if re.search(RX_INSIDE, sentence, re.I):
+            raise ValueError(f"{SNAKE_NAME} has never been inside the apartment building. Speak only of what is visible from the garden "
+                             "or what a resident actually told you.")
+
+
 def validate_snake_perspective(text, *, snake_role):
     """Catch detached species references before they become the partner's context."""
     # Direct quotations may legitimately report someone else's earlier wording.
     validate_python_harvest(text, snake_role=snake_role)
+    if snake_role == "speaker":
+        validate_snake_origin(text)
     unquoted = unquoted_speech(text)
     if re.search(name_pattern(SNAKE_NAME) + r"(?:['’]s\b|\s+(?:gave|gives|said|says|offered|offers|received|refused|accepted|decided|thinks|believes|claims|was|has|had)\b)", unquoted, re.I):
         raise ValueError(f"{SNAKE_NAME} is the {snake_role} in this exchange. Use I/my for yourself and you/your for the listener, retaining the event's ownership.")

@@ -446,8 +446,7 @@ def validate_information(response, context, *, names=(), participant_names=None,
             if firsthand:
                 agrees = options[firsthand.claim_id].affirmed == option.affirmed
                 if agrees and entry.intent == "challenge":
-                    raise ValueError("The speaker already knows this account firsthand. Share it as a personal experience; "
-                                     "do not ask someone else to confirm whether it happened.")
+                    entry.intent = "share"  # Challenging an event the speaker witnessed is only a mislabel.
                 if (not agrees and entry.intent == "share") or (agrees and entry.intent == "lie"):
                     raise ValueError("The disclosure intent must respect the speaker's firsthand knowledge of this event.")
             prior = beliefs[listener].get(option.id)

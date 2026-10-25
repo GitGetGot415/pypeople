@@ -203,6 +203,8 @@ def _speech_retry_snapshot(snapshot):
     """Rewrite only this speech step, retaining its chosen action, sources and full validation context."""
     state = deepcopy(snapshot)
     state["_compact_rewrite"] = state["request_kind"] != "handoff_thanks"
+    if "choices" in state:
+        state["choices"] = {**state["choices"], "offers": [], "acceptances": []}
     if state["request_kind"] == "resident_turn":
         return state  # Keep the conversation messages and unanswered questions on every attempt.
     state["preceding_turns"] = state["preceding_turns"][-1:]
