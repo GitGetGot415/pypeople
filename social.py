@@ -10,7 +10,8 @@ from actor_identity import account_references
 from social_records import (ConversationConcern, phase_label, Goal, Proposal, Promise, OpinionEffect, Claim, Belief,
     Disclosure, fact_by_id, claim_by_id, owns_recollection)
 from information import (account_content, account_view, record_intention, can_deceive, selected_beliefs, related_beliefs,
-    demote_contrary_beliefs, receive_belief, validate_information, trim_information, harvest_summary)
+    demote_contrary_beliefs, receive_belief, validate_information, trim_information, harvest_summary, retold_accusation,
+    reputation_deltas)
 
 
 def valid_concern(npc, concern):
@@ -266,7 +267,14 @@ def unweighed_allegation(conversation, turn, listener, option, claims):
                    and claims[e.claim_id].fact_id == option.fact_id for e in conversation.third_party_opinions)):
         return
     related = [b for b in listener.beliefs if b.claim_id in claims and claims[b.claim_id].fact_id == option.fact_id]
-    if any(b.assessed for b in related):
+    if retold_accusation(option):
+        # A retold accusation worsens its subject unless that has run its course (see reputation_assessment_available).
+        why = (f"{listener.name} had already judged this same account in an earlier conversation."
+               if any(b.assessed and b.claim_id == option.id for b in related) else
+               f"Retelling had already stirred {listener.name} up against {subject.name} as far as it can over this."
+               if not any(delta < 0 for delta in reputation_deltas(related, option)) else
+               f"{listener.name} formed no new view of {subject.name} from it.")
+    elif any(b.assessed for b in related):
         why = f"{listener.name} had already judged {subject.name} over this in an earlier conversation."
     elif any(b.direct for b in related) and option.kind != "harvest":
         why = f"{listener.name} saw this firsthand, so hearing it retold changed nothing."
@@ -354,7 +362,7 @@ def assign_goal(npc, world):
     descriptions = {
         "obtain_apple": (f"Obtain an apple from {target.name}",
                          "I want a sign that someone will look out for me." if generous
-                         else "I want to secure an apple while keeping my own resources.",
+                         else "I would rather get an apple from someone else than give up anything of mine.",
                          "Ask honestly and offer consideration in return." if generous
                          else "Try flattery and bargaining; keep my self-interest private."),
         "help_with_apple": (f"Give {target.name} an apple",

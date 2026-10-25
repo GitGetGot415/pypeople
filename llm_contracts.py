@@ -307,8 +307,9 @@ def _resident_contract(snapshot, *, correction=False):
                             "entry whose reason says, in your own words, whether what you heard makes you think better, worse or no "
                             "differently of that absent person, and why. believed_accounts lists each account, who told it to you, and "
                             "whether you saw it happen yourself. You accept that each one happened; never deny or doubt it. "
-                            "In that reason, you/your means the person who told you. When an entry has your_view_of_them worse, "
-                            "what you heard makes you think worse of that person; say why in your own words.")
+                            "In that reason, you/your means the person who told you. When an entry has your_view_of_them worse "
+                            "or far worse, what you heard makes you think that much worse of that person, even if you saw it "
+                            "yourself: hearing it told again stirs you up against them. Say why in your own words.")
         settled = snapshot.get("confrontation_verdict")
         if settled:
             accused = settled["accused"]

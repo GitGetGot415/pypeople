@@ -31,13 +31,53 @@ def assertion_text(world, fact, affirmed=True):
     return f"{subject.name} did not {action[fact.kind]} {target.name} in the exchange at {phase_label(fact.phase)}."
 
 
+# A "you" right after these words is an object ("greeted you", "in front of you"); anywhere else it is the subject.
+_MEMORY_OBJECT_BEFORE = frozenset("""to of for with at about from by toward towards behind around against
+    greeted taught suited made told gave asked helped let thanked called showed offered trusted needed missed loved""".split())
+_MEMORY_FORMS = {"your": ("my", "their"), "yours": ("mine", "theirs"), "yourself": ("myself", "themself"),
+                 "you're": ("I'm", "they're"), "you've": ("I've", "they've"), "you'd": ("I'd", "they'd"), "you'll": ("I'll", "they'll")}
+
+
+def memory_in_person(text, person):
+    """Retell an authored memory, which addresses its character as "you", in the first person for its owner
+    or the third ("they") for anyone else; handed on as "you", models read it as the listener's own life."""
+    first = person == "first"
+    text = re.sub(r"\b(neither|both|either|each) of you\b", lambda m: f"{m.group(1)} of {'us' if first else 'them'}", text, flags=re.I)
+
+    def swap(match):
+        word, before = match.group(0), text[:match.start()]
+        if re.search(r"thank[- ]$", before, re.I):
+            return word  # A thank-you card.
+        lower = word.casefold().replace("’", "'")
+        if lower == "you":
+            previous = re.findall(r"[a-z]+", before.casefold())[-1:]
+            new = (("me" if first else "them") if previous and previous[0] in _MEMORY_OBJECT_BEFORE else
+                   "I" if first else "they")
+        else:
+            new = _MEMORY_FORMS[lower][0 if first else 1]
+        return new[0].upper() + new[1:] if re.search(r"(?:^|[.!?]\s+)$", before) else new
+
+    text = re.sub(r"\byou(?:['’](?:re|ve|d|ll)|rself|rs|r)?\b", swap, text, flags=re.I)
+    if first:
+        # "You believe ..., but are unsure": the shared subject's verb agrees with I.
+        text = re.sub(r",\s+(but|and) are\b", r", \1 am", re.sub(r"\bI are\b", "I am", text))
+        text = re.sub(r"\bI were\b", "I was", text)
+    return text
+
+
+def own_memory(fact):
+    """A former-life memory as its owner tells it."""
+    _, marker, description = fact.summary.partition("'s own description: ")
+    return memory_in_person(description if marker else fact.summary, "first")
+
+
 def account_content(world, fact, affirmed=True):
     """Request prose has no record header; keep UI formatting in assertion_text()."""
     summary = (harvest_summary(world.participant_by_id(fact.subject_id).name, fact.quantity)
                if fact.kind == "harvest" else fact.summary if fact.kind == "former_life" else named_references(fact.summary))
     if fact.kind == "former_life":
         _, marker, description = summary.partition("'s own description: ")
-        summary = description if marker else summary
+        summary = memory_in_person(description if marker else summary, "third")
     elif fact.kind == "private_motive":
         # The heading describes the goal; the owed private information is why
         # its owner wants it. Ownership stays in the separate account fields.
@@ -286,6 +326,8 @@ def information_views(context, world):
                     **{key: projected[key] for key in ("claim_id", "subject_id", "subject_name", "object_id", "object_name",
                         "knowledge_owner_name", "original_speaker_id", "original_speaker_name")},
                     "permitted_use": "deliberate denial; private to this speaker" if option.creator_id else "known account"}
+            if fact.kind == "former_life" and option.affirmed and option.subject_id == npc_id:
+                view["assertion"] = own_memory(fact)
             if fact.kind == "harvest":
                 view["harvest_context"] = [row for (phase, _), row in harvests.items() if phase == fact.phase]
             if belief:
@@ -294,8 +336,9 @@ def information_views(context, world):
                             learned_at={"day": belief.phase // len(PHASES) + 1, "phase": PHASES[belief.phase % len(PHASES)]},
                             source_disclosure_id=belief.disclosure_id,
                             basis=projected["basis"],
-                            already_assessed=any(b.assessed and options[b.claim_id].fact_id == option.fact_id
-                                                 and options[b.claim_id].affirmed == option.affirmed
+                            already_assessed=any(b.assessed and (b.claim_id == claim_id if retold_accusation(option) else
+                                                                 options[b.claim_id].fact_id == option.fact_id
+                                                                 and options[b.claim_id].affirmed == option.affirmed)
                                                  for b in context.beliefs[role]),
                             current_reputation_influence=sum(b.opinion_delta for b in context.beliefs[role]
                                                              if options[b.claim_id].fact_id == option.fact_id))
@@ -318,6 +361,12 @@ def related_beliefs(option, beliefs, options):
 
 def reputation_assessment_available(option, related, options, *, believed, heard, participants, assessed=False):
     """Stance is actual during validation, possible before a pending reaction."""
+    if retold_accusation(option):
+        # A believed accusation riles its listener up again each time someone new tells it, even one who saw it happen:
+        # once per account, until the per-fact limit leaves no room for a worse view.
+        return (heard and believed and option.subject_id not in participants and not assessed
+                and not any(b.assessed and b.claim_id == option.id for b in related)
+                and any(delta < 0 for delta in reputation_deltas(related, option)))
     # A witness knows who picked the fruit, but may reconsider the collector's
     # generosity when someone frames that conduct. Assessment remains once per fact.
     return (option.kind != "conversation_seen" and heard and believed and option.subject_id not in participants and not assessed
@@ -775,17 +824,17 @@ def confrontation_verdict(snapshot, draft, role):
     return dict(change=change, accused=accused["name"], promised=promised)
 
 
-def snake_accusation(snapshot, role, option):
-    """Whether this role heard the account as an accusation from the python; believing one always worsens its subject."""
-    other = "recipient" if role == "initiator" else "initiator"
-    return snapshot[other].get("kind") == "python" and option.affirmed and option.kind in ACCUSATION_FACT_KINDS
+def retold_accusation(option):
+    """Whether hearing this account told is an accusation; believing one always worsens its subject, whoever told it."""
+    return option.affirmed and option.kind in ACCUSATION_FACT_KINDS
 
 
 def snake_verdict(snapshot, draft, role):
     """The python's change toward a partner it pressed with its task accusation, from that partner's answer.
 
-    A partner who thought worse of the accused agreed; one who doubted the account or weighed it without
-    changing their view did not. None when the python made no task accusation, leaving its view free.
+    A partner who believed the account agreed, and so thought worse of the accused; one who doubted it did not.
+    A believer already as worked up as retelling can make them leaves the python's view where it is.
+    None when the python made no task accusation, leaving its view free.
     """
     info = snapshot.get("_information_validation") or {}
     focus = info.get("focus_claim_id")
@@ -797,9 +846,9 @@ def snake_verdict(snapshot, draft, role):
         return None
     option = next(o for o in information_from_dict(info).options if o.id == focus)
     views = [e.delta for e in draft["third_party_opinions"] if turns[e.turn].speaker != role]
-    rejected = bool(views) or any(d.listener_stance != "believed" for d in told)
-    change = ("better" if any(delta < 0 for delta in views) else
-              ("terrible" if option.kind == "killing" else "worse") if rejected else "unchanged")
+    rejected = any(d.listener_stance != "believed" for d in told)
+    change = (("terrible" if option.kind == "killing" else "worse") if rejected else
+              "better" if any(delta < 0 for delta in views) else "unchanged")
     return dict(change=change, accused=snapshot.get("_name_actors", {}).get(option.subject_id, {}).get("name", ""))
 
 
@@ -836,7 +885,9 @@ def resident_turn_choices(snapshot, draft, role, private, *, closing=False, asse
             projected = build_account_view(selected, account_knowledge(belief, actor_id(person),
                 creator_id=option.creator_id, fallback_source=actor_id(partner)), catalog,
                 actor_id(person), actor_id(partner))
-            view.update(claim_id=claim_id, assertion=option.assertion, kind=option.kind,
+            # The owner's own memory keeps its first-person telling from permitted_accounts.
+            own = option.kind == "former_life" and option.affirmed and option.subject_id == actor_id(person) and view.get("assertion")
+            view.update(claim_id=claim_id, assertion=view["assertion"] if own else option.assertion, kind=option.kind,
                         subject_id=option.subject_id, subject_name=projected["subject_name"],
                         original_speaker_id=option.originator_id, original_speaker_name=projected["original_speaker_name"],
                         immediate_source_id=projected["immediate_source_id"], immediate_source_name=projected["immediate_source_name"],
@@ -872,6 +923,11 @@ def resident_turn_choices(snapshot, draft, role, private, *, closing=False, asse
                                       and (a["claim_id"] == required or options[a["claim_id"]].creator_id == actor_id(person)
                                            or options[a["claim_id"]].fact_id not in echoed
                                            and a.get("immediate_source_id") != actor_id(partner))]
+            if not assessment:
+                # Still known, so stance and reactions can draw on it, but listed so it is not tagged by mistake.
+                for a in accounts:
+                    if a["claim_id"] not in choices["disclosures"]:
+                        a["disclosure"] = "not available this reply; you may react to it in speech, with no disclosures entry for it"
             # Pending reactions are chosen before this reply's effects are checked.
             # A closing assessment is recorded on the assessor's own last spoken turn.
             cutoff = assessment_turn(draft, role) if assessment else index

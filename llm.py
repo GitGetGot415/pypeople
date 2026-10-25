@@ -314,6 +314,31 @@ def _resident_disclosure_choices(state, speech):
     return disclosure_choices
 
 
+_UNSUPPORTED_EFFECTS = {RecoveryKind.UNMATCHED_ACCOUNT: "disclosures", RecoveryKind.MISSING_PROMISE: "offers",
+                        RecoveryKind.MISSING_ACCEPTANCE: "acceptances"}
+
+
+def _without_unsupported_effects(state, exc, *, keep_disclosures):
+    """The rejected reply minus metadata its speech never supported, if that alone made it fail; else None.
+
+    Small models tag accounts, offers and acceptances their words never made. Dropping only those tags keeps
+    good speech rather than regenerating it and piling up corrections. A required disclosure is never dropped.
+    """
+    candidate, error = exc.response, exc
+    for _ in _UNSUPPORTED_EFFECTS:
+        field = _UNSUPPORTED_EFFECTS.get(error.kind)
+        if (candidate is None or field is None or not getattr(candidate, field, None)
+                or field == "disclosures" and keep_disclosures):
+            return None
+        candidate = candidate.model_copy(deep=True)
+        setattr(candidate, field, [])
+        try:
+            return validate_response(candidate.model_dump_json(), state)
+        except InvalidResponseError as retry:
+            error = retry
+    return None
+
+
 def _corrected_request(state, request, report):
     kind = state.get("request_kind")
     activity = (f"turn {state['turn_index'] + 1} for {state['speaker']['name']}" if kind == "resident_turn" else
@@ -376,6 +401,11 @@ def _corrected_request(state, request, report):
                     return validate_response(candidate.model_dump_json(), state)
                 except InvalidResponseError:
                     pass
+            if kind == "resident_turn":
+                required = bool(disclosure_repair) or bool(state.get("discussion_focus_claim_id")) and state["turn_index"] == 0
+                stripped = _without_unsupported_effects(state, exc, keep_disclosures=required)
+                if stripped is not None:
+                    return stripped
             correction = _stage_correction(state, exc)
             if kind == "resident_turn" and exc.kind == RecoveryKind.MISSING_PROMISE:
                 effect_repairs["offers"] = []

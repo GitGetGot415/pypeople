@@ -585,6 +585,54 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
                          + expected_account, RecoveryKind.UNMATCHED_ACCOUNT)
 
 
+_WITNESSED_ACTS = {"harvest": r"harvest\w*|pick\w*|take|takes|taking|took|collect\w*|gather\w*",
+                   "apple_eaten": r"eat|eats|eating|ate", "apple_given": r"give|gives|giving|gave|hand\w*"}
+
+
+def validate_witness_denial(text, witnessed):
+    """A witness never claims not to have seen what they saw; questioning what it meant stays allowed.
+
+    witnessed lists (actor name, fact kind) for events this speaker saw firsthand.
+    """
+    speech = unquoted_speech(text)
+    for name, kind in witnessed:
+        acts = _WITNESSED_ACTS.get(kind)
+        if not acts or not name:
+            continue
+        refs = "|".join(name_pattern(form) for form in dict.fromkeys((name, name.split()[0])))
+        if re.search(rf"\bi\s+(?:didn['’]t|did not|never|haven['’]t|have not)\s+(?:actually\s+|personally\s+|really\s+|even\s+)?"
+                     rf"(?:see|seen|saw|witness\w*|watch\w*|notice\w*)\s+(?:{refs})\s+(?:\w+\s+)?(?:{acts})\b", speech, re.I):
+            raise ValueError(f"You saw {name} do this yourself. Do not claim you did not see it; you may question what it meant.")
+
+
+def validate_promise_mentions(text, *, promisors, people, listener):
+    """Speech may describe only apple offers and promises that were actually made, and each is for one apple.
+
+    promisors names everyone with a real promise or offer this speaker knows of. The speaker's own new offer is
+    governed by the offer record instead, so only other people and the listener ("you", "your") are checked here.
+    """
+    refs = {form.casefold(): name for name in people if name for form in (name, name.split()[0])}
+    refs.update({"you": listener, "your": listener})
+    who = "|".join(re.escape(ref) for ref in sorted(refs, key=len, reverse=True))
+    count = r"(?P<count>\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|several|many|some|all(?: the)?|more)"
+    patterns = (rf"\b(?P<who>{who})(?:['’]s)?\s+(?:offer|promise)\s+(?:of|to (?:give|bring|share|save)(?:\s+\w+){{0,2}})\s+{count}\s+(?:apples?|fruits?)\b",
+                rf"\b(?P<who>{who})\s+(?:(?:has|had|have|already)\s+)?(?:offered|promised)\s+(?:to\s+(?:give|bring|share|save)\s+)?"
+                rf"(?:\w+\s+){{0,2}}{count}\s+(?:apples?|fruits?)\b")
+    for sentence in split_sentences(unquoted_speech(text)):
+        if sentence.rstrip().endswith("?"):
+            continue
+        for pattern in patterns:
+            for match in re.finditer(pattern, sentence, re.I):
+                if re.search(r"\b(?:if|imagine|suppose|unless)\s+(?:\w+\s+)?$", sentence[:match.start()], re.I):
+                    continue
+                person = refs[match["who"].casefold()]
+                if match["count"].casefold() not in ("a", "an", "one"):
+                    raise ValueError("An apple offer or promise is always for one apple. Do not invent a promise of several apples.")
+                if person not in promisors:
+                    raise ValueError(f"{person} made no apple offer or promise that you know of. Speak only about promises "
+                                     "actually made; do not invent one.")
+
+
 def validate_apple_promise(offer, acceptance, deadline, *, current_phase=None):
     validate_apple_offer(offer, deadline, current_phase=current_phase)
     validate_apple_acceptance(acceptance)
@@ -853,7 +901,9 @@ def validate_private_recital(text, *, personality="", motives=(), run=6):
             r"\b(?:current (?:listener|speaker|task)|private (?:motive|context|accounts?)|immediate objective|"
             r"(?:my|your) goal is to|claims? database|(?:with )?an intensity of \d+|permitted accounts?|the transcript|"
             r"named collector|witnessing is not collecting|phase['’]s (?:tree )?stock|tree stock|visiting is travel only|"
-            r"speech never transfers apples|successful local harvest|without permission, payment or quotas)\b",
+            r"speech never transfers apples|successful local harvest|without permission, payment or quotas|"
+            # The python's task script ("Keep pressing that accusation", "then insist it shows ...").
+            r"keep pressing (?:that|the|this|my) accusation|(?:then )?insist (?:that )?it shows|i have a task for you)\b",
             speech, re.I):
         raise ValueError("Speech reads internal instructions or record fields aloud. Say only natural spoken words.")
     # Motives are never spoken, in any person. A character may briefly voice their own trait,
@@ -901,7 +951,8 @@ def validate_unheard_quote(text, name):
 
 def leverage_pressure(text):
     """Recorded pressure needs pressure in the words themselves, not just a remembered account."""
-    return bool(re.search(r"\b(?:unless|or else|if you (?:don['’]t|do not|won['’]t|refuse)|you owe|owe me|"
+    # "If you don't mind" is politeness, not a threat.
+    return bool(re.search(r"\b(?:unless|or else|if you (?:(?:don['’]t|do not)(?!\s+mind\b)|won['’]t|refuse)|you owe|owe me|"
                           r"i know (?:that |what |about )?you|i (?:will|['’]ll|could|might) tell|keep (?:it|this|that) (?:quiet|secret|between us)|"
                           r"remember (?:when|that|how) you|after what you|you promised)\b", unquoted_speech(text), re.I))
 
@@ -944,11 +995,16 @@ def validate_echo(text, previous):
         raise ValueError("This reply mostly repeats the partner's previous words. Answer them in your own words.")
 
 
-def validate_own_memory_person(text, assertion):
-    """A speaker's own memory is told as I/my; telling it as you/your hands it to the listener."""
-    if any({"you", "your"} & set(words) for words in _word_runs(unquoted_speech(text), 4) & _word_runs(assertion, 4)):
+def validate_own_memory_person(text, assertion, own_telling):
+    """A speaker's own memory is told as I/my; reading out its third-person account makes someone else its owner.
+
+    Only the wording that differs from the owner's first-person telling counts: "they" there means the owner,
+    while a "they" both versions share is another person in the memory.
+    """
+    retold = _word_runs(assertion, 4) - _word_runs(own_telling, 4)
+    if _word_runs(unquoted_speech(text), 4) & retold:
         raise ValueError("This memory is your own. Tell it with I/my as something you did or felt; "
-                         "saying it as you/your makes the listener its owner.")
+                         "saying it as they/their makes someone else its owner.")
 
 
 _EXCUSE = re.compile(

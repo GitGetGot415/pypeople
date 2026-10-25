@@ -7,7 +7,7 @@ from dialogue_rules import (is_name_reference, name_pattern,
                            named_context, validate_base_prose, validate_opinion_reason,
                            validate_speaker_identity)
 from dialogue_text import split_sentences, contains_question
-from information import NPC_ARRIVAL_MEMORY, resident_turn_choices, snake_accusation, snake_verdict, confrontation_verdict
+from information import NPC_ARRIVAL_MEMORY, resident_turn_choices, retold_accusation, snake_verdict, confrontation_verdict
 from actor_identity import actor_id, own_name, forms, speech_only
 
 
@@ -435,6 +435,12 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
     if not orientation and not assessment and not thanks and role == "initiator" and index == 0 and focus:
         state["discussion_focus_claim_id"] = focus
         state["task"] += " Disclose the required task account or a permitted denial of the same fact now."
+    if not assessment and not thanks and index == 2 and person.get("kind") == "python":
+        from dialogue_validation import pending_snake_accusation
+        pending = pending_snake_accusation(snapshot, draft["turns"], role)
+        if pending:
+            state["task"] += (f" You told what {pending[0]} did but have not yet judged it. Say plainly, in your own view, "
+                              f"that it was selfish or greedy and shows {pending[0]} cares nothing for the listener.")
     if assessment and role == "initiator":
         state["escalation_choices"] = deepcopy(snapshot.get("escalation_choices"))
     if assessment:
@@ -469,8 +475,8 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
             options = {o.id: o for o in info.options}
             state["believed_accounts"] = [dict(claim_id=a["claim_id"], subject_name=a.get("subject_name", ""), account=a["assertion"],
                                                told_by=listener["name"], saw_it_yourself=a.get("fact_id") in seen,
-                                               **({"your_view_of_them": "worse"} if snake_accusation(snapshot, role, options[a["claim_id"]])
-                                                  and a.get("fact_id") not in seen else {}))
+                                               **({"your_view_of_them": "far worse" if options[a["claim_id"]].kind == "killing" else "worse"}
+                                                  if retold_accusation(options[a["claim_id"]]) else {}))
                                           for a in accounts if a["claim_id"] in choices["third_party_opinions"]]
         if person.get("kind") == "python":
             state["snake_verdict"] = snake_verdict(snapshot, draft, role)

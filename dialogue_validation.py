@@ -24,6 +24,7 @@ from dialogue_rules import (is_name_reference, mentions_account, mentions_privat
                            validate_continuity, validate_base_prose, validate_claim_source, validate_english,
                            validate_opinion_reason, validate_opinion_direction, validate_environment_speech, validate_speaker_identity,
                            personal_apple_request, short_player_answer, validate_snake_perspective, validate_snake_accusation,
+                           validate_promise_mentions, validate_witness_denial,
                            copied_share, first_person_text, validate_addressee, validate_private_recital,
                            validate_unheard_quote, leverage_pressure, validate_reason_subject, validate_reason_voice,
                            validate_tree_permanence, validate_name_tag_talk, validate_self_name, validate_echo,
@@ -31,7 +32,7 @@ from dialogue_rules import (is_name_reference, mentions_account, mentions_privat
                            validate_hostile_warmth, validate_own_apples, validate_own_harvest, validate_memory_firm, denies_conduct)
 from social_records import phase_index
 from information import (assessment_turn, information_from_dict, related_beliefs, reputation_labels,
-                         resident_information, resident_effect_limits, snake_accusation, opinion_change)
+                         resident_information, resident_effect_limits, retold_accusation, opinion_change, reputation_deltas)
 from social import validate_agreements, proposals_from_snapshot
 from actor_identity import account_references, actor_id, forms, own_name, speech_only
 from information import orientation_speech, validate_orientation
@@ -404,9 +405,18 @@ def validate_resident_grounding(result, snapshot):
         validate_memory_firm(turn.text)
         if speaker.get("kind") != "python":
             _validate_denial(result, index, turn, speaker, options, info)
+        tellings = {a["claim_id"]: a["assertion"] for a in private.get("permitted_accounts", [])}
         for account in options.values():
-            if account["kind"] == "former_life" and account["subject_id"] == speaker["actor_id"]:
-                validate_own_memory_person(turn.text, account["assertion"])
+            if (account["kind"] == "former_life" and account["subject_id"] == speaker["actor_id"]
+                    and account["id"] in tellings):
+                validate_own_memory_person(turn.text, account["assertion"], tellings[account["id"]])
+        lied = {options[d.claim_id]["fact_id"] for d in result.disclosures
+                if d.turn == index and d.claim_id in options and d.intent == "lie"}
+        validate_witness_denial(turn.text, {
+            (snapshot.get("_name_actors", {}).get(options[b["claim_id"]]["subject_id"], {}).get("name", ""), options[b["claim_id"]]["kind"])
+            for b in info.get("beliefs", {}).get(turn.speaker, [])
+            if b["direct"] and b["claim_id"] in options and options[b["claim_id"]]["affirmed"]
+            and options[b["claim_id"]]["fact_id"] not in lied})
         recent_memories = [options[entry.claim_id] for entry in result.disclosures
                            if entry.turn == index - 1 and entry.claim_id in options]
         validate_memory_ownership(turn.text, options.values(), speaker_id=speaker["actor_id"],
@@ -727,7 +737,8 @@ def _believed_from_partner(draft, role, state):
 def fallback_assessment(snapshot, state):
     """A plainly recorded verdict for when no written reason passed its checks, so the accepted exchange is kept.
 
-    The python's verdict still follows its partner's answer; everyone else's view is left unchanged.
+    The python's and a confronter's verdicts still follow the partner's answer, and a believed accusation still
+    worsens its subject; everyone else's view is left unchanged.
     """
     target, verdict, settled = state["opinion_target"], state.get("snake_verdict"), state.get("confrontation_verdict")
     reason = ({"better": f"{target} agreed with my accusation against {verdict['accused']}.",
@@ -742,8 +753,10 @@ def fallback_assessment(snapshot, state):
     for claim_id in state["choices"]["third_party_opinions"]:
         if options[claim_id].fact_id not in facts and len(gossip) < resident_effect_limits()["third_party_opinions"]:
             facts.add(options[claim_id].fact_id)
+            subject = snapshot.get("_name_actors", {}).get(options[claim_id].subject_id, {}).get("name", "them")
             gossip.append(ReputationReason(claim_id=claim_id, subject_id=options[claim_id].subject_id,
-                                           reason="No clear view formed from this account."))
+                                           reason=f"Hearing it told stirred me up against {subject}." if retold_accusation(options[claim_id])
+                                           else "No clear view formed from this account."))
     choices = state.get("escalation_choices")
     return ResidentAssessment(
         escalation=EscalationChoice(action="leave", target_id=choices["target_id"], grievance_id=choices["grievance_id"], evidence="")
@@ -755,16 +768,41 @@ def fallback_assessment(snapshot, state):
         third_party_opinions=gossip)
 
 
+def pending_snake_accusation(snapshot, turns, role):
+    """(accused, accused is the listener) while the python's opening turn told its task account without calling it
+    selfish; None once it has, or outside a python's task accusation."""
+    info = snapshot.get("_information_validation") or {}
+    if role != "initiator" or snapshot[role].get("kind") != "python" or not info.get("focus_claim_id") or not turns:
+        return None
+    subject_id = next(o["subject_id"] for o in info["options"] if o["id"] == info["focus_claim_id"])
+    subject = snapshot.get("_name_actors", {}).get(subject_id, {}).get("name", "")
+    if not subject:
+        return None
+    accused = (subject, actor_id(snapshot["recipient"]) == subject_id)
+    try:
+        validate_snake_accusation(turns[0].text, subject, subject_is_listener=accused[1])
+    except ValueError:
+        return accused
+    return None
+
+
 def gossip_labels(snapshot, draft, role, claim_id):
     """Directions for one heard account, within its per-fact limit; unchanged leaves the subject's standing alone."""
     options = {o.id: o for o in information_from_dict(snapshot["_information_validation"]).options}
     beliefs, _, _ = resident_information(snapshot, draft)
     related = related_beliefs(options[claim_id], beliefs[role].values(), options)
+    if retold_accusation(options[claim_id]):
+        # Hearing it told riles the listener up, whoever told it and whether or not they saw it; the drop is
+        # trimmed to the room the per-fact limit leaves (see gossip_delta).
+        return ["terrible" if options[claim_id].kind == "killing" else "worse"]
     allowed = {"unchanged", *reputation_labels(related, options[claim_id])}
-    if snake_accusation(snapshot, role, options[claim_id]) and "worse" in allowed and not any(b.direct for b in related):
-        # The python persuaded someone who had not seen it, so it worked. A witness believes it regardless and still judges it.
-        return ["terrible" if options[claim_id].kind == "killing" and "terrible" in allowed else "worse"]
     return [label for label in OPINION_CHANGES if label in allowed]
+
+
+def gossip_delta(related, option, label):
+    """One drawn change for a heard account, kept within what its per-fact limit still allows."""
+    allowed = reputation_deltas(related, option)
+    return max(min(allowed), min(max(allowed), opinion_change(label)))
 
 
 def apply_opinion_directions(snapshot, draft, state, change, gossip_changes):
@@ -784,11 +822,15 @@ def apply_opinion_directions(snapshot, draft, state, change, gossip_changes):
         except ValueError:
             # The reason did not end hostile enough for an attack; the confrontation ends peacefully.
             projected["escalation"] = escalation.model_copy(update={"action": "leave"})
+    beliefs, _, _ = resident_information(snapshot, projected)
+    options = {o.id: o for o in information_from_dict(snapshot["_information_validation"]).options} if pending["gossip"] else {}
     for entry, label in zip(pending["gossip"], gossip_changes):
         # An unchanged view is still recorded, so the outcome shows the account was weighed. None: no direction was found.
         reason = entry.reason if label else f"{entry.reason} (No clear direction; left unchanged.)"[:400]
+        option = options[entry.claim_id]
+        delta = gossip_delta(related_beliefs(option, beliefs[role].values(), options), option, label or "unchanged")
         projected["third_party_opinions"].append(ThirdPartyOpinion(turn=assessment_turn(draft, role), claim_id=entry.claim_id,
-            subject_id=entry.subject_id, delta=opinion_change(label or "unchanged"), reason=reason))
+            subject_id=entry.subject_id, delta=delta, reason=reason))
     resident_information(snapshot, projected)
     return projected
 
@@ -909,12 +951,20 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
         focus_fact = options[info["focus_claim_id"]]["fact_id"]
         if not any(options[d.claim_id]["fact_id"] == focus_fact for d in candidate.disclosures):
             raise ValueError("Disclose the required task account or a permitted denial of that same fact.")
-        if snapshot[role].get("kind") == "python" and snapshot.get("_dialogue_validation", True):
-            subject_id = options[info["focus_claim_id"]]["subject_id"]
-            subject = snapshot.get("_name_actors", {}).get(subject_id, {}).get("name", "")
-            if subject:
-                listener = snapshot["recipient" if role == "initiator" else "initiator"]
-                validate_snake_accusation(turn.text, subject, subject_is_listener=actor_id(listener) == subject_id)
+    if snapshot.get("_dialogue_validation", True):
+        catalog = snapshot.get("_name_actors", {})
+        promisor_ids = {p["promisor_id"] for p in state["speaker"].get("promises", [])}
+        promisor_ids |= {p["promisor_id"] for p in snapshot.get("permitted_proposals", []) if p["id"] in projected["offers"]}
+        promisor_ids |= {a["subject_id"] for a in state["speaker"].get("permitted_accounts", []) if a["kind"].startswith("promise")}
+        listener = snapshot["recipient" if role == "initiator" else "initiator"]
+        validate_promise_mentions(turn.text, promisors={catalog[i]["name"] for i in promisor_ids if i in catalog},
+                                  people=[a["name"] for i, a in catalog.items() if i != actor_id(snapshot[role])],
+                                  listener=listener["name"])
+    if index == 2 and snapshot[role].get("kind") == "python" and snapshot.get("_dialogue_validation", True):
+        # The python's judgment may come with its account or in its next turn; telling the account comes first.
+        pending = pending_snake_accusation(snapshot, projected["turns"][:1], role)
+        if pending:
+            validate_snake_accusation(turn.text, pending[0], subject_is_listener=pending[1])
     for entry in candidate.leverage:
         if entry.claim_id not in choices["leverage"]:
             raise ValueError("Leverage requires a permitted account known before this turn.")

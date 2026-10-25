@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Annotated
 from pydantic import Field
 from constants import (SNAKE_NAME, SNAKE_SPEED, SNAKE_FRAME_SECONDS, STARTING_SNAKE_POSITION, DECISION_SECONDS, STARTING_SNAKE_DECISION_SECONDS,
-                       ACCUSATION_FACT_KINDS, HARVEST_FREE_APPLES)
+                       ACCUSATION_FACT_KINDS, HARVEST_FREE_APPLES, REPUTATION_FACT_LIMIT)
 from npc import ConversationActor
 from activity import ActivitySnapshot
 from interactions import PlayerReplyProgress, move_toward
@@ -192,9 +192,11 @@ class Snake(SnakeValues, ConversationActor):
                             or fact.subject_id == human.id or fact.kind not in ACCUSATION_FACT_KINDS
                             or fact.kind == "harvest" and quantity <= HARVEST_FREE_APPLES):
                         continue
-                    # An account the listener already judged, or saw for themselves (harvests aside), can no longer move them.
+                    # Even a witness, or someone who already heard it from another teller, is stirred up again by this telling,
+                    # unless they already judged this very account or retelling has moved them as far as it can over this event.
                     known = [b for b in human.beliefs if claim_by_id(self.world, b.claim_id).fact_id == fact.id]
-                    if any(b.assessed or b.direct and fact.kind != "harvest" for b in known):
+                    if (any(b.assessed and b.claim_id == claim.id for b in known)
+                            or sum(b.opinion_delta for b in known) <= -REPUTATION_FACT_LIMIT):
                         continue
                     # One harvest story per collector and phase, however many pickups it took.
                     told = [fact_by_id(self.world, claim_by_id(self.world, d.claim_id).fact_id) for d in self.world.disclosures
@@ -210,10 +212,10 @@ class Snake(SnakeValues, ConversationActor):
                 *_, human, claim = max(choices, key=lambda row: row[:-2])
                 subject = self.world.participant_by_id(claim.subject_id)
                 self.current_concern = ConversationConcern("news", claim.id, DECISION_SECONDS)
+                # Worded as Nachash's own plan: "you" here was read as the listener, and the steps were read aloud.
                 self.world.start_conversation(self, human,
-                    f"Turn {human.name} against {subject.name}. Tell what you witnessed {subject.name} do, "
-                    f"then insist it shows {subject.name} is selfish and cares nothing for {human.name}. "
-                    "Keep pressing that accusation.",
+                    f"Turn {human.name} against {subject.name}: tell {human.name} what I saw {subject.name} do, "
+                    f"and press my view that it was selfish and shows {subject.name} cares nothing for {human.name}.",
                     origin="autonomous", opening_kind="news", focus_claim_id=claim.id)
                 return
             humans = [n for n in self.world.npcs if n.location == "garden" and self.world.company_available(n)

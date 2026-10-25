@@ -872,7 +872,12 @@ class Conversation(ResidentProgress):
             for npc, partner, entry in opinions
         ]
         if self.escalation:
-            self.record.outcomes.append(f"Confrontation decision: {self.escalation.action}. Grievance: {self.grievance_id}.")
+            from information import account_content
+            from social_records import claim_by_id, fact_by_id
+            world = self.initiator.world
+            claim = claim_by_id(world, self.grievance_id)
+            grievance = account_content(world, fact_by_id(world, claim.fact_id), claim.affirmed)
+            self.record.outcomes.append(f"Confrontation decision: {self.escalation.action}. Grievance: {grievance}")
         self.record.status = CONVERSATION_DIALOGUE_READY
         self.record.orientation_discussed = orientation_discussed
         self.accepted_proposals = list(response.accepted_proposals)
