@@ -527,22 +527,48 @@ def validate_apple_roles(text, *, giver, receiver, speaker, apple_received=False
             raise ValueError("The resident received the apple. Do not undo the committed handoff.")
 
 
-def validate_harvest_grounding(text, accounts, *, speaker_id, listener_id, current_time, tree_stock=None, focus=None):
+def harvest_extent(account, tree_stock, current_time):
+    """Infer a stock share only with complete firsthand coverage of the current phase."""
+    if type(tree_stock) is not int or account.get("event_time") != current_time or account.get("basis") != "firsthand":
+        return None
+    rows = account.get("harvest_context", [])
+    collector = next((r for r in rows if r["subject_id"] == account.get("subject_id")), None)
+    if not collector or not collector.get("all_harvests_witnessed"):
+        return None
+    stock = sum(r["quantity"] for r in rows) + tree_stock
+    quantity = collector["quantity"]
+    return dict(share="all" if quantity == stock else "most" if quantity * 2 > stock else "some",
+                phase_stock=stock, remaining=tree_stock)
+
+
+def validate_harvest_grounding(text, accounts, *, speaker_id, listener_id, current_time, tree_stock=None, focus=None,
+                               prefer_all=False):
     """Check explicit totals and visible stock; never require a spoken number."""
     scope = (focus or {}).get("event_time") or current_time
     totals = {}
+    extents = {}
     for account in accounts:
         if account.get("kind") != "harvest":
             continue
         for row in account.get("harvest_context", []):
             if row.get("event_time") == scope:
                 totals[row["subject_id"]] = row
+        extent = harvest_extent(account, tree_stock, current_time)
+        if extent:
+            extents[account["subject_id"]] = extent
     number = r"(?:\d+|zero|no|none|" + "|".join(SPOKEN_NUMBERS) + ")"
 
     def value(word):
         return int(word) if word.isdigit() else 0 if word.lower() in ("zero", "no", "none") else SPOKEN_NUMBERS[word.lower()]
 
     for sentence in split_sentences(unquoted_speech(text)):
+        focal_id = (focus or {}).get("subject_id") or (next(iter(totals)) if len(totals) == 1 else None)
+        if prefer_all and extents.get(focal_id, {}).get("share") == "all" and not re.search(
+                r"\b(?:if|imagine|suppose|wish)\b", sentence, re.I) and re.search(
+                r"\b(?:take|taking|took|taken|harvest(?:ed|s|ing)?|collect(?:ed|s|ing)?|pick(?:ed|s|ing)?)\s+"
+                r"(?:most|almost all|nearly all)\s+(?:of\s+)?(?:(?:the|this|that)\s+)?(?:apples|fruit|stock)\b", sentence, re.I):
+            raise ValueError("This collector took the entire phase's tree stock. Describe it as all or the entire stock, "
+                             "rather than most; preserve that fact when answering the listener.")
         if sentence.rstrip().endswith("?") or re.search(r"\b(?:if|would|could|might|imagine|suppose|wish)\b", sentence, re.I):
             continue
         historical = bool(re.search(r"\b(?:yesterday|last night|previous phase|previous day)\b", sentence, re.I))
@@ -575,6 +601,10 @@ def validate_harvest_grounding(text, accounts, *, speaker_id, listener_id, curre
             stocked = re.search(r"\b(?:apple )?tree\s+(?:still\s+)?has\s+(?:(?:some|many|any|several|a few|plenty of)\s+)?(?:apples|fruit)\b", sentence, re.I)
             if stocked and tree_stock == 0:
                 raise ValueError("The visible tree has zero apples; do not claim it still has fruit.")
+            if scope == current_time and totals and tree_stock == 0 and re.search(
+                    r"\b(?:tree|harvest(?:ed|s|ing)?|pick(?:ed|s|ing)?|collect(?:ed|s|ing)?)\b", sentence, re.I) and re.search(
+                    r"\b(?:leaving|leaves|left|leave)\s+(?:some|a few|several|many)\s+(?:apples?\s+|fruit\s+)?(?:for (?:others|everyone|anyone)|behind|on the tree)\b", sentence, re.I):
+                raise ValueError("No apples remain on the tree. Do not claim this harvest left some tree fruit for others.")
         if pickup or historical and scope == current_time:
             continue
         for identity, row in totals.items():
@@ -587,7 +617,13 @@ def validate_harvest_grounding(text, accounts, *, speaker_id, listener_id, curre
                 refs.append("I")
             elif identity == listener_id:
                 refs.append("you")
+            elif identity == focal_id:
+                refs.extend(["he", "she", "they"])
             subject = "(?:" + "|".join(refs) + ")"
+            if prefer_all and extents.get(identity, {}).get("share") == "all" and re.search(
+                    rf"\b{subject}\s+(?:did not|didn['\u2019]t|has not|hasn['\u2019]t|had not|hadn['\u2019]t|never)\s+"
+                    r"(?:take|taken|harvest|harvested|collect|collected|pick|picked)\s+all\s+(?:of\s+)?(?:the\s+)?(?:apples|fruit)\b", sentence, re.I):
+                raise ValueError(f"{name} took the entire phase's tree stock. Do not deny that they took all of it.")
             pattern = (rf"\b{subject}(?:['\u2019](?:ve|s|d)|\s+(?:has|have|had))?\s+"
                 r"(?:(?:just|already|recently|only)\s+){0,3}"
                 r"(?:harvest(?:ed|s)?|collect(?:ed|s)?|pick(?:ed|s)?(?: up)?|took|take|takes)\s+"

@@ -273,7 +273,7 @@ def validate_speech_grounding(text, snapshot):
     validate_harvest_grounding(text, [*firsthand, *([focus] if focus else [])],
         speaker_id=actor_id(speaker), listener_id=actor_id(listener) if isinstance(listener, dict) else None,
         current_time={"day": snapshot.get("day"), "phase": snapshot.get("time_of_day")},
-        tree_stock=tree.get("fruit"), focus=focus)
+        tree_stock=tree.get("fruit"), focus=focus, prefer_all=snake_role == "speaker")
     if actor_id(speaker):
         memories = [*firsthand, *speaker.get("heard_accounts", [])]
         recent_memories = [account for account in memories if account.get("kind") == "former_life"
@@ -355,6 +355,7 @@ def validate_resident_grounding(result, snapshot):
         validate_speech_grounding(turn.text, {
             "_name_actors": snapshot.get("_name_actors", {}),
             "speaker": {"name": speaker["name"], "actor_id": actor_id(speaker), "situation": private.get("situation", {}),
+                        "account_focus": next((a for a in private.get("permitted_accounts", []) if a["claim_id"] == info.get("focus_claim_id")), None),
                         "firsthand_events_with_listener": private.get("permitted_accounts", private.get("known_accounts", []))},
             "listener": snapshot[other_role],
             "account_to_share": next((a for a in private.get("permitted_accounts", [])

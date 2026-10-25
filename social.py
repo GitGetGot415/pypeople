@@ -15,7 +15,7 @@ from dialogue_text import split_sentences
 from dialogue_rules import unquoted_speech, mentions_account
 from types import SimpleNamespace
 from actor_identity import account_references, actor_id
-from dialogue_rules import named_references, validate_account_speech, validate_apple_promise
+from dialogue_rules import named_references, validate_account_speech, validate_apple_promise, harvest_extent
 
 
 GoalKind = Literal["obtain_apple", "help_with_apple", "repair_relationship", "sabotage_relationship"]
@@ -403,7 +403,8 @@ def account_view(world, claim, belief):
                 "knowledge_owner_name", "original_speaker_id", "immediate_source_id", "original_speaker_name", "immediate_source_name")},
             "source_disclosure_id": belief.disclosure_id, "stance": projected["stance"],
             "learned_at": {"day": belief.phase // len(PHASES) + 1, "phase": PHASES[belief.phase % len(PHASES)]},
-            "basis": projected["basis"]})
+            "basis": projected["basis"]}, tree_stock=world.tree.fruit,
+            current_time={"day": world.day, "phase": world.phase})
 
 
 def harvest_summary(name, quantity):
@@ -428,10 +429,13 @@ def witnessed_harvests(world, beliefs):
             quantity=0, pickups=0))
         row["quantity"] += fact.quantity
         row["pickups"] += 1
+    unseen_phases = {fact.phase for fact in world.facts if fact.kind == "harvest" and fact.id not in seen}
+    for (phase, _), row in totals.items():
+        row["all_harvests_witnessed"] = phase not in unseen_phases
     return totals
 
 
-def harvest_account_view(account):
+def harvest_account_view(account, *, tree_stock=None, current_time=None):
     """Present the witnessed collection consistently; durable facts remain individual pickups."""
     if account.get("kind") != "harvest" or account.get("basis") != "firsthand" or account.get("stance") != "believed":
         return account
@@ -442,6 +446,13 @@ def harvest_account_view(account):
     account = {**account, "assertion": harvest_summary(account["subject_name"], total["quantity"]),
                "quantity": total["quantity"], "pickup_count": total["pickups"],
                "quantity_scope": "total witnessed for this collector during event_time"}
+    extent = harvest_extent(account, tree_stock, current_time) if current_time is not None else account.get("harvest_extent")
+    if current_time is not None:
+        account.pop("harvest_extent", None)
+    if extent:
+        account["harvest_extent"] = extent
+        if extent["share"] == "all":
+            account["assertion"] += " This was the entire phase's tree stock; no apples remain on the tree."
     if account.get("firsthand_stance") == "believed":
         account["firsthand_evidence"] = account["assertion"]
     return account
@@ -611,7 +622,8 @@ def information_views(context, world):
                 if belief and belief.direct:
                     view["permitted_use"] = ("report the named collector's actions you witnessed; witnessing is not collecting"
                                              if fact.kind == "harvest" else "share personal experience; its truth needs no confirmation")
-            views.append(harvest_account_view(view))
+            views.append(harvest_account_view(view, tree_stock=world.tree.fruit,
+                         current_time={"day": world.day, "phase": world.phase}))
         result[role] = views
     return result
 

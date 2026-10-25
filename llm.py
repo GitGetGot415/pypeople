@@ -963,6 +963,8 @@ def _resident_contract(snapshot, *, correction=False):
                                 "harvest_context gives the other witnessed collectors' totals in that same phase. Do not shrink a repeated harvest to one pickup. "
                                 "Use those totals and the current tree stock without inventing unobserved pickups or combining phases. "
                                 "Read the current remaining stock from environment.tree.fruit, never from population minus one pickup. "
+                                "harvest_extent, when supplied, establishes the collector's share of the phase's full stock. "
+                                "If its share is all, the collector took every apple; do not change that to most, deny it, or suggest some remained in a follow-up. "
                                 "Do not use current stock as the stock of a different phase. "
                                 "An empty tree alone does not prove a particular resident took all its fruit.")
             elif focus and any(d.claim_id == focus["claim_id"] for d in snapshot["_draft"]["disclosures"]):
