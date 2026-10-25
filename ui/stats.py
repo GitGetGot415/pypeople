@@ -22,7 +22,8 @@ from constants import (STATS_PORTRAIT_PADDING, CONVERSATION_FAILED, ACCENT, FAIL
                        MODEL_LOG_REFRESH_SECONDS, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER, SNAKE_NAME,
                        STATS_TAB_RECTS, STATS_FOLLOW_RECT, STATS_INVENTORY_RECT, STATS_INVENTORY_DETAIL_TOP,
                        STATS_SORT_RECT, OPINION_BAR_LEFT, OPINION_BAR_WIDTH, OPINION_POSITIVE_COLOR,
-                       OPINION_NEGATIVE_COLOR, PLAYER_LABEL)
+                       OPINION_NEGATIVE_COLOR, PLAYER_LABEL, STATS_VIEW_RECT, STATS_SUBTAB_RECTS, STATS_COLLAPSED_ROWS,
+                       GRID_LABEL_WIDTH, GRID_MAX_CELL)
 
 
 class StatsScreen:
@@ -38,6 +39,9 @@ class StatsScreen:
         self.condense_toggle = Button((888, 66, 192, 30), "Condense: Off")
         self.follow_toggle = Button(STATS_FOLLOW_RECT, "Follow")
         self.sort_toggle = Button(STATS_SORT_RECT, "Sort: Name")
+        self.view_toggle = Button(STATS_VIEW_RECT, "View: Table")
+        self.subtabs = {name: Button(rect, name) for name, rect in zip(
+            ("Overview", "Profile", "Social", "Observer"), STATS_SUBTAB_RECTS)}
         self.list_rect = pygame.Rect(200, 184, 264, 440)
         self.detail_rect = pygame.Rect(512, 200, 568, 424)
         self.open()
@@ -64,7 +68,13 @@ class StatsScreen:
         self.opinion_links = []
         self.opinion_bars = []
         self.opinion_sort = "Name"
+        self.opinion_view = "Table"
         self.selected_opinion = None
+        self.subtab = "Overview"
+        self.expanded = set()
+        self.expand_links = []
+        self.dividers = []
+        self.grid = None
         self.dialogue_portraits = []
         self.dialogue_backgrounds = []
 
@@ -119,6 +129,9 @@ class StatsScreen:
         self.promise_links = []
         self.opinion_links = []
         self.opinion_bars = []
+        self.expand_links = []
+        self.dividers = []
+        self.grid = None
         self.dialogue_portraits = []
         self.dialogue_backgrounds = []
 
@@ -135,6 +148,10 @@ class StatsScreen:
 
         def height():
             return sum(font.get_linesize() for _, font, _, _ in lines)
+
+        def rule():
+            self.dividers.append(height() + app.small_font.get_linesize() // 2)
+            gap()
 
         def message(turn, *, original=True):
             speaker = turn.speaker
@@ -297,36 +314,48 @@ class StatsScreen:
                 add(f"Source: {account['immediate_source_name']}; original: {account['original_speaker_name']}", app.small_font, MUTED)
             return lines
         if self.tab == "Statistics":
+            self._statistics(app, npc, add, gap, rule, height)
+        elif self.opinion_view == "Grid":
+            self._opinion_grid(app, npc, add, gap, height)
+        else:
+            self._opinion_table(app, npc, add, gap, height)
+        return lines
+
+    def _toggle(self, app, add, height, key, label):
+        top = height()
+        add(label, app.small_font, ACCENT)
+        self.expand_links.append((top, height(), key))
+
+    def _statistics(self, app, npc, add, gap, rule, height):
+        sim = app.simulation
+        page = self.subtab
+        if page == "Overview":
             add("Last on their mind" if npc.departure else "On their mind", app.heading_font)
             add(concern_description(npc, npc.current_concern))
             if npc.current_concern and npc.current_concern.remaining == 0 and not npc.departure:
                 add("Will choose a new subject when free.", app.small_font, MUTED)
-            gap()
-            for field in PROFILE_FIELDS:
-                add(field, app.heading_font)
-                add(npc.character[field] or "Not specified")
-                gap()
-            add(f"Arrival: day {npc.arrival_day}")
+            rule()
+            add("Status", app.heading_font)
             add(f"Activity: {npc.status}")
-            add(f"Room {npc.room_number} / {npc.location} / fatigue {npc.social_fatigue:.0f}/100")
-            add(f"Creations: {sum(work.creator_id == npc.id for work in app.simulation.creations)}")
-            if npc.departure:
-                source = next(f for f in app.simulation.facts if f.source_id == npc.departure["event_id"] and f.kind == "killing")
-                top = height()
-                add(f"Killed by {app.simulation.participant_by_id(npc.departure['attacker_id']).name}. View confrontation", app.small_font, ACCENT)
-                self.promise_links.append((top, height(), source.conversation_id))
             add(f"Why: {npc.decision_reason}")
             add(f"Control: {npc.owner.replace('_', ' ')}", app.small_font, MUTED)
             if npc.interaction_blocked:
                 add("Player request pending; new decisions are deferred.", app.small_font, MUTED)
-            gap()
-            add(f"Satisfaction: {npc.social:.0f}/100")
+            add(f"Arrival: day {npc.arrival_day} / Room {npc.room_number} / {npc.location}")
+            if npc.departure:
+                source = next(f for f in sim.facts if f.source_id == npc.departure["event_id"] and f.kind == "killing")
+                top = height()
+                add(f"Killed by {sim.participant_by_id(npc.departure['attacker_id']).name}. View confrontation", app.small_font, ACCENT)
+                self.promise_links.append((top, height(), source.conversation_id))
+            rule()
+            add("Condition", app.heading_font)
+            add(f"Satisfaction: {npc.social:.0f}/100 / fatigue {npc.social_fatigue:.0f}/100")
             inventory_label = "Inventory at departure" if npc.departure else "Carrying"
             add(f"{inventory_label}: {npc.inventory.get('fruit', 0)} apples (unlimited storage)")
-            add(f"Owned works: {len(app.simulation.owned_works(npc.id))} (unlimited storage)")
+            add(f"Owned works: {len(sim.owned_works(npc.id))} (unlimited storage) / creations made: {sum(work.creator_id == npc.id for work in sim.creations)}")
             add(f"Opinion of player: {npc.player_opinion.opinion:+d}. {npc.player_opinion.reason}")
             add(f"Sociability: {npc.preferences['sociability']:.0%}; generosity: {npc.preferences['generosity']:.0%}", app.small_font, MUTED)
-            gap()
+            rule()
             add("Personal objective", app.heading_font)
             goal = npc.goal
             if goal:
@@ -336,66 +365,107 @@ class StatsScreen:
                     add(goal.outcome, app.small_font)
             else:
                 add("No feasible personal objective right now.", color=MUTED)
-            self.private_toggle_top = height()
-            add(f"{'Hide' if self.show_private else 'Show'} private details (observer only)", app.small_font, ACCENT)
-            if self.show_private:
-                if goal:
-                    add(f"Motive: {goal.motive}")
-                    add(f"Approach: {goal.approach}")
-                    add(f"Boundary: {goal.boundary}")
-                add("Known accounts and sources", app.heading_font)
-                if not npc.beliefs:
-                    add("No firsthand accounts or rumors yet.", app.small_font, MUTED)
-                for belief in selected_beliefs(npc):
-                    claim = claim_by_id(app.simulation, belief.claim_id)
-                    fact = fact_by_id(app.simulation, claim.fact_id)
-                    source = app.simulation.participant_by_id(belief.source_id)
-                    originator = app.simulation.participant_by_id(claim.originator_id)
-                    add(assertion_text(app.simulation, fact, claim.affirmed), app.small_font)
-                    add(f"{belief.stance.title()} / {'firsthand' if belief.direct else 'personal assertion' if belief.source_id == npc.id else 'hearsay'}", app.small_font, MUTED)
-                    add(f"Immediate source: {source.name}; original account: {originator.name}", app.small_font, MUTED)
-                    add(f"Observer: {'supported by the actual event or intention' if claim.affirmed else 'contradicts the actual event or intention'}.", app.small_font, MUTED)
-                    if claim.deliberate:
-                        add(f"Observer: the original assertion was deliberately fabricated by {originator.name}.", app.small_font, MUTED)
-                    if belief.disclosure_id:
-                        disclosure = next(d for d in app.simulation.disclosures if d.id == belief.disclosure_id)
-                        top = height()
-                        add("View source conversation", app.small_font, ACCENT)
-                        bottom = height()
-                        self.promise_links.append((top, bottom, disclosure.conversation_id))
-                    gap()
-            gap()
-            add("Apple promises", app.heading_font)
-            promises = [p for p in app.simulation.promises if npc.id in (p.promisor_id, p.recipient_id)]
-            promises.sort(key=lambda p: (p.status == "pending", p.created_phase), reverse=True)
-            if not promises:
-                add("No promises yet.", color=MUTED)
-            for promise in promises[:8]:
-                giver = app.simulation.participant_by_id(promise.promisor_id)
-                recipient = app.simulation.participant_by_id(promise.recipient_id)
-                top = height()
-                add(f"{giver.name} -> {recipient.name}: one apple / {promise.status} [view]", app.small_font, ACCENT)
-                bottom = height()
-                self.promise_links.append((top, bottom, promise.conversation_id))
-                add(f"Due {phase_label(promise.deadline)}", app.small_font, MUTED)
-                if promise.outcome:
-                    add(promise.outcome, app.small_font)
-            if npc.pending_social_opinions:
-                add("An opinion could not be saved; the simulation will retry.", app.small_font, MUTED)
-            gap()
-            add("Recent memories", app.heading_font)
-            if not npc.memories:
-                add("No personal experiences remembered yet.", color=MUTED)
-            for memory in reversed(npc.memories):
-                add(f"Day {memory.day} / {memory.phase.title()}: {memory.summary}")
-                add(f"Influence: {memory.weight:+g}", app.small_font, MUTED)
-            gap()
+        elif page == "Profile":
+            for field in PROFILE_FIELDS:
+                add(field, app.heading_font)
+                add(npc.character[field] or "Not specified")
+                gap()
+            rule()
             for field in (*IDENTITY_FIELDS, "Hair", "Eyes", *DEFAULT_COLORS):
                 value = npc.name if field == "Name" else npc.character.get(field, "")
                 add(f"{field}: {value or 'Not specified'}")
+        elif page == "Social":
+            add("Apple promises", app.heading_font)
+            promises = [p for p in sim.promises if npc.id in (p.promisor_id, p.recipient_id)]
+            promises.sort(key=lambda p: (p.status == "pending", p.created_phase), reverse=True)
+            if not promises:
+                add("No promises yet.", color=MUTED)
+            for promise in (promises if "promises" in self.expanded else promises[:STATS_COLLAPSED_ROWS]):
+                giver = sim.participant_by_id(promise.promisor_id)
+                recipient = sim.participant_by_id(promise.recipient_id)
+                top = height()
+                add(f"{giver.name} -> {recipient.name}: one apple / {promise.status} [view]", app.small_font, ACCENT)
+                self.promise_links.append((top, height(), promise.conversation_id))
+                add(f"Due {phase_label(promise.deadline)}", app.small_font, MUTED)
+                if promise.outcome:
+                    add(promise.outcome, app.small_font)
+            if len(promises) > STATS_COLLAPSED_ROWS:
+                self._toggle(app, add, height, "promises",
+                             "Show fewer promises" if "promises" in self.expanded else f"Show all {len(promises)} promises")
+            if npc.pending_social_opinions:
+                add("An opinion could not be saved; the simulation will retry.", app.small_font, MUTED)
+            rule()
+            add("Recent memories", app.heading_font)
+            memories = list(reversed(npc.memories))
+            if not memories:
+                add("No personal experiences remembered yet.", color=MUTED)
+            for memory in (memories if "memories" in self.expanded else memories[:STATS_COLLAPSED_ROWS]):
+                add(f"Day {memory.day} / {memory.phase.title()}: {memory.summary}")
+                add(f"Influence: {memory.weight:+g}", app.small_font, MUTED)
+            if len(memories) > STATS_COLLAPSED_ROWS:
+                self._toggle(app, add, height, "memories",
+                             "Show fewer memories" if "memories" in self.expanded else f"Show all {len(memories)} memories")
         else:
-            self._opinion_table(app, npc, add, gap, height)
-        return lines
+            add("Observer view", app.heading_font)
+            add("Private motives and accounts are hidden until you choose to show them.", app.small_font, MUTED)
+            self.private_toggle_top = height()
+            add(f"{'Hide' if self.show_private else 'Show'} private details (observer only)", app.small_font, ACCENT)
+            if not self.show_private:
+                return
+            goal = npc.goal
+            if goal:
+                rule()
+                add("Motive and approach", app.heading_font)
+                add(f"Motive: {goal.motive}")
+                add(f"Approach: {goal.approach}")
+                add(f"Boundary: {goal.boundary}")
+            rule()
+            add("Known accounts and sources", app.heading_font)
+            if not npc.beliefs:
+                add("No firsthand accounts or rumors yet.", app.small_font, MUTED)
+            else:
+                add("Click an account to expand its source and the observer's verdict.", app.small_font, MUTED)
+            for belief in selected_beliefs(npc):
+                claim = claim_by_id(sim, belief.claim_id)
+                fact = fact_by_id(sim, claim.fact_id)
+                key = ("account", belief.claim_id)
+                opened = key in self.expanded
+                top = height()
+                add(f"{'-' if opened else '+'} {assertion_text(sim, fact, claim.affirmed)}", app.small_font)
+                add(f"{belief.stance.title()} / {'firsthand' if belief.direct else 'personal assertion' if belief.source_id == npc.id else 'hearsay'}", app.small_font, MUTED)
+                self.expand_links.append((top, height(), key))
+                if opened:
+                    source = sim.participant_by_id(belief.source_id)
+                    originator = sim.participant_by_id(claim.originator_id)
+                    add(f"Immediate source: {source.name}; original account: {originator.name}", app.small_font, MUTED, 16)
+                    add(f"Observer: {'supported by the actual event or intention' if claim.affirmed else 'contradicts the actual event or intention'}.", app.small_font, MUTED, 16)
+                    if claim.deliberate:
+                        add(f"Observer: the original assertion was deliberately fabricated by {originator.name}.", app.small_font, MUTED, 16)
+                    if belief.disclosure_id:
+                        disclosure = next(d for d in sim.disclosures if d.id == belief.disclosure_id)
+                        link = height()
+                        add("View source conversation", app.small_font, ACCENT, 16)
+                        self.promise_links.append((link, height(), disclosure.conversation_id))
+                gap()
+
+    def _opinion_grid(self, app, npc, add, gap, height):
+        """Every living resident's opinion of every other, as a colored matrix."""
+        people = list(app.simulation.npcs)
+        add("Each row is that person's opinion of the person in the column. Green likes, red dislikes, "
+            "blank has no opinion. Click a cell to read the pair.", app.small_font, MUTED)
+        gap()
+        if len(people) < 2:
+            add("Not enough residents for a grid yet.", color=MUTED)
+            return
+        cell = min(GRID_MAX_CELL, (self.detail_rect.width - 40 - GRID_LABEL_WIDTH) // len(people))
+        header = app.small_font.get_linesize() + 4
+        top = height()
+        total = header + cell * len(people)
+        self.grid = dict(top=top, cell=cell, header=header, people=people,
+                         values=[[None if a is b else a.opinions.get(b.id, {}).get("opinion") for b in people] for a in people])
+        pad = -(-total // app.small_font.get_linesize())
+        for _ in range(pad):
+            gap()
 
     def _opinion_table(self, app, npc, add, gap, height):
         """Each person with this NPC's opinion of them and their opinion of this NPC, side by side."""
@@ -514,7 +584,20 @@ class StatsScreen:
             self.follow_log = not self.follow_log
             return
 
-        if self.tab == "Opinions" and isinstance(self.selected_npc, NPC) and self.sort_toggle.clicked(event):
+        if self.tab == "Statistics" and isinstance(self.selected_npc, NPC):
+            for name, button in self.subtabs.items():
+                if button.clicked(event):
+                    self.subtab = name
+                    self.detail_scroll = 0
+                    return
+
+        if self.tab == "Opinions" and isinstance(self.selected_npc, NPC) and self.view_toggle.clicked(event):
+            self.opinion_view = "Grid" if self.opinion_view == "Table" else "Table"
+            self.detail_scroll = 0
+            return
+
+        if (self.tab == "Opinions" and self.opinion_view == "Table" and isinstance(self.selected_npc, NPC)
+                and self.sort_toggle.clicked(event)):
             self.opinion_sort = "Score" if self.opinion_sort == "Name" else "Name"
             return
 
@@ -551,6 +634,19 @@ class StatsScreen:
                             and self.private_toggle_top <= content_y < self.private_toggle_top + app.small_font.get_linesize()):
                         self.show_private = not self.show_private
                         return
+                    if self.grid and self.tab == "Opinions":
+                        grid, x = self.grid, pos[0] - rect.x - GRID_LABEL_WIDTH
+                        row, column = (content_y - grid["top"] - grid["header"]) // grid["cell"], x // grid["cell"]
+                        if 0 <= row < len(grid["people"]) and (0 <= column < len(grid["people"]) or x < 0):
+                            self.selected_npc = grid["people"][row]
+                            self.selected_opinion = grid["people"][column].name if 0 <= column < len(grid["people"]) and column != row else None
+                            self.opinion_view = "Table"
+                            self.detail_scroll = 0
+                            return
+                    for top, bottom, key in self.expand_links:
+                        if top <= content_y < bottom:
+                            self.expanded ^= {key}
+                            return
                     for top, bottom, person in self.opinion_links:
                         if top <= content_y < bottom:
                             self.selected_opinion = None if self.selected_opinion == person else person
@@ -574,6 +670,7 @@ class StatsScreen:
                                 self.selected_npc = entry
                                 self.show_private = False
                                 self.selected_opinion = None
+                                self.expanded.clear()
                             self.detail_scroll = 0
                             self.scroll_focus = "detail"
                             return
@@ -699,6 +796,12 @@ class StatsScreen:
             for index, label in enumerate(labels):
                 surface.blit(app.small_font.render(label, True, MUTED),
                              (rect.x, rect.bottom + 6 + index * app.small_font.get_linesize()))
+        for rule_top in self.dividers:
+            y = self.detail_rect.top + rule_top - self.detail_scroll
+            if self.detail_rect.top <= y < self.detail_rect.bottom:
+                pygame.draw.line(surface, GRASS, (self.detail_rect.x, y), (self.detail_rect.right - 24, y), 2)
+        if self.grid:
+            self._draw_grid(app, surface)
         for top, label, value in self.opinion_bars:
             y = self.detail_rect.top + top - self.detail_scroll
             line = app.small_font.get_linesize()
@@ -715,8 +818,17 @@ class StatsScreen:
             surface.blit(app.small_font.render("n/a" if value is None else f"{value:+d}", True, INK), (track.right + 10, y))
         surface.set_clip(previous_clip)
         if self.tab == "Opinions" and isinstance(self.selected_npc, NPC):
-            self.sort_toggle.label = f"Sort: {self.opinion_sort}"
-            self.sort_toggle.draw(surface, app.small_font)
+            self.view_toggle.label = f"View: {self.opinion_view}"
+            self.view_toggle.draw(surface, app.small_font)
+            if self.opinion_view == "Table":
+                self.sort_toggle.label = f"Sort: {self.opinion_sort}"
+                self.sort_toggle.draw(surface, app.small_font)
+        if self.tab == "Statistics" and isinstance(self.selected_npc, NPC) and self.selected_npc is not app.simulation.snake:
+            for name, button in self.subtabs.items():
+                button.draw(surface, app.small_font)
+                if self.subtab == name:
+                    pygame.draw.line(surface, PAPER, (button.rect.left + 10, button.rect.bottom - 5),
+                                     (button.rect.right - 10, button.rect.bottom - 5), 2)
         if self.tab == "Statistics" and isinstance(self.selected_npc, NPC):
             self.inventory_button.draw(surface, app.small_font)
         if self.tab == "Creations":
@@ -727,6 +839,34 @@ class StatsScreen:
                 pygame.draw.rect(surface, GRASS, track)
                 pygame.draw.rect(surface, MUTED, thumb)
         surface.blit(app.small_font.render("Drag the scrollbar, scroll, or use Up/Down and Page Up/Down. Escape returns to the game.", True, MUTED), (184, 655))
+
+    def _draw_grid(self, app, surface):
+        grid = self.grid
+        cell, header, people = grid["cell"], grid["header"], grid["people"]
+        x0 = self.detail_rect.x + GRID_LABEL_WIDTH
+        y0 = self.detail_rect.top + grid["top"] - self.detail_scroll
+        line = app.small_font.get_linesize()
+        for column in range(len(people)):
+            label = app.small_font.render(str(column + 1), True, MUTED)
+            surface.blit(label, label.get_rect(center=(x0 + column * cell + cell // 2, y0 + line // 2)))
+        for row, person in enumerate(people):
+            y = y0 + header + row * cell
+            if y + cell < self.detail_rect.top or y > self.detail_rect.bottom:
+                continue
+            name = person.name if len(person.name) <= 18 else person.name[:17] + "."
+            color = INK if person is self.selected_npc else MUTED
+            surface.blit(app.small_font.render(f"{row + 1}. {name}", True, color), (self.detail_rect.x + 4, y + (cell - line) // 2))
+            for column, value in enumerate(grid["values"][row]):
+                rect = pygame.Rect(x0 + column * cell, y, cell - 2, cell - 2)
+                if value is None:
+                    pygame.draw.rect(surface, MUTED if row == column else GRASS, rect, 0 if row == column else 1)
+                    continue
+                target = OPINION_POSITIVE_COLOR if value >= 0 else OPINION_NEGATIVE_COLOR
+                strength = abs(value) / 100
+                fill = tuple(round(PAPER[i] + (target[i] - PAPER[i]) * strength) for i in range(3))
+                pygame.draw.rect(surface, fill, rect)
+            if person is self.selected_npc:
+                pygame.draw.rect(surface, ACCENT, (x0 - 2, y - 1, cell * len(people), cell), 2)
 
     def _position_detail(self):
         top = STATS_INVENTORY_DETAIL_TOP if self.tab == "Statistics" and isinstance(self.selected_npc, NPC) else 200
