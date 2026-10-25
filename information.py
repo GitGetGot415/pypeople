@@ -760,6 +760,17 @@ def caught_lies(context, response):
     return caught
 
 
+def confrontation_verdict(snapshot, draft, role):
+    """The confronter's change toward the accused: an accepted promise to make it right holds the view where it is
+    for now; an apology, explanation, admission or denial without one makes it worse. None outside that role."""
+    if snapshot.get("purpose") != "confrontation" or role != "initiator":
+        return None
+    accused = snapshot["recipient"]
+    promisors = {row["id"]: row["promisor_id"] for row in snapshot.get("permitted_proposals", [])}
+    promised = any(promisors.get(a.proposal_id) == actor_id(accused) for a in draft["accepted_proposals"])
+    return dict(change="unchanged" if promised else "worse", accused=accused["name"], promised=promised)
+
+
 def snake_accusation(snapshot, role, option):
     """Whether this role heard the account as an accusation from the python; believing one always worsens its subject."""
     other = "recipient" if role == "initiator" else "initiator"

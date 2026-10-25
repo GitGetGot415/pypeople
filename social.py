@@ -406,13 +406,16 @@ def check_relationship_goals(world, opinion_owner, record=None):
 
 
 def permitted_proposals(conversation):
-    if conversation.purpose in ("food_request", "confrontation") or conversation.opening_kind == "orientation" or conversation.initiator.speech_only or conversation.recipient.speech_only:
+    if conversation.purpose == "food_request" or conversation.opening_kind == "orientation" or conversation.initiator.speech_only or conversation.recipient.speech_only:
         return []
     world = conversation.initiator.world
     proposals = []
     goal = conversation.initiator.goal
     goal_pair = None
-    if goal and goal.status == "active" and goal.target_id == conversation.recipient.id:
+    if conversation.purpose == "confrontation":
+        # The accused can make the grievance right only by promising the confronter an apple.
+        goal_pair = (conversation.recipient.id, conversation.initiator.id)
+    elif goal and goal.status == "active" and goal.target_id == conversation.recipient.id:
         if goal.kind == "obtain_apple":
             goal_pair = (conversation.recipient.id, conversation.initiator.id)
         elif goal.kind == "help_with_apple":
@@ -703,6 +706,11 @@ def pair_objective(world, npc, other):
         return 2, danger_topic(npc, danger)
     goal = npc.goal
     if goal and goal.status == "active" and goal.target_id == other.id:
+        if goal.kind == "help_with_apple" and not npc.inventory.get("fruit", 0):
+            # Nothing to hand over yet, so the doable step is a promise kept from a later harvest.
+            if len(pending_promises(world, npc.id)) >= 2:
+                return 0, ""  # No further promise is permitted until one is kept.
+            return 1, f"Promise {other.name} an apple by {phase_label(world.phase_index + 1)}; I carry none right now"
         return 1, f"{goal.objective}, by {phase_label(goal.deadline)}"
     return 0, ""
 

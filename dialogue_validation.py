@@ -729,11 +729,13 @@ def fallback_assessment(snapshot, state):
 
     The python's verdict still follows its partner's answer; everyone else's view is left unchanged.
     """
-    target, verdict = state["opinion_target"], state.get("snake_verdict")
+    target, verdict, settled = state["opinion_target"], state.get("snake_verdict"), state.get("confrontation_verdict")
     reason = ({"better": f"{target} agreed with my accusation against {verdict['accused']}.",
                "worse": f"{target} would not accept my accusation against {verdict['accused']}.",
                "unchanged": f"{target} heard my accusation against {verdict['accused']} without changing their view."}[verdict["change"]]
-              if verdict else "No clear view formed in this exchange.")
+              if verdict else
+              (f"{target} promised to make this right." if settled["promised"] else f"{target} made no promise to make this right.")
+              if settled else "No clear view formed in this exchange.")
     options = {o.id: o for o in information_from_dict(snapshot["_information_validation"]).options} if snapshot.get("_information_validation") else {}
     gossip, facts = [], set()
     for claim_id in state["choices"]["third_party_opinions"]:
@@ -819,6 +821,7 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
             raise ValueError("Assess only your conversation partner using the supplied opinion record name.")
         believed = _believed_from_partner(projected, role, state)
         verdict = state.get("snake_verdict")
+        settled = state.get("confrontation_verdict")
         if snapshot.get("_dialogue_validation", True):
             validate_english(reason, (own_name(snapshot[role]), own_name(snapshot[other])))
             validate_base_prose(reason, (own_name(snapshot[role]), own_name(snapshot[other])))
@@ -829,6 +832,9 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
             validate_memory_firm(reason)
             if believed:
                 validate_reason_belief(reason, firsthand=any(believed.values()))
+            if settled:
+                validate_opinion_direction(reason, OPINION_CHANGES[settled["change"]][0], target=snapshot[other]["name"],
+                                           people=_reason_people(snapshot, role))
             if verdict and verdict["accused"]:
                 validate_snake_conviction(reason, verdict["accused"], target=snapshot[other]["name"], people=_reason_people(snapshot, role))
                 validate_opinion_direction(reason, OPINION_CHANGES[verdict["change"]][0], target=snapshot[other]["name"],

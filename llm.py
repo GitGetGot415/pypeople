@@ -15,7 +15,7 @@ from actor_identity import account_references, actor_id, name_forms, speech_only
 from constants import (CONVERSATION_MAX_TURNS, DIALOGUE_REPEAT_PHRASE_WORDS, DIALOGUE_STAGE_ATTEMPTS,
     DIALOGUE_TIMEOUT_SECONDS, FOOD_REQUEST_TURN_COUNT, MODEL_DEFAULT_CONTEXT_TOKENS, MODEL_DIALOGUE_CONTEXT_TOKENS,
     OPINION_CHANGES, RESIDENT_TURN_COUNT, VOICE_REWRITE_TEMPERATURE)
-from dialogue import ActionResponse, ConversationResponse, ConversationTurn, DialoguePartsResponse, DisclosureChoice
+from dialogue import AccountDisclosure, ActionResponse, ConversationResponse, ConversationTurn, DialoguePartsResponse, DisclosureChoice
 from dialogue_rules import copied_share, mentions_private_recollection, states_no_change, validate_account_speech
 from dialogue_text import contains_question
 from generation_errors import InvalidResponseError, RequestError, StreamRepetitionError
@@ -360,6 +360,15 @@ def _corrected_request(state, request, report):
                 if len(memories) == 1:
                     disclosure_repair = memories[0]["claim_id"]
                     disclosure_choices = None
+                    if exc.response is not None and not getattr(exc.response, "disclosures", None):
+                        # The reply plainly tells exactly this one memory of the speaker's own and only its record is
+                        # missing; small models drop the field on retry after retry, so record it rather than regenerate.
+                        candidate = exc.response.model_copy(deep=True)
+                        candidate.disclosures = [AccountDisclosure(claim_id=disclosure_repair, intent="share")]
+                        try:
+                            return validate_response(candidate.model_dump_json(), state)
+                        except InvalidResponseError:
+                            pass
             if exc.repeated_turns and isinstance(exc.response, DialoguePartsResponse):
                 candidate = exc.response.model_copy(deep=True)
                 candidate.parts = _deduplicate_dialogue_parts(candidate)
@@ -445,14 +454,15 @@ def _resident_exchange(snapshot, request, retain, report):
             # A verdict whose written reason never passed its checks must not discard the whole accepted exchange.
             assessment = dialogue_validation.fallback_assessment(snapshot, state)
             draft = dialogue_validation._apply_resident_candidate({**snapshot, "_dialogue_validation": False}, draft, assessment, state)
-            verdict = state.get("snake_verdict")
+            verdict = state.get("snake_verdict") or state.get("confrontation_verdict")
             settled = [dialogue_validation.gossip_labels(snapshot, draft, role, entry.claim_id) for entry in assessment.third_party_opinions]
             draft = dialogue_validation.apply_opinion_directions(snapshot, draft, state, verdict["change"] if verdict else "unchanged",
                                                                  [labels[0] if len(labels) == 1 else "unchanged" for labels in settled])
             continue
         draft = dialogue_validation._apply_resident_candidate(snapshot, draft, assessment, state)
         stored = (state["speaker"].get("opinion_of_listener") or {}).get("reason", "")
-        verdict = state.get("snake_verdict")
+        # The python's and a confronter's changes are settled by the partner's answer, not read from the reason.
+        verdict = state.get("snake_verdict") or state.get("confrontation_verdict")
         # Restating the view already held is no new reason to move it again.
         change = (verdict["change"] if verdict else
                   "unchanged" if stored and copied_share(assessment.opinion.reason, [stored]) >= 0.8 else

@@ -245,6 +245,12 @@ def _resident_contract(snapshot, *, correction=False):
         if snapshot.get("discussion_focus_claim_id") and snapshot["turn_index"] == 0 and not assessment:
             instruction += (" Your sentence must state the concrete event of the required account in your own words: "
                             "who did what, and how many apples if it is a harvest.")
+        # The short prompt otherwise loses the metadata a told account needs; name it outright.
+        required = snapshot.get("_disclosure_repair") or (
+            snapshot.get("discussion_focus_claim_id") if snapshot["turn_index"] == 0 and not assessment else None)
+        if required:
+            instruction += (" Include " + json.dumps({"disclosures": [{"claim_id": required, "intent": "share"}]})
+                            + " alongside parts.")
         if snapshot.get("_closing"):
             instruction += f" Answer question_to_answer in at most {DIALOGUE_CLOSING_WORD_LIMIT} words and end without a question."
         return instruction, schema, model
@@ -303,6 +309,13 @@ def _resident_contract(snapshot, *, correction=False):
                             "whether you saw it happen yourself. You accept that each one happened; never deny or doubt it. "
                             "In that reason, you/your means the person who told you. When an entry has your_view_of_them worse, "
                             "what you heard makes you think worse of that person; say why in your own words.")
+        settled = snapshot.get("confrontation_verdict")
+        if settled:
+            accused = settled["accused"]
+            instruction += (f" {accused} promised to make this right, so your view of them is no different for now. "
+                            if settled["promised"] else
+                            f" {accused} made no promise to make this right; an apology or explanation alone does not repair it, "
+                            "so you think worse of them. ") + "Say why in your own words."
         verdict = snapshot.get("snake_verdict")
         if verdict:
             accused = verdict["accused"]

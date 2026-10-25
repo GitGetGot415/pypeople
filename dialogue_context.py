@@ -7,7 +7,7 @@ from dialogue_rules import (is_name_reference, name_pattern,
                            named_context, validate_base_prose, validate_opinion_reason,
                            validate_speaker_identity)
 from dialogue_text import split_sentences, contains_question
-from information import NPC_ARRIVAL_MEMORY, resident_turn_choices, snake_accusation, snake_verdict
+from information import NPC_ARRIVAL_MEMORY, resident_turn_choices, snake_accusation, snake_verdict, confrontation_verdict
 from actor_identity import actor_id, own_name, forms, speech_only
 
 
@@ -411,6 +411,8 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
                          if role == "initiator" else
                          "Answer the grievance honestly: explain, apologize or justify what you did. Deny it only with your "
                          "recorded deliberate denial, if you have one; a witness will know it is a lie. "
+                         "An apology alone does not repair it; to make it right, you may offer the listener a promised apple "
+                         "by its deadline, which they can accept. "
                          "Allow peaceful resolution and never narrate an uncommitted killing.")
     elif snapshot.get("purpose") == "food_request":
         state["food_request"] = deepcopy(snapshot["food_request"])
@@ -424,12 +426,15 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
                          "Use your own knowledge to move that discussion forward; connect your private concern only when natural. "
                          "You need not introduce another subject or story.")
         focus = (snapshot.get("_information_validation") or {}).get("focus_claim_id")
-        if role == "initiator" and index == 0 and focus:
-            state["discussion_focus_claim_id"] = focus
-            state["task"] += " Disclose the required task account or a permitted denial of the same fact now."
-        elif index == 0 and snapshot.get("opening_kind") in ("recollection", "news"):
+        if not (role == "initiator" and index == 0 and focus) and index == 0 and snapshot.get("opening_kind") in ("recollection", "news"):
             state["task"] += (" Lead with your concern's selected account in your own words, retaining its actual owner, source and stance. "
                               "Discuss the account itself rather than promising a later story. Record a disclosure only if actually spoken.")
+    # A required task account (a python's accusation, a confrontation's grievance) opens the exchange; the schema,
+    # prompt and corrections all have to know it is required, not just the final check.
+    focus = (snapshot.get("_information_validation") or {}).get("focus_claim_id")
+    if not orientation and not assessment and not thanks and role == "initiator" and index == 0 and focus:
+        state["discussion_focus_claim_id"] = focus
+        state["task"] += " Disclose the required task account or a permitted denial of the same fact now."
     if assessment and role == "initiator":
         state["escalation_choices"] = deepcopy(snapshot.get("escalation_choices"))
     if assessment:
@@ -469,6 +474,7 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
                                           for a in accounts if a["claim_id"] in choices["third_party_opinions"]]
         if person.get("kind") == "python":
             state["snake_verdict"] = snake_verdict(snapshot, draft, role)
+        state["confrontation_verdict"] = confrontation_verdict(snapshot, draft, role)
     return state
 
 
