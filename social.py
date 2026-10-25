@@ -171,7 +171,7 @@ def commit_information(conversation):
     world = conversation.initiator.world
     options = {option.id: option for option in context.options}
     people = {"initiator": conversation.initiator, "recipient": conversation.recipient}
-    heard = {}
+    heard, alleged = {}, []
     claims = {claim.id: claim for claim in world.claims}
     for turn, speech in enumerate(conversation.turns):
         speaker = people[speech.speaker]
@@ -222,6 +222,9 @@ def commit_information(conversation):
                                     source_belief.disclosure_id, world.phase_index, event.id)
             world.disclosures.append(disclosure)
             prior = next((b for b in listener.beliefs if b.claim_id == option.id), None)
+            witnessed = any(b.direct and claims[b.claim_id].fact_id == option.fact_id for b in listener.beliefs if b.claim_id in claims)
+            if entry.intent == "share":
+                alleged.append((turn, listener, option))
             if entry.listener_stance == "believed":
                 demote_contrary_beliefs(option, related_beliefs(option, listener.beliefs, claims), claims, listener.id)
             learned = receive_belief(prior, listener_id=listener.id, claim_id=option.id,
@@ -243,9 +246,34 @@ def commit_information(conversation):
             remember(speaker, listener, event, "claim_shared", f"I discussed an account with {listener.name}: {assertion}", 0)
             remember(listener, speaker, event, "heard_claim",
                      f"{speaker.name} passed on an account from {originator.name}: {assertion} My stance: {entry.listener_stance}.", 0)
-            conversation.record.outcomes.append(f"Allegation: {speaker.name} -> {listener.name}; {entry.listener_stance}. {assertion}")
+            # A witness can only believe what they saw; that is not the same as being persuaded.
+            stance = f"{entry.listener_stance} (saw it firsthand)" if witnessed else entry.listener_stance
+            conversation.record.outcomes.append(f"Allegation: {speaker.name} -> {listener.name}; {stance}. {assertion}")
     for npc in people.values():
         apply_opinion_effects(npc)
+    for turn, listener, option in alleged:
+        unweighed_allegation(conversation, turn, listener, option, claims)
+
+
+def unweighed_allegation(conversation, turn, listener, option, claims):
+    """Show why a believed allegation left the absent subject's standing alone when the listener gave it no verdict."""
+    world = listener.world
+    subject = world.participant_by_id(option.subject_id)
+    belief = next((b for b in listener.beliefs if b.claim_id == option.id), None)
+    if (listener is world.player or subject is None or subject in (conversation.initiator, conversation.recipient)
+            or belief is None or belief.stance != "believed"
+            or any(conversation.turns[e.turn].speaker != conversation.turns[turn].speaker
+                   and claims[e.claim_id].fact_id == option.fact_id for e in conversation.third_party_opinions)):
+        return
+    related = [b for b in listener.beliefs if b.claim_id in claims and claims[b.claim_id].fact_id == option.fact_id]
+    if any(b.assessed for b in related):
+        why = f"{listener.name} had already judged {subject.name} over this in an earlier conversation."
+    elif any(b.direct for b in related) and option.kind != "harvest":
+        why = f"{listener.name} saw this firsthand, so hearing it retold changed nothing."
+    else:
+        why = f"{listener.name} formed no new view of {subject.name} from it."
+    conversation.record.outcomes.append(
+        f"{listener.name}'s opinion of {subject.name} changed +0 after assessing an allegation. {why}")
 
 
 def _witnessed_pickups(world, speaker, option, claims):
@@ -503,6 +531,12 @@ def apply_opinion_effects(npc):
     while npc.pending_social_opinions:
         effect = npc.pending_social_opinions[0]
         target = npc.world.participant_by_id(effect.target_id)
+        if not effect.delta and effect.claim_id:
+            # A weighed account that left the view unchanged is shown, but the standing and its reason stay as they were.
+            record = next(entry for entry in npc.world.history if entry.id == effect.conversation_id)
+            record.outcomes.append(f"{npc.name}'s opinion of {target.name} changed +0 after assessing an allegation. {effect.reason}")
+            npc.pending_social_opinions.pop(0)
+            continue
         if target is npc.world.player:
             from player import update_player_opinion
             update_player_opinion(npc, effect.delta, effect.reason)

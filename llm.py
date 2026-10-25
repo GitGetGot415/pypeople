@@ -423,26 +423,33 @@ def _resident_exchange(snapshot, request, retain, report):
         draft.update(accepted)
 
     _exchange_turns(snapshot, draft, turn, retain, budget=budget, limit=limit)
-    def direction(state, role, target, reason, labels):
+    def direction(state, role, target, reason, labels, you=""):
         # A finished reason is classified on its own; small models ignore a label chosen alongside long prose.
+        if len(labels) == 1:
+            return labels[0]  # Already settled, as for a believed accusation from the python.
         if states_no_change(reason):
             return "unchanged"
         try:
             return request(dialogue_context.opinion_direction_snapshot(
-                state, target, reason, labels=labels, people=dialogue_validation._reason_people(snapshot, role))).change
+                state, target, reason, labels=labels, people=dialogue_validation._reason_people(snapshot, role), you=you)).change
         except RequestError:
-            return "unchanged"
+            return None  # No direction could be found; recorded as unchanged.
 
-    for role in ("initiator", "recipient"):
+    # The python's view of its partner follows the partner's verdict on its accusation, so it is assessed last.
+    roles = ("recipient", "initiator") if snapshot["initiator"].get("kind") == "python" else ("initiator", "recipient")
+    for role in roles:
         state = dialogue_context._resident_turn_snapshot(snapshot, draft, role=role, assessment=True)
         assessment = request(state)
         draft = dialogue_validation._apply_resident_candidate(snapshot, draft, assessment, state)
         stored = (state["speaker"].get("opinion_of_listener") or {}).get("reason", "")
+        verdict = state.get("snake_verdict")
         # Restating the view already held is no new reason to move it again.
-        change = ("unchanged" if stored and copied_share(assessment.opinion.reason, [stored]) >= 0.8 else
-                  direction(state, role, state["opinion_target"], assessment.opinion.reason, list(OPINION_CHANGES)))
+        change = (verdict["change"] if verdict else
+                  "unchanged" if stored and copied_share(assessment.opinion.reason, [stored]) >= 0.8 else
+                  direction(state, role, state["opinion_target"], assessment.opinion.reason, list(OPINION_CHANGES)) or "unchanged")
+        partner = snapshot["recipient" if role == "initiator" else "initiator"]["name"]
         gossip = [direction(state, role, snapshot["_name_actors"][entry.subject_id]["name"], entry.reason,
-                            dialogue_validation.gossip_labels(snapshot, draft, role, entry.claim_id))
+                            dialogue_validation.gossip_labels(snapshot, draft, role, entry.claim_id), you=partner)
                   for entry in assessment.third_party_opinions]
         draft = dialogue_validation.apply_opinion_directions(snapshot, draft, state, change, gossip)
     thanks = []

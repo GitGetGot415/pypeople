@@ -466,6 +466,8 @@ SPOKEN_NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
                   "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
                   "nineteen": 19, "twenty": 20, "a": 1, "an": 1}
 GRIEVANCE_FACT_KINDS = ("promise_broken", "apple_refused", "killing", "report")
+# Conduct an affirmed account can hold against its subject; believing one never improves the subject's standing.
+ACCUSATION_FACT_KINDS = ("harvest", "killing", "promise_broken", "apple_refused")
 TREE_SHAKE_FREQUENCY = 60
 KILLING_WITNESS_MAX_PENALTY = 40
 DANGEROUS_GIFT_PENALTY = 18

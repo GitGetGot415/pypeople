@@ -279,15 +279,22 @@ _SECOND_PERSON = r"\b(?:you|your|yours|yourself)\b"
 _PREDICATED = re.compile(r"(?:['’]s(?:\s+[a-z-]+){0,2})?(?:['’]re|\s+(?:is|was|were|are|seems?|seemed|looks?|looked|has been|"
                          r"have been|had been|acted|appears?|appeared))?(?:\s+(?:so|very|really|quite|indeed|being|a|an|more|less|"
                          r"truly|clearly)){0,2}\s*", re.I)
+# Text between a judgment and the person it is aimed at: "cautious about trusting Grace", "wary and not trust her".
+_AIMED = re.compile(r"\s*(?:(?:and\s+)?(?:not|never)\s+)?(?:(?:about|of|toward|towards|around|with|in)\s+)?"
+                    r"(?:(?:trust(?:ing)?|believ(?:e|ing)|rely(?:ing)? on)\s+)?", re.I)
+_OBJECT_PRONOUN = re.compile(r"\b(?:her|him|them)\b", re.I)
 
 
-def view_subjects(reason, people=(), *, target=""):
+def view_subjects(reason, people=(), *, target="", you=""):
     """Each judgment in a reason as (hostile|warm, person), skipping denials, reported views and contrasts.
 
-    A judgment directly predicated of someone ("Colin's selfish actions") is about them; any other judgment is
-    about the sentence's first-named person, since that is usually its subject; you/your is the target. A sentence
-    naming nobody keeps the previous sentence's subject: "...seeing Colin take all of them. He only cares about himself."
+    A judgment directly predicated of someone ("Colin's selfish actions") is about them; one aimed at someone
+    ("cautious about trusting Grace", "wary and not trust her") is about that person, a her/him meaning the last
+    person named; any other judgment is about the sentence's first-named person, since that is usually its subject.
+    You/your is `you` (the conversation partner), which is the target unless the reason judges an absent person.
+    A sentence naming nobody keeps the previous sentence's subject: "...seeing Colin take all of them. He only cares about himself."
     """
+    you = you or target
     forms = {}
     for name in dict.fromkeys((target, *people)):
         if name:
@@ -296,10 +303,11 @@ def view_subjects(reason, people=(), *, target=""):
             if sum(other.split()[0].casefold() == first for other in dict.fromkeys((target, *people)) if other) == 1:
                 forms.setdefault(first, name)
     pattern = re.compile("|".join([*(name_pattern(f) for f in sorted(forms, key=len, reverse=True)), _SECOND_PERSON]), re.I)
-    views, last = [], target
+    views, last, named = [], target, ""
     for sentence in split_sentences(unquoted_speech(reason)):
-        refs = [(m.start(), m.end(), forms.get(m.group().casefold(), target)) for m in pattern.finditer(sentence)
-                if m.group().casefold() not in forms or is_name_reference(m, sentence)]
+        matches = [m for m in pattern.finditer(sentence) if m.group().casefold() not in forms or is_name_reference(m, sentence)]
+        refs = [(m.start(), m.end(), forms.get(m.group().casefold(), you)) for m in matches]
+        names = [(m.start(), forms[m.group().casefold()]) for m in matches if m.group().casefold() in forms]
         subject = refs[0][2] if refs else last
         for kind, cue in (("hostile", _HOSTILE_VIEW), ("warm", _WARM_VIEW)):
             for match in cue.finditer(sentence):
@@ -309,8 +317,15 @@ def view_subjects(reason, people=(), *, target=""):
                     continue
                 direct = [person for _, end, person in refs if end <= match.start()
                           and _PREDICATED.fullmatch(sentence, end, match.start())]
-                views.append((kind, direct[-1] if direct else subject))
+                aimed, aimed_at = _AIMED.match(sentence, match.end()), None
+                if aimed.group().strip():
+                    aimed_at = next((person for start, _, person in refs if start == aimed.end()), None)
+                    if aimed_at is None and _OBJECT_PRONOUN.match(sentence, aimed.end()):
+                        earlier = [person for start, person in names if start < aimed.end()]
+                        aimed_at = earlier[-1] if earlier else named or None
+                views.append((kind, direct[-1] if direct else aimed_at or subject))
         last = subject
+        named = names[-1][1] if names else named
     return views
 
 
@@ -328,18 +343,18 @@ def states_no_change(reason):
                           unquoted_speech(reason), re.I))
 
 
-def validate_reason_subject(reason, *, target, people=()):
+def validate_reason_subject(reason, *, target, people=(), you=""):
     """A view of the target must judge the target, not only someone else the reason mentions."""
-    views = view_subjects(reason, people, target=target)
+    views = view_subjects(reason, people, target=target, you=you)
     others = sorted({person for _, person in views if person != target})
     if others and not any(person == target for _, person in views):
         raise ValueError(f"This reason judges {' and '.join(others)}, not {target}. Say how {target}'s own words "
                          f"or conduct changed your view of {target}.")
 
 
-def validate_opinion_direction(reason, delta, *, target="", people=()):
+def validate_opinion_direction(reason, delta, *, target="", people=(), you=""):
     """The chosen direction must agree with a one-sided reason about the target; mixed reasons may go either way."""
-    views = [kind for kind, person in view_subjects(reason, people, target=target) if person == target]
+    views = [kind for kind, person in view_subjects(reason, people, target=target, you=you) if person == target]
     hostile, warm = "hostile" in views, "warm" in views
     if delta > 0 and hostile and not warm:
         raise ValueError("The reason describes a worse view of this person, but the change chosen is better. "
@@ -962,6 +977,35 @@ def validate_snake_stance(text, accused, listener, people=()):
                      r"thoughtless|inconsiderate|untrustworthy|a hoarder)\b", sentence, re.I):
             raise ValueError(f"Your accusation is against {accused}, not {listener}. "
                              f"Speak to {listener} as someone you want on your side against {accused}.")
+
+
+_DISBELIEF = re.compile(
+    r"\b(?:(?:don['’]t|do not|didn['’]t|did not)\s+(?:really\s+|quite\s+)?believe\s+"
+    r"(?:you|your|him|them|it|that|this|what|a word|the account|any of)|(?:that|it|this)(?:['’]s|\s+is|\s+was)\s+(?:simply\s+|just\s+)?"
+    r"(?:not true|untrue|false|a lie)|(?:isn['’]t|wasn['’]t|is not|was not|never) true|unbelievable|"
+    r"false (?:information|accounts?|claims?|story|stories|accusations?)|(?:you|he|she|they)(?:['’]re|\s+are|\s+is|['’]s)\s+lying|"
+    r"made (?:it|that|this) up)\b", re.I)
+_RETRACTION = re.compile(
+    r"\b(?:too quick to judge|(?:might|may|could) have been (?:wrong|mistaken|unfair|too harsh|too quick)|misjudg\w*|"
+    r"(?:initially|at first) (?:skeptical|wrong|mistaken|unsure)|was wrong about|changed my (?:mind|view) about|"
+    r"alternative motivations?|(?:her|his|their) kind heart)\b", re.I)
+
+
+def validate_reason_belief(reason, *, firsthand=False):
+    """A view formed after believing an account cannot deny or doubt that account."""
+    if _DISBELIEF.search(unquoted_speech(reason)):
+        raise ValueError("You believed this account" + (", and you saw it happen yourself" if firsthand else "") +
+                         ". Do not deny or doubt that it happened; say how it changed your view, and why.")
+
+
+def validate_snake_conviction(reason, accused, *, target="", people=()):
+    """The python's own view never retracts its accusation: no excuse, praise or second thoughts about the accused."""
+    accused_ref = re.compile("|".join(name_pattern(form) for form in dict.fromkeys((accused, accused.split()[0])) if form), re.I)
+    speech = unquoted_speech(reason)
+    if (_RETRACTION.search(speech) or any(_EXCUSE.search(s) and accused_ref.search(s) for s in split_sentences(speech))
+            or any(kind == "warm" and person == accused for kind, person in view_subjects(reason, people, target=target))):
+        raise ValueError(f"You are certain {accused} acted selfishly and have no second thoughts. Do not excuse, praise or "
+                         f"reconsider {accused}; judge {target or 'your partner'} only by how they answered your accusation.")
 
 
 def validate_snake_accusation(text, subject_name, *, subject_is_listener=False):

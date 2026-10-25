@@ -7,7 +7,7 @@ from dialogue_rules import (is_name_reference, name_pattern,
                            named_context, validate_base_prose, validate_opinion_reason,
                            validate_speaker_identity)
 from dialogue_text import split_sentences, contains_question
-from information import NPC_ARRIVAL_MEMORY, resident_turn_choices
+from information import NPC_ARRIVAL_MEMORY, resident_turn_choices, snake_accusation, snake_verdict
 from actor_identity import actor_id, own_name, forms, speech_only
 
 
@@ -442,13 +442,23 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
     if assessment:
         # The only effect left to choose is a view of absent people in believed accounts.
         state["choices"] = dict(third_party_opinions=choices["third_party_opinions"])
+        if choices["third_party_opinions"]:
+            # A verdict written without its own stance in view argues with it ("I don't believe you").
+            seen = {a.get("fact_id") for a in accounts if a.get("basis") == "firsthand"}
+            options = {o.id: o for o in info.options}
+            state["believed_accounts"] = [dict(claim_id=a["claim_id"], subject_name=a.get("subject_name", ""), account=a["assertion"],
+                                               told_by=listener["name"], saw_it_yourself=a.get("fact_id") in seen,
+                                               **({"your_view_of_them": "worse"} if snake_accusation(snapshot, role, options[a["claim_id"]]) else {}))
+                                          for a in accounts if a["claim_id"] in choices["third_party_opinions"]]
+        if person.get("kind") == "python":
+            state["snake_verdict"] = snake_verdict(snapshot, draft, role)
     return state
 
 
-def opinion_direction_snapshot(state, target, reason, *, labels, people=()):
+def opinion_direction_snapshot(state, target, reason, *, labels, people=(), you=""):
     """A small classification of one finished reason; it sees nothing but the reason and the two names.
 
-    The other names only let validation tell which person each judgment in the reason is about.
+    The other names, and who "you" is, only let validation tell which person each judgment in the reason is about.
     """
     return dict(request_kind="opinion_direction", owner=state["speaker"]["name"], target=target, reason=reason,
-                labels=list(labels), people=list(people), _dialogue_validation=state.get("_dialogue_validation", True))
+                labels=list(labels), people=list(people), you=you, _dialogue_validation=state.get("_dialogue_validation", True))

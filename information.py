@@ -6,7 +6,7 @@ from dataclasses import asdict
 from uuid import uuid4
 from constants import (SNAKE_NAME, CONVERSATION_MAX_AGREEMENTS, LEVERAGE_ACCOUNT_KINDS, PHASES,
     CONVERSATION_MAX_DISCLOSURES, CONVERSATION_MAX_REPUTATION_EFFECTS, CONVERSATION_MAX_LEVERAGE,
-    REPUTATION_FACT_LIMIT, OPINION_CHANGES, ROUTINE_FACT_KINDS)
+    REPUTATION_FACT_LIMIT, OPINION_CHANGES, ROUTINE_FACT_KINDS, ACCUSATION_FACT_KINDS)
 from conversation_history import remember
 from dialogue_text import split_sentences
 from dialogue_rules import (unquoted_speech, mentions_account, named_references, validate_account_speech, harvest_extent)
@@ -318,14 +318,16 @@ def reputation_assessment_available(option, related, options, *, believed, heard
                         for b in related))
 
 
-def reputation_deltas(related):
+def reputation_deltas(related, option=None):
+    """Zero records a considered, unchanged view; believing an accusation never improves its subject."""
     influence = sum(b.opinion_delta for b in related)
+    accusation = option is not None and option.affirmed and option.kind in ACCUSATION_FACT_KINDS
     return [delta for delta in range(-REPUTATION_FACT_LIMIT, REPUTATION_FACT_LIMIT + 1)
-            if delta and abs(influence + delta) <= REPUTATION_FACT_LIMIT]
+            if abs(influence + delta) <= REPUTATION_FACT_LIMIT and not (accusation and delta > 0)]
 
 
-def reputation_labels(related):
-    allowed = reputation_deltas(related)
+def reputation_labels(related, option=None):
+    allowed = reputation_deltas(related, option)
     return [label for label, delta in OPINION_CHANGES.items() if delta in allowed]
 
 
@@ -418,7 +420,7 @@ def validate_information(response, context, *, names=(), participant_names=None,
             if (not reputation_assessment_available(option, related, options,
                     believed=belief.stance == "believed", heard=True, participants=context.participants.values(),
                     assessed=(role, option.fact_id) in seen_opinions)
-                    or entry.delta not in reputation_deltas(related)):
+                    or entry.delta not in reputation_deltas(related, option)):
                 raise ValueError("A repeated or disbelieved account cannot cause another reputation penalty.")
             seen_opinions.add((role, option.fact_id))
             belief.assessed, belief.opinion_delta = True, belief.opinion_delta + entry.delta
@@ -719,6 +721,33 @@ def resident_accounts_for_turn(accounts, info, role, draft, catalog, *, concern_
 
 def assessment_turn(draft, role):
     return next((i for i in reversed(range(len(draft["turns"]))) if draft["turns"][i].speaker == role), None)
+
+
+def snake_accusation(snapshot, role, option):
+    """Whether this role heard the account as an accusation from the python; believing one always worsens its subject."""
+    other = "recipient" if role == "initiator" else "initiator"
+    return snapshot[other].get("kind") == "python" and option.affirmed and option.kind in ACCUSATION_FACT_KINDS
+
+
+def snake_verdict(snapshot, draft, role):
+    """The python's change toward a partner it pressed with its task accusation, from that partner's answer.
+
+    A partner who thought worse of the accused agreed; one who doubted the account or weighed it without
+    changing their view did not. None when the python made no task accusation, leaving its view free.
+    """
+    info = snapshot.get("_information_validation") or {}
+    focus = info.get("focus_claim_id")
+    if role != "initiator" or not focus:
+        return None
+    turns = draft["turns"]
+    told = [d for d in draft["disclosures"] if turns[d.turn].speaker == role and d.intent == "share"]
+    if not told:
+        return None
+    option = next(o for o in information_from_dict(info).options if o.id == focus)
+    views = [e.delta for e in draft["third_party_opinions"] if turns[e.turn].speaker != role]
+    change = ("better" if any(delta < 0 for delta in views) else
+              "worse" if views or any(d.listener_stance != "believed" for d in told) else "unchanged")
+    return dict(change=change, accused=snapshot.get("_name_actors", {}).get(option.subject_id, {}).get("name", ""))
 
 
 def resident_turn_choices(snapshot, draft, role, private, *, closing=False, assessment=False):

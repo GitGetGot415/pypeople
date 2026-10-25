@@ -290,7 +290,20 @@ def _resident_contract(snapshot, *, correction=False):
         if "third_party_opinions" in properties:
             instruction += (" You believed an account about an absent person in this exchange. For each one, add a third_party_opinions "
                             "entry whose reason says, in your own words, whether what you heard makes you think better, worse or no "
-                            "differently of that absent person, and why.")
+                            "differently of that absent person, and why. believed_accounts lists each account, who told it to you, and "
+                            "whether you saw it happen yourself. You accept that each one happened; never deny or doubt it. "
+                            "In that reason, you/your means the person who told you. When an entry has your_view_of_them worse, "
+                            "what you heard makes you think worse of that person; say why in your own words.")
+        verdict = snapshot.get("snake_verdict")
+        if verdict:
+            accused = verdict["accused"]
+            instruction += {
+                "better": f" {snapshot['opinion_target']} came to think worse of {accused} after your accusation, so you think better of them.",
+                "worse": f" {snapshot['opinion_target']} did not accept your accusation against {accused}, so you think worse of them.",
+                "unchanged": f" {snapshot['opinion_target']} heard your accusation against {accused} without changing their view, "
+                             "so your view of them is no different.",
+            }[verdict["change"]] + (f" Say why in your own words. You remain certain {accused} acted selfishly: never doubt, "
+                                    f"excuse or reconsider {accused}.")
     elif not thanks:
         instruction += ("\nReply to the listener first. Personality is private behavioral guidance, never text to recite "
                         "or attribute to the listener. Do not read objectives or account menus aloud.")

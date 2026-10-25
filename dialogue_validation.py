@@ -26,10 +26,10 @@ from dialogue_rules import (is_name_reference, mentions_account, mentions_privat
                            copied_share, first_person_text, validate_addressee, validate_private_recital,
                            validate_unheard_quote, leverage_pressure, validate_reason_subject, validate_reason_voice,
                            validate_tree_permanence, validate_name_tag_talk, validate_self_name, validate_echo,
-                           validate_own_memory_person, validate_snake_stance)
+                           validate_own_memory_person, validate_snake_stance, validate_reason_belief, validate_snake_conviction)
 from social_records import phase_index
 from information import (assessment_turn, information_from_dict, related_beliefs, reputation_labels,
-                         resident_information, resident_effect_limits)
+                         resident_information, resident_effect_limits, snake_accusation)
 from social import validate_agreements, proposals_from_snapshot
 from actor_identity import account_references, actor_id, forms, own_name, speech_only
 from information import orientation_speech, validate_orientation
@@ -472,7 +472,7 @@ def _validate_response(raw, snapshot, model):
             raise ValueError("Choose one of the supplied changes.")
         if check_dialogue:
             validate_opinion_direction(snapshot["reason"], OPINION_CHANGES[result.change],
-                                       target=snapshot["target"], people=snapshot.get("people", ()))
+                                       target=snapshot["target"], people=snapshot.get("people", ()), you=snapshot.get("you", ""))
         return result
     if check_dialogue:
         _validate_base_presentation(result, snapshot)
@@ -670,11 +670,22 @@ def _reason_people(snapshot, role):
     return [name for name in dict.fromkeys((*names, SNAKE_NAME)) if name and name != owner]
 
 
+def _believed_from_partner(draft, role, state):
+    """Accounts this role believed from its partner in this exchange: {claim_id: whether it also saw the event}."""
+    accounts = state["speaker"].get("permitted_accounts", [])
+    seen = {a.get("fact_id") for a in accounts if a.get("basis") == "firsthand"}
+    facts = {a["claim_id"]: a.get("fact_id") for a in accounts}
+    return {d.claim_id: facts.get(d.claim_id) in seen for d in draft["disclosures"]
+            if draft["turns"][d.turn].speaker != role and d.listener_stance == "believed"}
+
+
 def gossip_labels(snapshot, draft, role, claim_id):
     """Directions for one heard account, within its per-fact limit; unchanged leaves the subject's standing alone."""
     options = {o.id: o for o in information_from_dict(snapshot["_information_validation"]).options}
     beliefs, _, _ = resident_information(snapshot, draft)
-    allowed = {"unchanged", *reputation_labels(related_beliefs(options[claim_id], beliefs[role].values(), options))}
+    allowed = {"unchanged", *reputation_labels(related_beliefs(options[claim_id], beliefs[role].values(), options), options[claim_id])}
+    if snake_accusation(snapshot, role, options[claim_id]) and "worse" in allowed:
+        return ["worse"]  # The python's accusation was believed, so it worked.
     return [label for label in OPINION_CHANGES if label in allowed]
 
 
@@ -696,9 +707,10 @@ def apply_opinion_directions(snapshot, draft, state, change, gossip_changes):
             # The reason did not end hostile enough for an attack; the confrontation ends peacefully.
             projected["escalation"] = escalation.model_copy(update={"action": "leave"})
     for entry, label in zip(pending["gossip"], gossip_changes):
-        if OPINION_CHANGES[label]:  # A neutral reaction to hearsay leaves the absent person's standing alone.
-            projected["third_party_opinions"].append(ThirdPartyOpinion(turn=assessment_turn(draft, role), claim_id=entry.claim_id,
-                subject_id=entry.subject_id, delta=OPINION_CHANGES[label], reason=entry.reason))
+        # An unchanged view is still recorded, so the outcome shows the account was weighed. None: no direction was found.
+        reason = entry.reason if label else f"{entry.reason} (No clear direction; left unchanged.)"[:400]
+        projected["third_party_opinions"].append(ThirdPartyOpinion(turn=assessment_turn(draft, role), claim_id=entry.claim_id,
+            subject_id=entry.subject_id, delta=OPINION_CHANGES[label or "unchanged"], reason=reason))
     resident_information(snapshot, projected)
     return projected
 
@@ -730,6 +742,8 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
         reason = candidate.opinion.reason
         if candidate.opinion.person != snapshot[other]["name"]:
             raise ValueError("Assess only your conversation partner using the supplied opinion record name.")
+        believed = _believed_from_partner(projected, role, state)
+        verdict = state.get("snake_verdict")
         if snapshot.get("_dialogue_validation", True):
             validate_english(reason, (own_name(snapshot[role]), own_name(snapshot[other])))
             validate_base_prose(reason, (own_name(snapshot[role]), own_name(snapshot[other])))
@@ -737,6 +751,12 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
             validate_reason_voice(reason, snapshot[role]["name"])
             validate_reason_subject(reason, target=snapshot[other]["name"], people=_reason_people(snapshot, role))
             validate_reason_originality(reason, state)
+            if believed:
+                validate_reason_belief(reason, firsthand=any(believed.values()))
+            if verdict and verdict["accused"]:
+                validate_snake_conviction(reason, verdict["accused"], target=snapshot[other]["name"], people=_reason_people(snapshot, role))
+                validate_opinion_direction(reason, OPINION_CHANGES[verdict["change"]], target=snapshot[other]["name"],
+                                           people=_reason_people(snapshot, role))
         choices = state["choices"]["third_party_opinions"]
         if choices and not candidate.third_party_opinions:
             raise ValueError("Give your changed view of each absent person in an account you believed in this exchange.")
@@ -749,8 +769,14 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
                 validate_base_prose(entry.reason, [p["name"] for p in snapshot.get("_name_actors", {}).values()])
                 subject = snapshot.get("_name_actors", {}).get(entry.subject_id, {}).get("name", "")
                 validate_reason_voice(entry.reason, snapshot[role]["name"])
+                validate_reason_belief(entry.reason, firsthand=believed.get(entry.claim_id, False))
                 if subject:
-                    validate_reason_subject(entry.reason, target=subject, people=_reason_people(snapshot, role))
+                    # Here "you" is the partner who told the account, not the absent person it is about.
+                    validate_reason_subject(entry.reason, target=subject, people=_reason_people(snapshot, role),
+                                            you=snapshot[other]["name"])
+                    if gossip_labels(snapshot, projected, role, entry.claim_id) == ["worse"]:
+                        validate_opinion_direction(entry.reason, OPINION_CHANGES["worse"], target=subject,
+                                                   people=_reason_people(snapshot, role), you=snapshot[other]["name"])
         projected["assessments"][role] = dict(person=candidate.opinion.person, reason=reason,
                                                              gossip=list(candidate.third_party_opinions))
         resident_information(snapshot, projected)

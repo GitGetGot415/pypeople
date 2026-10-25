@@ -5,7 +5,8 @@ import random
 from dataclasses import dataclass, field
 from typing import Annotated
 from pydantic import Field
-from constants import SNAKE_NAME, SNAKE_SPEED, SNAKE_FRAME_SECONDS, STARTING_SNAKE_POSITION, DECISION_SECONDS, STARTING_SNAKE_DECISION_SECONDS
+from constants import (SNAKE_NAME, SNAKE_SPEED, SNAKE_FRAME_SECONDS, STARTING_SNAKE_POSITION, DECISION_SECONDS, STARTING_SNAKE_DECISION_SECONDS,
+                       ACCUSATION_FACT_KINDS, HARVEST_FREE_APPLES)
 from npc import ConversationActor
 from activity import ActivitySnapshot
 from interactions import PlayerReplyProgress, move_toward
@@ -184,9 +185,16 @@ class Snake(SnakeValues, ConversationActor):
                 for belief in self.beliefs:
                     claim = claim_by_id(self.world, belief.claim_id)
                     fact = fact_by_id(self.world, claim.fact_id)
-                    # Telling the accused about their own conduct cannot turn anyone against them.
+                    # Telling the accused about their own conduct cannot turn anyone against them, and
+                    # ordinary conduct (eating, sharing, a single apple) is no accusation at all.
+                    quantity = harvests.get((fact.phase, fact.subject_id), {}).get("quantity", fact.quantity) if fact.kind == "harvest" else 0
                     if (belief.stance != "believed" or not claim.affirmed or fact.subject_id == self.id
-                            or fact.subject_id == human.id):
+                            or fact.subject_id == human.id or fact.kind not in ACCUSATION_FACT_KINDS
+                            or fact.kind == "harvest" and quantity <= HARVEST_FREE_APPLES):
+                        continue
+                    # An account the listener already judged, or saw for themselves (harvests aside), can no longer move them.
+                    known = [b for b in human.beliefs if claim_by_id(self.world, b.claim_id).fact_id == fact.id]
+                    if any(b.assessed or b.direct and fact.kind != "harvest" for b in known):
                         continue
                     # One harvest story per collector and phase, however many pickups it took.
                     told = [fact_by_id(self.world, claim_by_id(self.world, d.claim_id).fact_id) for d in self.world.disclosures
@@ -194,7 +202,6 @@ class Snake(SnakeValues, ConversationActor):
                     shared = any(t.id == fact.id or fact.kind == t.kind == "harvest"
                                  and (t.phase, t.subject_id) == (fact.phase, fact.subject_id) for t in told)
                     if not shared:
-                        quantity = harvests.get((fact.phase, fact.subject_id), {}).get("quantity", 0) if fact.kind == "harvest" else 0
                         choices.append((fact.kind == "killing", fact.kind == "harvest", quantity,
                                         -human.opinion_score(fact.subject_id)
                                         - math.dist((self.x, self.y), (human.x, human.y)) / SNAKE_SPEED,
