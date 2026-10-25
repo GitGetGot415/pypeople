@@ -5,7 +5,7 @@ from character_data import DEFAULT_COLORS, IDENTITY_FIELDS, PROFILE_FIELDS
 from conversation_history import (has_failed_voice_rewrite, usable_rewrite, uses_original_dialogue,
                                  voice_rewrite_errors)
 from emotions import portrait_expression
-from npc import NPC
+from npc import NPC, ConversationActor
 from social_records import claim_by_id, fact_by_id, phase_label
 from information import assertion_text, selected_beliefs
 from social import concern_description
@@ -303,7 +303,7 @@ class StatsScreen:
             return lines
         add(npc.name, app.heading_font)
         gap()
-        if npc is app.simulation.snake:
+        if npc is app.simulation.snake and self.tab == "Statistics":
             add(f"Activity: {npc.status}")
             add(f"Tree stock: {app.tree.fruit}")
             add(f"{SNAKE_NAME} seeks influence through known accounts. Religious explanations remain its claims.", app.small_font, MUTED)
@@ -449,8 +449,8 @@ class StatsScreen:
                 gap()
 
     def _opinion_grid(self, app, npc, add, gap, height):
-        """Every living resident's opinion of every other, as a colored matrix."""
-        people = list(app.simulation.npcs)
+        """Every living resident's and the python's opinion of every other, as a colored matrix."""
+        people = list(app.simulation.actors)
         add("Each row is that person's opinion of the person in the column. Green likes, red dislikes, "
             "blank has no opinion. Click a cell to read the pair.", app.small_font, MUTED)
         gap()
@@ -591,12 +591,12 @@ class StatsScreen:
                     self.detail_scroll = 0
                     return
 
-        if self.tab == "Opinions" and isinstance(self.selected_npc, NPC) and self.view_toggle.clicked(event):
+        if self.tab == "Opinions" and isinstance(self.selected_npc, ConversationActor) and self.view_toggle.clicked(event):
             self.opinion_view = "Grid" if self.opinion_view == "Table" else "Table"
             self.detail_scroll = 0
             return
 
-        if (self.tab == "Opinions" and self.opinion_view == "Table" and isinstance(self.selected_npc, NPC)
+        if (self.tab == "Opinions" and self.opinion_view == "Table" and isinstance(self.selected_npc, ConversationActor)
                 and self.sort_toggle.clicked(event)):
             self.opinion_sort = "Score" if self.opinion_sort == "Name" else "Name"
             return
@@ -817,7 +817,7 @@ class StatsScreen:
             pygame.draw.line(surface, INK, (track.centerx, track.y - 1), (track.centerx, track.bottom))
             surface.blit(app.small_font.render("n/a" if value is None else f"{value:+d}", True, INK), (track.right + 10, y))
         surface.set_clip(previous_clip)
-        if self.tab == "Opinions" and isinstance(self.selected_npc, NPC):
+        if self.tab == "Opinions" and isinstance(self.selected_npc, ConversationActor):
             self.view_toggle.label = f"View: {self.opinion_view}"
             self.view_toggle.draw(surface, app.small_font)
             if self.opinion_view == "Table":

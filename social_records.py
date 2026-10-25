@@ -77,7 +77,7 @@ class Promise:
 class OpinionEffect:
     event_id: Annotated[str, Field(min_length=1)]
     target_id: str
-    delta: Annotated[int, Field(ge=-6, le=6)]
+    delta: Annotated[int, Field(ge=-REPUTATION_FACT_LIMIT, le=REPUTATION_FACT_LIMIT)]
     reason: Annotated[str, Field(min_length=1, max_length=400)]
     claim_id: str | None = None
     actor_id: str | None = None

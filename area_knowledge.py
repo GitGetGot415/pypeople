@@ -136,8 +136,11 @@ def validate_area_speech(text, knowledge, *, question=""):
     from dialogue_rules import unquoted_speech
     from dialogue_text import split_sentences
     source = knowledge.get("familiarity", {})
-    layout_question = bool(re.search(r"\b(?:how|who|where)\b.*\b(?:know|learn|told|confirm|sure)\b", question, re.I)
-        and re.search(r"\b(?:layout|rooms?|hallways?|building|doors?|exits?|look|surroundings|other places)\b", question, re.I))
+    # Only an actual question asks this; "I don't know how to get back... the building" is a statement.
+    asked = " ".join(sentence for sentence in split_sentences(question)
+                     if sentence.rstrip().endswith("?") or re.match(r"\W*(?:how|who|where)\b", sentence, re.I))
+    layout_question = bool(re.search(r"\b(?:how|who|where)\b.*\b(?:know|learn|told|confirm|sure)\b", asked, re.I)
+        and re.search(r"\b(?:layout|rooms?|hallways?|building|doors?|exits?|look|surroundings|other places)\b", asked, re.I))
     if source and layout_question:
         speech = unquoted_speech(text)
         if re.search(r"\byou (?:already )?know (?:the|this|what|how|because)\b|\bthat['’]s how you know\b", speech, re.I):

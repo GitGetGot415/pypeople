@@ -244,10 +244,12 @@ CONVERSATION_MAX_AGREEMENTS = 2
 CONVERSATION_MAX_DISCLOSURES = 4
 CONVERSATION_MAX_REPUTATION_EFFECTS = 4
 REPUTATION_FACT_LIMIT = 15
-CONVERSATION_OPINION_STEP = 15  # Largest change one conversation makes to an opinion of the partner.
-# Assessments name a direction instead of a number; small models read numbers as intensity, not sign.
-OPINION_CHANGES = {"much_worse": -15, "worse": -8, "slightly_worse": -3, "unchanged": 0,
-                   "slightly_better": 3, "better": 8, "much_better": 15}
+# Assessments name only a direction; small models pick the strongest intensity for any warm reason.
+# Talk sours a view faster than it warms one; large moves come from deeds such as harvests and promises.
+OPINION_CHANGES = {"worse": -8, "unchanged": 0, "better": 3}
+# Largest change one conversation makes to an opinion of the partner. A harvest seen mid-conversation
+# lands first; this bound keeps the conversation's own result from undoing more than its own change.
+CONVERSATION_OPINION_STEP = max(abs(delta) for delta in OPINION_CHANGES.values())
 # Routine movement and sightings stay known but are not conversation topics.
 ROUTINE_FACT_KINDS = ("arrival", "departure", "conversation_seen")
 CONVERSATION_MAX_LEVERAGE = 2
@@ -440,6 +442,9 @@ STATS_PORTRAIT_PADDING = 8
 
 # Local resources, confrontations and transient presentation.
 HARVEST_DISTANCE = 90.0
+# The tree restocks one apple per resident each phase. Each witnessed apple beyond these costs
+# the collector one more opinion point than the previous one: 4 apples cost 0 + 1 + 2 + 3.
+HARVEST_FREE_APPLES = 1
 TREE_SHAKE_SECONDS = 0.4
 TREE_SHAKE_OFFSET = 3.0
 CONFRONTATION_OPINION = -70

@@ -24,7 +24,9 @@ from dialogue_rules import (is_name_reference, mentions_account, mentions_privat
                            validate_opinion_reason, validate_opinion_direction, validate_environment_speech, validate_speaker_identity,
                            personal_apple_request, short_player_answer, validate_snake_perspective, validate_snake_accusation,
                            copied_share, first_person_text, validate_addressee, validate_private_recital,
-                           validate_unheard_quote, validate_leverage_speech)
+                           validate_unheard_quote, leverage_pressure, validate_reason_subject, validate_reason_voice,
+                           validate_tree_permanence, validate_name_tag_talk, validate_self_name, validate_echo,
+                           validate_own_memory_person, validate_snake_stance)
 from social_records import phase_index
 from information import (assessment_turn, information_from_dict, related_beliefs, reputation_labels,
                          resident_information, resident_effect_limits)
@@ -269,6 +271,7 @@ def validate_speech_grounding(text, snapshot):
     snake_role = ("speaker" if speaker.get("kind") == "python" or _actor_name(speaker) == SNAKE_NAME else
                   "listener" if listener_name == SNAKE_NAME else None)
     validate_python_harvest(text, snake_role=snake_role)
+    validate_tree_permanence(text)
     names = [_actor_name(speaker), listener_name, SNAKE_NAME, *snapshot.get("known_actor_names", [])]
     validate_english(text, names)
     situation = speaker.get("situation", {})
@@ -361,12 +364,21 @@ def validate_resident_grounding(result, snapshot):
             accused = snapshot.get("_name_actors", {}).get(focus["subject_id"], {}).get("name", "")
             if accused and focus["subject_id"] not in heard_from:
                 validate_unheard_quote(turn.text, accused)
+            if accused:
+                validate_snake_stance(turn.text, accused, snapshot[other_role]["name"], people=names)
         private = speaker.get("private_context", {})
         validate_addressee(turn.text, speaker_name=speaker["name"], listener_name=snapshot[other_role]["name"],
                            names=[*names, PLAYER_NAME_TAG])
         goal = private.get("goal") or {}
         validate_private_recital(turn.text, personality=speaker.get("character", {}).get("Personality", ""),
                                  motives=[goal.get(field, "") for field in ("motive", "approach", "boundary")])
+        previous = result.turns[index - 1].text if index else ""
+        validate_name_tag_talk(turn.text, previous)
+        validate_self_name(turn.text, speaker["name"])
+        validate_echo(turn.text, previous)
+        for account in options.values():
+            if account["kind"] == "former_life" and account["subject_id"] == speaker["actor_id"]:
+                validate_own_memory_person(turn.text, account["assertion"])
         recent_memories = [options[entry.claim_id] for entry in result.disclosures
                            if entry.turn == index - 1 and entry.claim_id in options]
         validate_memory_ownership(turn.text, options.values(), speaker_id=speaker["actor_id"],
@@ -459,7 +471,8 @@ def _validate_response(raw, snapshot, model):
         if result.change not in snapshot["labels"]:
             raise ValueError("Choose one of the supplied changes.")
         if check_dialogue:
-            validate_opinion_direction(snapshot["reason"], OPINION_CHANGES[result.change])
+            validate_opinion_direction(snapshot["reason"], OPINION_CHANGES[result.change],
+                                       target=snapshot["target"], people=snapshot.get("people", ()))
         return result
     if check_dialogue:
         _validate_base_presentation(result, snapshot)
@@ -644,6 +657,17 @@ def validate_reason_originality(reason, state):
     if copied_share(reason, copied) >= 0.5:
         raise ValueError("The reason only repeats your own goal, personality, a known account or the conversation. "
                          "Say in your own words how your partner's words or conduct in this exchange changed your view of them.")
+    goal = speaker.get("goal") or {}
+    validate_private_recital(reason, personality=speaker.get("personality") or "",
+                             motives=[goal.get(field, "") for field in ("motive", "approach", "boundary")])
+
+
+def _reason_people(snapshot, role):
+    """Everyone a reason might judge besides its owner, for attributing each judgment."""
+    owner = snapshot[role]["name"]
+    names = [snapshot[r]["name"] for r in ("initiator", "recipient")]
+    names.extend(actor["name"] for actor in snapshot.get("_name_actors", {}).values())
+    return [name for name in dict.fromkeys((*names, SNAKE_NAME)) if name and name != owner]
 
 
 def gossip_labels(snapshot, draft, role, claim_id):
@@ -710,6 +734,8 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
             validate_english(reason, (own_name(snapshot[role]), own_name(snapshot[other])))
             validate_base_prose(reason, (own_name(snapshot[role]), own_name(snapshot[other])))
             validate_opinion_reason(reason, snapshot[role]["name"], snapshot[other]["name"])
+            validate_reason_voice(reason, snapshot[role]["name"])
+            validate_reason_subject(reason, target=snapshot[other]["name"], people=_reason_people(snapshot, role))
             validate_reason_originality(reason, state)
         choices = state["choices"]["third_party_opinions"]
         if choices and not candidate.third_party_opinions:
@@ -721,6 +747,10 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
                 raise ValueError("Assess only an eligible account you heard earlier.")
             if snapshot.get("_dialogue_validation", True):
                 validate_base_prose(entry.reason, [p["name"] for p in snapshot.get("_name_actors", {}).values()])
+                subject = snapshot.get("_name_actors", {}).get(entry.subject_id, {}).get("name", "")
+                validate_reason_voice(entry.reason, snapshot[role]["name"])
+                if subject:
+                    validate_reason_subject(entry.reason, target=subject, people=_reason_people(snapshot, role))
         projected["assessments"][role] = dict(person=candidate.opinion.person, reason=reason,
                                                              gossip=list(candidate.third_party_opinions))
         resident_information(snapshot, projected)
@@ -777,8 +807,8 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
     for entry in candidate.leverage:
         if entry.claim_id not in choices["leverage"]:
             raise ValueError("Leverage requires a permitted account known before this turn.")
-        if snapshot.get("_dialogue_validation", True):
-            validate_leverage_speech(turn.text)
+        if snapshot.get("_dialogue_validation", True) and not leverage_pressure(turn.text):
+            continue  # Speech without pressure stays as an ordinary remark; only the leverage record is dropped.
         projected["leverage"].append(LeverageUse(turn=index, **entry.model_dump()))
     limits = resident_effect_limits()
     for field in ("accepted_proposals", "disclosures", "third_party_opinions", "leverage"):

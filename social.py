@@ -10,7 +10,7 @@ from actor_identity import account_references
 from social_records import (ConversationConcern, phase_label, Goal, Proposal, Promise, OpinionEffect, Claim, Belief,
     Disclosure, fact_by_id, claim_by_id, owns_recollection)
 from information import (account_content, account_view, record_intention, can_deceive, selected_beliefs, related_beliefs,
-    demote_contrary_beliefs, receive_belief, validate_information, trim_information)
+    demote_contrary_beliefs, receive_belief, validate_information, trim_information, harvest_summary)
 
 
 def valid_concern(npc, concern):
@@ -209,7 +209,13 @@ def commit_information(conversation):
                 claims[option.id] = world.claims[-1]
                 speaker.beliefs.append(Belief(speaker.id, option.id, "disbelieved", speaker.id, None,
                                               False, world.phase_index))
-            text = f"{speaker.name} {'questioned an account with' if entry.intent == 'challenge' else 'alleged to'} {listener.name}: {option.assertion}"
+            pickups = _witnessed_pickups(world, speaker, option, claims) if entry.intent == "share" else []
+            assertion = option.assertion
+            if pickups:
+                # Speech reports the speaker's witnessed total, so the record and the listener's knowledge do too.
+                total = sum(fact_by_id(world, claim.fact_id).quantity for claim in [claims[option.id], *pickups])
+                assertion = harvest_summary(world.participant_by_id(option.subject_id).name, total)
+            text = f"{speaker.name} {'questioned an account with' if entry.intent == 'challenge' else 'alleged to'} {listener.name}: {assertion}"
             event = world.publish("claim_shared", (speaker, listener), text, conversation.record)
             disclosure = Disclosure(f"{conversation.id}:disclosure:{turn}", option.id, conversation.record.id,
                                     speaker.id, listener.id, turn, entry.intent, entry.listener_stance,
@@ -222,14 +228,41 @@ def commit_information(conversation):
                 stance=entry.listener_stance, source_id=speaker.id, disclosure_id=disclosure.id, phase=world.phase_index)
             if prior is None:
                 listener.beliefs.append(learned)
+            for claim in pickups:
+                # Each pickup the telling covers is its own disclosed account, so hearsay keeps an exact source.
+                told = Disclosure(f"{disclosure.id}:{claim.id}", claim.id, conversation.record.id, speaker.id, listener.id,
+                                  turn, entry.intent, entry.listener_stance, None, world.phase_index, event.id)
+                world.disclosures.append(told)
+                prior_pickup = next((b for b in listener.beliefs if b.claim_id == claim.id), None)
+                learned_pickup = receive_belief(prior_pickup, listener_id=listener.id, claim_id=claim.id, stance=entry.listener_stance,
+                                                source_id=speaker.id, disclosure_id=told.id, phase=world.phase_index)
+                if prior_pickup is None:
+                    listener.beliefs.append(learned_pickup)
             heard[listener.id, option.id] = speaker
             originator = world.participant_by_id(option.originator_id)
-            remember(speaker, listener, event, "claim_shared", f"I discussed an account with {listener.name}: {option.assertion}", 0)
+            remember(speaker, listener, event, "claim_shared", f"I discussed an account with {listener.name}: {assertion}", 0)
             remember(listener, speaker, event, "heard_claim",
-                     f"{speaker.name} passed on an account from {originator.name}: {option.assertion} My stance: {entry.listener_stance}.", 0)
-            conversation.record.outcomes.append(f"Allegation: {speaker.name} -> {listener.name}; {entry.listener_stance}. {option.assertion}")
+                     f"{speaker.name} passed on an account from {originator.name}: {assertion} My stance: {entry.listener_stance}.", 0)
+            conversation.record.outcomes.append(f"Allegation: {speaker.name} -> {listener.name}; {entry.listener_stance}. {assertion}")
     for npc in people.values():
         apply_opinion_effects(npc)
+
+
+def _witnessed_pickups(world, speaker, option, claims):
+    """The speaker's claims about the same collector's other pickups that phase, which a firsthand telling includes."""
+    fact = fact_by_id(world, option.fact_id)
+    if (fact.kind != "harvest" or not option.affirmed or world.participant_by_id(fact.subject_id) is None
+            or not any(b.direct and claims[b.claim_id].fact_id == fact.id for b in speaker.beliefs if b.claim_id in claims)):
+        return []
+    pickups = {}
+    for belief in speaker.beliefs:
+        claim = claims.get(belief.claim_id)
+        if claim is None or not belief.direct or not claim.affirmed or claim.fact_id == fact.id:
+            continue
+        other = fact_by_id(world, claim.fact_id)
+        if other.kind == "harvest" and other.subject_id == fact.subject_id and other.phase == fact.phase:
+            pickups.setdefault(other.id, claim)
+    return list(pickups.values())
 
 
 def check_sabotage_goal(world, effect, listener, actual_delta, record):

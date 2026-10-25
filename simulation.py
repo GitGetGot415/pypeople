@@ -474,7 +474,32 @@ class Simulation:
         else:
             add_fact(self, "harvest", actor, None, event.id, None, text, witnesses,
                      quantity=quantity, location="garden")
+        self.harvest_impressions(actor, quantity, witnesses)
         return event
+
+    def harvest_impressions(self, actor, quantity, witnesses):
+        """Each resident watching minds every apple past a fair share that they saw this collector take this phase."""
+        from constants import HARVEST_FREE_APPLES
+        from player import update_player_opinion
+        for witness in witnesses:
+            if witness is actor or self.npc_by_id(witness.id) is not witness:
+                continue  # The python and the collector keep their own views.
+            seen = sum(fact.quantity for fact in self.facts if fact.kind == "harvest" and fact.subject_id == actor.id
+                       and fact.phase == self.phase_index and witness.id in fact.witness_ids)
+            # Apples numbered past the free share each cost one more point: the 2nd costs 1, the 3rd 2, and so on.
+            delta = -sum(max(0, count - HARVEST_FREE_APPLES) for count in range(seen - quantity + 1, seen + 1))
+            if not delta:
+                continue
+            text = f"Saw {actor.name} take {seen} apples from the tree, more than a fair share."
+            if actor is self.player:
+                update_player_opinion(witness, delta, text, scaled=False)
+                continue
+            previous = witness.opinions.get(actor.id, {"opinion": 0, "reason": ""})
+            earlier = previous["reason"]
+            if earlier.startswith(f"Saw {actor.name} take "):
+                earlier = earlier.partition(" Earlier: ")[2]  # A later pickup restates the running total.
+            witness.remember_opinion(actor.id, max(-100, min(100, previous["opinion"] + delta)),
+                                     (text + (f" Earlier: {earlier}" if earlier else ""))[:400])
 
     def escalation_choices(self, meeting):
         from constants import CONFRONTATION_OPINION, KILLING_COOLDOWN_PHASES, GRIEVANCE_FACT_KINDS

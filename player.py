@@ -301,13 +301,16 @@ def requested_work_id(world, owner_id, message):
     return matches[0].id if len(matches) == 1 else ""
 
 
-def update_player_opinion(npc, delta, reason):
-    """Keep mixed evidence, and scale a bounded change by this resident's personality."""
+def update_player_opinion(npc, delta, reason, *, scaled=True):
+    """Keep mixed evidence, and scale a bounded change by this resident's personality.
+
+    Witnessed deeds such as harvests apply exactly, as they do between residents.
+    """
     entry = npc.player_opinion
     if reason in entry.reason:
         return
     step = round(max(-PLAYER_OPINION_STEP, min(PLAYER_OPINION_STEP, delta))
-                 * (0.5 + npc.preferences["sociability"] / 2))
+                 * (0.5 + npc.preferences["sociability"] / 2)) if scaled else delta
     entry.opinion = max(-100, min(100, entry.opinion + step))
     combined = (entry.reason + " " + reason).strip()
     entry.reason = combined if len(combined) <= 400 else entry.reason[:180] + " ... " + reason[:215]

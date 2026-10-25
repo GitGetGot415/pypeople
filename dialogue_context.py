@@ -445,7 +445,10 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
     return state
 
 
-def opinion_direction_snapshot(state, target, reason, *, labels):
-    """A small classification of one finished reason; it sees nothing but the reason and the two names."""
+def opinion_direction_snapshot(state, target, reason, *, labels, people=()):
+    """A small classification of one finished reason; it sees nothing but the reason and the two names.
+
+    The other names only let validation tell which person each judgment in the reason is about.
+    """
     return dict(request_kind="opinion_direction", owner=state["speaker"]["name"], target=target, reason=reason,
-                labels=list(labels), _dialogue_validation=state.get("_dialogue_validation", True))
+                labels=list(labels), people=list(people), _dialogue_validation=state.get("_dialogue_validation", True))

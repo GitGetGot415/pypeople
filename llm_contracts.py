@@ -546,9 +546,8 @@ def _request_context(message, snapshot, correction):
             f"Choose a worse change when the reason describes {target} as selfish, dishonest, unkind, manipulative or untrustworthy, "
             f"or says {owner} feels wary, hurt, disappointed or uneasy about them. Choose a better change when it describes {target} "
             f"as kind, honest, generous, helpful or pleasant, or says {owner} feels appreciative, comfortable or close to them. "
-            "Choose unchanged when the reason is neutral, only restates events without judging them, or is about someone else. "
-            "Use slightly_worse or slightly_better for a mild view, worse or better for a clear one, and much_worse or much_better "
-            "for a strong one. Return only the change JSON."
+            f"Choose unchanged when the reason is neutral, only restates events without judging them, says {owner} feels no "
+            f"different, or judges someone other than {target}. Return only the change JSON."
             + ("\n" + correction if correction else ""))
         schema = {"type": "object", "properties": {"change": {"type": "string", "enum": snapshot["labels"]}}, "required": ["change"]}
         return instruction, schema, {"owner": owner, "target": target, "reason": snapshot["reason"]}

@@ -16,7 +16,7 @@ from constants import (CONVERSATION_MAX_TURNS, DIALOGUE_REPEAT_PHRASE_WORDS, DIA
     DIALOGUE_TIMEOUT_SECONDS, FOOD_REQUEST_TURN_COUNT, MODEL_DEFAULT_CONTEXT_TOKENS, MODEL_DIALOGUE_CONTEXT_TOKENS,
     OPINION_CHANGES, RESIDENT_TURN_COUNT, VOICE_REWRITE_TEMPERATURE)
 from dialogue import ActionResponse, ConversationResponse, ConversationTurn, DialoguePartsResponse, DisclosureChoice
-from dialogue_rules import copied_share, mentions_private_recollection, validate_account_speech
+from dialogue_rules import copied_share, mentions_private_recollection, states_no_change, validate_account_speech
 from dialogue_text import contains_question
 from generation_errors import InvalidResponseError, RequestError, StreamRepetitionError
 from llm_contracts import intent_snapshot, prepare_request, response_model
@@ -423,10 +423,13 @@ def _resident_exchange(snapshot, request, retain, report):
         draft.update(accepted)
 
     _exchange_turns(snapshot, draft, turn, retain, budget=budget, limit=limit)
-    def direction(state, target, reason, labels):
+    def direction(state, role, target, reason, labels):
         # A finished reason is classified on its own; small models ignore a label chosen alongside long prose.
+        if states_no_change(reason):
+            return "unchanged"
         try:
-            return request(dialogue_context.opinion_direction_snapshot(state, target, reason, labels=labels)).change
+            return request(dialogue_context.opinion_direction_snapshot(
+                state, target, reason, labels=labels, people=dialogue_validation._reason_people(snapshot, role))).change
         except RequestError:
             return "unchanged"
 
@@ -437,8 +440,8 @@ def _resident_exchange(snapshot, request, retain, report):
         stored = (state["speaker"].get("opinion_of_listener") or {}).get("reason", "")
         # Restating the view already held is no new reason to move it again.
         change = ("unchanged" if stored and copied_share(assessment.opinion.reason, [stored]) >= 0.8 else
-                  direction(state, state["opinion_target"], assessment.opinion.reason, list(OPINION_CHANGES)))
-        gossip = [direction(state, snapshot["_name_actors"][entry.subject_id]["name"], entry.reason,
+                  direction(state, role, state["opinion_target"], assessment.opinion.reason, list(OPINION_CHANGES)))
+        gossip = [direction(state, role, snapshot["_name_actors"][entry.subject_id]["name"], entry.reason,
                             dialogue_validation.gossip_labels(snapshot, draft, role, entry.claim_id))
                   for entry in assessment.third_party_opinions]
         draft = dialogue_validation.apply_opinion_directions(snapshot, draft, state, change, gossip)

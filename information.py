@@ -127,7 +127,7 @@ def harvest_account_view(account, *, tree_stock=None, current_time=None):
     if extent:
         account["harvest_extent"] = extent
         if extent["share"] == "all":
-            account["assertion"] += " This was the entire phase's tree stock; no apples remain on the tree."
+            account["assertion"] += " That was every apple the tree had, leaving none for anyone else."
     if account.get("firsthand_stance") == "believed":
         account["firsthand_evidence"] = account["assertion"]
     return account
