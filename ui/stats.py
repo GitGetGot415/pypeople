@@ -20,7 +20,9 @@ from constants import (STATS_PORTRAIT_PADDING, CONVERSATION_FAILED, ACCENT, FAIL
                        QUEUED_CONVERSATION_SELECTED_COLOR, REWRITE_FAILED_CONVERSATION_COLOR,
                        REWRITE_FAILED_CONVERSATION_SELECTED_COLOR, GRASS, INK, MODEL_LOG_COLORS,
                        MODEL_LOG_REFRESH_SECONDS, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER, SNAKE_NAME,
-                       STATS_TAB_RECTS, STATS_FOLLOW_RECT, STATS_INVENTORY_RECT, STATS_INVENTORY_DETAIL_TOP)
+                       STATS_TAB_RECTS, STATS_FOLLOW_RECT, STATS_INVENTORY_RECT, STATS_INVENTORY_DETAIL_TOP,
+                       STATS_SORT_RECT, OPINION_BAR_LEFT, OPINION_BAR_WIDTH, OPINION_POSITIVE_COLOR,
+                       OPINION_NEGATIVE_COLOR, PLAYER_LABEL)
 
 
 class StatsScreen:
@@ -35,6 +37,7 @@ class StatsScreen:
         self.original_toggle = Button((888, 102, 192, 30), "Original dialogue: Off")
         self.condense_toggle = Button((888, 66, 192, 30), "Condense: Off")
         self.follow_toggle = Button(STATS_FOLLOW_RECT, "Follow")
+        self.sort_toggle = Button(STATS_SORT_RECT, "Sort: Name")
         self.list_rect = pygame.Rect(200, 184, 264, 440)
         self.detail_rect = pygame.Rect(512, 200, 568, 424)
         self.open()
@@ -58,6 +61,10 @@ class StatsScreen:
         self.show_private = False
         self.private_toggle_top = None
         self.promise_links = []
+        self.opinion_links = []
+        self.opinion_bars = []
+        self.opinion_sort = "Name"
+        self.selected_opinion = None
         self.dialogue_portraits = []
         self.dialogue_backgrounds = []
 
@@ -110,6 +117,8 @@ class StatsScreen:
         lines = []
         self.private_toggle_top = None
         self.promise_links = []
+        self.opinion_links = []
+        self.opinion_bars = []
         self.dialogue_portraits = []
         self.dialogue_backgrounds = []
 
@@ -385,17 +394,50 @@ class StatsScreen:
                 value = npc.name if field == "Name" else npc.character.get(field, "")
                 add(f"{field}: {value or 'Not specified'}")
         else:
-            add("Opinion scores range from -100 to 100.", app.small_font, MUTED)
-            gap()
-            opinions = npc.named_opinions()
-            if not opinions:
-                add("No opinions recorded yet.", color=MUTED)
-            for person, entry in sorted(opinions.items(), key=lambda item: item[0].casefold()):
-                add(person, app.heading_font)
-                add(f"Opinion: {entry['opinion']:+d}")
-                add(f"Reason: {entry['reason']}")
-                gap()
+            self._opinion_table(app, npc, add, gap, height)
         return lines
+
+    def _opinion_table(self, app, npc, add, gap, height):
+        """Each person with this NPC's opinion of them and their opinion of this NPC, side by side."""
+        first = npc.name.split()[0]
+        rows = {}
+        for person, entry in npc.named_opinions().items():
+            rows[person] = {"mine": entry, "theirs": None}
+        for other in app.simulation.actors:
+            entry = other.named_opinions().get(npc.name) if other is not npc else None
+            if entry is not None:
+                rows.setdefault(other.name, {"mine": None, "theirs": None})["theirs"] = entry
+        if npc.player_opinion.opinion or npc.player_opinion.reason:
+            rows[PLAYER_LABEL] = {"mine": {"opinion": npc.player_opinion.opinion, "reason": npc.player_opinion.reason},
+                                  "theirs": None, "player": True}
+        add("Bars run from -100 (left) to +100 (right). Click a person to read both reasons.", app.small_font, MUTED)
+        gap()
+        if not rows:
+            add("No opinions recorded yet.", color=MUTED)
+
+        def order(item):
+            person, row = item
+            if self.opinion_sort == "Score":
+                score = row["mine"]["opinion"] if row["mine"] else None
+                return (score is None, -(score or 0), person.casefold())
+            return (False, 0, person.casefold())
+
+        for person, row in sorted(rows.items(), key=order):
+            top = height()
+            add(person, app.font)
+            for label, entry in ((f"{first} on them", row["mine"]), (f"They on {first}", row["theirs"])):
+                if row.get("player") and entry is None:
+                    continue
+                self.opinion_bars.append((height(), label, entry["opinion"] if entry else None))
+                gap()
+            if self.selected_opinion == person:
+                if row["mine"]:
+                    add(f"{first}'s reason: {row['mine']['reason']}", app.small_font)
+                if row["theirs"]:
+                    add(f"Their reason: {row['theirs']['reason']}", app.small_font)
+                self.dialogue_backgrounds.append((top, height()))
+            self.opinion_links.append((top, height(), person))
+            gap()
 
     def _scroll_limits(self, app):
         _, list_height = self._list_rows(app)
@@ -472,6 +514,10 @@ class StatsScreen:
             self.follow_log = not self.follow_log
             return
 
+        if self.tab == "Opinions" and isinstance(self.selected_npc, NPC) and self.sort_toggle.clicked(event):
+            self.opinion_sort = "Score" if self.opinion_sort == "Name" else "Name"
+            return
+
         if self.tab == "Conversations" and self.condense_toggle.clicked(event):
             app.condensed_dialogue = not getattr(app, "condensed_dialogue", False)
             self._scroll("detail", self.detail_scroll, self._scroll_limits(app))
@@ -505,6 +551,10 @@ class StatsScreen:
                             and self.private_toggle_top <= content_y < self.private_toggle_top + app.small_font.get_linesize()):
                         self.show_private = not self.show_private
                         return
+                    for top, bottom, person in self.opinion_links:
+                        if top <= content_y < bottom:
+                            self.selected_opinion = None if self.selected_opinion == person else person
+                            return
                     for top, bottom, record_id in self.promise_links:
                         if top <= content_y < bottom:
                             record = next(entry for entry in app.conversation_history if entry.id == record_id)
@@ -523,6 +573,7 @@ class StatsScreen:
                             else:
                                 self.selected_npc = entry
                                 self.show_private = False
+                                self.selected_opinion = None
                             self.detail_scroll = 0
                             self.scroll_focus = "detail"
                             return
@@ -648,7 +699,24 @@ class StatsScreen:
             for index, label in enumerate(labels):
                 surface.blit(app.small_font.render(label, True, MUTED),
                              (rect.x, rect.bottom + 6 + index * app.small_font.get_linesize()))
+        for top, label, value in self.opinion_bars:
+            y = self.detail_rect.top + top - self.detail_scroll
+            line = app.small_font.get_linesize()
+            if y + line < self.detail_rect.top or y > self.detail_rect.bottom:
+                continue
+            track = pygame.Rect(self.detail_rect.x + OPINION_BAR_LEFT, y + 3, OPINION_BAR_WIDTH, line - 6)
+            surface.blit(app.small_font.render(label, True, MUTED), (self.detail_rect.x + 8, y))
+            pygame.draw.rect(surface, GRASS, track)
+            if value is not None:
+                length = round(abs(value) / 100 * track.width / 2)
+                fill = pygame.Rect(track.centerx if value >= 0 else track.centerx - length, track.y, length, track.height)
+                pygame.draw.rect(surface, OPINION_POSITIVE_COLOR if value >= 0 else OPINION_NEGATIVE_COLOR, fill)
+            pygame.draw.line(surface, INK, (track.centerx, track.y - 1), (track.centerx, track.bottom))
+            surface.blit(app.small_font.render("n/a" if value is None else f"{value:+d}", True, INK), (track.right + 10, y))
         surface.set_clip(previous_clip)
+        if self.tab == "Opinions" and isinstance(self.selected_npc, NPC):
+            self.sort_toggle.label = f"Sort: {self.opinion_sort}"
+            self.sort_toggle.draw(surface, app.small_font)
         if self.tab == "Statistics" and isinstance(self.selected_npc, NPC):
             self.inventory_button.draw(surface, app.small_font)
         if self.tab == "Creations":
