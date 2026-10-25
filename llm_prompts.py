@@ -5,7 +5,7 @@ import json
 import dialogue_context
 from area_knowledge import known_layout
 from constants import EMOTION_THRESHOLD, FURIOUS_THRESHOLD, SNAKE_NAME
-from dialogue_context import NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION
+from dialogue_context import NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION, PLAYER_TAG_INSTRUCTION
 
 
 EMOTION_INSTRUCTION = f"""Include emotion with name and intensity (an integer 0 to 100).
@@ -463,7 +463,7 @@ Keep technical mechanics out of ordinary speech unless the player asks.
 def build_system_instruction(character, *, conversation_only=False):
     """Combine the shared game rules with this NPC's JSON character profile."""
     return ((PLAYER_SAY_INSTRUCTION if conversation_only else SYSTEM_INSTRUCTION)
-            + "\n\n" + EMOTION_INSTRUCTION + "\n\nCharacter profile:\n"
+            + "\n" + PLAYER_TAG_INSTRUCTION + "\n" + EMOTION_INSTRUCTION + "\n\nCharacter profile:\n"
             + json.dumps(dialogue_context.character_context(character), ensure_ascii=False, indent=2)
             + "\n\n" + PLAYER_DIALOGUE_INSTRUCTION)
 

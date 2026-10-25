@@ -16,12 +16,15 @@ Names are immediately available from those tags; nobody needs to ask, introduce,
 memorize or learn a name. Use the supplied tag names, including full names.
 If asked how you know someone's name without asking, explain naturally that you
 can see their name tag floating above their head. This is visible in the world,
-not a hidden roster or a memory. The human player's tag reads {PLAYER_NAME_TAG}.
+not a hidden roster or a memory.
 A name tag reveals only a name: it does not reveal biography, private memories,
 relationships, whereabouts, past meetings, possessions or accepted obligations.
 Use I/my for yourself and you/your for the listener; preserve all account owners
 and sources. Do not confuse knowing a name with having met or talked before.
+Address only your actual listener by name.
 """
+# Only where the player is actually present; otherwise residents start calling each other Player.
+PLAYER_TAG_INSTRUCTION = f"The human player's tag reads {PLAYER_NAME_TAG}.\n"
 
 NPC_ARRIVAL_INSTRUCTION = """Every human NPC resident has the same firsthand arrival memory, regardless
 of their background: """ + NPC_ARRIVAL_MEMORY + f"""

@@ -231,6 +231,28 @@ def validate_opinion_reason(reason, owner, target=""):
                              "The initiator judges the recipient; the recipient judges the initiator. Use I/my for the owner.")
 
 
+_HOSTILE_VIEW = re.compile(
+    r"\b(?:selfish\w*|greed\w*|hoard\w*|stingy|dishonest\w*|untrustworth\w*|distrust\w*|manipulat\w*|"
+    r"inconsiderate|thoughtless|unkind|rude|pushy|only cares? about|cares? (?:nothing|little) (?:for|about)|"
+    r"did(?:n['’]t| not) share|refused to share)\b", re.I)
+_VIEW_NEGATED = re.compile(r"\b(?:not|never|no|isn['’]t|wasn['’]t|aren['’]t|don['’]t|doesn['’]t|didn['’]t|hardly)\b(?:\W+\w+){0,4}\W*$", re.I)
+_VIEW_REPORTED = re.compile(r"\b(?:says?|said|claims?|claimed|insists?|insisted|thinks|called|accus\w+|wants? me to)\b", re.I)
+
+
+def validate_opinion_direction(reason, delta):
+    """A better view cannot rest on a reason that calls the person selfish or untrustworthy."""
+    if delta <= 0:
+        return
+    for sentence in split_sentences(unquoted_speech(reason)):
+        for match in _HOSTILE_VIEW.finditer(sentence):
+            before, after = sentence[:match.start()], sentence[match.end():]
+            # Denials, someone else's accusation, or a contrasting clause are not the owner's own hostile view.
+            if _VIEW_NEGATED.search(before) or _VIEW_REPORTED.search(before) or re.search(r"\b(?:but|however|though|yet)\b", after, re.I):
+                continue
+            raise ValueError("Your reason describes a worse view of this person, but the change you chose is better. "
+                             "Choose a change that agrees with your reason, or explain what actually improved your view.")
+
+
 _CONTENT_NOISE = set("""a an the and or but so if while to of in on at by for with from as into
     it its is are was were be been being do does did have has had that this these those
     i me my we us our you your he him his she her they them their one some any all no not
@@ -556,12 +578,15 @@ def validate_harvest_grounding(text, accounts, *, speaker_id, listener_id, curre
     scope = (focus or {}).get("event_time") or current_time
     totals = {}
     extents = {}
+    other_phases = {}  # Witnessed totals for the same collector in other phases, e.g. yesterday's harvest.
     for account in accounts:
         if account.get("kind") != "harvest":
             continue
         for row in account.get("harvest_context", []):
             if row.get("event_time") == scope:
                 totals[row["subject_id"]] = row
+            else:
+                other_phases.setdefault(row["subject_id"], set()).add(row["quantity"])
         extent = harvest_extent(account, tree_stock, current_time)
         if extent:
             extents[account["subject_id"]] = extent
@@ -649,9 +674,82 @@ def validate_harvest_grounding(text, accounts, *, speaker_id, listener_id, curre
                 count, total = value(match["count"]), row["quantity"]
                 bound = (match["bound"] or "").strip().lower()
                 supported = count <= total if bound == "at least" else count < total if bound == "more than" else count == total
+                if not supported and not bound and count in other_phases.get(identity, ()) and not re.search(
+                        r"\b(?:today|this (?:morning|day|phase)|right now|currently)\b", sentence, re.I):
+                    continue  # An accurate total from another witnessed phase.
                 if not supported:
                     raise ValueError(f"The witnessed total for {name} in this account's phase is {total} apples. "
                         "Do not present one pickup as the whole harvest. You may omit numbers or explicitly distinguish an individual pickup from the total.")
+
+
+_ACCUSATION = re.compile(
+    r"\b(?:selfish\w*|greed\w*|hoard\w*|stingy|only cares? about|cares? (?:nothing|little) (?:for|about)|"
+    r"thinks? only (?:of|about)|did(?:n['’]t| not) (?:share|leave|save|think)|without (?:sharing|leaving|a thought)|"
+    r"took (?:all|every|everything)|left (?:nothing|none|no apples)|kept (?:them|it|everything|the apples)|"
+    r"can(?:not|['’]t) be trusted|untrustworth\w*|do(?:n['’]t| not) trust|beware|kill\w*|murder\w*|dangerous|"
+    # Insinuation counts too: "I wonder how much she cares about anyone else."
+    r"wonder (?:whether|if|how much|what)\b[^.?!]*\b(?:cares?|spared?|leaves?|left|anyone else|everyone else|for you))\b", re.I)
+
+
+def first_person_text(text):
+    """Compare recited text regardless of whether it was rewritten from you/your into I/my."""
+    text = text.casefold().replace("’", "'")
+    for pattern, replacement in ((r"\byou're\b", "i'm"), (r"\byours\b", "mine"), (r"\byour\b", "my"), (r"\byou\b", "i")):
+        text = re.sub(pattern, replacement, text)
+    return text
+
+
+def _word_runs(text, run):
+    words = re.findall(r"[a-z']+", text.casefold().replace("’", "'"))
+    return {tuple(words[i:i + run]) for i in range(len(words) - run + 1)}
+
+
+def validate_private_recital(text, *, personality="", motives=(), run=6):
+    """Speech acts on private personality and motives; it never reads their wording or record fields aloud."""
+    speech = unquoted_speech(text)
+    if re.search(r"\b[A-Za-z]+_[A-Za-z_]+\b", speech):
+        raise ValueError("Speech reads an internal record field aloud. Say only natural spoken words, never field names.")
+    # Motives are never spoken, in either person. A character may voice their own trait,
+    # but personality wording kept in the second person describes the listener with it.
+    recited = any(_word_runs(first_person_text(speech), run) & _word_runs(first_person_text(motive or ""), run) for motive in motives)
+    recited = recited or any({"you", "your"} & set(words) for words in _word_runs(speech, run) & _word_runs(personality or "", run))
+    if recited:
+        raise ValueError("Speech recites your private personality or motive. Let it guide what you do and say "
+                         "in your own words; never read it aloud or describe the listener with it.")
+
+
+_GREETING = r"(?:hey|hi|hello|oh|well|yes|no|thanks|thank you|listen|look)"
+_AFTER_VOCATIVE = (r"(?:i|you|we|it['’]s|have|did|do|are|can|could|would|listen|look|please|what|how|thanks?|"
+                   r"there|let['’]s|so|well|yes|no|beware|remember)\b")
+
+
+def validate_addressee(text, *, speaker_name, listener_name, names):
+    """Greetings and direct address name only the actual listener, never a bystander or an absent player."""
+    exempt = {form.casefold() for name in (speaker_name, listener_name) for form in (name, *name.split()) if form}
+    speech = unquoted_speech(text)
+    for name in sorted(set(names), key=len, reverse=True):
+        for form in dict.fromkeys((name, name.split()[0] if name else "")):
+            if not form or form.casefold() in exempt:
+                continue
+            ref = name_pattern(form)
+            if (re.search(rf"^\W*(?:{_GREETING}\W+)?{ref}\s*(?:!|,\s*(?={_AFTER_VOCATIVE}))", speech, re.I)
+                    or re.search(rf"\b(?:hey|hi|hello|thanks|thank you)\W+{ref}\b", speech, re.I)
+                    or re.search(rf",\s*{ref}\s*[.!?]", speech, re.I)
+                    # "I've seen her too, Player, and..." but not a list such as "Judy, Kevin, and I".
+                    or re.search(rf"\b[a-z][a-z'’]*,\s*(?i:{ref})\s*,\s*(?i:and|but|so|i|you|we)\b", speech)):
+                raise ValueError(f"You are speaking to {listener_name}. Address {listener_name} as you; "
+                                 f"do not greet or address {form}, who is not your listener.")
+
+
+def validate_snake_accusation(text, subject_name, *, subject_is_listener=False):
+    """The python's chosen account must open as an accusation against its subject, not neutral news."""
+    speech = unquoted_speech(text)
+    forms = (subject_name, subject_name.split()[0], *(("you",) if subject_is_listener else ()))
+    named = any(re.search(name_pattern(form), speech, re.I) for form in forms if form)
+    if not named or not _ACCUSATION.search(speech):
+        raise ValueError(f"Accuse {subject_name} directly: say what you witnessed {subject_name} do and call it selfish, "
+                         "greedy or uncaring toward the listener in your own view. Neutral news, musing about the tree "
+                         "or leaving the judgment to the listener is not enough.")
 
 
 def validate_python_harvest(text, *, snake_role=None):
@@ -667,6 +765,12 @@ def validate_python_harvest(text, *, snake_role=None):
         r"(?:harvest(?:ed|s|ing)?|pick(?:ed|s|ing)?(?:\s+up)?|collect(?:ed|s|ing)?|took|take|takes|taking)\b"
         rf"(?P<object>\s+(?:{determiner}\s+){{0,5}}(?:apples?|fruit)\b|\s+from (?:the|this|that) (?:apple )?tree\b)", re.I)
     for sentence in split_sentences(unquoted_speech(text)):
+        if snake_role == "speaker" and re.search(
+                r"\bi\s+(?:should|could|might|want to|wish to|['’]d like to|would like to|will|['’]ll|plan to)\s+"
+                r"(?:try\s+(?:to\s+)?)?(?:harvest|pick|collect)\w*\b|\b(?:harvest|pick|collect)\w*\s+(?:some\s+|a few\s+)?"
+                r"(?:apples?|fruit)\s+myself\b", sentence, re.I):
+            raise ValueError(f"{SNAKE_NAME} is a python and cannot harvest apples, now or later. "
+                             "Do not plan or wish to collect fruit yourself; speak only about what residents did.")
         if sentence.rstrip().endswith("?"):
             continue
         for match in harvest.finditer(sentence):

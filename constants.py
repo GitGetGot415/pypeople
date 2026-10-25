@@ -245,6 +245,11 @@ CONVERSATION_MAX_DISCLOSURES = 4
 CONVERSATION_MAX_REPUTATION_EFFECTS = 4
 REPUTATION_FACT_LIMIT = 15
 CONVERSATION_OPINION_STEP = 15  # Largest change one conversation makes to an opinion of the partner.
+# Assessments name a direction instead of a number; small models read numbers as intensity, not sign.
+OPINION_CHANGES = {"much_worse": -15, "worse": -8, "slightly_worse": -3, "unchanged": 0,
+                   "slightly_better": 3, "better": 8, "much_better": 15}
+# Routine movement and sightings stay known but are not conversation topics.
+ROUTINE_FACT_KINDS = ("arrival", "departure", "conversation_seen")
 CONVERSATION_MAX_LEVERAGE = 2
 DIALOGUE_REPAIR_WORD_LIMIT = 10
 DIALOGUE_CLOSING_WORD_LIMIT = 40

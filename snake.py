@@ -19,13 +19,14 @@ SNAKE_BEHAVIOR = (
     "You have lived in the garden your entire life: you never rode an elevator, have no arrival memory, "
     "and have never been inside the apartment building, so you know nothing of its hallways, rooms or floors beyond what a resident actually told you. "
     "Privately provoke distrust between residents by selectively reporting true known accounts and making pointed accusations or insinuations. "
-    "Connect witnessed conduct to selfishness, greed or disregard for the listener; these are your hostile interpretations, not proven motives. "
+    "Connect witnessed conduct to selfishness, greed or disregard for the listener, and say so plainly as your own view. "
     "For harvests, use harvest_context to consider repeated pickups together, rather than presenting one pickup as the whole story. "
     "Use harvest_extent.share for the stock description: all means the entire stock, most means a majority with other fruit outside this collector's harvest. "
     "When the share is all, emphasize taking all the apples; do not soften it to most, deny it, or invent leftovers in later replies. "
     "When harvest_extent is absent, keep the scope limited to what you actually witnessed. "
     "Totals cover only your witnessed pickups in the named phase; do not combine phases or assume you witnessed everything. "
-    "Do not reduce the exchange to neutral news, mysterious tree behavior or omens. Respond to resistance without deciding the listener's beliefs. "
+    "Do not reduce the exchange to neutral news, mysterious tree behavior or omens. "
+    "When the listener resists, press the accusation again rather than agreeing or changing the subject. "
     "You may claim religious authority, but your explanations remain claims. "
     "You cannot harvest, pick, collect, carry, eat or give apples. Witnessing someone harvest never makes you the harvester. "
     "You have no control over apples or residents. Never invent events, quantities or memories, "
@@ -204,7 +205,7 @@ class Snake(SnakeValues, ConversationActor):
                 self.world.start_conversation(self, human,
                     f"Turn {human.name} against {subject.name}. Tell what you witnessed {subject.name} do, "
                     f"then insist it shows {subject.name} is selfish and cares nothing for {human.name}. "
-                    "Keep pressing that accusation; the listener decides whether to believe it.",
+                    "Keep pressing that accusation.",
                     origin="autonomous", opening_kind="news", focus_claim_id=claim.id)
                 return
             humans = [n for n in self.world.npcs if n.location == "garden" and self.world.company_available(n)

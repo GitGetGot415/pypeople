@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 from constants import (DIALOGUE_MAX_PARTS, CONVERSATION_MAX_TURNS, CONVERSATION_MAX_AGREEMENTS,
     CONVERSATION_MAX_DISCLOSURES, CONVERSATION_MAX_REPUTATION_EFFECTS, CONVERSATION_MAX_LEVERAGE,
-    FOOD_REQUEST_TURN_COUNT, REPUTATION_FACT_LIMIT)
+    FOOD_REQUEST_TURN_COUNT, REPUTATION_FACT_LIMIT, OPINION_CHANGES)
 from dialogue_text import contains_question
 
 
@@ -62,6 +62,16 @@ class OpinionUpdate(StrictResponse):
         if not self.person.strip() or not self.reason.strip():
             raise ValueError("Opinions require a person and a reason.")
         return self
+
+
+OpinionChangeLabel = Literal[tuple(OPINION_CHANGES)]
+
+
+class OpinionChange(StrictResponse):
+    """An assessment's reason comes first, then the direction it moves the current opinion."""
+    person: str = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=400)
+    change: OpinionChangeLabel
 
 
 class ActionIntent(StrictResponse):
@@ -168,8 +178,8 @@ class AccountReaction(StrictResponse):
 class ReputationChoice(StrictResponse):
     claim_id: str
     subject_id: str
-    delta: int = Field(ge=-REPUTATION_FACT_LIMIT, le=REPUTATION_FACT_LIMIT)
     reason: str = Field(min_length=1, max_length=400)
+    change: OpinionChangeLabel
 
 
 class LeverageChoice(StrictResponse):
@@ -197,7 +207,7 @@ class EscalationChoice(StrictResponse):
 
 class ResidentAssessment(StrictResponse):
     escalation: EscalationChoice | None = None
-    opinion: OpinionUpdate
+    opinion: OpinionChange
     reactions: list[AccountReaction] = Field(default_factory=list, max_length=CONVERSATION_MAX_DISCLOSURES)
     third_party_opinions: list[ReputationChoice] = Field(default_factory=list, max_length=CONVERSATION_MAX_REPUTATION_EFFECTS)
 

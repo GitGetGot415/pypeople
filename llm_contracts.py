@@ -14,12 +14,12 @@ from constants import (CONVERSATION_MAX_REPUTATION_EFFECTS, DIALOGUE_CLOSING_WOR
     SNAKE_NAME)
 from dialogue import (ActionResponse, ConversationResponse, DialoguePartsResponse, DialogueRepairResponse,
     EmotionReaction, PlayerIntent, ResidentAssessment, ResidentTurnResponse, VoiceRewriteResponse)
-from dialogue_context import NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION, account_speech_context
+from dialogue_context import NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION, PLAYER_TAG_INSTRUCTION, account_speech_context
 from dialogue_rules import is_name_reference, name_pattern, named_references
 from llm_prompts import (CONVERSATION_HISTORY_INSTRUCTION, DIALOGUE_VARIETY_INSTRUCTION, EMOTION_INSTRUCTION,
     GARDEN_INSTRUCTION, INTENT_INSTRUCTION, ORIENTATION_SPEAKING_BRIEF, PLAYER_POSSESSIONS_INSTRUCTION,
     SPEAKING_BRIEF, WORLD_INSTRUCTION, build_system_instruction)
-from information import (information_from_dict, related_beliefs, reputation_deltas, resident_effect_capacity,
+from information import (information_from_dict, related_beliefs, reputation_labels, resident_effect_capacity,
     resident_information)
 from voice_rewrite import VOICE_REWRITE_INSTRUCTION, voice_rewrite_parts
 
@@ -146,7 +146,7 @@ def _reputation_items(snapshot, item):
         branch["properties"]["claim_id"] = {"type": "string", "enum": [claim_id]}
         branch["properties"]["subject_id"] = {"type": "string", "enum": [options[claim_id].subject_id]}
         related = related_beliefs(options[claim_id], beliefs[snapshot["speaker_role"]].values(), options)
-        branch["properties"]["delta"] = {"type": "integer", "enum": reputation_deltas(related)}
+        branch["properties"]["change"] = {"type": "string", "enum": reputation_labels(related)}
         branches.append(branch)
     return branches[0] if len(branches) == 1 else {"anyOf": branches}
 
@@ -286,16 +286,18 @@ def _resident_contract(snapshot, *, correction=False):
             "An attack is intentionally lethal and requires exact evidence from the target's accepted answer; "
             "it requests a later local action, never an accomplished death. Do not invent motives or narrate a killing.")
     if assessment:
-        instruction += ("\nThe transcript is fixed. Return your own opinion of opinion_target, with a first-person reason in plain prose. "
-                        "Explain your assessment of the OTHER person from this exchange, not a summary of your own personality, "
-                        "interests, confusion, or behavior. Use I/my for yourself; do not describe yourself by name. "
-                        "Preserve established views unless the exchange warrants a change. Resolve pending_reactions using only their allowed stances. "
+        instruction += ("\nThe transcript is fixed. First write a first-person reason in plain prose about how opinion_target's "
+                        "words or conduct in this exchange affected you, not a summary of your own personality, interests, confusion, or behavior. "
+                        "Use I/my for yourself; do not describe yourself by name. Then choose change: how this exchange moves your current "
+                        "opinion_of_listener (none means neutral). Choose a worse change when they seemed selfish, dishonest, unkind, "
+                        "pushy or manipulative, a better change when they seemed kind, honest or helpful, and unchanged when nothing mattered. "
+                        "The change must agree with your reason. Resolve pending_reactions using only their allowed stances. "
                         "Add no dialogue, introductions or other effects, and never revise an accepted stance.")
         if "third_party_opinions" in properties:
             instruction += (" You believed an account about an absent person in this exchange. For each one, add a third_party_opinions "
-                            "entry giving how much it changes your own view of that person: negative when it shows selfishness, "
-                            "greed or harm to you or others, positive when it shows generosity. Its reason is your first-person view "
-                            "of that absent person, based on what you heard.")
+                            "entry: first a first-person reason about that absent person based on what you heard, then the change it makes "
+                            "to your view of them. Use a worse change when it shows selfishness, greed or harm to you or others, "
+                            "a better change when it shows generosity. The change must agree with your reason.")
     elif not thanks:
         instruction += ("\nReply to the listener first. Personality is private behavioral guidance, never text to recite "
                         "or attribute to the listener. Do not read objectives or account menus aloud.")
@@ -328,7 +330,8 @@ def _resident_contract(snapshot, *, correction=False):
         if "reactions" in properties:
             instruction += " Resolve your pending heard accounts using only their permitted stances before choosing this reply's effects."
         if "third_party_opinions" in properties:
-            instruction += " Reputation effects can cite only eligible earlier heard accounts about their actual absent subject, within supplied limits."
+            instruction += (" Reputation effects can cite only eligible earlier heard accounts about their actual absent subject; "
+                            "each gives a reason, then a change that agrees with it.")
         if "leverage" in properties:
             instruction += " Leverage is explicit pressure using an already known account; ordinary requests need no leverage."
         if any(field in properties for field in ("offers", "acceptances", "disclosures", "reactions", "third_party_opinions", "leverage")):
@@ -615,6 +618,9 @@ def _request_context(message, snapshot, correction):
                     "Do not imitate casing, accents or verbal tics from previous speech.")
     if NAME_TAG_INSTRUCTION not in instruction:
         instruction += "\n" + NAME_TAG_INSTRUCTION
+    if PLAYER_TAG_INSTRUCTION not in instruction and any(
+            actor.get("kind") == "player" and actor.get("_visible") for actor in snapshot.get("_name_actors", {}).values()):
+        instruction += PLAYER_TAG_INSTRUCTION
     if NPC_ARRIVAL_INSTRUCTION not in instruction:
         instruction += "\n" + NPC_ARRIVAL_INSTRUCTION
     instruction += "\n" + AREA_KNOWLEDGE_INSTRUCTION

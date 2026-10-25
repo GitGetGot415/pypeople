@@ -3,7 +3,7 @@
 from dataclasses import asdict
 from uuid import uuid4
 from constants import (CONCERN_LIFETIME_RANGE, CONCERN_WEIGHTS, FAILURE_COOLDOWN, GOAL_IMPROVEMENT,
-    MAX_DIALOGUE_FAILURE_COOLDOWN, PHASES)
+    MAX_DIALOGUE_FAILURE_COOLDOWN, PHASES, ROUTINE_FACT_KINDS)
 from conversation_history import remember
 from dialogue_rules import validate_apple_promise
 from actor_identity import account_references
@@ -133,7 +133,8 @@ def refresh_concern(npc):
         fact = fact_by_id(npc.world, claim.fact_id)
         if belief.direct and claim.affirmed and not claim.deliberate and fact.kind == "former_life" and fact.subject_id == npc.id:
             candidates["recollection"].append(claim.id)
-        elif fact.kind != "private_motive" or fact.subject_id != npc.id:
+        elif (fact.kind != "private_motive" or fact.subject_id != npc.id) and fact.kind not in ROUTINE_FACT_KINDS:
+            # Someone walking past or chatting is not worth raising as news.
             candidates["news"].append(claim.id)
     retired = concern_key(npc, previous)
     candidates = {kind: [claim_id for claim_id in entries

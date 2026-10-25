@@ -6,7 +6,7 @@ from dataclasses import asdict
 from uuid import uuid4
 from constants import (SNAKE_NAME, CONVERSATION_MAX_AGREEMENTS, LEVERAGE_ACCOUNT_KINDS, PHASES,
     CONVERSATION_MAX_DISCLOSURES, CONVERSATION_MAX_REPUTATION_EFFECTS, CONVERSATION_MAX_LEVERAGE,
-    REPUTATION_FACT_LIMIT)
+    REPUTATION_FACT_LIMIT, OPINION_CHANGES, ROUTINE_FACT_KINDS)
 from conversation_history import remember
 from dialogue_text import split_sentences
 from dialogue_rules import (unquoted_speech, mentions_account, named_references, validate_account_speech, harvest_extent)
@@ -194,7 +194,8 @@ def selected_beliefs(npc, partner_id=None, *, pinned=()):
         return (claim.id in pinned or bool(npc.current_concern and npc.current_concern.claim_id == claim.id),
                 bool(goal and goal.claim_id == claim.id),
                 fact.kind in ("killing",),
-                fact.kind in ("killing", "snake_claim", "arrival", "harvest"),
+                fact.kind in ("killing", "snake_claim", "harvest"),
+                fact.kind not in ROUTINE_FACT_KINDS,
                 partner_id in (fact.subject_id, fact.object_id, belief.source_id),
                 bool(goal and fact.subject_id == goal.third_npc_id),
                 fact.kind == "promise_broken" or fact.kind == "private_motive" and fact.subject_id != npc.id,
@@ -321,6 +322,11 @@ def reputation_deltas(related):
     influence = sum(b.opinion_delta for b in related)
     return [delta for delta in range(-REPUTATION_FACT_LIMIT, REPUTATION_FACT_LIMIT + 1)
             if delta and abs(influence + delta) <= REPUTATION_FACT_LIMIT]
+
+
+def reputation_labels(related):
+    allowed = reputation_deltas(related)
+    return [label for label, delta in OPINION_CHANGES.items() if delta in allowed]
 
 
 def resident_effect_limits():
@@ -795,7 +801,9 @@ def resident_turn_choices(snapshot, draft, role, private, *, closing=False, asse
                         assessed=any(draft["turns"][e.turn].speaker == role
                                      and options[e.claim_id].fact_id == option.fact_id for e in draft["third_party_opinions"])):
                     choices["third_party_opinions"].append(claim_id)
+            # Pressure needs an account about the listener; one's own memories or motives are no leverage.
             choices["leverage"] = [a["claim_id"] for a in accounts if a["kind"] in LEVERAGE_ACCOUNT_KINDS
+                and actor_id(partner) in (a["subject_id"], a.get("object_id"))
                 and (a["claim_id"] in beliefs[role] or a["claim_id"] in heard_ids)
                 and a["claim_id"] not in {entry.claim_id for entry in draft["leverage"]}]
     if not orientation and snapshot.get("purpose") != "food_request":

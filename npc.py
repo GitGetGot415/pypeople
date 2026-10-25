@@ -831,10 +831,12 @@ class Conversation(ResidentProgress):
         if dialogue_validation:
             validate_dialogue_format(response.turns)
             validate_dialogue_speakers(response.turns, {"initiator": self.initiator.name, "recipient": self.recipient.name})
+            initiator, recipient = getattr(self, "request_participants", None) or (
+                self.initiator.snapshot(self.initiator.world.tree), self.recipient.snapshot(self.initiator.world.tree))
             validate_resident_grounding(response, {
                 "_name_actors": self.name_actors,
-                "initiator": self.initiator.snapshot(self.initiator.world.tree),
-                "recipient": self.recipient.snapshot(self.initiator.world.tree),
+                "initiator": initiator,
+                "recipient": recipient,
                 "_information_validation": asdict(self.information_context) if self.information_context else None})
         orientation_discussed = validate_orientation(response, {
             "arrival_focus": self.opening_kind == "orientation", "_dialogue_validation": dialogue_validation})
@@ -1001,6 +1003,8 @@ class Conversation(ResidentProgress):
         initiator["private_context"]["discussion_focus_claim_id"] = self.focus_claim_id
         initiator["private_context"]["immediate_objective"] = self.topic
         recipient["private_context"]["immediate_objective"] = "Respond to what is actually said using only my own knowledge."
+        # The live check must judge speech against the same knowledge the speakers were given.
+        self.request_participants = deepcopy((initiator, recipient))
         return {
             "request_kind": "conversation",
             "_name_actors": self.name_actors,
