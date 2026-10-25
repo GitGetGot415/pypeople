@@ -711,6 +711,10 @@ def resident_accounts_for_turn(accounts, info, role, draft, catalog, *, concern_
             or options[a["claim_id"]].fact_id == selected]
 
 
+def assessment_turn(draft, role):
+    return next((i for i in reversed(range(len(draft["turns"]))) if draft["turns"][i].speaker == role), None)
+
+
 def resident_turn_choices(snapshot, draft, role, private, *, closing=False, assessment=False):
     """Select this actor's accounts and eligible effects from the accepted prefix."""
     index = len(draft["turns"])
@@ -774,8 +778,12 @@ def resident_turn_choices(snapshot, draft, role, private, *, closing=False, asse
             seen = {(draft["turns"][d.turn].speaker, d.claim_id) for d in draft["disclosures"]}
             choices["disclosures"] = [a["claim_id"] for a in accounts if (role, a["claim_id"]) not in seen]
             # Pending reactions are chosen before this reply's effects are checked.
-            heard_ids = {claim_id for (hearer, claim_id), turn in heard.items() if hearer == role and turn < index}
-            heard_ids.update(p["claim_id"] for p in pending)
+            # A closing assessment is recorded on the assessor's own last spoken turn.
+            cutoff = assessment_turn(draft, role) if assessment else index
+            heard_ids = {claim_id for (hearer, claim_id), turn in heard.items()
+                         if hearer == role and cutoff is not None and turn < cutoff}
+            if not assessment:
+                heard_ids.update(p["claim_id"] for p in pending)
             pending_stances = {p["claim_id"]: p["stances"] for p in pending}
             for account in accounts:
                 claim_id = account["claim_id"]

@@ -82,8 +82,7 @@ def validate_social_records(ctx):
             expected = {"apple_given": "fruit_shared", "work_given": "work_shared", "apple_refused": "food_refused", "promise_kept": "promise_fulfilled"}.get(fact.kind, fact.kind)
             if (event.kind != expected or fact.phase != phase_index(event.day, event.phase)
                     or set(event.participants) != {fact.subject_id, fact.object_id}
-                    or event.history != fact.conversation_id
-                    or fact.kind == "harvest" and event.text != fact.summary):
+                    or event.history != fact.conversation_id):
                 raise ValueError("A fact must match its actual source event.")
     for claim in claims.values():
         fact = facts.get(claim.fact_id)

@@ -199,6 +199,7 @@ class ResidentAssessment(StrictResponse):
     escalation: EscalationChoice | None = None
     opinion: OpinionUpdate
     reactions: list[AccountReaction] = Field(default_factory=list, max_length=CONVERSATION_MAX_DISCLOSURES)
+    third_party_opinions: list[ReputationChoice] = Field(default_factory=list, max_length=CONVERSATION_MAX_REPUTATION_EFFECTS)
 
 
 class ConversationResponse(StrictResponse):

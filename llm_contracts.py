@@ -9,7 +9,7 @@ import dialogue_context
 import dialogue_rules
 from actor_identity import actor_id, forms, own_name, speech_only
 from area_knowledge import AREA_KNOWLEDGE_INSTRUCTION
-from constants import (DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_CHARACTERS,
+from constants import (CONVERSATION_MAX_REPUTATION_EFFECTS, DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_CHARACTERS,
     DIALOGUE_PART_TARGET_CHARACTERS, DIALOGUE_PARTS_PER_TURN, PLAYER_NAME_TAG, PLAYER_REPLY_CONTEXT_TURN_LIMIT,
     SNAKE_NAME)
 from dialogue import (ActionResponse, ConversationResponse, DialoguePartsResponse, DialogueRepairResponse,
@@ -136,6 +136,21 @@ def _resident_stage_model(kind):
             "handoff_thanks": DialoguePartsResponse}.get(kind)
 
 
+def _reputation_items(snapshot, item):
+    """One schema branch per eligible heard account, fixing its absent subject and permitted deltas."""
+    options = {o.id: o for o in information_from_dict(snapshot["_baseline"]["_information_validation"]).options}
+    beliefs, _, _ = resident_information(snapshot["_baseline"], snapshot["_draft"])
+    branches = []
+    for claim_id in snapshot["choices"]["third_party_opinions"]:
+        branch = deepcopy(item)
+        branch["properties"]["claim_id"] = {"type": "string", "enum": [claim_id]}
+        branch["properties"]["subject_id"] = {"type": "string", "enum": [options[claim_id].subject_id]}
+        related = related_beliefs(options[claim_id], beliefs[snapshot["speaker_role"]].values(), options)
+        branch["properties"]["delta"] = {"type": "integer", "enum": reputation_deltas(related)}
+        branches.append(branch)
+    return branches[0] if len(branches) == 1 else {"anyOf": branches}
+
+
 def _resident_contract(snapshot, *, correction=False):
     assessment = snapshot["request_kind"] == "resident_assessment"
     thanks = snapshot["request_kind"] == "handoff_thanks"
@@ -167,6 +182,16 @@ def _resident_contract(snapshot, *, correction=False):
             properties["escalation"] = {"type": "null"}
     if assessment:
         properties["opinion"]["properties"]["person"] = {"type": "string", "enum": [snapshot["opinion_target"]]}
+        gossip = snapshot["choices"]["third_party_opinions"]
+        if gossip:
+            # Believed hearsay about an absent person must leave an impression;
+            # small models otherwise never volunteer this optional effect.
+            facts = {o.id: o.fact_id for o in information_from_dict(snapshot["_baseline"]["_information_validation"]).options}
+            count = min(len({facts[c] for c in gossip}), CONVERSATION_MAX_REPUTATION_EFFECTS)
+            properties["third_party_opinions"].update(minItems=count, maxItems=count,
+                                                      items=_reputation_items(snapshot, properties["third_party_opinions"]["items"]))
+        else:
+            properties["third_party_opinions"] = {"type": "array", "maxItems": 0}
     elif not thanks:
         choices, draft = snapshot["choices"], snapshot["_draft"]
         properties["gift_offer"] = (_possession_offer_schema(snapshot["speaker"], snapshot.get("gift_recipient_id", ""))
@@ -190,17 +215,7 @@ def _resident_contract(snapshot, *, correction=False):
                 else:
                     item["properties"]["claim_id"] = {"type": "string", "enum": choices[field]}
                     if field == "third_party_opinions":
-                        options = {o.id: o for o in information_from_dict(snapshot["_baseline"]["_information_validation"]).options}
-                        beliefs, _, _ = resident_information(snapshot["_baseline"], draft)
-                        branches = []
-                        for claim_id in choices[field]:
-                            branch = deepcopy(item)
-                            branch["properties"]["claim_id"]["enum"] = [claim_id]
-                            branch["properties"]["subject_id"] = {"type": "string", "enum": [options[claim_id].subject_id]}
-                            related = related_beliefs(options[claim_id], beliefs[snapshot["speaker_role"]].values(), options)
-                            branch["properties"]["delta"] = {"type": "integer", "enum": reputation_deltas(related)}
-                            branches.append(branch)
-                        properties[field]["items"] = branches[0] if len(branches) == 1 else {"anyOf": branches}
+                        properties[field]["items"] = _reputation_items(snapshot, item)
         if snapshot.get("_disclosure_repair"):
             properties["disclosures"]["items"]["properties"]["claim_id"]["enum"] = [snapshot["_disclosure_repair"]]
             properties["disclosures"]["minItems"] = 1
@@ -209,6 +224,8 @@ def _resident_contract(snapshot, *, correction=False):
     schema["required"] = (["opinion"] if assessment else ["parts"])
     if assessment and snapshot.get("escalation_choices"):
         schema["required"].append("escalation")
+    if assessment and snapshot["choices"]["third_party_opinions"]:
+        schema["required"].append("third_party_opinions")
     if snapshot.get("pending_reactions"):
         schema["required"].append("reactions")
     if bool(snapshot.get("discussion_focus_claim_id")) and snapshot["turn_index"] == 0 and not assessment:
@@ -274,6 +291,11 @@ def _resident_contract(snapshot, *, correction=False):
                         "interests, confusion, or behavior. Use I/my for yourself; do not describe yourself by name. "
                         "Preserve established views unless the exchange warrants a change. Resolve pending_reactions using only their allowed stances. "
                         "Add no dialogue, introductions or other effects, and never revise an accepted stance.")
+        if "third_party_opinions" in properties:
+            instruction += (" You believed an account about an absent person in this exchange. For each one, add a third_party_opinions "
+                            "entry giving how much it changes your own view of that person: negative when it shows selfishness, "
+                            "greed or harm to you or others, positive when it shows generosity. Its reason is your first-person view "
+                            "of that absent person, based on what you heard.")
     elif not thanks:
         instruction += ("\nReply to the listener first. Personality is private behavioral guidance, never text to recite "
                         "or attribute to the listener. Do not read objectives or account menus aloud.")

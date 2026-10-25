@@ -414,7 +414,8 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
     if assessment and role == "initiator":
         state["escalation_choices"] = deepcopy(snapshot.get("escalation_choices"))
     if assessment:
-        state["task"] = "Assess your partner from the fixed transcript and your own knowledge. Resolve only your pending heard disclosures. Add no speech or other effects."
+        state["task"] = ("Assess your partner from the fixed transcript and your own knowledge. Resolve only your pending heard disclosures. "
+                         "Add no speech or other effects beyond any required third_party_opinions.")
     elif thanks:
         if draft.get("gift"):
             state["task"] = "Acknowledge the accepted gift briefly after its successful handoff, preserving creator and giver roles. This speech is reserved for the actual handoff."
@@ -435,4 +436,7 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
     if assessment or thanks:
         for field in ("choices", "permitted_proposals", "pending_offers"):
             state.pop(field, None)
+    if assessment:
+        # The only effect left to choose is a view of absent people in believed accounts.
+        state["choices"] = dict(third_party_opinions=choices["third_party_opinions"])
     return state

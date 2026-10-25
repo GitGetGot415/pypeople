@@ -32,7 +32,7 @@ from constants import (MAX_RESIDENTS, PLAYER_CALL_COOLDOWN, REST_SECONDS_RANGE,
     STARTING_NPC_SATISFACTION_RANGE, STARTING_NPC_SOCIABILITY_RANGE, STARTING_TREE_POSITION,
     STARTING_FATIGUE_RANGE, EXCHANGE_FATIGUE, CONVERSATION_CANCELLED, CONVERSATION_DIALOGUE_READY,
     CONVERSATION_ENDED_BEFORE_DIALOGUE, CONVERSATION_ENDED_BEFORE_SHARING, CONVERSATION_FAILED,
-    CONVERSATION_FINISHED, CONVERSATION_WAITING_FOR_DIALOGUE, CONVERSATION_WALKING_TO_MEET)
+    CONVERSATION_FINISHED, CONVERSATION_WAITING_FOR_DIALOGUE, CONVERSATION_WALKING_TO_MEET, CONVERSATION_OPINION_STEP)
 from information import NPC_ARRIVAL_MEMORY, validate_orientation
 from actor_identity import (actor_catalog, name_forms)
 from transfers import Handoff
@@ -853,6 +853,10 @@ class Conversation(ResidentProgress):
         record_generated_turns(self, response.turns, rewritten_parts)
         opinions = ((self.initiator, self.recipient, response.initiator_opinion),
                     (self.recipient, self.initiator, response.recipient_opinion))
+        # One exchange nudges a relationship; it cannot jump straight to an extreme.
+        opinions = [(npc, partner, entry.model_copy(update={"opinion": max(npc.opinion_score(partner.id) - CONVERSATION_OPINION_STEP,
+                                                                           min(npc.opinion_score(partner.id) + CONVERSATION_OPINION_STEP, entry.opinion))}))
+                    for npc, partner, entry in opinions]
         self.record.outcomes = [
             describe_opinion_change(
                 npc.name, partner.name, npc.opinion_score(partner.id, default=None), entry.opinion, entry.reason

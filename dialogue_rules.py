@@ -277,7 +277,11 @@ def mentions_account(text, assertion, names):
 def mentions_private_recollection(text, assertion, names):
     # Generic reactions or a shared theological concept do not establish a private memory.
     general = {"description", "think", "thought", "mean", "feel", "felt", "wonder", "hope", "believe",
-               "seem", "too", "find", "way", "authority", "accept", "detail", "far", "listener"}
+               "seem", "too", "find", "way", "authority", "accept", "detail", "far", "listener",
+               # Everyday words in any welcome or chat are not evidence of a specific memory.
+               "when", "day", "time", "first", "last", "community", "people", "place", "make", "made", "best",
+               "trying", "try", "found", "going", "know", "like", "little", "good", "really", "thing", "everyone",
+               "together", "new", "lot", "bit", "help", "helped", "want", "wanted", "work", "worked"}
     expected = _content_words(assertion, names) - general
     actual = _content_words(text, names) - general
     overlap = expected & actual
@@ -286,7 +290,8 @@ def mentions_private_recollection(text, assertion, names):
     if overlap <= {"apple", "tree"} and not re.search(
             r"\b(?:former|past|previous) life\b|\bused to\b", unquoted_speech(text), re.I):
         return False
-    return bool(expected) and len(overlap) >= min(2, len(expected))
+    # Long memories need more shared detail before a chance overlap counts as retelling one.
+    return bool(expected) and len(overlap) >= min(2 if len(expected) < 6 else 3, len(expected))
 
 
 def validate_memory_ownership(text, accounts, *, speaker_id, names=(), recent_accounts=()):
@@ -645,7 +650,7 @@ def validate_harvest_grounding(text, accounts, *, speaker_id, listener_id, curre
                 bound = (match["bound"] or "").strip().lower()
                 supported = count <= total if bound == "at least" else count < total if bound == "more than" else count == total
                 if not supported:
-                    raise ValueError(f"The witnessed total for {name} in this account's phase is {total} apples across {row['pickups']} pickups. "
+                    raise ValueError(f"The witnessed total for {name} in this account's phase is {total} apples. "
                         "Do not present one pickup as the whole harvest. You may omit numbers or explicitly distinguish an individual pickup from the total.")
 
 

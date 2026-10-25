@@ -462,8 +462,18 @@ class Simulation:
         from locations import observers
         text = harvest_summary(actor.name, quantity)
         event = self.publish("harvest", (actor,), text)
-        add_fact(self, "harvest", actor, None, event.id, None, text, observers(self, actor),
-                 quantity=quantity, location="garden")
+        witnesses = observers(self, actor)
+        witness_ids = {p.id for p in witnesses if p is not None and p is not self.player}
+        # Repeat pickups seen by exactly the same witnesses are one account of the
+        # whole collection, so retelling it reports the total rather than one apple.
+        fact = next((f for f in self.facts if f.kind == "harvest" and f.subject_id == actor.id
+                     and f.phase == self.phase_index and set(f.witness_ids) == witness_ids), None)
+        if fact:
+            fact.quantity += quantity
+            fact.summary = harvest_summary(actor.name, fact.quantity)
+        else:
+            add_fact(self, "harvest", actor, None, event.id, None, text, witnesses,
+                     quantity=quantity, location="garden")
         return event
 
     def escalation_choices(self, meeting):

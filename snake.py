@@ -182,22 +182,29 @@ class Snake(SnakeValues, ConversationActor):
                 for belief in self.beliefs:
                     claim = claim_by_id(self.world, belief.claim_id)
                     fact = fact_by_id(self.world, claim.fact_id)
-                    if belief.stance != "believed" or not claim.affirmed or fact.subject_id == self.id:
+                    # Telling the accused about their own conduct cannot turn anyone against them.
+                    if (belief.stance != "believed" or not claim.affirmed or fact.subject_id == self.id
+                            or fact.subject_id == human.id):
                         continue
-                    shared = any(d.speaker_id == self.id and d.listener_id == human.id
-                                 and claim_by_id(self.world, d.claim_id).fact_id == fact.id for d in self.world.disclosures)
+                    # One harvest story per collector and phase, however many pickups it took.
+                    told = [fact_by_id(self.world, claim_by_id(self.world, d.claim_id).fact_id) for d in self.world.disclosures
+                            if d.speaker_id == self.id and d.listener_id == human.id]
+                    shared = any(t.id == fact.id or fact.kind == t.kind == "harvest"
+                                 and (t.phase, t.subject_id) == (fact.phase, fact.subject_id) for t in told)
                     if not shared:
                         quantity = harvests.get((fact.phase, fact.subject_id), {}).get("quantity", 0) if fact.kind == "harvest" else 0
                         choices.append((fact.kind == "killing", fact.kind == "harvest", quantity,
-                                        human.id != fact.subject_id, -human.opinion_score(fact.subject_id)
+                                        -human.opinion_score(fact.subject_id)
                                         - math.dist((self.x, self.y), (human.x, human.y)) / SNAKE_SPEED,
                                         belief.phase, human, claim))
             if choices:
                 *_, human, claim = max(choices, key=lambda row: row[:-2])
+                subject = self.world.participant_by_id(claim.subject_id)
                 self.current_concern = ConversationConcern("news", claim.id, DECISION_SECONDS)
                 self.world.start_conversation(self, human,
-                    "Use a true known account to provoke distrust of the resident involved. "
-                    "Make a pointed accusation or insinuation grounded in what you witnessed; the listener decides whether to believe it.",
+                    f"Turn {human.name} against {subject.name}. Tell what you witnessed {subject.name} do, "
+                    f"then insist it shows {subject.name} is selfish and cares nothing for {human.name}. "
+                    "Keep pressing that accusation; the listener decides whether to believe it.",
                     origin="autonomous", opening_kind="news", focus_claim_id=claim.id)
                 return
             humans = [n for n in self.world.npcs if n.location == "garden" and self.world.company_available(n)

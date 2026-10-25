@@ -24,7 +24,7 @@ from dialogue_rules import (is_name_reference, mentions_account, mentions_privat
                            validate_opinion_reason, validate_environment_speech, validate_speaker_identity,
                            personal_apple_request, short_player_answer, validate_snake_perspective)
 from social_records import phase_index
-from information import resident_information, resident_effect_limits
+from information import assessment_turn, resident_information, resident_effect_limits
 from social import validate_agreements, proposals_from_snapshot
 from actor_identity import account_references, actor_id, forms, own_name, speech_only
 from information import orientation_speech, validate_orientation
@@ -610,6 +610,22 @@ def _validate_response(raw, snapshot, model):
     return result
 
 
+def validate_reason_originality(reason, speaker):
+    """A partner opinion must judge the partner, not recite the owner's goal, accounts or prompt roles."""
+    if re.match(r"\s*(?:you are|assume the|as the (?:speaker|listener))\b", reason, re.I):
+        raise ValueError("Write the reason as your own first-person view of your partner, not as instructions about roles.")
+    copied = [value for value in (speaker.get("goal") or {}).values() if isinstance(value, str)]
+    copied.append(speaker.get("immediate_objective") or "")
+    copied.extend(a.get("assertion", "") for a in speaker.get("permitted_accounts", []))
+    remainder = reason.casefold()
+    for text in copied:
+        if len(text.split()) >= 4:
+            remainder = remainder.replace(text.casefold().rstrip(". "), " ")
+    if remainder != reason.casefold() and len(re.findall(r"[a-z']+", remainder)) < 4:
+        raise ValueError("The reason only repeats your own goal or a known account. "
+                         "Say in your own words how your partner's words or conduct in this exchange changed your view of them.")
+
+
 def _apply_resident_candidate(snapshot, draft, candidate, state):
     """Return a validated copy; a rejected attempt cannot alter accepted state."""
     projected = deepcopy(draft)
@@ -638,7 +654,19 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
             validate_english(candidate.opinion.reason, (own_name(snapshot[role]), own_name(snapshot[other])))
             validate_base_prose(candidate.opinion.reason, (own_name(snapshot[role]), own_name(snapshot[other])))
             validate_opinion_reason(candidate.opinion.reason, snapshot[role]["name"], snapshot[other]["name"])
+            validate_reason_originality(candidate.opinion.reason, state["speaker"])
         projected["opinions"][role] = candidate.opinion
+        choices = state["choices"]["third_party_opinions"]
+        if choices and not candidate.third_party_opinions:
+            raise ValueError("Give your changed view of each absent person in an account you believed in this exchange.")
+        for entry in candidate.third_party_opinions:
+            if entry.claim_id not in choices:
+                raise ValueError("Assess only an eligible account you heard earlier.")
+            if snapshot.get("_dialogue_validation", True):
+                validate_base_prose(entry.reason, [p["name"] for p in snapshot.get("_name_actors", {}).values()])
+            projected["third_party_opinions"].append(ThirdPartyOpinion(turn=assessment_turn(draft, role), **entry.model_dump()))
+        if len(projected["third_party_opinions"]) > resident_effect_limits()["third_party_opinions"]:
+            raise ValueError("The complete conversation exceeds its third_party_opinions limit.")
         resident_information(snapshot, projected)
         return projected
 
@@ -715,15 +743,11 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
                     r"\bi(?:['’]ve| have)? already (?:told|explained|described|shown)\b",
                     unquoted_speech(turn.text), re.I):
                 raise ValueError("This is Judy's first conversation with this newcomer. Explain the layout now; do not claim you already told them in an earlier conversation.")
-            if snapshot.get("arrival_welcome") and not (
-                    (re.search(r"\bbed\b", turn.text, re.I)
-                     and re.search(r"\b(?:doorway|door|exit)\b", turn.text, re.I)
-                     and re.search(r"\b(?:south|hallway)\b", turn.text, re.I))
-                    or (re.search(r"\belevator\b", turn.text, re.I)
-                        and re.search(r"\bgarden exit\b", turn.text, re.I)
-                        and re.search(r"\b(?:first floor|floor (?:1|one))\b", turn.text, re.I))
-                    or (re.search(r"\bbridge\b", turn.text, re.I)
-                        and re.search(r"\bgarden\b", turn.text, re.I)
-                        and re.search(r"\b(?:apartment entrance|building entrance)\b", turn.text, re.I))):
-                raise ValueError("Give concrete layout information in this welcome: describe the room's bed and exit, or explain the elevator and floor-one garden exit. A greeting, saying you walked around, or offering to explain later is insufficient.")
+            # Any two distinct places are a usable welcome; exact route phrasing is not required.
+            places = (r"\belevators?\b", r"\bgardens?\b", r"\b(?:rooms?|beds?)\b", r"\b(?:hallways?|floors?)\b",
+                      r"\b(?:doors?|doorways?|exits?|entrances?)\b", r"\b(?:apple )?trees?\b", r"\bbridges?\b",
+                      r"\b(?:apartments?|building)\b")
+            if snapshot.get("arrival_welcome") and sum(bool(re.search(p, turn.text, re.I)) for p in places) < 2:
+                raise ValueError("Give concrete layout information in this welcome: name at least two places here, "
+                                 "such as the rooms, elevator, hallway, garden or apple tree. A greeting alone is insufficient.")
     return projected
