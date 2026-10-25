@@ -427,6 +427,8 @@ class NPC(ResidentValues, ConversationActor):
             if starting_experience:
                 state["private_context"]["starting_experience"] = starting_experience
             state["private_context"]["opinions"] = self.named_opinions()
+            # Validation only: speech claiming a harvest needs one this resident actually made.
+            state["_harvested"] = any(f.kind == "harvest" and f.subject_id == self.id for f in self.world.facts)
             encounters = [record for record in self.world.history if record.includes(self) and record.turns]
             state["private_context"]["situation"] = {
                 "days_here": self.world.day - self.arrival_day,
@@ -844,8 +846,18 @@ class Conversation(ResidentProgress):
             self.record.dialogue_errors = list(dict.fromkeys([
                 *response._dialogue_errors,
                 *dialogue_validation_errors(response, self.snapshot(self.initiator.world.tree, self.initiator.world.npcs))]))
+        # The exchange moves each opinion from where it stood when generation began, and by at most one step;
+        # anything that changed it meanwhile, such as a harvest seen, is kept rather than overwritten.
+        starts = self.information_context.opinions if self.information_context is not None else {}
+        opinions = []
+        for role, npc, partner, entry in (("initiator", self.initiator, self.recipient, response.initiator_opinion),
+                                          ("recipient", self.recipient, self.initiator, response.recipient_opinion)):
+            live = npc.opinion_score(partner.id)
+            change = entry.opinion - starts.get(role, {}).get(partner.id, live)
+            change = max(-CONVERSATION_OPINION_STEP, min(CONVERSATION_OPINION_STEP, change))
+            opinions.append((npc, partner, entry.model_copy(update={"opinion": max(-100, min(100, live + change))})))
         from social import validate_escalation
-        validate_escalation(self, response)
+        validate_escalation(self, response, opinions[0][2].opinion)
         self.escalation = response.escalation
         self.accepted_revisions = ({n.id: n.command_revision for n in (self.initiator, self.recipient)}
                                    if self.escalation and self.escalation.action == "attack" else {})
@@ -853,12 +865,6 @@ class Conversation(ResidentProgress):
         self.accepted_gift = response.gift if response.gift and response.gift.accept_turn is not None else None
         self.rewritten_handoff_thanks = list(rewritten_parts[-1]) if rewritten_parts and response.handoff_thanks else []
         record_generated_turns(self, response.turns, rewritten_parts)
-        opinions = ((self.initiator, self.recipient, response.initiator_opinion),
-                    (self.recipient, self.initiator, response.recipient_opinion))
-        # One exchange nudges a relationship; it cannot jump straight to an extreme.
-        opinions = [(npc, partner, entry.model_copy(update={"opinion": max(npc.opinion_score(partner.id) - CONVERSATION_OPINION_STEP,
-                                                                           min(npc.opinion_score(partner.id) + CONVERSATION_OPINION_STEP, entry.opinion))}))
-                    for npc, partner, entry in opinions]
         self.record.outcomes = [
             describe_opinion_change(
                 npc.name, partner.name, npc.opinion_score(partner.id, default=None), entry.opinion, entry.reason

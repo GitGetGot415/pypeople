@@ -2,7 +2,7 @@
 
 import re
 from copy import deepcopy
-from constants import PLAYER_NAME_TAG, SNAKE_NAME, FOOD_REQUEST_TURN_COUNT
+from constants import PLAYER_NAME_TAG, SNAKE_NAME, FOOD_REQUEST_TURN_COUNT, OPINION_BANDS, COLD_OPINION
 from dialogue_rules import (is_name_reference, name_pattern,
                            named_context, validate_base_prose, validate_opinion_reason,
                            validate_speaker_identity)
@@ -23,6 +23,11 @@ Use I/my for yourself and you/your for the listener; preserve all account owners
 and sources. Do not confuse knowing a name with having met or talked before.
 Address only your actual listener by name.
 """
+def opinion_feeling(score):
+    """The band an opinion score falls in: very hostile, hostile, cold, neutral, warm, friendly or close."""
+    return next(name for name, low, high in OPINION_BANDS if low <= max(-100, min(100, score)) <= high)
+
+
 # Only where the player is actually present; otherwise residents start calling each other Player.
 PLAYER_TAG_INSTRUCTION = f"The human player's tag reads {PLAYER_NAME_TAG}.\n"
 
@@ -344,6 +349,11 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
         # Reasons are private assessments, often long or written in third person;
         # feeding their wording into speech teaches the model to recite them.
         speaker["opinion_of_listener"] = {"opinion": speaker["opinion_of_listener"]["opinion"]}
+    # A bare score does not steer a small model's tone; the band and its recorded causes do.
+    score = (speaker["opinion_of_listener"] or {}).get("opinion", 0)
+    speaker["opinion_of_listener"] = {**(speaker["opinion_of_listener"] or {"opinion": 0}), "feeling": opinion_feeling(score)}
+    if score <= COLD_OPINION and private.get("listener_grievances"):
+        speaker["opinion_of_listener"]["because"] = list(private["listener_grievances"])
     info, accounts, choices, pending = resident_turn_choices(snapshot, draft, role, private,
                                                            closing=closing, assessment=assessment)
     preceding = [dict(name=own_name(snapshot[t.speaker]), role=t.speaker, text=t.text) for t in draft["turns"]]
@@ -358,7 +368,7 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
                  _preceding_turns=preceding, _name_actors=catalog, _dialogue_validation=snapshot.get("_dialogue_validation", True),
                  _baseline=snapshot, _draft=draft, _closing=closing,
                  _listener_identity=own_name(partner),
-                 _speaker_behavior=speaker["personality"])
+                 _speaker_behavior=speaker["personality"], _speaker_harvested=person.get("_harvested", True))
     if not orientation:
         speaker.update(inventory=deepcopy(person.get("inventory", {})), permitted_accounts=accounts)
         speaker["owned_works"] = deepcopy(person.get("owned_works", []))

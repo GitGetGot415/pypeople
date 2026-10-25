@@ -991,6 +991,48 @@ _RETRACTION = re.compile(
     r"alternative motivations?|(?:her|his|their) kind heart)\b", re.I)
 
 
+_WARM_TALK = re.compile(
+    r"\b(?:love (?:your|you|how you|that you)|(?:glad|happy|lucky|grateful) (?:to have you|we['’]ve got|we have|you['’]re|for you)|"
+    r"each other['’]s backs?|(?:i['’]m|i am) with you|you['’]re (?:(?:so|really|such|very|truly)\s+)*(?:great|wonderful|amazing|sweet|"
+    r"kind|generous|thoughtful|a good|a true|a real)|(?:trust|admire|adore) you|my (?:dear )?friend)\b", re.I)
+# "I always seem to have an apple to spare", "I've got two apples", "my spare apple".
+_OWN_APPLES = re.compile(
+    r"\bi(?:['’]ve| have)?\s+(?:(?:always|still|usually|often|already|really|just|seem to|tend to|also)\s+)*"
+    r"(?:have|carry|carrying|keep|hold|holding|(?<=['’]ve\s)got|(?<=have\s)got)\s+(?:(?:an?|some|plenty of|a few|lots of|extra|spare|more|one|two|three|"
+    r"four|five|\d+)\s+)*apples?\b|\bmy\s+(?:extra|spare)\s+apples?\b|\bi\b[^.!?]{0,40}\bapples?\s+to\s+spare\b", re.I)
+_OWN_HARVEST = re.compile(
+    r"\bi(?:['’]ve| have)?\s+(?:(?:already|just|also|only)\s+)*(?:took|taken|harvested|picked|gathered|collected)\s+"
+    r"(?:(?:an?|some|all|most|the|of|those|these|\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+)*apples?\b", re.I)
+
+
+def validate_hostile_warmth(text, listener, *, feeling, cause="", people=()):
+    """Speech to someone the speaker is hostile toward cannot be warm toward them."""
+    listener_ref = re.compile("|".join([_SECOND_PERSON, *(name_pattern(form) for form in dict.fromkeys((listener, listener.split()[0])))]), re.I)
+    for sentence in split_sentences(unquoted_speech(text)):
+        if sentence.rstrip().endswith("?") or not listener_ref.search(sentence):
+            continue
+        talk = _WARM_TALK.search(sentence)
+        if (talk and not _VIEW_NEGATED.search(sentence[:talk.start()])
+                or any(kind == "warm" and person == listener for kind, person in view_subjects(sentence, people, target=listener))):
+            raise ValueError(f"You feel {feeling} toward {listener}" + (f": {cause}" if cause else ".") +
+                             f" Do not speak warmly to {listener}, praise them or say you are on their side; "
+                             "stay guarded and let your distrust show in your own words.")
+
+
+def validate_own_apples(text, fruit):
+    """A speaker carrying no apples cannot claim to have one, as when another person's apple is retold as one's own."""
+    if not fruit and _OWN_APPLES.search(unquoted_speech(text)):
+        raise ValueError("You carry no apples right now. Do not say you have, carry or can spare an apple; "
+                         "if an account is about someone else's apples, keep it theirs.")
+
+
+def validate_own_harvest(text, harvested):
+    """A speaker who never harvested cannot tell a harvest as their own."""
+    if not harvested and _OWN_HARVEST.search(unquoted_speech(text)):
+        raise ValueError("You have never harvested from the tree. Keep each harvest with the person who made it, "
+                         "and use you/your when that person is your listener.")
+
+
 def validate_reason_belief(reason, *, firsthand=False):
     """A view formed after believing an account cannot deny or doubt that account."""
     if _DISBELIEF.search(unquoted_speech(reason)):

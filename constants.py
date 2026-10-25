@@ -245,11 +245,19 @@ CONVERSATION_MAX_DISCLOSURES = 4
 CONVERSATION_MAX_REPUTATION_EFFECTS = 4
 REPUTATION_FACT_LIMIT = 15
 # Assessments name only a direction; small models pick the strongest intensity for any warm reason.
-# Talk sours a view faster than it warms one; large moves come from deeds such as harvests and promises.
-OPINION_CHANGES = {"worse": -8, "unchanged": 0, "better": 3}
-# Largest change one conversation makes to an opinion of the partner. A harvest seen mid-conversation
-# lands first; this bound keeps the conversation's own result from undoing more than its own change.
-CONVERSATION_OPINION_STEP = max(abs(delta) for delta in OPINION_CHANGES.values())
+# Each direction moves an opinion by a random amount in its inclusive range. Talk sours a view faster than
+# it warms one; large moves come from deeds such as harvests and promises.
+OPINION_CHANGES = {"worse": (-12, -8), "unchanged": (0, 0), "better": (3, 5)}
+# Largest change one conversation makes to an opinion of the partner. It is applied on top of the opinion
+# as it stands when the conversation is accepted, so a harvest seen mid-conversation is kept.
+CONVERSATION_OPINION_STEP = max(abs(delta) for bounds in OPINION_CHANGES.values() for delta in bounds)
+# How a resident feels about someone, by opinion score. Speech takes its tone from the band; from hostile down,
+# warm talk toward that person is rejected, a grievance can start a confrontation, and very hostile permits an attack.
+OPINION_BANDS = (("very hostile", -100, -61), ("hostile", -60, -31), ("cold", -30, -16), ("neutral", -15, 15),
+                 ("warm", 16, 30), ("friendly", 31, 60), ("close", 61, 100))
+COLD_OPINION = -16
+HOSTILE_OPINION = -31
+VERY_HOSTILE_OPINION = -61
 # Routine movement and sightings stay known but are not conversation topics.
 ROUTINE_FACT_KINDS = ("arrival", "departure", "conversation_seen")
 CONVERSATION_MAX_LEVERAGE = 2
@@ -447,7 +455,7 @@ HARVEST_DISTANCE = 90.0
 HARVEST_FREE_APPLES = 1
 TREE_SHAKE_SECONDS = 0.4
 TREE_SHAKE_OFFSET = 3.0
-CONFRONTATION_OPINION = -70
+CONFRONTATION_OPINION = VERY_HOSTILE_OPINION
 KILLING_COOLDOWN_PHASES = 2
 KILLING_DISTANCE = 160.0
 KILLING_WITNESS_PENALTY = 24
@@ -456,7 +464,7 @@ BODY_FADE_SECONDS = 1.0
 BODY_ROTATION = 90
 HARVEST_BUTTON_RECT = (24, 420, 180, 34)
 HARVEST_AMOUNT_RECT = (212, 420, 80, 34)
-CONFRONTATION_START_OPINION = -35
+CONFRONTATION_START_OPINION = HOSTILE_OPINION
 DANGEROUS_COMPANY_PENALTY = 60
 KILLING_RELIEF_OPINION = -70
 KILLING_RELIEF_CHANCE = 0.15
@@ -465,7 +473,7 @@ SPOKEN_NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
                   "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
                   "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
                   "nineteen": 19, "twenty": 20, "a": 1, "an": 1}
-GRIEVANCE_FACT_KINDS = ("promise_broken", "apple_refused", "killing", "report")
+GRIEVANCE_FACT_KINDS = ("promise_broken", "apple_refused", "killing", "report", "harvest")
 # Conduct an affirmed account can hold against its subject; believing one never improves the subject's standing.
 ACCUSATION_FACT_KINDS = ("harvest", "killing", "promise_broken", "apple_refused")
 TREE_SHAKE_FREQUENCY = 60

@@ -479,10 +479,9 @@ def validate_live_agreements(conversation, response, *, dialogue_validation=True
             changed = any(current.get(claim_id) != belief for claim_id, belief in before.items())
             related = any(b.claim_id not in before and claim_by_id(world, b.claim_id).fact_id in relevant_facts
                           for b in npc.beliefs)
-            opinions = {other.id: npc.opinion_score(other.id)
-                        for other in world.actors if other is not npc}
-            if changed or related or opinions != context.opinions[role] or can_deceive(npc) != context.can_lie[role]:
-                raise ValueError("A speaker's knowledge or opinion changed during generation. Please try again.")
+            # Opinions may move meanwhile (a harvest seen); the result is applied as a change, so only knowledge counts.
+            if changed or related or can_deceive(npc) != context.can_lie[role]:
+                raise ValueError("A speaker's knowledge changed during generation. Please try again.")
     validate_information(response, context, names=[actor.name for actor in world.actors],
                          participant_names={"initiator": pair[0].name, "recipient": pair[1].name},
                          dialogue_validation=dialogue_validation, actor_references=account_references(conversation.name_actors))
@@ -631,12 +630,42 @@ def private_context(npc, partner_id=None):
         goal_view.pop("baseline_opinion")
     partner = world.participant_by_id(partner_id) if world and partner_id else None
     return {"dangerous_partner": bool(partner and regards_as_dangerous(npc, partner)),
+            "listener_grievances": opinion_causes(npc, partner) if partner else [],
             "owner_id": npc.id, "visibility": "Only this speaker knows their private motive and memories.",
             "concern": ({"kind": npc.current_concern.kind, "claim_id": npc.current_concern.claim_id,
                          "guidance": concern_topic(npc, npc.current_concern)} if npc.current_concern else None),
             "goal": goal_view,
             "known_accounts": known,
             "promises": [dict(asdict(p), deadline_label=phase_label(p.deadline)) for p in promises[:8]]}
+
+
+def opinion_causes(npc, partner):
+    """What this resident holds against a partner, from recorded facts rather than any written reason.
+
+    A conversation rewrites the stored reason, but these causes stay, so speech can still show why.
+    """
+    from constants import HARVEST_FREE_APPLES, ACCUSATION_FACT_KINDS
+    world = npc.world
+    if world is None:
+        return []
+    harvests, causes = {}, []
+    for fact in world.facts:
+        if fact.kind == "harvest" and fact.subject_id == partner.id and npc.id in fact.witness_ids:
+            harvests[fact.phase] = harvests.get(fact.phase, 0) + fact.quantity
+    causes.extend(f"You saw {partner.name} take {total} apples from the tree at {phase_label(phase)}."
+                  for phase, total in sorted(harvests.items(), reverse=True) if total > HARVEST_FREE_APPLES)
+    causes.extend(p.outcome for p in world.promises if p.status == "broken" and p.outcome
+                  and (p.promisor_id, p.recipient_id) == (partner.id, npc.id))
+    for belief in reversed(npc.beliefs):
+        claim = claim_by_id(world, belief.claim_id)
+        fact = fact_by_id(world, claim.fact_id)
+        if (belief.stance != "believed" or not claim.affirmed or fact.subject_id != partner.id
+                or fact.kind not in ACCUSATION_FACT_KINDS or fact.kind == "harvest" and belief.direct):
+            continue
+        source = world.participant_by_id(belief.source_id)
+        causes.append(f"You saw this yourself: {fact.summary}" if belief.direct else
+                      f"{source.name if source else 'Someone'} told you: {fact.summary}")
+    return list(dict.fromkeys(causes))[:3]
 
 
 def pair_objective(world, npc, other):
@@ -735,7 +764,8 @@ def validate_escalation_snapshot(decision, snapshot, turns, opinion):
             raise ValueError("An attack requires final hostility and exact evidence from the target's accepted answer.")
 
 
-def validate_escalation(conversation, response):
+def validate_escalation(conversation, response, opinion=None):
+    """opinion: the initiator's resulting view of the target as it will be committed; defaults to the response's own."""
     validate_escalation_snapshot(response.escalation,
         {"purpose": conversation.purpose, "escalation_choices": conversation.initiator.world.escalation_choices(conversation)},
-        response.turns, response.initiator_opinion.opinion)
+        response.turns, response.initiator_opinion.opinion if opinion is None else opinion)

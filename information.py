@@ -1,5 +1,6 @@
 """Facts, claims, beliefs and disclosures: what residents know and how accounts are told, heard and committed."""
 
+import random
 import re
 from copy import deepcopy
 from dataclasses import asdict
@@ -328,7 +329,12 @@ def reputation_deltas(related, option=None):
 
 def reputation_labels(related, option=None):
     allowed = reputation_deltas(related, option)
-    return [label for label, delta in OPINION_CHANGES.items() if delta in allowed]
+    return [label for label, (low, high) in OPINION_CHANGES.items() if any(d in allowed for d in range(low, high + 1))]
+
+
+def opinion_change(label):
+    """The amount one assessed direction moves an opinion, drawn from its range."""
+    return random.randint(*OPINION_CHANGES[label])
 
 
 def resident_effect_limits():

@@ -267,6 +267,15 @@ def _resident_contract(snapshot, *, correction=False):
             "Use accept_gift true only when you explicitly accept an earlier pending_gift directed to you. "
             "You may decline without penalty. Gifts occur after this conversation, never claim delivery already happened. "
             "Collections are unlimited and separate from apple capacity. You know your own works; do not infer the listener's private collection.")
+    feeling = (snapshot["speaker"].get("opinion_of_listener") or {}).get("feeling")
+    if not thanks and feeling and snapshot["speaker"].get("kind") != "python":
+        instruction += (" opinion_of_listener.feeling is how you feel about the listener; "
+                        + ("weigh this exchange against it and against anything because lists that you already held against them."
+                           if assessment else
+                           "let it set your tone. neutral: as your personality suggests. warm, friendly or close: friendly and at ease. "
+                           "cold: reserved and guarded, with no warm praise. hostile: openly wary and distrustful, with no warmth, "
+                           "praise or thanks beyond bare courtesy. very hostile: curt, cold and openly accusing. "
+                           "because lists what you hold against them; you may raise it in your own words. Never state the score."))
     if snapshot["speaker"].get("dangerous_partner"):
         instruction += (" Your own believed account and current relationship make this listener seem dangerous. "
                         "You are usually reluctant to seek optional company, give unsolicited gifts or invite them home. "

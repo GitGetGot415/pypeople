@@ -15,7 +15,7 @@ from dialogue import (AcceptedProposal, ActionIntent, ActionResponse, Conversati
 from constants import (RESIDENT_TURN_COUNT, CONVERSATION_MAX_TURNS, DIALOGUE_REPEAT_PHRASE_WORDS,
                       DIALOGUE_REPEAT_SENTENCE_WORDS, DIALOGUE_REPEAT_TURN_WORDS,
                       PLAYER_LABEL,
-                      PLAYER_NAME_TAG, SNAKE_NAME, OPINION_CHANGES)
+                      PLAYER_NAME_TAG, SNAKE_NAME, OPINION_CHANGES, HOSTILE_OPINION)
 from dialogue_text import (contains_question, contains_serialized_dialogue, contains_speaker_label,
                           speech_is_complete, split_sentences)
 from dialogue_rules import (is_name_reference, mentions_account, mentions_private_recollection, name_pattern,
@@ -26,10 +26,11 @@ from dialogue_rules import (is_name_reference, mentions_account, mentions_privat
                            copied_share, first_person_text, validate_addressee, validate_private_recital,
                            validate_unheard_quote, leverage_pressure, validate_reason_subject, validate_reason_voice,
                            validate_tree_permanence, validate_name_tag_talk, validate_self_name, validate_echo,
-                           validate_own_memory_person, validate_snake_stance, validate_reason_belief, validate_snake_conviction)
+                           validate_own_memory_person, validate_snake_stance, validate_reason_belief, validate_snake_conviction,
+                           validate_hostile_warmth, validate_own_apples, validate_own_harvest)
 from social_records import phase_index
 from information import (assessment_turn, information_from_dict, related_beliefs, reputation_labels,
-                         resident_information, resident_effect_limits, snake_accusation)
+                         resident_information, resident_effect_limits, snake_accusation, opinion_change)
 from social import validate_agreements, proposals_from_snapshot
 from actor_identity import account_references, actor_id, forms, own_name, speech_only
 from information import orientation_speech, validate_orientation
@@ -471,7 +472,7 @@ def _validate_response(raw, snapshot, model):
         if result.change not in snapshot["labels"]:
             raise ValueError("Choose one of the supplied changes.")
         if check_dialogue:
-            validate_opinion_direction(snapshot["reason"], OPINION_CHANGES[result.change],
+            validate_opinion_direction(snapshot["reason"], OPINION_CHANGES[result.change][0],
                                        target=snapshot["target"], people=snapshot.get("people", ()), you=snapshot.get("you", ""))
         return result
     if check_dialogue:
@@ -492,6 +493,9 @@ def _validate_response(raw, snapshot, model):
             if selected:
                 snapshot = {**snapshot, "account_to_share": selected}
         validate_speech_grounding(current.text, snapshot)
+        if (snapshot.get("request_kind") in ("resident_turn", "conversation_closing") and isinstance(snapshot.get("speaker"), dict)
+                and snapshot["speaker"].get("kind") != "python"):
+            _validate_speaker_standing(current.text, snapshot)
         if snapshot.get("request_kind") == "handoff_thanks":
             draft = deepcopy(snapshot["_draft"])
             draft["turns"].append(current)
@@ -643,6 +647,19 @@ def _validate_response(raw, snapshot, model):
     return result
 
 
+def _validate_speaker_standing(text, state):
+    """Speech keeps the speaker's own apples and harvests, and their feeling toward the listener."""
+    speaker = state["speaker"]
+    if "inventory" in speaker:
+        validate_own_apples(text, speaker["inventory"].get("fruit", 0))
+    validate_own_harvest(text, state.get("_speaker_harvested", True))
+    view = speaker.get("opinion_of_listener") or {}
+    if view.get("opinion", 0) <= HOSTILE_OPINION:
+        names = [actor["name"] for actor in state.get("_name_actors", {}).values() if actor.get("name")]
+        validate_hostile_warmth(text, state["listener"]["name"], feeling=view.get("feeling", "hostile"),
+                                cause=(view.get("because") or [""])[0], people=names)
+
+
 def validate_reason_originality(reason, state):
     """A partner opinion must judge the partner, not recite the owner's goal, personality, accounts, transcript or prompt."""
     speaker = state["speaker"]
@@ -697,7 +714,7 @@ def apply_opinion_directions(snapshot, draft, state, change, gossip_changes):
     pending = projected["assessments"].pop(role)
     current = (state["speaker"].get("opinion_of_listener") or {}).get("opinion", 0)
     projected["opinions"][role] = OpinionUpdate(person=pending["person"], reason=pending["reason"],
-                                                opinion=max(-100, min(100, current + OPINION_CHANGES[change])))
+                                                opinion=max(-100, min(100, current + opinion_change(change))))
     escalation = projected.get("escalation") if role == "initiator" else None
     if escalation and escalation.action == "attack":
         try:
@@ -710,7 +727,7 @@ def apply_opinion_directions(snapshot, draft, state, change, gossip_changes):
         # An unchanged view is still recorded, so the outcome shows the account was weighed. None: no direction was found.
         reason = entry.reason if label else f"{entry.reason} (No clear direction; left unchanged.)"[:400]
         projected["third_party_opinions"].append(ThirdPartyOpinion(turn=assessment_turn(draft, role), claim_id=entry.claim_id,
-            subject_id=entry.subject_id, delta=OPINION_CHANGES[label or "unchanged"], reason=reason))
+            subject_id=entry.subject_id, delta=opinion_change(label or "unchanged"), reason=reason))
     resident_information(snapshot, projected)
     return projected
 
@@ -735,7 +752,7 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
         current = (state["speaker"].get("opinion_of_listener") or {}).get("opinion", 0)
         validate_escalation_snapshot(candidate.escalation,
             {"purpose": snapshot.get("purpose"), "escalation_choices": state.get("escalation_choices")},
-            draft["turns"], max(-100, current + min(OPINION_CHANGES.values())))
+            draft["turns"], max(-100, current + min(low for low, _ in OPINION_CHANGES.values())))
         if role == "initiator":
             projected["escalation"] = candidate.escalation
         other = "recipient" if role == "initiator" else "initiator"
@@ -755,7 +772,7 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
                 validate_reason_belief(reason, firsthand=any(believed.values()))
             if verdict and verdict["accused"]:
                 validate_snake_conviction(reason, verdict["accused"], target=snapshot[other]["name"], people=_reason_people(snapshot, role))
-                validate_opinion_direction(reason, OPINION_CHANGES[verdict["change"]], target=snapshot[other]["name"],
+                validate_opinion_direction(reason, OPINION_CHANGES[verdict["change"]][0], target=snapshot[other]["name"],
                                            people=_reason_people(snapshot, role))
         choices = state["choices"]["third_party_opinions"]
         if choices and not candidate.third_party_opinions:
@@ -775,7 +792,7 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
                     validate_reason_subject(entry.reason, target=subject, people=_reason_people(snapshot, role),
                                             you=snapshot[other]["name"])
                     if gossip_labels(snapshot, projected, role, entry.claim_id) == ["worse"]:
-                        validate_opinion_direction(entry.reason, OPINION_CHANGES["worse"], target=subject,
+                        validate_opinion_direction(entry.reason, OPINION_CHANGES["worse"][0], target=subject,
                                                    people=_reason_people(snapshot, role), you=snapshot[other]["name"])
         projected["assessments"][role] = dict(person=candidate.opinion.person, reason=reason,
                                                              gossip=list(candidate.third_party_opinions))
