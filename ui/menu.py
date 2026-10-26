@@ -3,15 +3,21 @@ from model_transport import MODEL
 from ollama_manager import check_ollama
 from .button import Button
 from .text import draw_centered_text, draw_wrapped_text
-from constants import BORDER_RADIUS, GRASS, MUTED, PAPER, INK, MODAL_OVERLAY_COLOR
+from constants import (BORDER_RADIUS, GRASS, MUTED, PAPER, INK, MODAL_OVERLAY_COLOR,
+                       MENU_PANEL_RECT, MENU_CONTENT_PADDING, MENU_BUTTON_GAP)
 
 class MenuScreen:
     def __init__(self):
-        self.start_button = Button((410, 290, 220, 54), "New Sim")
-        self.load_button = Button((650, 290, 220, 54), "Load Sim")
-        self.character_button = Button((410, 360, 460, 54), "Character Creator")
-        self.settings_button = Button((410, 430, 220, 54), "Settings")
-        self.exit_button = Button((650, 430, 220, 54), "Exit")
+        self.panel_rect = pygame.Rect(MENU_PANEL_RECT)
+        self.content_rect = self.panel_rect.inflate(-2 * MENU_CONTENT_PADDING, 0)
+        left, width = self.content_rect.x, self.content_rect.width
+        button_width = (width - MENU_BUTTON_GAP) // 2
+        right = left + button_width + MENU_BUTTON_GAP
+        self.start_button = Button((left, 290, button_width, 54), "New Sim")
+        self.load_button = Button((right, 290, button_width, 54), "Load Sim")
+        self.character_button = Button((left, 360, width, 54), "Character Creator")
+        self.settings_button = Button((left, 430, button_width, 54), "Settings")
+        self.exit_button = Button((right, 430, button_width, 54), "Exit")
         self.message = ""
         self.ai_warning = ""
         self.pending_screen = None
@@ -63,7 +69,7 @@ class MenuScreen:
 
     def draw(self, app):
         app.window.fill(GRASS)
-        pygame.draw.rect(app.window, PAPER, (370, 95, 540, 530), border_radius=BORDER_RADIUS)
+        pygame.draw.rect(app.window, PAPER, self.panel_rect, border_radius=BORDER_RADIUS)
         if app.provider == "gemini":
             model_name = f"Gemini ({MODEL})"
         elif app.provider == "ollama":
@@ -71,13 +77,8 @@ class MenuScreen:
         else:
             model_name = "No AI selected"
 
-        draw_centered_text(
-            app.window,
-            "Pypeople",
-            app.title_font,
-            145,
-            INK,
-        )
+        title = app.title_font.render("Pypeople", True, INK)
+        app.window.blit(title, title.get_rect(midtop=(self.panel_rect.centerx, 145)))
 
         draw_centered_text(
             app.window,
@@ -91,7 +92,8 @@ class MenuScreen:
             button.draw(app.window, app.font)
         draw_centered_text(app.window, "(no you can't flirt with the ai yet)", app.small_font, 550, MUTED)
         if self.message:
-            draw_wrapped_text(app.window, self.message, app.small_font, MUTED, (420, 580, 440, 40))
+            draw_wrapped_text(app.window, self.message, app.small_font, MUTED,
+                              (self.content_rect.x, 580, self.content_rect.width, 40))
         if self.ai_warning:
             overlay = pygame.Surface(app.window.get_size(), pygame.SRCALPHA)
             overlay.fill(MODAL_OVERLAY_COLOR)
