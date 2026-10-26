@@ -14,7 +14,7 @@ from dialogue_rules import (unquoted_speech, mentions_account, named_references,
 from types import SimpleNamespace
 from actor_identity import account_references, actor_id, speech_only
 from social_records import (phase_label, Fact, Claim, Belief, Disclosure, ClaimOption, InformationContext, fact_by_id,
-    claim_by_id)
+    claim_by_id, clear_record_indexes)
 
 
 def assertion_text(world, fact, affirmed=True):
@@ -91,7 +91,10 @@ def account_content(world, fact, affirmed=True):
     if fact.kind == "private_motive":
         return f"{subject.name} does not have the motive described in this account: {summary}"
     if fact.kind not in action:
-        return f"An account disputes: {summary}"
+        # Plain words, since the model reads an assertion's record label ("An account disputes:") aloud.
+        # Other kinds begin with a name; a memory begins "They..." or "In their former life...".
+        lowered = fact.kind == "former_life" and not re.match(r"I\b", summary)
+        return f"It is not true that {summary[:1].lower() + summary[1:] if lowered else summary}"
     return f"{subject.name} did not {action[fact.kind]} {target.name} in that exchange."
 
 
@@ -149,6 +152,18 @@ def witnessed_harvests(world, beliefs):
     for (phase, _), row in totals.items():
         row["all_harvests_witnessed"] = phase not in unseen_phases
     return totals
+
+
+def believed_harvest(world, beliefs, fact):
+    """One harvest told as this person believes it: the collector's total over the distinct pickups they believe that phase."""
+    pickups = {fact.id: fact}
+    for belief in beliefs:
+        claim = claim_by_id(world, belief.claim_id)
+        other = fact_by_id(world, claim.fact_id)
+        if (belief.stance == "believed" and claim.affirmed and other.kind == "harvest"
+                and (other.subject_id, other.phase) == (fact.subject_id, fact.phase)):
+            pickups[other.id] = other
+    return harvest_summary(world.participant_by_id(fact.subject_id).name, sum(p.quantity for p in pickups.values()))
 
 
 def harvest_account_view(account, *, tree_stock=None, current_time=None):
@@ -572,7 +587,10 @@ def trim_information(world):
         keep = {b.claim_id for b in npc.beliefs[-24:]}
         for b in npc.beliefs:
             claim = claims[b.claim_id]
-            if b.direct or b.assessed or len(polarities[claim.fact_id]) > 1 or fact_by_id(world, claim.fact_id).source_id in current_goals:
+            fact = fact_by_id(world, claim.fact_id)
+            # Sightings of someone walking past or chatting are never raised as news; only recent ones are kept.
+            if (b.direct and fact.kind not in ROUTINE_FACT_KINDS or b.assessed or len(polarities[claim.fact_id]) > 1
+                    or fact.source_id in current_goals):
                 keep.add(b.claim_id)
         if npc.goal and npc.goal.claim_id:
             keep.add(npc.goal.claim_id)
@@ -641,6 +659,7 @@ def trim_information(world):
     world.disclosures[:] = [d for d in world.disclosures if d.id in disclosure_ids]
     world.claims[:] = [claim for claim in world.claims if claim.id in claim_ids]
     world.facts[:] = [fact for fact in world.facts if fact.id in fact_ids]
+    clear_record_indexes(world)
 
 
 def learn_account(world, speaker, listener, claim_id, record, turn, stance, *, private=False):

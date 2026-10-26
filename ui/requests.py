@@ -1,5 +1,6 @@
 import queue
 import threading
+import traceback
 from dataclasses import dataclass
 from time import monotonic
 
@@ -93,6 +94,8 @@ def _request_worker(session_id, request_id, provider, api_key, message, snapshot
         except Exception:
             error = ("Could not complete this creation." if creative else
                      "Could not get a reply from the model. Please try again.")
+            # The player sees the generic message; the request log keeps what actually failed.
+            record_output("traceback", traceback.format_exc())
             record_output("error", error)
             if not control.cancelled.is_set():
                 results.put((session_id, request_id, None, error, snapshot, [], [], control))

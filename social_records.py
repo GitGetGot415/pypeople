@@ -166,12 +166,26 @@ class InformationContext:
     focus_claim_id: str | None
 
 
+def _record_index(world, name):
+    # Records are only appended between trims, so the list and its length identify the index; trims clear it.
+    records = getattr(world, name)
+    cache = getattr(world, f"_{name}_index", None)
+    if cache is None or cache[0] is not records or cache[1] != len(records):
+        cache = (records, len(records), {record.id: record for record in records})
+        setattr(world, f"_{name}_index", cache)
+    return cache[2]
+
+
+def clear_record_indexes(world):
+    world._facts_index = world._claims_index = None
+
+
 def fact_by_id(world, fact_id):
-    return next(fact for fact in world.facts if fact.id == fact_id)
+    return _record_index(world, "facts")[fact_id]
 
 
 def claim_by_id(world, claim_id):
-    return next(claim for claim in world.claims if claim.id == claim_id)
+    return _record_index(world, "claims")[claim_id]
 
 
 def owns_recollection(owner_id, belief, claim, fact):

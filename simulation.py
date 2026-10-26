@@ -754,7 +754,8 @@ class Simulation:
             self.pending_arrival_days.pop(0)
             return None
         try:
-            character = random_character(trait_mode=self.npc_trait_mode)
+            character = random_character(trait_mode=self.npc_trait_mode,
+                                         used_first_names=[actor.name.split()[0] for actor in self.actors if actor.name.split()])
         except (OSError, ValueError) as exc:
             self.arrival_error = f"Could not create the next arrival: {exc}"
             return None

@@ -90,7 +90,7 @@ def load_character(path):
         return normalize_character(json.load(character_file))
 
 
-def random_character(config_path=RANDOM_CONFIG_PATH, *, trait_mode="normal"):
+def random_character(config_path=RANDOM_CONFIG_PATH, *, trait_mode="normal", used_first_names=()):
     """Generate a complete character using the selected random trait pool."""
     with Path(config_path).open(encoding="utf-8") as config_file:
         config = json.load(config_file)
@@ -130,7 +130,10 @@ def random_character(config_path=RANDOM_CONFIG_PATH, *, trait_mode="normal"):
     if not isinstance(limits, dict):
         raise ValueError("Random settings must include numeric limits.")
     values = {"Sex": random.choice(("M", "F"))}
-    values["Name"] = f"{random.choice(first_names[values['Sex']]).strip()} {random.choice(config['last_names']).strip()}"
+    # Residents sharing a first name were confused with each other in speech and in account matching.
+    used = {name.casefold() for name in used_first_names}
+    fresh = [name for name in first_names[values["Sex"]] if name.strip().casefold() not in used]
+    values["Name"] = f"{random.choice(fresh or first_names[values['Sex']]).strip()} {random.choice(config['last_names']).strip()}"
     for name in ("Age", "Weight", "Height"):
         bounds = limits.get(name)
         if not isinstance(bounds, dict):

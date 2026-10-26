@@ -174,7 +174,8 @@ class Application:
             # Both modes require Judy first and permit additional residents.
             for index, source in enumerate(sources, start=1):
                 try:
-                    characters.append(random_character(trait_mode=self.npc_trait_mode)
+                    characters.append(random_character(trait_mode=self.npc_trait_mode,
+                                                       used_first_names=[c["Name"].split()[0] for c in characters if c["Name"].split()])
                                       if source is None else load_character(source))
                 except (OSError, ValueError) as error:
                     raise ValueError(f"NPC {index}: {error}") from error

@@ -24,12 +24,13 @@ from dialogue_rules import (is_name_reference, mentions_account, mentions_privat
                            validate_continuity, validate_base_prose, validate_claim_source, validate_english,
                            validate_opinion_reason, validate_opinion_direction, validate_environment_speech, validate_speaker_identity,
                            personal_apple_request, short_player_answer, validate_snake_perspective, validate_snake_accusation,
-                           validate_promise_mentions, validate_witness_denial,
+                           validate_promise_mentions, validate_witness_denial, validate_listener_witness,
                            copied_share, first_person_text, validate_addressee, validate_private_recital,
                            validate_unheard_quote, leverage_pressure, validate_reason_subject, validate_reason_voice,
                            validate_tree_permanence, validate_name_tag_talk, validate_self_name, validate_echo,
                            validate_own_memory_person, validate_snake_stance, validate_reason_belief, validate_snake_conviction,
-                           validate_hostile_warmth, validate_own_apples, validate_own_harvest, validate_memory_firm, denies_conduct)
+                           validate_hostile_warmth, validate_own_apples, validate_own_harvest, validate_memory_firm, denies_conduct,
+                           view_subjects, states_no_change)
 from social_records import phase_index
 from information import (assessment_turn, information_from_dict, related_beliefs, reputation_labels,
                          resident_information, resident_effect_limits, retold_accusation, opinion_change, reputation_deltas)
@@ -417,6 +418,13 @@ def validate_resident_grounding(result, snapshot):
             for b in info.get("beliefs", {}).get(turn.speaker, [])
             if b["direct"] and b["claim_id"] in options and options[b["claim_id"]]["affirmed"]
             and options[b["claim_id"]]["fact_id"] not in lied})
+        if info:
+            listener_name = snapshot[other_role]["name"]
+            validate_listener_witness(turn.text, {
+                (snapshot.get("_name_actors", {}).get(options[b["claim_id"]]["subject_id"], {}).get("name", ""), options[b["claim_id"]]["kind"])
+                for b in info.get("beliefs", {}).get(other_role, [])
+                if b["direct"] and b["claim_id"] in options and options[b["claim_id"]]["affirmed"]},
+                people=[name for name in dict.fromkeys(names) if name != listener_name], listener=listener_name)
         recent_memories = [options[entry.claim_id] for entry in result.disclosures
                            if entry.turn == index - 1 and entry.claim_id in options]
         validate_memory_ownership(turn.text, options.values(), speaker_id=speaker["actor_id"],
@@ -822,13 +830,23 @@ def apply_opinion_directions(snapshot, draft, state, change, gossip_changes):
         except ValueError:
             # The reason did not end hostile enough for an attack; the confrontation ends peacefully.
             projected["escalation"] = escalation.model_copy(update={"action": "leave"})
-    beliefs, _, _ = resident_information(snapshot, projected)
+    # Food requests carry no accounts, so there is nothing to weigh and no belief state to project.
+    beliefs, _, _ = resident_information(snapshot, projected) if pending["gossip"] else ({}, None, None)
     options = {o.id: o for o in information_from_dict(snapshot["_information_validation"]).options} if pending["gossip"] else {}
     for entry, label in zip(pending["gossip"], gossip_changes):
         # An unchanged view is still recorded, so the outcome shows the account was weighed. None: no direction was found.
         reason = entry.reason if label else f"{entry.reason} (No clear direction; left unchanged.)"[:400]
         option = options[entry.claim_id]
         delta = gossip_delta(related_beliefs(option, beliefs[role].values(), options), option, label or "unchanged")
+        if delta < 0 and retold_accusation(option):
+            # The drop is set by the retelling, not chosen from the reason; a reason that says nothing changed,
+            # or holds no grudge against the accused, would contradict the recorded change.
+            subject = snapshot.get("_name_actors", {}).get(entry.subject_id, {}).get("name", "them")
+            people = [actor["name"] for actor in snapshot.get("_name_actors", {}).values()]
+            partner = snapshot["recipient" if role == "initiator" else "initiator"]["name"]
+            views = view_subjects(entry.reason, people, target=subject, you=partner)
+            if states_no_change(entry.reason) or views and not any(kind == "hostile" and person == subject for kind, person in views):
+                reason = f"Hearing it told stirred me up against {subject}."
         projected["third_party_opinions"].append(ThirdPartyOpinion(turn=assessment_turn(draft, role), claim_id=entry.claim_id,
             subject_id=entry.subject_id, delta=delta, reason=reason))
     resident_information(snapshot, projected)

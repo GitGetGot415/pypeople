@@ -478,6 +478,9 @@ class ConversationSession:
             request_id=conversation.id, ollama_model=self.ollama_model,
             voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation,
         ):
+            # A running exchange can queue its next call while the snapshot is built; wait for the next free slot.
+            if self.requests.busy:
+                return
             conversation.fail_dialogue("Could not start dialogue generation.")
             return
         conversation.error = ""

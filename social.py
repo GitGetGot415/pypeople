@@ -11,7 +11,7 @@ from social_records import (ConversationConcern, phase_label, Goal, Proposal, Pr
     Disclosure, fact_by_id, claim_by_id, owns_recollection)
 from information import (account_content, account_view, record_intention, can_deceive, selected_beliefs, related_beliefs,
     demote_contrary_beliefs, receive_belief, validate_information, trim_information, harvest_summary, retold_accusation,
-    reputation_deltas)
+    reputation_deltas, believed_harvest)
 
 
 def valid_concern(npc, concern):
@@ -172,7 +172,7 @@ def commit_information(conversation):
     world = conversation.initiator.world
     options = {option.id: option for option in context.options}
     people = {"initiator": conversation.initiator, "recipient": conversation.recipient}
-    heard, alleged = {}, []
+    heard, told_as, alleged = {}, {}, []
     claims = {claim.id: claim for claim in world.claims}
     for turn, speech in enumerate(conversation.turns):
         speaker = people[speech.speaker]
@@ -189,7 +189,9 @@ def commit_information(conversation):
             source = heard[speaker.id, entry.claim_id]
             originator = world.participant_by_id(claim.originator_id)
             option = options[claim.id]
-            reason = (f"Heard {source.name}'s account (original source: {originator.name}): {option.assertion} "
+            # Quote the account as it was told, so a harvest keeps the teller's total rather than one pickup.
+            reason = (f"Heard {source.name}'s account (original source: {originator.name}): "
+                      f"{told_as.get((speaker.id, entry.claim_id), option.assertion)} "
                       f"Personal assessment: {entry.reason}")[:400]
             event = world.publish("claim_assessed", (source, speaker),
                                   f"{speaker.name} assessed an allegation about {world.participant_by_id(entry.subject_id).name} from {source.name}.",
@@ -243,6 +245,7 @@ def commit_information(conversation):
                 if prior_pickup is None:
                     listener.beliefs.append(learned_pickup)
             heard[listener.id, option.id] = speaker
+            told_as[listener.id, option.id] = assertion
             originator = world.participant_by_id(option.originator_id)
             remember(speaker, listener, event, "claim_shared", f"I discussed an account with {listener.name}: {assertion}", 0)
             remember(listener, speaker, event, "heard_claim",
@@ -755,8 +758,12 @@ def grievance_against(npc, target):
 
 def confrontation_topic(npc, claim_id):
     belief = next(b for b in npc.beliefs if b.claim_id == claim_id)
-    account = account_view(npc.world, claim_by_id(npc.world, claim_id), belief)
-    return f"Seek an explanation for this unresolved account: {account['assertion']} Source: {account['immediate_source_name']}; stance: {account['stance']}."
+    claim = claim_by_id(npc.world, claim_id)
+    account = account_view(npc.world, claim, belief)
+    fact = fact_by_id(npc.world, claim.fact_id)
+    # A harvest is raised as the whole collection this resident believes, not the one pickup the grievance names.
+    assertion = believed_harvest(npc.world, npc.beliefs, fact) if fact.kind == "harvest" and claim.affirmed else account["assertion"]
+    return f"Seek an explanation for this unresolved account: {assertion} Source: {account['immediate_source_name']}; stance: {account['stance']}."
 
 
 def regards_as_dangerous(npc, target):

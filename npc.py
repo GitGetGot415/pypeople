@@ -872,11 +872,14 @@ class Conversation(ResidentProgress):
             for npc, partner, entry in opinions
         ]
         if self.escalation:
-            from information import account_content
+            from information import account_content, believed_harvest
             from social_records import claim_by_id, fact_by_id
             world = self.initiator.world
             claim = claim_by_id(world, self.grievance_id)
-            grievance = account_content(world, fact_by_id(world, claim.fact_id), claim.affirmed)
+            fact = fact_by_id(world, claim.fact_id)
+            # Matches the confrontation topic: the whole harvest the confronter believes, not one pickup.
+            grievance = (believed_harvest(world, self.initiator.beliefs, fact) if fact.kind == "harvest" and claim.affirmed
+                         else account_content(world, fact, claim.affirmed))
             self.record.outcomes.append(f"Confrontation decision: {self.escalation.action}. Grievance: {grievance}")
         self.record.status = CONVERSATION_DIALOGUE_READY
         self.record.orientation_discussed = orientation_discussed

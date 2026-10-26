@@ -24,7 +24,8 @@ def validate_environment_speech(text, *, location="garden"):
     speech = unquoted_speech(text)
     venue = r"(?:jazz club|nightclub|caf[eé]|restaurant)"
     mentions_venue = bool(re.search(rf"\b{venue}\b", speech, re.I))
-    missing_tree = (r"\b(?:the|this|that|our) (?:apple )?tree(?:['’]s (?:absence|disappearance)|"
+    # "The tree's absence of apples" describes missing fruit, not a missing tree.
+    missing_tree = (r"\b(?:the|this|that|our) (?:apple )?tree(?:['’]s (?:absence|disappearance)(?!\s+of\b)|"
                     r"\s+(?:is|was|has|had)(?: (?:now|completely|just|entirely))? "
                     r"(?:gone|missing|absent|vanished|disappeared|been removed))\b|"
                     r"\b(?:absence|disappearance) of (?:the|our) (?:apple )?tree\b")
@@ -84,6 +85,14 @@ def named_context(value):
 
 def name_pattern(name):
     return rf"(?<!\w){re.escape(name)}(?!\w)"
+
+
+def identifying_forms(name, names):
+    """Forms that name this person alone: the first name only while no one else in names shares it."""
+    first = name.split()[0]
+    if any(other != name and other.split() and other.split()[0].casefold() == first.casefold() for other in names):
+        return [name, name.split()[-1]]
+    return [first]
 
 
 _ORDINARY_NAME_WORDS = {
@@ -264,13 +273,20 @@ _HOSTILE_VIEW = re.compile(
     r"self-cent(?:ered|red)|thinks? only (?:of|about)|only (?:thinks|cares|looks out) (?:of|about|for)|"
     r"hiding something|ulterior|hidden (?:motive|agenda)s?|disappoint\w*|upset|annoy\w*|frustrat\w*|"
     r"question(?:ed|s|ing)? (?:his|her|their|your) (?:honesty|reliability|motives?|intentions?|word)|unreliable|"
-    r"dismiss(?:ed|ive|ing)|contradict\w*|stir(?:ring)? up trouble|accusatory|lie[sd]?|lying|mislead\w*|misled)\b", re.I)
+    r"dismiss(?:ed|ive|ing)|contradict\w*|stir(?:ring)? up trouble|accusatory|lie[sd]?|lying|mislead\w*|misled|"
+    r"(?:feel|feels|feeling|felt) worse|think(?:s|ing)? (?:less|worse)|thought (?:less|worse))\b", re.I)
 _WARM_VIEW = re.compile(
     r"\b(?:appreciat\w*|grateful|thankful|kind|kindness|generous|generosity|honest|honesty|trustworth\w*|thoughtful|"
     r"refreshing|relatable|solidarity|supportive|friendly|pleasant|comfort(?:ing|able)|at ease|admir\w*|respect\w*|"
-    r"resonat\w*|inspir\w*|genuine|caring|warm|enjoy\w*|seen and heard|feel seen|like (?:her|him|them)|considerate)\b", re.I)
+    r"resonat\w*|inspir\w*|genuine|caring|warm|enjoy\w*|seen and heard|feel seen|like (?:her|him|them)|considerate|"
+    # "made me feel better about him": the owner's own view, aimed at whoever follows.
+    r"(?:feel|feels|feeling|felt) better|think(?:s|ing)? (?:better|more highly)|thought (?:better|more highly))\b", re.I)
 _VIEW_NEGATED = re.compile(r"\b(?:not|never|no|isn['’]t|wasn['’]t|aren['’]t|don['’]t|doesn['’]t|didn['’]t|hardly|"
                            r"question(?:ed|s|ing)?|doubt(?:ed|s|ing)?|lack(?:ed|s|ing)?)\b(?:\W+\w+){0,4}\W*$", re.I)
+# Feelings someone shared about their own situation ("he shared his concerns and frustrations") are not a view of them.
+_VIEW_EXPRESSED = re.compile(r"\b(?:shar(?:e|es|ed|ing)|express(?:es|ed|ing)?|voic(?:e|es|ed|ing)|admit(?:s|ted|ting)?|"
+                             r"describ(?:e|es|ed|ing)|told me about|talk(?:s|ed|ing)? about|open(?:s|ed)? up about)\s+"
+                             r"(?:(?:his|her|their|your|our|my)\s+)?(?:\w+\s+(?:and|or)\s+)?$", re.I)
 _VIEW_REPORTED = re.compile(r"\b(?:says?|said|claims?|claimed|insists?|insisted|thinks|called|accus\w+|wants? me to)\b", re.I)
 _SECOND_PERSON = r"\b(?:you|your|yours|yourself)\b"
 
@@ -312,7 +328,7 @@ def view_subjects(reason, people=(), *, target="", you=""):
         for kind, cue in (("hostile", _HOSTILE_VIEW), ("warm", _WARM_VIEW)):
             for match in cue.finditer(sentence):
                 before, after = sentence[:match.start()], sentence[match.end():]
-                if (_VIEW_NEGATED.search(before) or _VIEW_REPORTED.search(before)
+                if (_VIEW_NEGATED.search(before) or _VIEW_REPORTED.search(before) or _VIEW_EXPRESSED.search(before)
                         or re.search(r"\b(?:but|however|though|yet)\b", after, re.I)):
                     continue
                 direct = [person for _, end, person in refs if end <= match.start()
@@ -339,6 +355,8 @@ def states_no_change(reason):
     """A reason that says the view did not move is unchanged, however warmly it is worded."""
     return bool(re.search(r"\b(?:(?:feel|felt|feeling) no different|no different (?:about|toward|towards)|"
                           r"(?:didn['’]t|did not|doesn['’]t|does not|hasn['’]t|has not) change (?:my|how i)|"
+                          r"(?:hasn['’]t|has not|haven['’]t|have not|hadn['’]t|had not) changed (?:my|how i)|"
+                          r"(?:view|opinion) of \w+(?: \w+)? (?:hasn['’]t|has not|didn['’]t|did not) change(?:d)?|"
                           r"neither better nor worse|(?:didn['’]t|did not|don['’]t|do not) feel (?:any )?(?:worse or better|better or worse))\b",
                           unquoted_speech(reason), re.I))
 
@@ -562,7 +580,7 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
         for name in names:
             if name and name not in participant_forms and re.search(
                     rf"\b{name_pattern(name)}\s+heard\b", assertion, re.I):
-                references = [name.split()[0], *(actor_references or {}).get(name, [])]
+                references = [*identifying_forms(name, names), *(actor_references or {}).get(name, [])]
                 if not any(re.search(name_pattern(ref), spoken, re.I) for ref in references):
                     raise DialogueValidationError("The selected account is not actually told in this turn. "
                         f"Preserve who heard the snake: {name}. Expected snake_claim: {assertion}", RecoveryKind.UNMATCHED_ACCOUNT)
@@ -571,7 +589,7 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
             for match in re.finditer(name_pattern(name), assertion, re.I))
         and not (kind == "snake_claim" and name != SNAKE_NAME)
         and not any(re.search(name_pattern(ref), spoken, re.I)
-                    for ref in [name.split()[0], *(actor_references or {}).get(name, []),
+                    for ref in [*identifying_forms(name, names), *(actor_references or {}).get(name, []),
                                 *(["the python", "the snake"] if name == SNAKE_NAME else [])])
         for name in names if name)
     if missing_actor or not expected or len(expected & actual) < min(2, len(expected)):
@@ -603,6 +621,25 @@ def validate_witness_denial(text, witnessed):
         if re.search(rf"\bi\s+(?:didn['’]t|did not|never|haven['’]t|have not)\s+(?:actually\s+|personally\s+|really\s+|even\s+)?"
                      rf"(?:see|seen|saw|witness\w*|watch\w*|notice\w*)\s+(?:{refs})\s+(?:\w+\s+)?(?:{acts})\b", speech, re.I):
             raise ValueError(f"You saw {name} do this yourself. Do not claim you did not see it; you may question what it meant.")
+
+
+def validate_listener_witness(text, seen, *, people, listener):
+    """The listener is never told they saw an event they did not witness; asking whether they saw it stays allowed.
+
+    seen lists (actor name, fact kind) for events the listener saw firsthand; people names everyone who could be meant.
+    """
+    for sentence in split_sentences(unquoted_speech(text)):
+        if sentence.rstrip().endswith("?"):
+            continue
+        for name in people:
+            for kind, acts in _WITNESSED_ACTS.items():
+                if not name or (name, kind) in seen:
+                    continue
+                refs = "|".join(name_pattern(form) for form in dict.fromkeys((name, *identifying_forms(name, people))))
+                if re.search(rf"\byou(?:['’]ve|\s+have)?\s+(?:just\s+|already\s+|also\s+)?(?:seen|saw|witnessed|watched)\s+"
+                             rf"(?:{refs})\s+(?:\w+\s+)?(?:{acts})\b", sentence, re.I):
+                    raise ValueError(f"{listener} did not see {name} do this firsthand. Say what you saw or heard yourself; "
+                                     f"do not tell {listener} they witnessed it.")
 
 
 def validate_promise_mentions(text, *, promisors, people, listener):
@@ -903,8 +940,14 @@ def validate_private_recital(text, *, personality="", motives=(), run=6):
             r"named collector|witnessing is not collecting|phase['’]s (?:tree )?stock|tree stock|visiting is travel only|"
             r"speech never transfers apples|successful local harvest|without permission, payment or quotas|"
             # The python's task script ("Keep pressing that accusation", "then insist it shows ...").
-            r"keep pressing (?:that|the|this|my) accusation|(?:then )?insist (?:that )?it shows|i have a task for you)\b",
-            speech, re.I):
+            r"keep pressing (?:that|the|this|my) accusation|(?:then )?insist (?:that )?it shows|i have a task for you|"
+            # Account fields read aloud: "An account disputes: ...", "a believed stance", "As the original speaker".
+            r"an account disputes|(?:a|my|your|the|their) (?:believed|uncertain|disbelieved) stance|"
+            r"stance: (?:believed|uncertain|disbelieved)|as the original (?:speaker|source)|"
+            r"(?:don['’]t|do not) apologi[sz]e or threaten)\b",
+            speech, re.I) or re.search(
+            # A bare imperative is the stance field, not the speaker's own "I believe it's true".
+            r"(?:^|[.!?]\s+)believe (?:it|this|that)(?:['’]s| is) true\b", speech, re.I):
         raise ValueError("Speech reads internal instructions or record fields aloud. Say only natural spoken words.")
     # Motives are never spoken, in any person. A character may briefly voice their own trait,
     # but personality wording kept in the second person describes the listener with it,
