@@ -777,7 +777,7 @@ def capture_simulation(world, *, camera_offset, camera_zoom):
         record = next((row for row in history if row.id == interaction.record_id), None)
         if record:
             record.status = CONVERSATION_REPLY_PENDING_WHEN_SAVED
-            record.outcomes.insert(0, "The reply was not saved. Send the request again after loading.")
+            record.outcomes.insert(0, "The reply was interrupted by saving.")
     npcs, conversations, handoffs = [], [], []
     captured_handoffs = set()
     for npc in [*world.npcs, world.snake]:

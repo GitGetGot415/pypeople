@@ -195,7 +195,7 @@ class ConversationSession:
         npc.set_selected(True)
         interaction = self.simulation.player_interaction
         record = next((r for r in self.simulation.history if r.id == interaction.record_id), None)
-        if (interaction.incoming and not interaction.pending_request
+        if (interaction.incoming and not interaction.pending_request and not (record and record.error)
                 and (npc.player_call or record and record.purpose == "confrontation" and not record.turns)):
             self.prepare_player_opening()
             return
@@ -215,14 +215,8 @@ class ConversationSession:
         record = self.record
         pending = self.simulation.player_interaction.pending_request
         if record and pending and not npc.generation_pending and self.player_request(npc) is None:
-            record.error = "Generation was interrupted by saving. Retry this exchange."
-            request_id = uuid4().hex
-            snapshot = self.player_snapshot(npc, pending["message"])
-            if pending["kind"]:
-                snapshot.update(request_kind=pending["kind"], player_interaction=pending["context"])
-            self.player_requests[request_id] = PlayerRequest(id=request_id, actor=npc, record=record,
-                message=pending["message"], snapshot=snapshot, actor_revision=npc.command_revision,
-                roster_revision=self.simulation.roster_revision)
+            record.status, record.error = CONVERSATION_FAILED, "Generation was interrupted by saving."
+            interaction.pending_request = None
         self.show_reply(record.error if record and record.error else "")
         self.emit("focus")
 
@@ -317,6 +311,8 @@ class ConversationSession:
         if npc is None:
             return
         record = self.record
+        if record and record.error:
+            return
         if npc.player_call:
             call = asdict(npc.player_call)
         elif record and record.purpose == "confrontation" and not record.turns:
@@ -406,36 +402,8 @@ class ConversationSession:
             snapshot.update(request_kind="player_acknowledgment", player_interaction={"declined_offer": offer})
             self._submit_player_message(npc, "", snapshot)
 
-    def retry_player_dialogue(self):
-        npc = self.view_actor
-        request = self.player_request(npc) if npc else None
-        if (not request or player_request_pending(request) or npc.interaction_blocked or npc.busy
-                or self.simulation.paused or self.record is not request.record):
-            return
-        message = request.message
-        snapshot = self.player_snapshot(npc, message)
-        old = request.snapshot
-        if old.get("request_kind") == "player_command":
-            from player import work_choices
-            snapshot["owned_works"] = work_choices(self.simulation, npc.id, old["player_interaction"]["command"]["item"])
-            from player_commands import normalize_action, validate_action
-            try:
-                intent = normalize_action(old["player_interaction"]["command"], snapshot)
-                validate_action(self.simulation, npc, intent, accepting=True)
-            except ValueError as exc:
-                self.notice(str(exc))
-                return
-            snapshot.update(request_kind="player_command", player_interaction={"command": intent.model_dump()},
-                            request_intent=intent.model_dump())
-        elif old.get("request_kind") in ("player_opening", "player_gift", "player_acknowledgment"):
-            snapshot.update(request_kind=old["request_kind"], player_interaction=old["player_interaction"])
-            if old["player_interaction"].get("call"):
-                from player import work_choices
-                snapshot["owned_works"] = work_choices(self.simulation, npc.id, old["player_interaction"]["call"]["reference"])
-        self._submit_player_message(npc, message, snapshot)
-
     def player_request(self, npc):
-        """Latest direct request for this actor, retained for retry after completion."""
+        """Latest direct request for this actor."""
         return next((request for request in self.player_requests.values() if request.actor is npc), None)
 
     def pending_player_request(self, npc):
@@ -466,7 +434,7 @@ class ConversationSession:
             voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation,
             queue_if_busy=True,
         ):
-            self.show_reply("Could not start the request. Please try again.")
+            self.show_reply("Could not start the request.")
             return
         npc.player_reply.start(request_id)
         self.show_reply("")
@@ -570,8 +538,7 @@ class ConversationSession:
         accepted = accept_resident_reply(self.simulation, request, result, error, rewritten,
             dialogue_validation=self.dialogue_validation, visible=visible,
             record_open=self.record is record)
-        if not accepted.error:
-            interaction.pending_request = None
+        interaction.pending_request = None
         if not accepted.error and record is not None and visible:
             self.select_record(record)
             self.pending_offer = accepted.pending_offer
@@ -643,6 +610,8 @@ class ConversationSession:
             if record is not None:
                 record.status, record.error = CONVERSATION_FAILED, reason
             interaction = self.simulation.player_interaction
+            if self.player_owns(npc):
+                interaction.pending_request = None
             if (self.player_owns(npc) and not (self.view_open and self.view_actor is npc
                     and interaction.id == self.view_interaction_id)):
                 self.end_player_conversation(reason)
@@ -682,16 +651,3 @@ class ConversationSession:
         self.player_requests.clear()
         self.conversation_requests.clear()
         self.pending_offer = None
-
-    def retry_conversation_dialogue(self, conversation):
-        if conversation.active or conversation.turns or self.requests.busy:
-            return
-        try:
-            replacement = self.simulation.start_conversation(
-                conversation.initiator, conversation.recipient, conversation.topic,
-                origin=conversation.origin, purpose=conversation.purpose, opening_kind=conversation.opening_kind,
-                focus_claim_id=conversation.focus_claim_id, goal_id=conversation.goal_id)
-        except ValueError as exc:
-            conversation.error = str(exc)
-            return
-        self.emit("view_conversation", replacement)

@@ -67,8 +67,7 @@ class GameScreen:
         self.done_button = Button((1136, 644, 120, 44), "Done")
         self.next_button = Button((1144, 552, 112, 32), "Next")
         self.back_button = Button((self.next_button.rect.left - 116, 552, 112, 32), "Back")
-        self.retry_button = Button((904, 552, 112, 32), "Retry")
-        self.subjects_button = Button((self.retry_button.rect.left - 116, 552, 112, 32), "Subjects")
+        self.subjects_button = Button((self.back_button.rect.left - 116, 552, 112, 32), "Subjects")
         self.portrait_rect = pygame.Rect(24, 552, 148, 148)
         self.original_toggle = Button(DIALOGUE_ORIGINAL_TOGGLE_RECT, "Original: Off")
         dialogue_x = self.portrait_rect.right + 16
@@ -324,12 +323,6 @@ class GameScreen:
                 app.original_dialogue = not app.original_dialogue
                 self.dialogue.scroll = 0
                 return
-            if (self.player_record and self.player_record.error and self.retry_button.clicked(event,
-                    enabled=not paused and not self.dialogue.actor.interaction_blocked)):
-                app._sync_conversation_view()
-                app.conversations.retry_player_dialogue()
-                app._present_conversation_events()
-                return
             if self.handle_dialogue_scroll(app, event):
                 return
             if self.dialogue.conversation is not None:
@@ -345,11 +338,6 @@ class GameScreen:
                     self.rewind_conversation()
                 elif event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE, pygame.K_RIGHT):
                     self.advance_conversation(app)
-                elif self.retry_button.clicked(event, enabled=not paused and bool(
-                        self.dialogue.conversation.error and not self.dialogue.conversation.record.turns)):
-                    app._sync_conversation_view()
-                    app.conversations.retry_conversation_dialogue(self.dialogue.conversation)
-                    app._present_conversation_events()
                 return
             if self.back_button.clicked(event, enabled=self.dialogue.index > 0):
                 self.dialogue.move(-1)
@@ -703,12 +691,11 @@ class GameScreen:
             work = next((w for w in app.simulation.creations if w.id == offer["item"]), None)
             status = f'Gift offer: {offer["quantity"]} × {work.title + " [" + work.id[:8] + "]" if work else "apples"}'
         elif self.player_record and self.player_record.error:
-            self.retry_button.draw(app.window, app.small_font, enabled=not app.simulation.paused and not self.dialogue.actor.interaction_blocked)
             status = "Reply failed."
         title = app.font.render(turn.speaker if turn else "Request status" if page else self.dialogue.actor.name, True, INK)
         title_rect = title.get_rect(topleft=(self.reply_rect.x, 557))
         app.window.blit(title, title_rect)
-        status_right = self.retry_button.rect.left if self.player_record and self.player_record.error else self.back_button.rect.left
+        status_right = self.back_button.rect.left
         draw_wrapped_text(app.window, status, app.small_font, MUTED,
                           (title_rect.right + 16, 558, max(0, status_right - title_rect.right - 24), 24))
         self.back_button.draw(app.window, app.small_font, enabled=self.dialogue.index > 0)
@@ -919,7 +906,7 @@ class GameScreen:
             title = f"{conversation.initiator.name} & {conversation.recipient.name}"
         emotion = portrait_expression(part["name"], part["intensity"]) if part is not None else None
         self.draw_portrait(app, speaker, emotion)
-        title_right = self.subjects_button.rect.left if conversation.record.intended_subjects else self.retry_button.rect.left
+        title_right = self.subjects_button.rect.left if conversation.record.intended_subjects else self.back_button.rect.left
         draw_wrapped_text(app.window, title, app.font, INK, (self.reply_rect.x, 557, title_right - self.reply_rect.x - 16, 30))
         if conversation.record.intended_subjects:
             self.subjects_button.draw(app.window, app.small_font)
@@ -928,8 +915,6 @@ class GameScreen:
         self.next_button.label = "Done" if last_page else "Next"
         can_finish = not (last_page and conversation.active and app.simulation.paused)
         self.next_button.draw(app.window, app.small_font, enabled=bool(self.dialogue.pages) and can_finish)
-        if conversation.error and not conversation.record.turns:
-            self.retry_button.draw(app.window, app.small_font, enabled=not app.simulation.paused)
         if not conversation.arrived:
             text = f"{conversation.initiator.name} is walking over to {conversation.recipient.name}..."
         elif conversation.error and not source:

@@ -160,8 +160,6 @@ class Application:
             elif kind == "clear_input": self.game.prompt_input.set_value("")
             elif kind == "focus": self.game.focus_player_reply(self)
             elif kind == "close": self.game.close_dialogue(terminate=False, notify=False)
-            elif kind == "view_conversation":
-                self.game.dialogue.show(value.initiator, value)
             elif kind == "open":
                 self.game.dialogue.show(value)
                 self.game.dialogue.interaction_id = self.conversations.view_interaction_id
@@ -395,7 +393,7 @@ class Application:
                 relax(npc)
                 return
         self._sync_conversation_view()
-        self.conversations.cancel_request(request_id, "Model request cancelled by player. Retry when ready.")
+        self.conversations.cancel_request(request_id, "Model request cancelled by player.")
         self._present_conversation_events()
 
     def handle_event(self, event):

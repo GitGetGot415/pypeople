@@ -93,7 +93,7 @@ def _request_worker(session_id, request_id, provider, api_key, message, snapshot
                              [turn.model_dump() for turn in exc.failed_turns], [], control))
         except Exception:
             error = ("Could not complete this creation." if creative else
-                     "Could not get a reply from the model. Please try again.")
+                     "Could not get a reply from the model.")
             # The player sees the generic message; the request log keeps what actually failed.
             record_output("traceback", traceback.format_exc())
             record_output("error", error)
@@ -274,7 +274,7 @@ class RequestManager:
             except (ValidationError, ValueError, TypeError):
                 disposition("Rejected at main-thread validation: invalid action or reply.")
                 self.finish(session_id, request_id, "Invalid action or reply.")
-                replies.append((request_id, None, "The model returned an invalid action or reply. Try again.", [], []))
+                replies.append((request_id, None, "The model returned an invalid action or reply.", [], []))
                 continue
             for reason in getattr(result, "_dialogue_errors", ()):
                 disposition(f"Base dialogue failed validation; retaining dialogue and effects: {reason}")

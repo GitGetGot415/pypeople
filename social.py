@@ -480,7 +480,7 @@ def validate_live_agreements(conversation, response, *, dialogue_validation=True
     if any(npc.conversation is not conversation or world.actor_by_id(npc.id) is not npc or not npc.alive or npc.location != pair[0].location for npc in pair):
         raise ValueError("The conversation participants are no longer available.")
     if conversation.context_references != conversation_references(conversation):
-        raise ValueError("An objective or promise changed while the reply was being generated. Please try again.")
+        raise ValueError("An objective or promise changed while the reply was being generated.")
     context = conversation.information_context
     if context is not None:
         # Keep the original permitted choices. Reselecting them after a nearby
@@ -495,7 +495,7 @@ def validate_live_agreements(conversation, response, *, dialogue_validation=True
                           for b in npc.beliefs)
             # Opinions may move meanwhile (a harvest seen); the result is applied as a change, so only knowledge counts.
             if changed or related or can_deceive(npc) != context.can_lie[role]:
-                raise ValueError("A speaker's knowledge changed during generation. Please try again.")
+                raise ValueError("A speaker's knowledge changed during generation.")
     validate_information(response, context, names=[actor.name for actor in world.actors],
                          participant_names={"initiator": pair[0].name, "recipient": pair[1].name},
                          dialogue_validation=dialogue_validation, actor_references=account_references(conversation.name_actors))
@@ -509,7 +509,7 @@ def validate_live_agreements(conversation, response, *, dialogue_validation=True
                 or {proposal.promisor_id, proposal.recipient_id} != {npc.id for npc in pair}
                 or (proposal.promisor_id, proposal.recipient_id) in pending
                 or sum(giver == proposal.promisor_id for giver, _ in pending) >= 2):
-            raise ValueError("The promise's deadline or participants changed. Please try the conversation again.")
+            raise ValueError("The promise's deadline or participants changed.")
         pending.append((proposal.promisor_id, proposal.recipient_id))
 
 

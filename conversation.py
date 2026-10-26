@@ -179,7 +179,7 @@ class Conversation(ResidentProgress):
         from dialogue_validation import dialogue_validation_errors, validate_dialogue_format, validate_dialogue_speakers, validate_resident_grounding
         # Reject stale actor snapshots before displaying or committing anything.
         if getattr(self, "request_roster_revision", self.initiator.world.roster_revision) != self.initiator.world.roster_revision:
-            raise ValueError("The resident roster changed while dialogue was being prepared. Retry this meeting.")
+            raise ValueError("The resident roster changed while dialogue was being prepared.")
         if any(n.command_revision != self.request_actor_revisions[n.id] for n in (self.initiator, self.recipient)):
             raise ValueError("The participants changed activities before the reply arrived.")
         if self.initiator.speech_only or self.recipient.speech_only:
