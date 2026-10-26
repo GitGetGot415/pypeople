@@ -360,7 +360,14 @@ class ConversationSession:
         from player import start_approach
         if self.simulation.paused:
             raise ValueError("Resume time before giving.")
-        if self.player_owns(recipient) and not recipient.interaction_blocked and not recipient.busy:
+        if self.player_owns(recipient):
+            from transfers import validate_transfer
+            reason = self.input_unavailable(recipient)
+            if reason:
+                raise ValueError(reason)
+            if self.pending_offer:
+                raise ValueError("Accept or decline the current gift offer first.")
+            validate_transfer(self.simulation, self.simulation.player, recipient, item, quantity)
             self.simulation.player_interaction.gift = dict(item=item, quantity=quantity)
             self.open_player_dialogue(recipient)
             return

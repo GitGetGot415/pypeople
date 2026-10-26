@@ -24,7 +24,7 @@ from .world import CHARACTER_SCALE, draw_world
 from .character_sprite import draw_actor_portrait
 from constants import GAME_PORTRAIT_BACKGROUND, GAME_PORTRAIT_PADDING, GAME_PORTRAIT_BORDER_WIDTH
 from .inventory import InventoryPanel
-from constants import (PLAYER_ACTION_BUTTON_RECT, PLAYER_ACTION_PICKER_RECT, PLAYER_ACTION_PICKER_ROWS,
+from constants import (PLAYER_ACTION_BUTTON_RECT, PLAYER_GIVE_APPLE_RECT, PLAYER_ACTION_PICKER_RECT, PLAYER_ACTION_PICKER_ROWS,
                        PLAYER_ACTION_PICKER_ROW_HEIGHT, PLAYER_ACTION_PICKER_INSET,
                        PLAYER_ACTION_PICKER_TITLE_HEIGHT, PLAYER_ACTION_PICKER_FOOTER_HEIGHT,
                        PLAYER_ACTION_PICKER_BUTTON_WIDTH, PLAYER_ACTION_PICKER_ROW_BUTTON_HEIGHT,
@@ -43,6 +43,7 @@ class GameScreen:
         self.harvest_amount.set_value("1")
         self.invitation_button = Button(INVITATION_ACCEPT_RECT, "Accept invitation")
         self.actions_button = Button(PLAYER_ACTION_BUTTON_RECT, "Request action")
+        self.give_apple_button = Button(PLAYER_GIVE_APPLE_RECT, "Give apple")
         self.menu_button = Button(GAME_MENU_RECT, "Menu", icon="menu")
         self.confirm_menu = False
         self.menu_restore_focus = False
@@ -182,6 +183,15 @@ class GameScreen:
             app._sync_conversation_view()
             app.conversations.kill_resident(self.dialogue.actor)
             app._present_conversation_events()
+            return
+        if self.dialogue.open and self.give_apple_button.clicked(event):
+            if self.can_give_apple(app):
+                app._sync_conversation_view()
+                try:
+                    app.conversations.offer_player_item(self.dialogue.actor, "fruit", 1)
+                except ValueError as exc:
+                    self.show_save_message(str(exc))
+                app._present_conversation_events()
             return
         if self.dialogue.open and self.dialogue.conversation is None and self.actions_button.clicked(event):
             if self.player_response_ready and not self.pending_offer:
@@ -607,6 +617,17 @@ class GameScreen:
                 and not self.dialogue.open and math.dist((world.player.x, world.player.y),
                                                         world.tree.interaction_point) <= HARVEST_DISTANCE)
 
+    def can_give_apple(self, app):
+        from transfers import validate_transfer
+        if (not self.dialogue.open or not self.player_response_ready or self.pending_offer
+                or app.conversations.input_unavailable(self.dialogue.actor, active=app.screen == "game")):
+            return False
+        try:
+            validate_transfer(app.simulation, app.simulation.player, self.dialogue.actor, "fruit", 1)
+        except ValueError:
+            return False
+        return True
+
     def draw(self, app):
         from player import active_player
         draw_world(app.window, app.npcs, app.tree, app.small_font, app.character.renderer,
@@ -648,6 +669,7 @@ class GameScreen:
                 and self.dialogue.actor is not app.simulation.snake and self.player_response_ready):
             reason = app.conversations.input_unavailable(self.dialogue.actor, active=app.screen == "game")
             self.actions_button.draw(app.window, app.small_font, enabled=not reason and not self.pending_offer)
+            self.give_apple_button.draw(app.window, app.small_font, enabled=self.can_give_apple(app))
         if not self.dialogue.open:
             if self.apartment_open:
                 self.draw_apartments(app)
