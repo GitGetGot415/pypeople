@@ -119,7 +119,7 @@ class StatsScreen:
         else:
             sim = app.simulation
             entries = [(npc, npc.name) for npc in (*sim.npcs, sim.snake)]
-            departed = [*sim.archived, *([] if sim.player.alive or self.tab == "Opinions" else [sim.player])]
+            departed = [*sim.archived, *([] if sim.player.alive else [sim.player])]
             if departed:
                 opened = self.show_departed or self.selected_npc in departed
                 entries.append(("departed", f"{'-' if opened else '+'} Departed ({len(departed)})"))
@@ -358,7 +358,7 @@ class StatsScreen:
             self._epitaph(app, npc, add, gap, rule, height)
         elif self.tab == "Statistics":
             self._statistics(app, npc, add, gap, rule, height)
-        elif self.opinion_view == "Grid":
+        elif self.opinion_view == "Grid" and npc is not app.simulation.player:
             self._opinion_grid(app, npc, add, gap, height)
         else:
             self._opinion_table(app, npc, add, gap, height)
@@ -517,9 +517,23 @@ class StatsScreen:
                         self._link(link, height(), lambda cid=disclosure.conversation_id: self._open_conversation(app, cid))
                 gap()
 
+    @staticmethod
+    def _person_label(app, person):
+        return PLAYER_LABEL if person is app.simulation.player else person.name
+
     def _opinion_grid(self, app, npc, add, gap, height):
         """Every living resident's and the python's opinion of every other, as a colored matrix."""
-        people = list(app.simulation.actors)
+        sim = app.simulation
+        people = [*sim.actors, sim.player]
+
+        def opinion(a, b):
+            if a is b or a is sim.player:
+                return None
+            if b is sim.player:
+                held = getattr(a, "player_opinion", None)
+                return held.opinion if held and (held.opinion or held.reason) else None
+            return a.opinions.get(b.id, {}).get("opinion")
+
         add("Each row is that person's opinion of the person in the column. Green likes, red dislikes, "
             "blank has no opinion. Click a cell to read the pair.", app.small_font, MUTED)
         gap()
@@ -531,22 +545,31 @@ class StatsScreen:
         top = height()
         total = header + cell * len(people)
         self.grid = dict(top=top, cell=cell, header=header, people=people,
-                         values=[[None if a is b else a.opinions.get(b.id, {}).get("opinion") for b in people] for a in people])
+                         values=[[opinion(a, b) for b in people] for a in people])
         pad = -(-total // app.small_font.get_linesize())
         for _ in range(pad):
             gap()
 
     def _opinion_table(self, app, npc, add, gap, height):
         """Each person with this NPC's opinion of them and their opinion of this NPC, side by side."""
-        first = npc.name.split()[0]
+        sim = app.simulation
+        is_player = npc is sim.player
+        first = PLAYER_LABEL if is_player else npc.name.split()[0]
         rows = {}
-        for person, entry in npc.named_opinions().items():
-            rows[person] = {"mine": entry, "theirs": None}
-        for other in app.simulation.actors:
-            entry = other.named_opinions().get(npc.name) if other is not npc else None
-            if entry is not None:
-                rows.setdefault(other.name, {"mine": None, "theirs": None})["theirs"] = entry
-        if npc.player_opinion.opinion or npc.player_opinion.reason:
+        if is_player:
+            # The player holds no opinions of their own; show what each resident thought of them.
+            for other in (*sim.npcs, *sim.archived):
+                if other.player_opinion.opinion or other.player_opinion.reason:
+                    rows[other.name] = {"mine": None, "theirs": {"opinion": other.player_opinion.opinion,
+                                                                 "reason": other.player_opinion.reason}}
+        else:
+            for person, entry in npc.named_opinions().items():
+                rows[person] = {"mine": entry, "theirs": None}
+            for other in sim.actors:
+                entry = other.named_opinions().get(npc.name) if other is not npc else None
+                if entry is not None:
+                    rows.setdefault(other.name, {"mine": None, "theirs": None})["theirs"] = entry
+        if not is_player and (npc.player_opinion.opinion or npc.player_opinion.reason):
             rows[PLAYER_LABEL] = {"mine": {"opinion": npc.player_opinion.opinion, "reason": npc.player_opinion.reason},
                                   "theirs": None, "player": True}
         add("Bars run from -100 (left) to +100 (right). Click a person to read both reasons.", app.small_font, MUTED)
@@ -565,7 +588,7 @@ class StatsScreen:
             top = height()
             add(person, app.font)
             for label, entry in ((f"{first} on them", row["mine"]), (f"They on {first}", row["theirs"])):
-                if row.get("player") and entry is None:
+                if entry is None and (row.get("player") or is_player):
                     continue
                 self.opinion_bars.append((height(), label, entry["opinion"] if entry else None))
                 gap()
@@ -629,8 +652,6 @@ class StatsScreen:
                 if self.tab != name:
                     self.gallery.stop()
                 self.tab = name
-                if name == "Opinions" and self.selected_npc is app.simulation.player:
-                    self.selected_npc = None
                 if name == "Conversations" and self.selected_conversation is None and app.conversation_history:
                     self.selected_conversation = app.conversation_history[-1]
                 if name == "Model logs" and self.selected_log is None:
@@ -711,7 +732,7 @@ class StatsScreen:
                         row, column = (content_y - grid["top"] - grid["header"]) // grid["cell"], x // grid["cell"]
                         if 0 <= row < len(grid["people"]) and (0 <= column < len(grid["people"]) or x < 0):
                             self.selected_npc = grid["people"][row]
-                            self.selected_opinion = grid["people"][column].name if 0 <= column < len(grid["people"]) and column != row else None
+                            self.selected_opinion = self._person_label(app, grid["people"][column]) if 0 <= column < len(grid["people"]) and column != row else None
                             self.opinion_view = "Table"
                             self.detail_scroll = 0
                             return
@@ -923,7 +944,8 @@ class StatsScreen:
             y = y0 + header + row * cell
             if y + cell < self.detail_rect.top or y > self.detail_rect.bottom:
                 continue
-            name = person.name if len(person.name) <= 18 else person.name[:17] + "."
+            name = self._person_label(app, person)
+            name = name if len(name) <= 18 else name[:17] + "."
             color = INK if person is self.selected_npc else MUTED
             surface.blit(app.small_font.render(f"{row + 1}. {name}", True, color), (self.detail_rect.x + 4, y + (cell - line) // 2))
             for column, value in enumerate(grid["values"][row]):
