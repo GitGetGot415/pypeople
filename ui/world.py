@@ -153,6 +153,11 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
                         labels.append((label, (target_rect.centerx, target_rect.top - 2)))
     if zoom != 1.0:
         scene = pygame.transform.scale(scene, (round(size[0] * zoom), round(size[1] * zoom)))
+    if location == GARDEN_LOCATION:
+        # Nearest-neighbor shrinking can skip the artwork's last column or row.
+        # Restore its outline after both map resizing and camera zooming.
+        pygame.draw.rect(scene, garden_floor_art().get_at((0, 0)), scene.get_rect(),
+                         width=max(1, round(zoom)))
     previous_clip = surface.get_clip()
     floor_offset = GARDEN_FLOOR_OFFSET if location == GARDEN_LOCATION else (0, 0)
     scene_rect = scene.get_rect(topleft=(round(camera_offset[0] + floor_offset[0] * zoom),
