@@ -3,7 +3,7 @@
 import pygame
 
 from .text import wrap_text, scrollbar_rects, ScrollbarDrag
-from constants import ACCENT, EVENT_FEED_BODY_HEIGHT, HUD_HEADER_HEIGHT, HUD_PANEL_GAP, INK, MUTED, PAPER
+from constants import ACCENT, EVENT_FEED_BODY_HEIGHT, EVENT_FEED_WIDTH, HUD_HEADER_HEIGHT, HUD_PANEL_GAP, INK, MUTED, PAPER
 
 
 class EventFeed:
@@ -25,10 +25,11 @@ class EventFeed:
 
     def position(self, app):
         controls = app.game.save_button.rect.unionall([app.game.stats_button.rect, app.game.menu_button.rect])
-        self.header.topleft = (controls.left, controls.bottom + HUD_PANEL_GAP)
-        self.header.width = controls.width
+        # Keep event text readable when toolbar buttons only contain symbols.
+        self.header.width = max(EVENT_FEED_WIDTH, controls.width)
+        self.header.topright = (controls.right, controls.bottom + HUD_PANEL_GAP)
         self.body.topleft = self.header.bottomleft
-        self.body.width = controls.width
+        self.body.width = self.header.width
 
     def layout(self, app):
         events = app.simulation.events

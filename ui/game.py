@@ -5,7 +5,7 @@ from constants import (DIALOGUE_PANEL_HEIGHT, DIALOGUE_READING_Y, DIALOGUE_READI
                       WORLD_HEIGHT, WORLD_WIDTH, APARTMENT_INSPECTOR_CLOSE_RECT, APARTMENT_INSPECTOR_RECT,
                       APARTMENT_INSPECTOR_ROW_HEIGHT, APARTMENT_INSPECTOR_CONTENT_INSET,
                       APARTMENT_INSPECTOR_CONTENT_TOP, APARTMENT_INSPECTOR_TITLE_OFFSET, MODAL_OVERLAY_COLOR,
-                      INVENTORY_BUTTON_RECT, GAME_PAUSE_RECT, GAME_CLOCK_RECT, GAME_PHASE_POSITION,
+                      INVENTORY_BUTTON_RECT, GAME_PAUSE_RECT, GAME_CLOCK_RECT, GAME_SAVE_RECT, GAME_STATS_RECT, GAME_PHASE_POSITION,
                       GAME_PAUSED_LABEL_RIGHT, GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT,
                       DIALOGUE_ORIGINAL_TOGGLE_RECT, BORDER_RADIUS, GAME_MENU_CONFIRM_RECT,
                       GAME_MENU_CONFIRM_TITLE_Y, GAME_MENU_CONFIRM_MESSAGE_RECT, GAME_MENU_KEEP_PLAYING_RECT,
@@ -48,15 +48,15 @@ class GameScreen:
         self.menu_restore_focus = False
         self.keep_playing_button = Button(GAME_MENU_KEEP_PLAYING_RECT, "Keep playing")
         self.leave_game_button = Button(GAME_MENU_LEAVE_RECT, "Return to menu")
-        self.stats_button = Button((1024, 16, 112, 38), "Stats")
-        self.save_button = Button((904, 16, 108, 38), "Save")
+        self.stats_button = Button(GAME_STATS_RECT, "Stats", icon="stats")
+        self.save_button = Button(GAME_SAVE_RECT, "Save", icon="save")
         self.inventory_button = Button(INVENTORY_BUTTON_RECT, "Inventory")
         self.inventory = InventoryPanel()
         self.accept_offer_button = Button(GIFT_ACCEPT_RECT, "Accept gift")
         self.decline_offer_button = Button(GIFT_DECLINE_RECT, "Decline")
-        self.pause_button = Button(GAME_PAUSE_RECT, "Pause")
+        self.pause_button = Button(GAME_PAUSE_RECT, "Pause", icon="pause")
         self.arrival_retry = Button((476, 72, 120, 32), "Retry arrival")
-        self.clock_button = Button(GAME_CLOCK_RECT, "")
+        self.clock_button = Button(GAME_CLOCK_RECT, "Pass time", icon="clock")
         self.bed_open = False
         self.bed_advance_button = Button(BED_ADVANCE_RECT, "")
         self.bed_cancel_button = Button(BED_CANCEL_RECT, "Cancel")
@@ -473,13 +473,10 @@ class GameScreen:
         from player import active_player
         paused = app.simulation.paused
         self.pause_button.label = "Resume" if paused else "Pause"
+        self.pause_button.icon = "play" if paused else "pause"
         self.pause_button.draw(app.window, app.small_font)
         self.clock_button.draw(app.window, app.small_font, enabled=not paused and not app.simulation.phase_pending
                                and not app.simulation.player_attention_pending and not active_player(app.simulation))
-        x, y = self.clock_button.rect.center
-        pygame.draw.circle(app.window, PAPER, (x, y), 12, width=2)
-        pygame.draw.line(app.window, PAPER, (x, y), (x, y - 8), 2)
-        pygame.draw.line(app.window, PAPER, (x, y), (x + 6, y + 3), 2)
         color = PAPER if app.screen == "game" and app.simulation.phase == "night" else INK
         app.window.blit(app.small_font.render(app.simulation.phase_label, True, color), GAME_PHASE_POSITION)
         if app.simulation.player_attention_pending:

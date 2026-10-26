@@ -4,9 +4,10 @@ from constants import ACCENT, BORDER_RADIUS, PAPER
 
 
 class Button:
-    def __init__(self, rect, label):
+    def __init__(self, rect, label, *, icon=None):
         self.rect = pygame.Rect(rect)
         self.label = label
+        self.icon = icon
 
     def clicked(self, event, enabled=True):
         return (
@@ -22,5 +23,31 @@ class Button:
         if not enabled:
             color = (152, 164, 151)
         pygame.draw.rect(surface, color, self.rect, border_radius=BORDER_RADIUS)
+        if self.icon is not None:
+            self._draw_icon(surface)
+            return
         label = font.render(self.label, True, PAPER)
         surface.blit(label, label.get_rect(center=self.rect.center))
+
+    def _draw_icon(self, surface):
+        """Draw toolbar symbols with the same crisp strokes as the clock."""
+        x, y = self.rect.center
+        if self.icon == "clock":
+            pygame.draw.circle(surface, PAPER, (x, y), 12, width=2)
+            pygame.draw.line(surface, PAPER, (x, y), (x, y - 8), 2)
+            pygame.draw.line(surface, PAPER, (x, y), (x + 6, y + 3), 2)
+        elif self.icon == "pause":
+            pygame.draw.rect(surface, PAPER, (x - 8, y - 10, 5, 20))
+            pygame.draw.rect(surface, PAPER, (x + 3, y - 10, 5, 20))
+        elif self.icon == "play":
+            pygame.draw.polygon(surface, PAPER, ((x - 7, y - 11), (x + 10, y), (x - 7, y + 11)))
+        elif self.icon == "save":
+            pygame.draw.polygon(surface, PAPER, (
+                (x - 11, y - 12), (x + 6, y - 12), (x + 11, y - 7),
+                (x + 11, y + 12), (x - 11, y + 12)), width=2)
+            pygame.draw.rect(surface, PAPER, (x - 6, y - 11, 12, 8), width=2)
+            pygame.draw.rect(surface, PAPER, (x - 7, y + 2, 14, 10), width=2)
+        elif self.icon == "stats":
+            pygame.draw.line(surface, PAPER, (x - 12, y + 11), (x + 12, y + 11), 2)
+            for left, top, height in ((x - 10, y + 3, 7), (x - 2, y - 3, 13), (x + 6, y - 10, 20)):
+                pygame.draw.rect(surface, PAPER, (left, top, 5, height))
