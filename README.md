@@ -66,7 +66,7 @@
 - npc.py - backend
 - player_commands.py - normalizes player action identities and availability
 - simulation_data.py - validates, saves, and restores complete simulations
-- simulation.py - day phases, shared activity constants, and world updates
+- simulation.py - daily progression, shared activity constants, and world updates
 - snake.py - the guarding python, movement, and generated encounters
 - player.py - player inventory, possessions, and shared player rules
 - player_records.py - defines player conversation records and response reasons

@@ -105,7 +105,7 @@ class StatsScreen:
         rows = []
         top = 0
         if self.tab == "Creations":
-            entries = [(work, f"{work.kind.title()}: {work.title}\n{app.simulation.actor_by_id(work.creator_id).name}\nDay {work.day} / {work.phase.title()}")
+            entries = [(work, f"{work.kind.title()}: {work.title}\n{app.simulation.actor_by_id(work.creator_id).name}\n{work.day}")
                        for work in self.gallery.entries(app.simulation)]
         elif self.tab == "Model logs":
             entries = [(log, f"{log.metadata['participants']}\n{log.status_label} / "
@@ -418,7 +418,7 @@ class StatsScreen:
             add(f"Control: {npc.owner.replace('_', ' ')}", app.small_font, MUTED)
             if npc.interaction_blocked:
                 add("Player request pending; new decisions are deferred.", app.small_font, MUTED)
-            add(f"Arrival: day {npc.arrival_day} / Room {npc.room_number} / {npc.location}")
+            add(f"Arrival: {npc.arrival_day} / Room {npc.room_number} / {npc.location}")
             rule()
             add("Condition", app.heading_font)
             add(f"Satisfaction: {npc.social:.0f}/100 / fatigue {npc.social_fatigue:.0f}/100")
@@ -471,7 +471,7 @@ class StatsScreen:
             if not memories:
                 add("No personal experiences remembered yet.", color=MUTED)
             for memory in (memories if "memories" in self.expanded else memories[:STATS_COLLAPSED_ROWS]):
-                add(f"Day {memory.day} / {memory.phase.title()}: {memory.summary}")
+                add(f"{memory.day}: {memory.summary}")
                 add(f"Influence: {memory.weight:+g}", app.small_font, MUTED)
             if len(memories) > STATS_COLLAPSED_ROWS:
                 self._toggle(app, add, height, "memories",

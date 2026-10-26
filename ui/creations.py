@@ -173,7 +173,7 @@ class CreationsGallery:
         add(f"By {creator.name}" + (" (departed)" if not creator.alive else ""), app.small_font)
         owner = app.simulation.participant_by_id(work.owner_id)
         add(f"Owned by {owner.name}" + (" (departed)" if not owner.alive else ""), app.small_font)
-        add(f"Day {work.day} / {work.phase.title()} / {work.kind.title()}", app.small_font, MUTED)
+        add(f"{work.day} / {work.kind.title()}", app.small_font, MUTED)
         if work.kind == "art":
             self.preview_top = max(y, CREATIONS_PREVIEW_TOP)
             return rows, self.preview_top + ART_SIZE * ART_PREVIEW_SCALE + CREATIONS_CONTENT_PADDING

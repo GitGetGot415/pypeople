@@ -57,7 +57,7 @@ class GameScreen:
         self.decline_offer_button = Button(GIFT_DECLINE_RECT, "Decline")
         self.pause_button = Button(GAME_PAUSE_RECT, "Pause", icon="pause")
         self.arrival_retry = Button((476, 72, 120, 32), "Retry arrival")
-        self.clock_button = Button(GAME_CLOCK_RECT, "Pass time", icon="clock")
+        self.clock_button = Button(GAME_CLOCK_RECT, "Next day", icon="clock")
         self.bed_open = False
         self.bed_advance_button = Button(BED_ADVANCE_RECT, "")
         self.bed_cancel_button = Button(BED_CANCEL_RECT, "Cancel")
@@ -450,9 +450,9 @@ class GameScreen:
         draw_centered_text(app.window, "Rest in your bed", app.heading_font, BED_POPUP_TITLE_Y)
         message = ("Resume the game before passing time." if world.paused else
                    "Time will change after the current conversations finish." if world.phase_pending else
-                   "Sleep until tomorrow morning? Current conversations and handoffs will finish first. A new resident arrives if there is room.")
+                   "Advance to the next day? Current conversations and handoffs will finish first. A new resident arrives if there is room.")
         draw_wrapped_text(app.window, message, app.font, INK, BED_POPUP_MESSAGE_RECT)
-        self.bed_advance_button.label = f"Sleep until Day {world.day + 1}"
+        self.bed_advance_button.label = f"Advance to {world.day + 1}"
         self.bed_advance_button.draw(app.window, app.small_font, enabled=self.can_advance_from_bed(world))
         self.bed_cancel_button.draw(app.window, app.small_font)
 
@@ -494,7 +494,7 @@ class GameScreen:
         else:
             self.clock_button.draw(app.window, app.small_font, enabled=not paused and not app.simulation.phase_pending
                                    and not app.simulation.player_attention_pending)
-        color = PAPER if app.screen == "game" and app.simulation.phase == "night" else INK
+        color = INK
         phase_label = app.small_font.render(app.simulation.phase_label, True, INK)
         phase_rect = phase_label.get_rect(topright=GAME_PHASE_POSITION)
         app.window.blit(phase_label, phase_rect)
@@ -646,7 +646,7 @@ class GameScreen:
         pending = app.simulation.pending_arrival_days
         error = app.simulation.arrival_error
         if pending or error:
-            color = PAPER if app.simulation.phase == "night" else INK
+            color = INK
             label = f"Arrivals waiting: {', '.join(str(d) for d in pending)}" if pending else "Next arrival"
             if error:
                 label += f" / {error}"
@@ -655,7 +655,7 @@ class GameScreen:
                 label += " / arriving"
             draw_wrapped_text(app.window, label, app.small_font, color, (476, 110, 550, 64))
         if self.save_message_remaining:
-            color = PAPER if app.simulation.phase == "night" or self.location != "garden" else INK
+            color = PAPER if self.location != "garden" else INK
             draw_wrapped_text(app.window, self.save_message, app.small_font, color, (24, 480, 1232, 44))
 
         if self.dialogue.open and app.simulation.player_interaction:

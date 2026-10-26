@@ -7,8 +7,7 @@ from constants import (GARDEN_LOCATION, GARDEN_FLOOR_ART, GARDEN_FLOOR_OFFSET, I
                       APARTMENT_BASE_Y, APARTMENT_ROOF_RECT, GARDEN_BRIDGE_RECT, DEFAULT_BUBBLE_SPRITE_SIZE,
                       GARDEN_UNDERSIDE_RECT, APARTMENT_UNDERSIDE_RECT,
                       UI_SMALL_FONT_SIZE, NAME_TAG_FONT_SIZE, NAME_TAG_HEAD_GAP, PLAYER_NAME_TAG,
-                      ROOM_BED_RECT, SLEEP_FACING, SLEEP_ROTATION, PLAYER_ROOM_NUMBER, TREE_BASE_OFFSET)
-from activity import Behavior
+                      ROOM_BED_RECT, PLAYER_ROOM_NUMBER, TREE_BASE_OFFSET)
 from locations import active_player
 from npc import NPC
 from .fonts import UnicodeFont
@@ -225,7 +224,7 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
         size = (max(1, round(image.get_width() * scale)), max(1, round(image.get_height() * scale)))
         return image if image.get_size() == size else pygame.transform.scale(image, size)
 
-    label_color = PAPER if phase == "night" else INK
+    label_color = INK
     label_font = npc_name_font(max(1, round(UI_SMALL_FONT_SIZE * zoom)))
     name_font = npc_name_font(max(1, round(NAME_TAG_FONT_SIZE * zoom)))
     tags = []
@@ -281,18 +280,14 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
             continue
         npc = obj
         position = screen_point((npc.x, npc.y))
-        sleeping = getattr(npc, "behavior", None) == Behavior.SLEEP
         # Always resize from the original composed artwork, including when zooming out.
-        original = character_renderer.render(npc.appearance if hasattr(npc, "appearance") else npc.character, SLEEP_FACING if sleeping else npc.facing, giving=getattr(npc, "giving", False), eating=getattr(npc, "eating", False))
-        if sleeping:
-            original = pygame.transform.rotate(original, SLEEP_ROTATION)
+        original = character_renderer.render(npc.appearance if hasattr(npc, "appearance") else npc.character, npc.facing, giving=getattr(npc, "giving", False), eating=getattr(npc, "eating", False))
         sprite = resized(original, CHARACTER_SCALE * zoom)
         sprite_rect = sprite.get_rect(midbottom=position)
         shadow_height = CHARACTER_SHADOW_HEIGHT
         shadow = pygame.Rect(screen_point((npc.x - 16, npc.y + CHARACTER_SHADOW_OFFSET_Y - shadow_height / 2)),
                              (round(32 * zoom), round(shadow_height * zoom)))
-        if not sleeping:
-            _draw_shadow(surface, shadow)
+        _draw_shadow(surface, shadow)
         surface.blit(sprite, sprite_rect)
         tag = npc.name if isinstance(npc, NPC) else PLAYER_NAME_TAG
         tags.append((tag, sprite, sprite_rect))

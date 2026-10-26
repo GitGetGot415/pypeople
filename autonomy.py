@@ -27,10 +27,13 @@ def arrival_greeter(world, *, include_archived=False):
 
 def awaiting_arrival_greeting(npc, world):
     greeter = arrival_greeter(world)
-    return (npc is not world.snake and greeter is not None and npc is not greeter and npc.arrival_day > STARTING_DAY
-            and not any(greeter.id in record.participant_ids and npc.id in record.participant_ids
-                        and any(turn.speaker_id == greeter.id for turn in record.turns)
-                        for record in world.history))
+    if (npc is world.snake or npc is world.player or npc is greeter or greeter is None
+            or npc.arrival_day <= STARTING_DAY):
+        return False
+    if npc.conversation and npc.conversation.opening_kind == "orientation":
+        return True
+    # A finished attempt ends welcome priority even if it failed or was cancelled.
+    return not any(record.between(greeter, npc) for record in world.history)
 
 
 def next_arrival_to_greet(world):
@@ -44,9 +47,7 @@ def arrival_greeting_reserved(npc, world):
 
 
 def greet_arrivals(world):
-    """Reserve Judy's first conversation immediately, before any other activity."""
-    if world.phase_pending:
-        return
+    """Rush along real routes, then reserve the newcomer's first conversation."""
     greeter = arrival_greeter(world)
     if greeter is None:
         return
@@ -56,21 +57,24 @@ def greet_arrivals(world):
     if greeter.conversation and greeter.conversation.other(greeter) is newcomer:
         return
     reason = f"Welcoming the new arrival {newcomer.name} takes priority."
-    world.interrupt_resident(greeter, reason, mode="arrival")
-    from locations import clamp_point
-    greeter.location = newcomer.location
-    greeter.x, greeter.y = clamp_point(newcomer.location, (newcomer.x + SOCIAL_RADIUS, newcomer.y))
+    if greeter.journey and greeter.journey.purpose == "arrival_greeting":
+        return
+    from locations import clamp_point, start_journey
+    point = clamp_point(newcomer.location, (newcomer.x + SOCIAL_RADIUS, newcomer.y))
+    if greeter.location != newcomer.location or math.dist((greeter.x, greeter.y), point) > 1:
+        world.interrupt_resident(greeter, reason, mode="arrival")
+        start_journey(greeter, newcomer.location, point, purpose="arrival_greeting", fast=True)
+        return
+    if greeter.interaction or greeter.behavior != Behavior.WAIT or greeter.owner != "autonomous":
+        world.interrupt_resident(greeter, reason, mode="arrival")
     if not world.company_available(newcomer, allow_arrival=True):
         return
     try:
-        meeting = world.start_conversation(greeter, newcomer,
+        world.start_conversation(greeter, newcomer,
             f"Welcome {newcomer.name} and explain the known garden, apartment rooms and routes. Do not propose exploring for discoveries.",
             origin="autonomous", opening_kind="orientation")
     except ValueError:
         return
-    for person in (greeter, newcomer):
-        person.x, person.y = person.destination
-    meeting.update(0)
     greeter.reason = f"Welcoming {newcomer.name}"
     newcomer.reason = f"Meeting {greeter.name} after arriving"
 
@@ -96,8 +100,7 @@ def reconsider(npc, world, *, pressing_only=False):
         return
     if owns_resident(world, npc) or npc.journey or world.visit and world.visit.host_id == npc.id:
         return
-    if (world.phase_pending or npc.interaction is not None or npc.resume_pending or npc.player_call or npc.behavior in HOME_BEHAVIORS
-            or npc.home_reason == "night"):
+    if (world.phase_pending or npc.interaction is not None or npc.resume_pending or npc.player_call or npc.behavior in HOME_BEHAVIORS):
         return
     if not target_valid(npc, world):
         npc.finish_activity(world, failed=True)

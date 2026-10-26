@@ -9,7 +9,7 @@ class DeathMixin:
     """The Simulation's killing and departure rules, kept apart from its clock and movement."""
 
     def killing_unavailable(self, attacker, victim):
-        """Shared physical restrictions; each killer has their own phase cooldown."""
+        """Shared physical restrictions; each killer has their own daily cooldown."""
         from constants import (GARDEN_LOCATION, KILLING_COOLDOWN_PHASES, KILLING_DISTANCE, PLAYER_KILLING_DISTANCE,
                                KILLING_INDOOR_REASON, SNAKE_NAME)
         if victim is self.snake:
@@ -20,13 +20,16 @@ class DeathMixin:
                 or not (self.npc_by_id(attacker.id) is attacker
                         or attacker is self.player and active_player(self))):
             return "Choose a living resident."
+        from autonomy import arrival_greeting_reserved
+        if any(arrival_greeting_reserved(person, self) for person in (attacker, victim)):
+            return "Judy and the new arrival are protected until their welcome finishes."
         if attacker.location != GARDEN_LOCATION or victim.location != GARDEN_LOCATION:
             return KILLING_INDOOR_REASON
         if self.population <= PROTECTED_POPULATION:
             return "The remaining population is protected."
         last_kill = self.last_killing_phase_for(attacker.id)
         if last_kill is not None and self.phase_index - last_kill < KILLING_COOLDOWN_PHASES:
-            return "This attacker has already killed someone this phase. Wait for the next phase."
+            return "This attacker has already killed someone today. Wait for the next day."
         distance = PLAYER_KILLING_DISTANCE if attacker is self.player else KILLING_DISTANCE
         if math.dist((attacker.x, attacker.y), (victim.x, victim.y)) > distance:
             return "Move closer to the resident first."

@@ -113,7 +113,7 @@ class Creation(TitledData):
     kind: Literal["art", "music"]
     day: int = Field(strict=True, ge=1)
     owner_id: str = Field(min_length=1)
-    phase: Literal["day", "night"]
+    phase: Literal["day"]
     payload: dict
 
     @model_validator(mode="after")

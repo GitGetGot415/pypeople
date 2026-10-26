@@ -5,16 +5,15 @@ from activity import ActivitySnapshot
 from uuid import uuid4
 from dataclasses import dataclass
 from typing import Literal
-from constants import (APARTMENT_ID, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_RANGE,
+from constants import (APARTMENT_ID, CREATION_WORK_SECONDS_RANGE,
                       CREATIVE_QUEUE_SECONDS, INDOOR_RECOVERY_PER_SECOND, MINIMUM_INDOOR_SECONDS,
                       OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE, RETREAT_SOCIABILITY_WEIGHT,
-                      RETREAT_THRESHOLD_BASE, WAKE_DELAY_RANGE, ROOM_SLEEP_POSITION, SLEEP_FACING,
-                      PLAYER_ROOM_NUMBER, JUDY_WAKE_DELAY, MAX_RESIDENTS)
+                      RETREAT_THRESHOLD_BASE, PLAYER_ROOM_NUMBER, MAX_RESIDENTS)
 from creations import CreativeJob
 from activity import Behavior
 
 
-INDOOR_BEHAVIORS = (Behavior.REST, Behavior.SLEEP, Behavior.PAINT, Behavior.COMPOSE)
+INDOOR_BEHAVIORS = (Behavior.REST, Behavior.PAINT, Behavior.COMPOSE)
 HOME_BEHAVIORS = (Behavior.GO_HOME, *INDOOR_BEHAVIORS)
 
 
@@ -84,34 +83,14 @@ def discard_work(npc):
 
 def leave(npc, world):
     cancel_work(npc)
-    from locations import start_journey, door_point, npc_capacity
-    from constants import GARDEN_BUILDING_ARRIVAL, ARRIVAL_LOCATION
-    from autonomy import arrival_greeter, next_arrival_to_greet
-    greeting = (npc is arrival_greeter(world) and world.phase == "day"
-                and (world.pending_arrival_days and len(world.npcs) < npc_capacity(world)
-                     or next_arrival_to_greet(world) is not None))
-    start_journey(npc, ARRIVAL_LOCATION if greeting else "garden",
-                  door_point(npc.room_number) if greeting else GARDEN_BUILDING_ARRIVAL,
-                  purpose="arrival_greeting" if greeting else "leave_home")
+    from locations import start_journey
+    from constants import GARDEN_BUILDING_ARRIVAL
+    start_journey(npc, "garden", GARDEN_BUILDING_ARRIVAL, purpose="leave_home")
     npc.home_reason = None
-    npc.bedtime_remaining = npc.wake_remaining = None
     npc.home_remaining = 0.0
     npc.outdoor_remaining = OUTDOOR_COOLDOWN_SECONDS
     npc.command_revision += 1
-    npc.begin_activity(Behavior.WAIT if greeting else Behavior.WANDER, world,
-                       reason="Going to welcome a new arrival" if greeting else "Back from my apartment")
-
-
-def sleep(npc):
-    cancel_work(npc)
-    npc.command_revision += 1
-    npc.behavior = Behavior.SLEEP
-    npc.x, npc.y = ROOM_SLEEP_POSITION
-    npc.facing = SLEEP_FACING
-    npc.home_reason = "night"
-    npc.home_remaining = MINIMUM_INDOOR_SECONDS
-    npc.wake_remaining = None
-    npc.reason = "Sleeping until daytime"
+    npc.begin_activity(Behavior.WANDER, world, reason="Back from my apartment")
 
 
 def enter(npc, world):
@@ -123,9 +102,6 @@ def enter(npc, world):
     npc.activity_elapsed = 0.0
     npc.command_revision += 1
     npc.home_remaining = MINIMUM_INDOOR_SECONDS
-    if world.phase == "night":
-        sleep(npc)
-        return
     if npc.last_creative_day == world.day:
         relax(npc)
         return
@@ -152,49 +128,32 @@ def home_priority(npc, world, dt):
             or world.visit and world.visit.host_id == npc.id or npc.interaction):
         return
     if npc.behavior in INDOOR_BEHAVIORS:
-        if world.phase == "night" and npc.behavior != Behavior.SLEEP:
-            sleep(npc)
         return
-    if world.phase != "night" and npc.home_reason == "night":
-        npc.home_reason = None
-        npc.bedtime_remaining = None
-        if npc.behavior == Behavior.GO_HOME:
-            npc.finish_activity(world)
     if (npc.interaction or npc.eating or npc.selected or npc.interaction_blocked or npc.player_call or npc.player_reply.closing
             or npc.owner != "autonomous" or npc.behavior == Behavior.GO_HOME
             or any(npc.id in (action.npc_id, action.target_id) for action in world.pending_actions)):
         return
-    if world.phase == "night":
-        if npc.bedtime_remaining is None:
-            npc.home_reason = "night"
-            npc.bedtime_remaining = npc.rng.uniform(*BEDTIME_DELAY_RANGE)
-        npc.bedtime_remaining = max(0.0, npc.bedtime_remaining - dt)
-        if npc.bedtime_remaining > 0:
-            return
-        reason = "night"
-    else:
-        if (npc.social_fatigue < RETREAT_THRESHOLD_BASE + RETREAT_SOCIABILITY_WEIGHT * npc.preferences["sociability"]
-                or npc.outdoor_remaining > 0):
-            return
-        # Deliver an already available promised apple before an optional retreat.
-        from social import pending_promises
-        for promise in pending_promises(world):
-            if npc.id not in (promise.promisor_id, promise.recipient_id):
-                continue
-            giver, receiver = world.npc_by_id(promise.promisor_id), world.npc_by_id(promise.recipient_id)
-            if (giver and receiver and giver.inventory.get("fruit", 0)
-                    and world.company_available(giver) and world.company_available(receiver)
-                    and receiver.id not in giver.cooldowns and giver.id not in receiver.cooldowns):
-                from interactions import company_point
-                if company_point(giver, receiver) is not None:
-                    giver.decision_remaining = 0.0
-                    return
-        if npc.behavior not in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY):
-            return
-        reason = "retreat"
+    if (npc.social_fatigue < RETREAT_THRESHOLD_BASE + RETREAT_SOCIABILITY_WEIGHT * npc.preferences["sociability"]
+            or npc.outdoor_remaining > 0):
+        return
+    # Deliver an already available promised apple before an optional retreat.
+    from social import pending_promises
+    for promise in pending_promises(world):
+        if npc.id not in (promise.promisor_id, promise.recipient_id):
+            continue
+        giver, receiver = world.npc_by_id(promise.promisor_id), world.npc_by_id(promise.recipient_id)
+        if (giver and receiver and giver.inventory.get("fruit", 0)
+                and world.company_available(giver) and world.company_available(receiver)
+                and receiver.id not in giver.cooldowns and giver.id not in receiver.cooldowns):
+            from interactions import company_point
+            if company_point(giver, receiver) is not None:
+                giver.decision_remaining = 0.0
+                return
+    if npc.behavior not in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY):
+        return
     npc.command_revision += 1
-    npc.begin_activity(Behavior.GO_HOME, world, APARTMENT_ID, "Going home to sleep" if reason == "night" else "Taking some time alone")
-    npc.home_reason = reason
+    npc.begin_activity(Behavior.GO_HOME, world, APARTMENT_ID, "Taking some time alone")
+    npc.home_reason = "retreat"
     from locations import room_location, start_journey
     from constants import ROOM_ARRIVAL
     start_journey(npc, room_location(npc.room_number), ROOM_ARRIVAL, purpose="home")
@@ -212,17 +171,6 @@ def update_home(npc, world, dt):
         return
     npc.social_fatigue = max(0.0, npc.social_fatigue - INDOOR_RECOVERY_PER_SECOND * dt)
     npc.home_remaining = max(0.0, npc.home_remaining - dt)
-    if npc.behavior == Behavior.SLEEP:
-        if world.phase != "day":
-            return
-        if npc.wake_remaining is None:
-            from autonomy import arrival_greeter
-            npc.wake_remaining = (JUDY_WAKE_DELAY if npc is arrival_greeter(world)
-                                  else npc.rng.uniform(*WAKE_DELAY_RANGE))
-        npc.wake_remaining = max(0.0, npc.wake_remaining - dt)
-        if npc.wake_remaining == 0:
-            leave(npc, world)
-        return
     job = npc.creative_job
     if job:
         if not world.is_creative_job(npc, job):
@@ -234,27 +182,6 @@ def update_home(npc, world, dt):
         return
     if npc.home_remaining == 0:
         leave(npc, world)
-
-
-def phase_changed(world):
-    """Keep phase-sensitive state consistent even if the player saves immediately."""
-    from autonomy import arrival_greeter
-    for npc in world.npcs:
-        from player import owns_resident
-        if owns_resident(world, npc) or world.visit and world.visit.host_id == npc.id or npc.interaction:
-            continue
-        if npc.behavior in INDOOR_BEHAVIORS:
-            if world.phase == "night" and npc.behavior != Behavior.SLEEP:
-                sleep(npc)
-            if world.phase != "day":
-                npc.wake_remaining = None
-            elif npc.behavior == Behavior.SLEEP and npc is arrival_greeter(world):
-                update_home(npc, world, 0.0)
-        elif world.phase != "night" and npc.home_reason == "night":
-            npc.home_reason = None
-            npc.bedtime_remaining = None
-            if npc.behavior == Behavior.GO_HOME:
-                npc.finish_activity(world)
 
 
 def invitation_choices(world, npc):

@@ -170,7 +170,7 @@ def uses_original_dialogue(parts, rewritten=(), *, original=False, speaker="", l
 class Memory:
     id: Annotated[str, Field(min_length=1)]
     day: Annotated[int, Field(ge=1)]
-    phase: Literal["day", "night"]
+    phase: Literal["day"]
     partner_id: str
     kind: Literal["gave_fruit", "received_fruit", "refused", "kept_fruit", "conversation",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
@@ -182,7 +182,7 @@ class Memory:
 @dataclass
 class WorldEvent:
     day: Annotated[int, Field(ge=1)]
-    phase: Literal["day", "night"]
+    phase: Literal["day"]
     kind: Literal["phase", "food_requested", "food_refused", "fruit_shared", "conversation_completed", "interaction_failed",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
                   "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "departure", "apple_eaten", "conversation_seen", "harvest", "killing", "snake_claim", "goal_cancelled", "promise_cancelled", "work_shared", "player_call", "player_conversation", "travel_failed", "visit"]

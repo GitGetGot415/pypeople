@@ -40,7 +40,7 @@ class PlayerReport:
     conversation_id: str
     turn: int
     day: int
-    phase: Literal["day", "night"]
+    phase: Literal["day"]
     text: str
     kind: Literal["report"]
     listener_ids: list[str]

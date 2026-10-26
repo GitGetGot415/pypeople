@@ -57,7 +57,7 @@ def known_layout():
         apartment=f"A cream-colored building with muted green trim, rows of windows and a brown entrance door. It has {APARTMENT_FLOORS} floors, with {ROOMS_PER_FLOOR} rooms per floor. The elevator serves every floor, even when rooms are vacant. There are no stairs.",
         hallway=f"A long, narrow hallway with a tan floor, cream wall and muted green trim. The elevator is at the western end; {ROOMS_PER_FLOOR} brown room doors line the north wall. Only floor 1 has the garden exit, at the southwestern end beside the elevator.",
         room="A narrow private room with a tan floor, cream wall and muted green trim. A wood-framed bed with a pale pillow and muted green blanket is against the north wall. One doorway at the south end leads back to that floor's hallway. No other furnishings or exits are present.",
-        apple_access="Living residents and the player can harvest available tree apples locally without permission, payment or quotas. Stock is finite and replenishes at each day/night change. Harvesting briefly shakes the tree. Visiting is travel only; speech never transfers apples. Carried apples can be given to others even when the tree is empty.",
+        apple_access="Living residents and the player can harvest available tree apples locally without permission, payment or quotas. Stock is finite and replenishes at the start of each new day. Harvesting briefly shakes the tree. Visiting is travel only; speech never transfers apples. Carried apples can be given to others even when the tree is empty.",
         routes="From a room, use the south doorway to its hallway. On floors above 1, take the elevator to floor 1. Use the garden exit at the southwestern end of floor 1, then cross the wooden bridge to the grass. This exits the building, not this world.")
 
 
@@ -69,7 +69,7 @@ def unguided_familiarity(*, first_turn):
 
 
 def familiarity(npc):
-    from autonomy import arrival_greeter
+    from autonomy import arrival_greeter, awaiting_arrival_greeting
     from social_records import phase_index
     world = npc.world
     greeter = arrival_greeter(world, include_archived=True)
@@ -88,7 +88,7 @@ def familiarity(npc):
                         explanation=f"{greeter.name} told me about the layout, and since then I confirmed it by walking around myself. This is all I could see.")
         return dict(source="judy", guide_name=greeter.name,
                     explanation=f"{greeter.name} told me what the garden, building and rooms look like and where their exits are.")
-    if greeter in world.npcs:
+    if greeter in world.npcs and awaiting_arrival_greeting(npc, world):
         return dict(source="awaiting_welcome", explanation="I remember arriving in the elevator. Nobody has explained the layout to me yet.")
     # The immediate question mark on a player approach is a listening cue, not an arrival reaction.
     has_spoken = any(turn.speaker_id == npc.id and turn.text.strip() != "?"

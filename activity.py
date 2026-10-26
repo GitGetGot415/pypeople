@@ -18,7 +18,6 @@ class Behavior(str, Enum):
     WAIT = "WAIT"
     GO_HOME = "GO_HOME"
     REST = "REST"
-    SLEEP = "SLEEP"
     PAINT = "PAINT"
     COMPOSE = "COMPOSE"
 

@@ -187,7 +187,7 @@ class InventoryPanel:
             if transfers:
                 last = max(transfers, key=lambda t: t.sequence)
                 giver = app.simulation.participant_by_id(last.giver_id)
-                draw_wrapped_text(surface, f'Latest giver: {giver.name}, day {last.day} / {last.phase}',
+                draw_wrapped_text(surface, f'Latest giver: {giver.name}, {last.day}',
                                   app.small_font, MUTED, (x + 220, y + 78, 350, 90))
             if work.kind == "art":
                 surface.blit(self.media.painting_preview(work, INVENTORY_PREVIEW_SCALE), (x, y + 70))

@@ -17,7 +17,7 @@ class TransferIntent:
 class TransferReceipt(TransferIntent):
     id: Annotated[str, Field(min_length=1)]
     day: Annotated[int, Field(strict=True, ge=1)]
-    phase: Literal["day", "night"]
+    phase: Literal["day"]
     sequence: Annotated[int, Field(strict=True, ge=0)]
 
     @classmethod

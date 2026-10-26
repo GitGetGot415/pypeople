@@ -1,4 +1,4 @@
-"""Records for social knowledge, goals and promises, with the phase clock they are dated by."""
+"""Records for social knowledge, goals and promises, dated by the daily clock."""
 
 from dataclasses import dataclass
 from typing import Annotated, Literal
@@ -24,7 +24,7 @@ def phase_index(day, phase):
 
 
 def phase_label(index):
-    return f"Day {index // len(PHASES) + 1} / {PHASES[index % len(PHASES)].title()}"
+    return str(index + 1)
 
 
 @dataclass

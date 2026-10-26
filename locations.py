@@ -112,8 +112,8 @@ def observers(world, *actors):
 
 def available(npc):
     from activity import Behavior
-    return (npc.alive and npc.behavior not in (Behavior.SLEEP, Behavior.GO_HOME)
-            and not npc.journey and npc.home_reason != "night")
+    return (npc.alive and npc.behavior != Behavior.GO_HOME
+            and not npc.journey)
 
 
 def door_point(number):

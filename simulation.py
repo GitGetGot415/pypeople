@@ -1,4 +1,4 @@
-"""A small world with player-controlled day phases."""
+"""A small world with player-controlled days."""
 
 
 import math
@@ -70,7 +70,6 @@ class Simulation(DeathMixin):
         self.phase = STARTING_PHASE
         self.paused = STARTING_PAUSED
         self.phase_pending = False
-        self.sleep_until_day = False
         self.pending_actions = []
         self.history = []
         self.events = []
@@ -141,11 +140,11 @@ class Simulation(DeathMixin):
 
     @property
     def phase_label(self):
-        return f"{self.phase.title()} {self.day}"
+        return str(self.day)
 
     @property
     def next_phase_label(self):
-        return "Night" if self.phase == "day" else f"Day {self.day + 1}"
+        return str(self.day + 1)
 
     @property
     def player_attention_pending(self):
@@ -158,43 +157,31 @@ class Simulation(DeathMixin):
         self.finish_phase_change()
 
     def next_day(self):
-        if self.paused or self.phase_pending or self.player_attention_pending:
-            return
-        self.sleep_until_day = True
         self.next_phase()
 
     def finish_phase_change(self):
         """Commit one clock request only after existing speech and handoffs finish."""
         from social import advance_social_phase
+        from autonomy import next_arrival_to_greet
         if (not self.phase_pending or self.paused or self.player_attention_pending or self.snake.conversation is not None
                 or self.snake.interaction_blocked or self.pending_actions
+                or next_arrival_to_greet(self) is not None
                 or any(npc.interaction is not None or npc.interaction_blocked
                        or npc.selected and npc.player_reply.closing for npc in self.npcs)):
             return
         self.phase_pending = False
-        if self.phase == "day":
-            self.phase = "night"
-        else:
-            self.phase = "day"
-            self.day += 1
-            from locations import npc_capacity
-            if (len(self.npcs) < npc_capacity(self) and self.day not in self.pending_arrival_days
-                    and self.day not in self.processed_arrival_days):
-                self.pending_arrival_days.append(self.day)
+        self.day += 1
+        self.phase = "day"
+        from locations import npc_capacity
+        if (len(self.npcs) < npc_capacity(self) and self.day not in self.pending_arrival_days
+                and self.day not in self.processed_arrival_days):
+            self.pending_arrival_days.append(self.day)
         for npc in self.npcs:
             npc.social = max(0.0, npc.social - SATISFACTION_PHASE_LOSS)
         self.tree.fruit = self.population
-        from apartments import phase_changed
-        phase_changed(self)
         advance_social_phase(self)
-        self.publish("phase", [], f"Time changed to {self.phase}.")
-        if self.sleep_until_day and self.phase == "night":
-            self.phase_pending = True
-            self.finish_phase_change()
-            return
-        self.sleep_until_day = False
-        if self.phase == "day":
-            self.deliver_arrivals()
+        self.publish("phase", [], f"Day advanced to {self.day}.")
+        self.deliver_arrivals()
 
     def publish(self, kind, participants, text, record=None):
         from conversation_history import WorldEvent
@@ -217,7 +204,7 @@ class Simulation(DeathMixin):
                    and opening_kind == "orientation")
         if not welcome and any(arrival_greeting_reserved(p, self) for p in (initiator, recipient)):
             raise ValueError("The new arrival must speak with Judy first.")
-        if self.phase_pending and origin == "autonomous":
+        if self.phase_pending and origin == "autonomous" and not welcome:
             raise ValueError("Waiting for the pending time change before starting another automatic conversation.")
         if not colocated(initiator, recipient) or any(self.actor_by_id(p.id) is not p or not available_outdoors(p) for p in (initiator, recipient)):
             raise ValueError("Only living residents can begin this conversation.")
@@ -521,6 +508,9 @@ class Simulation(DeathMixin):
         from player import owns_resident, end_interaction
         if mode not in ("cancel", "departure", "arrival", "approach", "action", "session"):
             raise ValueError("Unknown resident interruption reason.")
+        from autonomy import arrival_greeting_reserved
+        if mode not in ("arrival", "session") and arrival_greeting_reserved(target, self):
+            raise ValueError("Judy's welcome must finish before either resident can be interrupted.")
         if mode == "action":
             if self.visit and self.visit.host_id == target.id:
                 from apartments import finish_visit
@@ -610,7 +600,7 @@ class Simulation(DeathMixin):
             from apartments import cancel_work
             cancel_work(target)
             target.journey = None
-            target.home_reason = target.bedtime_remaining = target.wake_remaining = None
+            target.home_reason = None
         if mode == "arrival":
             target.player_reply.release()
             target.begin_activity(Behavior.WAIT, self, reason=reason)

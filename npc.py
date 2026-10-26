@@ -13,7 +13,7 @@ from creations import CreativeJob
 from emotions import portrait_expression
 from conversation_history import Memory, relevant_memories
 from constants import (MAX_RESIDENTS, PLAYER_CALL_COOLDOWN, REST_SECONDS_RANGE, CREATION_WORK_SECONDS_RANGE,
-                       OUTDOOR_COOLDOWN_SECONDS, BEDTIME_DELAY_RANGE, WAKE_DELAY_RANGE, APPLE_SATISFACTION,
+                       OUTDOOR_COOLDOWN_SECONDS, APPLE_SATISFACTION,
                        COMPANY_MAX_SECONDS, DECISION_SECONDS, DEFAULT_CHARACTER_NAME, EAT_SECONDS,
                        CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS,
                        MOVEMENT_SPEED, NPC_RADIUS, PARTNER_COOLDOWN, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED,
@@ -80,9 +80,7 @@ class ResidentValues(ActivitySnapshot):
     social_fatigue: Annotated[float, Field(ge=0, le=100)] = field(default_factory=lambda: random.uniform(*STARTING_FATIGUE_RANGE))
     home_remaining: Annotated[float, Field(ge=0, le=max(REST_SECONDS_RANGE[1], CREATION_WORK_SECONDS_RANGE[1]))] = 0.0
     outdoor_remaining: Annotated[float, Field(ge=0, le=OUTDOOR_COOLDOWN_SECONDS)] = 0.0
-    bedtime_remaining: Annotated[float | None, Field(ge=0, le=BEDTIME_DELAY_RANGE[1])] = None
-    wake_remaining: Annotated[float | None, Field(ge=0, le=WAKE_DELAY_RANGE[1])] = None
-    home_reason: Literal["night", "retreat"] | None = None
+    home_reason: Literal["retreat"] | None = None
     last_creative_day: Annotated[int, Field(strict=True, ge=0)] = 0
     creative_job: CreativeJob | None = field(default=None, repr=False, compare=False)
     location: str = "garden"
@@ -252,7 +250,6 @@ class NPC(ResidentValues, ConversationActor):
     def begin_activity(self, behavior, world, target=None, reason="", owner="autonomous"):
         if behavior != Behavior.GO_HOME:
             self.home_reason = None
-            self.bedtime_remaining = None
         self.behavior, self.target_id = behavior, target
         self.owner, self.reason = owner, reason
         self.destination = None
@@ -355,7 +352,6 @@ class NPC(ResidentValues, ConversationActor):
             Behavior.WAIT: "Waiting",
             Behavior.GO_HOME: "Walking home",
             Behavior.REST: "Relaxing at home",
-            Behavior.SLEEP: "Sleeping at home",
             Behavior.PAINT: "Painting at home",
             Behavior.COMPOSE: "Composing at home",
         }[self.behavior]
@@ -363,8 +359,6 @@ class NPC(ResidentValues, ConversationActor):
     def contains(self, point):
         if self.sprite_size is not None:
             width, height = self.sprite_size
-            if self.behavior == Behavior.SLEEP:
-                width, height = height, width
             return (
                 self.x - width / 2 <= point[0] < self.x + width / 2
                 and self.y - height <= point[1] < self.y
@@ -548,7 +542,7 @@ class NPC(ResidentValues, ConversationActor):
         if self.interaction is not None or self.resume_pending or self.player_call:
             return
         world = self.world
-        if self.behavior in (Behavior.REST, Behavior.SLEEP, Behavior.PAINT, Behavior.COMPOSE, Behavior.GO_HOME):
+        if self.behavior in (Behavior.REST, Behavior.PAINT, Behavior.COMPOSE, Behavior.GO_HOME):
             from apartments import update_home
             update_home(self, world, max(0.0, dt))
             return

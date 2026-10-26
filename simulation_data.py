@@ -98,7 +98,7 @@ class InformationState(saved_record(InformationContext)):
 
 class DepartureState(SaveModel):
     day: int = Field(ge=1)
-    phase: Literal["day", "night"]
+    phase: Literal["day"]
     cause: Literal["killed by resident", "killed by player"]
     attacker_id: str = Field(min_length=1)
     conversation_id: str = Field(min_length=1)
@@ -366,7 +366,7 @@ class SimulationState(SaveModel):
     player_call_check: float = Field(ge=0, le=PLAYER_CALL_CHECK_SECONDS)
     player_acknowledgments: list[PlayerAcknowledgmentState]
     npc_trait_mode: Literal["normal", "extreme", "both"]
-    phase: Literal["day", "night"]
+    phase: Literal["day"]
     events: list[EventState] = Field(max_length=200)
     promises: list[PromiseState]
     facts: list[FactState]

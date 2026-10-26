@@ -350,7 +350,7 @@ def accept_player_promises(world, npc, record, response, message, *, opening=Fal
             continue
         try:
             validate_apple_promise(record.turns[pending.offer_turn].text, message,
-                                   pending.deadline, current_phase=world.phase_index)
+                                   pending.deadline, current_phase=pending.created_phase)
         except ValueError:
             continue
         pending.accept_turn = len(record.turns) - 1

@@ -8,7 +8,7 @@ import re
 import unicodedata
 from collections import Counter
 from validation_errors import DialogueValidationError, RecoveryKind
-from constants import (DIALOGUE_CAPS_MIN_LETTERS, DIALOGUE_CAPS_MIN_WORDS, DIALOGUE_CAPS_RATIO, PHASES,
+from constants import (DIALOGUE_CAPS_MIN_LETTERS, DIALOGUE_CAPS_MIN_WORDS, DIALOGUE_CAPS_RATIO,
                       SNAKE_NAME, SPOKEN_NUMBERS)
 from dialogue_text import split_sentences
 
@@ -721,15 +721,16 @@ def validate_apple_offer(offer, deadline, *, current_phase=None):
     negative = r"\b(?:cannot|can['’]t|won['’]t|wouldn['’]t|will not|do not|don['’]t|decline|refuse|maybe|perhaps|might)\b"
     if not giving or not re.search(r"\b(?:apple|fruit)\b", offer, re.I) or re.search(negative, offer, re.I):
         raise DialogueValidationError("A recorded apple promise needs the giver's explicit spoken commitment to give an apple, not a request or unrelated discussion.", RecoveryKind.MISSING_PROMISE)
-    phase = PHASES[deadline % len(PHASES)]
-    phase_words = {"day": r"day|daytime|morning", "night": r"night|tonight"}[phase]
-    day = re.search(r"\bday\s+(\d+)\b", offer, re.I)
-    phase_text = re.sub(r"\bday\s+\d+\b", "", offer, flags=re.I)
-    if (not re.search(rf"\b(?:{phase_words})\b", phase_text, re.I)
-            or day and int(day[1]) != deadline // len(PHASES) + 1
-            or current_phase is not None and re.search(r"\btomorrow\b", offer, re.I)
-            and deadline // len(PHASES) != current_phase // len(PHASES) + 1):
-        raise ValueError("State the apple promise's actual deadline in the offer; do not invent a different day or phase.")
+    day = re.search(r"\b(?:day\s+|(?:by|on|before)\s+(?:day\s+)?)(\d+)\b", offer, re.I)
+    tomorrow = bool(re.search(r"\btomorrow\b", offer, re.I))
+    today = bool(re.search(r"\btoday\b", offer, re.I))
+    valid = (bool(day or tomorrow or today)
+             and (day is None or int(day[1]) == deadline + 1)
+             and (not tomorrow or current_phase is not None and deadline == current_phase + 1)
+             and (not today or current_phase is not None and deadline == current_phase)
+             and not re.search(r"\b(?:tonight|night|nightfall)\b", offer, re.I))
+    if not valid:
+        raise ValueError("State the apple promise's actual deadline day in the offer.")
 
 
 def validate_apple_acceptance(acceptance):
@@ -1043,7 +1044,7 @@ def leverage_pressure(text):
 
 
 def validate_tree_permanence(text):
-    """The tree's stock changes: residents harvest it and it refills at each day/night change."""
+    """The tree's stock changes: residents harvest it and it refills at the start of each new day."""
     for sentence in split_sentences(unquoted_speech(text)):
         if sentence.rstrip().endswith("?") or not re.search(r"\b(?:tree|apples?|fruit|branches|harvest\w*)\b", sentence, re.I):
             continue
@@ -1055,7 +1056,7 @@ def validate_tree_permanence(text):
                 sentence, re.I):
             if not re.search(r"\bnot\s+$", sentence[:match.start()], re.I):
                 raise ValueError("The tree is not permanently empty or full: residents harvest it, and it refills at each "
-                                 "day/night change. Describe its current state or a harvest you saw, not a permanent condition.")
+                                 "new day. Describe its current state or a harvest you saw, not a permanent condition.")
 
 
 def validate_name_tag_talk(text, question=""):

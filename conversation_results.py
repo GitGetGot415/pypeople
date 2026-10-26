@@ -219,7 +219,7 @@ def apply_pending_action(world, action, spacing):
     npc.player_reply.complete()
     error = ""
     if (world.npc_by_id(npc.id) is not npc or npc.busy or npc.command_revision != action.revision
-            or npc.behavior in (Behavior.SLEEP, Behavior.GO_HOME)
+            or npc.behavior == Behavior.GO_HOME
             or action.record is None and npc.behavior in (Behavior.REST, Behavior.PAINT, Behavior.COMPOSE)):
         error = "That request is no longer available because the NPC's activity changed."
     if not error:

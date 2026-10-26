@@ -46,7 +46,7 @@ class EventFeed:
         self.rows = []
         top = 6
         for event in events:
-            text = f"Day {event.day} / {event.phase.title()} - {event.text}"
+            text = f"{event.day} - {event.text}"
             if event.history is not None:
                 text += " [view]"
             lines = wrap_text(text, app.small_font, self.body.width - 28)

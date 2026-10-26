@@ -104,7 +104,7 @@ not a destination, eating, or transfer command.
 
 KILLING_INSTRUCTION = f"""{KILLING_INDOOR_REASON}
 Killings can occur only in the garden. {SNAKE_NAME} cannot be killed.
-Each person can kill at most once per phase. Killing does not use another person's allowance.
+Each person can kill at most once per day. Killing does not use another person's allowance.
 """
 
 GARDEN_INSTRUCTION = TREE_INSTRUCTION + """Current physical surroundings are authoritative: one grassy garden,
@@ -203,12 +203,12 @@ WORLD_INSTRUCTION = SPEAKING_BRIEF + f"""Use world_state.environment, live inven
 for the simulation. Profiles describe personality and former life; former-life
 recollections do not establish events in this garden. Opinions and memory
 summaries are subjective and cannot establish an unrecorded event.
-Each phase change resets tree apples to the number of living human residents,
+Each new day resets tree apples to the number of living human residents,
 including the living player in Player mode. Spectators and the snake do not count.
 Leftover tree apples do not accumulate, and tree stock has no maximum.
 Keep speech grounded in what the speaker knows and what is happening now.
-Time alternates between day and night. Residents normally go about their activities
-during the day and return to their apartments to sleep at night, waking during the day.
+It is always daytime. The day number advances only when requested; there is no night.
+Residents can return to their apartments to relax, paint or compose when they need time alone.
 Firsthand memories and accounts are events that speaker personally experienced.
 The speaker already knows whether they happened: never describe them as hearsay,
 invent a source for them, or ask another person to verify their occurrence.
@@ -243,11 +243,11 @@ You are the resident described by the character profile below.
 The following are technical mechanics for choosing actions and answering explicit
 player questions about supported mechanics. Ordinary speech stays in your experience;
 do not discuss Pygame, UI controls, action identifiers or numeric satisfaction unasked.
-World state includes the day number, time_of_day (day or night),
+World state includes the day number, time_of_day (always day),
 satisfaction, carried fruit, an activity, and its reason. The player
-changes the time of day using the bed in their own room; it never advances on its own.
+advances to the next day using the bed in their own room; it never advances on its own.
 Use these facts when asked what you are doing or how you feel. Satisfaction drops
-by 5 each time the player changes the phase. Time passing alone never lowers it.
+by 10 each time a new day begins. Time passing alone never lowers it.
 Eating one carried apple raises satisfaction by 10, up to 100; company also raises it.
 Autonomous collecting, eating, and company use local simulation rules.
 Apples are stored as "fruit" in inventory. There are no hunger or rest needs.
@@ -471,9 +471,9 @@ use player_opinion for the player. Preserve existing views absent relevant new
 information. Opinion reasons use ordinary prose from your own perspective.
 Do not announce numeric scores unless asked. Return [] when there is no update.
 
-For explicit questions about mechanics: the player's bed changes day/night;
-time does not advance by itself. Each phase resets tree stock to the living
-human count, including the player. Satisfaction loses 5 per phase, not over time.
+For explicit questions about mechanics: the player's bed advances to the next day;
+time does not advance by itself. Each new day resets tree stock to the living
+human count, including the player. Satisfaction loses 10 per day, not over time.
 Eating one carried apple adds 10 up to 100; company also helps. There are no
 hunger/rest needs or storage limits. You choose your ordinary walking and resting autonomously.
 The supported player requests are visiting the tree, eating a carried apple, approaching
