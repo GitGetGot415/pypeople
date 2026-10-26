@@ -23,7 +23,7 @@ from constants import (STATS_PORTRAIT_PADDING, CONVERSATION_FAILED, ACCENT, FAIL
                        STATS_TAB_RECTS, STATS_FOLLOW_RECT, STATS_INVENTORY_RECT, STATS_INVENTORY_DETAIL_TOP,
                        STATS_SORT_RECT, OPINION_BAR_LEFT, OPINION_BAR_WIDTH, OPINION_POSITIVE_COLOR,
                        OPINION_NEGATIVE_COLOR, PLAYER_LABEL, STATS_VIEW_RECT, STATS_SUBTAB_RECTS, STATS_COLLAPSED_ROWS,
-                       GRID_LABEL_WIDTH, GRID_MAX_CELL)
+                       GRID_LABEL_WIDTH, GRID_MAX_CELL, STATS_DEAD_COLOR, STATS_DEAD_SELECTED_COLOR)
 
 # Row colors by conversation state: (unselected, selected).
 CONVERSATION_COLORS = {
@@ -86,6 +86,7 @@ class StatsScreen:
         self.grid = None
         self.dialogue_portraits = []
         self.dialogue_backgrounds = []
+        self.dead_backgrounds = []
 
     def open_record(self, record):
         self.tab = "Conversations"
@@ -122,7 +123,7 @@ class StatsScreen:
             departed = [*sim.archived, *([] if sim.player.alive else [sim.player])]
             if departed:
                 opened = self.show_departed or self.selected_npc in departed
-                entries.append(("departed", f"{'-' if opened else '+'} Departed ({len(departed)})"))
+                entries.append(("departed", f"{'-' if opened else '+'} Dead ({len(departed)})"))
                 if opened:
                     entries += [(npc, PLAYER_LABEL if npc is sim.player else npc.name) for npc in departed]
         for entry, label in entries:
@@ -148,6 +149,7 @@ class StatsScreen:
         self.grid = None
         self.dialogue_portraits = []
         self.dialogue_backgrounds = []
+        self.dead_backgrounds = []
 
         if self.tab == "Creations":
             return lines
@@ -556,6 +558,7 @@ class StatsScreen:
         is_player = npc is sim.player
         first = PLAYER_LABEL if is_player else npc.name.split()[0]
         rows = {}
+        dead_names = {self._person_label(app, person) for person in (*sim.actors, sim.player) if not person.alive}
         if is_player:
             # The player holds no opinions of their own; show what each resident thought of them.
             for other in (*sim.npcs, *sim.archived):
@@ -581,10 +584,17 @@ class StatsScreen:
             person, row = item
             if self.opinion_sort == "Score":
                 score = row["mine"]["opinion"] if row["mine"] else None
-                return (score is None, -(score or 0), person.casefold())
-            return (False, 0, person.casefold())
+                return (person in dead_names, score is None, -(score or 0), person.casefold())
+            return (person in dead_names, False, 0, person.casefold())
 
+        has_dead = any(person in dead_names for person in rows)
+        category = None
         for person, row in sorted(rows.items(), key=order):
+            dead = person in dead_names
+            if has_dead and category != dead:
+                add("Dead" if dead else "Living", app.heading_font)
+                gap()
+                category = dead
             top = height()
             add(person, app.font)
             for label, entry in ((f"{first} on them", row["mine"]), (f"They on {first}", row["theirs"])):
@@ -597,7 +607,10 @@ class StatsScreen:
                     add(f"{first}'s reason: {row['mine']['reason']}", app.small_font)
                 if row["theirs"]:
                     add(f"Their reason: {row['theirs']['reason']}", app.small_font)
-                self.dialogue_backgrounds.append((top, height()))
+                if not dead:
+                    self.dialogue_backgrounds.append((top, height()))
+            if dead:
+                self.dead_backgrounds.append((top, height(), self.selected_opinion == person))
             self._link(top, height(), lambda person=person: setattr(
                 self, "selected_opinion", None if self.selected_opinion == person else person))
             gap()
@@ -787,7 +800,7 @@ class StatsScreen:
         pygame.draw.rect(surface, PAPER, (496, 134, 600, 506))
         list_title = ("Model requests" if self.tab == "Model logs" else
                       f"Conversations ({len(app.conversation_history)})" if self.tab == "Conversations" else
-                      f"Living {app.simulation.population} / Departed {app.simulation.departed_count}")
+                      f"Living {app.simulation.population} / Dead {app.simulation.departed_count}")
         if self.tab != "Creations":
             surface.blit(app.font.render(list_title, True, INK), (200, 150))
         for name, button in self.tabs.items():
@@ -859,6 +872,8 @@ class StatsScreen:
                 else:
                     state = "normal"
                 color = CONVERSATION_COLORS[state][selected]
+            elif self.tab in ("Statistics", "Opinions") and (entry == "departed" or not entry.alive):
+                color = STATS_DEAD_SELECTED_COLOR if selected else STATS_DEAD_COLOR
             else:
                 color = ACCENT if selected else GRASS
             pygame.draw.rect(surface, color, row)
@@ -873,6 +888,12 @@ class StatsScreen:
             pygame.draw.rect(surface, ORIGINAL_DIALOGUE_PAPER,
                 (self.detail_rect.x - 4, self.detail_rect.top + top - self.detail_scroll,
                  self.detail_rect.width - 8, bottom - top))
+        for top, bottom, selected in self.dead_backgrounds:
+            row = pygame.Rect(self.detail_rect.x - 4, self.detail_rect.top + top - self.detail_scroll,
+                              self.detail_rect.width - 8, bottom - top)
+            pygame.draw.rect(surface, STATS_DEAD_COLOR, row)
+            if selected:
+                pygame.draw.rect(surface, ACCENT, row, 2)
         y = self.detail_rect.top - self.detail_scroll
         for line, font, color, indent in lines:
             if self.detail_rect.top - font.get_linesize() < y < self.detail_rect.bottom:
