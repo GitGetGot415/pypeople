@@ -197,7 +197,8 @@ class ConversationSession:
         npc.set_selected(True)
         interaction = self.simulation.player_interaction
         record = next((r for r in self.simulation.history if r.id == interaction.record_id), None)
-        if interaction.incoming and npc.player_call and not interaction.pending_request:
+        if (interaction.incoming and not interaction.pending_request
+                and (npc.player_call or record and record.purpose == "confrontation" and not record.turns)):
             self.prepare_player_opening()
             return
         if record is None:
@@ -279,6 +280,8 @@ class ConversationSession:
                 belief = next(b for b in npc.beliefs if b.claim_id == record.grievance_id)
                 account = account_view(self.simulation, claim_by_id(self.simulation, record.grievance_id), belief)
                 snapshot["conversation_account"] = account
+                if not record.turns:
+                    snapshot["opening_account"] = account
                 known = snapshot["private_context"]["known_accounts"]
                 snapshot["private_context"]["known_accounts"] = [account, *[a for a in known if a["claim_id"] != record.grievance_id]]
         earlier, remaining = [], PLAYER_CONTEXT_TURN_LIMIT
@@ -307,21 +310,31 @@ class ConversationSession:
         """Generate the opening after the resident reaches the player and the panel is open."""
         from player import call_valid
         interaction = self.simulation.player_interaction
-        if (not interaction or interaction.kind != "resident" or not interaction.incoming
+        if (not interaction or interaction.kind not in ("resident", "snake") or not interaction.incoming
                 or interaction.stage != "conversation" or self.simulation.paused):
             return
         npc = self.simulation.actor_by_id(interaction.npc_id)
         if not self.view_open or self.view_actor is not npc or self.view_interaction_id != interaction.id:
             return
-        if npc is None or not npc.player_call:
+        if npc is None:
             return
-        if not call_valid(self.simulation, npc, npc.player_call):
+        record = self.record
+        if npc.player_call:
+            call = asdict(npc.player_call)
+        elif record and record.purpose == "confrontation" and not record.turns:
+            from social_records import claim_by_id, fact_by_id
+            fact = fact_by_id(self.simulation, claim_by_id(self.simulation, record.grievance_id).fact_id)
+            call = dict(key=f"confrontation:{record.id}", kind="news", reference=record.grievance_id,
+                        reason=record.intended_subjects[npc.name], event_id=fact.source_id)
+        else:
+            return
+        from player_records import PlayerCall
+        if not call_valid(self.simulation, npc, PlayerCall(**call)):
             self.end_player_conversation("The reason for this call is no longer available.")
             self.close_view()
             return
         request = self.player_request(npc)
         if request is None:
-            call = asdict(npc.player_call)
             from player_story import starting_player_opening
             from dialogue import ActionResponse
             opening = starting_player_opening(self.simulation, npc) if call["kind"] == "introduction" else ""

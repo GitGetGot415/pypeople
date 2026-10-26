@@ -205,7 +205,7 @@ class NPC(ResidentValues, ConversationActor):
 
     @property
     def last_killing_phase(self):
-        return max((fact.phase for fact in self.world.facts if fact.kind == "killing" and fact.subject_id == self.id), default=None)
+        return self.world.last_killing_phase_for(self.id)
 
     @property
     def indoors(self):

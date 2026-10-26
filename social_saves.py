@@ -139,10 +139,10 @@ def validate_social_records(ctx):
             grievance = claims.get(record.grievance_id)
             player_confrontation = record.participant_ids[1] == PLAYER_ID
             if (not grievance or not grievance.affirmed or grievance.subject_id != record.participant_ids[1]
-                    or record.participant_ids[0] not in {n.id for n in residents}
+                    or record.participant_ids[0] not in ({n.id for n in residents} | ({snake.id} if player_confrontation else set()))
                     or record.participant_ids[1] not in {n.id for n in residents} | {PLAYER_ID}
                     or player_confrontation and record.origin != "autonomous"):
-                raise ValueError("A confrontation history needs its human accuser, accused and original sourced grievance.")
+                raise ValueError("A confrontation history needs its accuser, accused and original sourced grievance.")
             if record.turns and not player_confrontation and not any(d.conversation_id == record.id and d.speaker_id == record.participant_ids[0]
                     and claims[d.claim_id].fact_id == grievance.fact_id for d in disclosures.values()):
                 raise ValueError("An accepted confrontation must retain its actual grievance discussion and date.")

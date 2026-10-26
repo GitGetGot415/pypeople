@@ -134,9 +134,8 @@ class Simulation:
         from social_records import phase_index
         return phase_index(self.day, self.phase)
 
-    @property
-    def last_killing_phase(self):
-        return max((fact.phase for fact in self.facts if fact.kind == "killing"), default=None)
+    def last_killing_phase_for(self, actor_id):
+        return max((fact.phase for fact in self.facts if fact.kind == "killing" and fact.subject_id == actor_id), default=None)
 
     @property
     def phase_label(self):
@@ -500,7 +499,7 @@ class Simulation:
                                      (text + (f" Earlier: {earlier}" if earlier else ""))[:400])
 
     def killing_unavailable(self, attacker, victim):
-        """Shared physical restrictions and one world-wide allowance per phase."""
+        """Shared physical restrictions; each killer has their own phase cooldown."""
         from constants import (GARDEN_LOCATION, KILLING_COOLDOWN_PHASES, KILLING_DISTANCE,
                                KILLING_INDOOR_REASON, SNAKE_NAME)
         from player import active_player
@@ -516,9 +515,9 @@ class Simulation:
             return KILLING_INDOOR_REASON
         if self.population <= PROTECTED_POPULATION:
             return "The remaining population is protected."
-        if (self.last_killing_phase is not None
-                and self.phase_index - self.last_killing_phase < KILLING_COOLDOWN_PHASES):
-            return "Someone has already been killed this phase. Wait for the next phase."
+        last_kill = self.last_killing_phase_for(attacker.id)
+        if last_kill is not None and self.phase_index - last_kill < KILLING_COOLDOWN_PHASES:
+            return "This attacker has already killed someone this phase. Wait for the next phase."
         if math.dist((attacker.x, attacker.y), (victim.x, victim.y)) > KILLING_DISTANCE:
             return "Move closer to the resident first."
         return ""
@@ -548,40 +547,55 @@ class Simulation:
         self.history.append(record)
         return self._finish_killing(self.player, victim, record)
 
-    def begin_incoming_conversation(self, npc, interaction):
-        """Roll once on arrival, before speech or player actions; the saved conversation stage prevents rerolls."""
-        from constants import CONFRONTATION_OPINION, CONVERSATION_COMPLETED, PLAYER_LABEL
+    def player_confrontation_record(self, npc, interaction, grievance, *, approaching=False):
+        from constants import CONVERSATION_COMPLETED, CONVERSATION_WALKING_TO_MEET, PLAYER_LABEL
         from conversation_history import ConversationRecord
-        from social import grievance_against, confrontation_topic, killing_chance
-        from social_records import claim_by_id, fact_by_id
-        if (self.paused or self.player_interaction is not interaction or not interaction.incoming
-                or interaction.stage != "conversation" or interaction.record_id is not None
-                or self.npc_by_id(npc.id) is not npc):
-            return
-        grievance = grievance_against(npc, self.player)
-        if not grievance:
-            return
+        from social import confrontation_topic
         topic = confrontation_topic(npc, grievance)
         if npc.player_call:
             npc.player_call.kind, npc.player_call.reference = "news", grievance
             npc.player_call.key = f"confrontation:{grievance}:{self.phase_index}"
             npc.player_call.reason = topic
-        record = ConversationRecord((npc.name, PLAYER_LABEL), topic, CONVERSATION_COMPLETED,
+        record = ConversationRecord((npc.name, PLAYER_LABEL), topic,
+                                    CONVERSATION_WALKING_TO_MEET if approaching else CONVERSATION_COMPLETED,
                                     origin="autonomous", purpose="confrontation",
                                     participant_ids=[npc.id, self.player.id], grievance_id=grievance)
         record.intended_subjects = {npc.name: topic, PLAYER_LABEL: "Responding to the resident's accusation."}
         self.history.append(record)
         interaction.record_id = record.id
-        belief = next(b for b in npc.beliefs if b.claim_id == grievance)
-        fact = fact_by_id(self, claim_by_id(self, grievance).fact_id)
-        eligible = (npc.opinion_score(self.player.id) <= CONFRONTATION_OPINION
-                    and not self.killing_unavailable(npc, self.player)
-                    and (fact.kind != "killing" or belief.phase < self.phase_index))
-        if eligible and npc.rng.random() < killing_chance(npc.opinion_score(self.player.id)):
+        return record
+
+    def begin_incoming_conversation(self, npc, interaction):
+        """Resolve the opening once on arrival, including an interrupted victim's partner."""
+        from constants import CONFRONTATION_OPINION, CONVERSATION_COMPLETED, CONVERSATION_WALKING_TO_MEET
+        from social import grievance_against, killing_chance
+        if (self.paused or self.player_interaction is not interaction or not interaction.incoming
+                or interaction.stage != "conversation"
+                or not (npc is self.snake or self.npc_by_id(npc.id) is npc)):
+            return
+        record = self.record_by_id(interaction.record_id)
+        if record:
+            if record.purpose != "confrontation" or record.status != CONVERSATION_WALKING_TO_MEET:
+                return
+            record.status = CONVERSATION_COMPLETED
+        else:
+            grievance = grievance_against(npc, self.player) if npc is not self.snake else None
+            if not grievance:
+                return
+            record = self.player_confrontation_record(npc, interaction, grievance)
+        if npc is self.snake:
+            record.outcomes.append("The python confronted the player without physical action.")
+            return
+        unavailable = self.killing_unavailable(npc, self.player)
+        if npc.opinion_score(self.player.id) > CONFRONTATION_OPINION:
+            record.outcomes.append("The resident was not hostile enough to attack.")
+        elif unavailable:
+            record.outcomes.append(f"The resident could not attack: {unavailable}")
+        elif npc.rng.random() < killing_chance(npc.opinion_score(self.player.id)):
             record.outcomes.append("The resident attacked immediately on reaching the player.")
             self._finish_killing(npc, self.player, record)
         else:
-            record.outcomes.append("The resident began the conversation without attacking.")
+            record.outcomes.append("The resident's opening attack roll failed.")
 
     def escalation_choices(self, meeting, opinion=None):
         """opinion: the confronter's view to judge eligibility by, such as the one an exchange is about to commit."""
@@ -603,8 +617,7 @@ class Simulation:
         if (belief and belief.stance == "believed" and claim.affirmed and fact.subject_id == target.id
                 and fact.kind in GRIEVANCE_FACT_KINDS
                 and retained and (first.opinion_score(target.id) if opinion is None else opinion) <= CONFRONTATION_OPINION
-                and not self.killing_unavailable(first, target)
-                and (fact.kind != "killing" or belief.phase < self.phase_index)):
+                and not self.killing_unavailable(first, target)):
             actions.append("attack")
         return {"target_id": target.id, "grievance_id": meeting.grievance_id, "actions": actions}
 
@@ -634,6 +647,9 @@ class Simulation:
         from locations import observers
         from social_records import claim_by_id
         from information import add_fact
+        conversation = getattr(victim, "conversation", None)
+        partner = (conversation.other(victim) if attacker is self.player and conversation
+                   and conversation.active and conversation.arrived else None)
         witnesses = observers(self, attacker, victim)
         text = f"{attacker.name} killed {victim.name}."
         event = self.publish("killing", (attacker, victim), text, record)
@@ -665,7 +681,21 @@ class Simulation:
         if victim is self.player:
             self.depart_player()
             return True
-        return self.depart_resident(victim, event, record, attacker, meeting=meeting)
+        departed = self.depart_resident(victim, event, record, attacker, meeting=meeting)
+        if departed and partner is not None:
+            self.confront_interrupted_partner(partner, fact)
+        return departed
+
+    def confront_interrupted_partner(self, partner, fact):
+        from player import active_player, start_approach
+        from social_records import claim_by_id
+        if not active_player(self) or partner.departure or partner.location != self.player.location:
+            return
+        belief = next(b for b in partner.beliefs if b.direct and claim_by_id(self, b.claim_id).fact_id == fact.id)
+        interaction = start_approach(self, partner, incoming=True)
+        source = self.player_confrontation_record(partner, interaction, belief.claim_id, approaching=True)
+        partner.reason = "Confronting the player about killing my conversation partner."
+        self.publish("player_call", (partner,), f"{partner.name} is confronting you about killing their conversation partner.", source)
 
     def cancel_death_promises(self, target, reason):
         for promise in self.promises:

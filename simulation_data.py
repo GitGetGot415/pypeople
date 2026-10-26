@@ -492,9 +492,9 @@ class SimulationState(SaveModel):
         if set(deaths) != set(killings):
             raise ValueError("Archived deaths must have exactly one retained committed killing fact.")
         by_id = {n.id: n for n in [*self.npcs, *self.archived]}
-        phases = []
-        for event_id, victim in deaths.items():
-            fact = killings[event_id]
+        phases_by_killer, dead_ids = {}, set()
+        for event_id, fact in killings.items():
+            victim = deaths[event_id]
             player_victim = victim is self.player
             departure = None if player_victim else victim.departure
             record = history.get(fact.conversation_id)
@@ -514,15 +514,13 @@ class SimulationState(SaveModel):
                     or player_victim and (record.origin != "autonomous" or record.turns
                                           or record.status != CONVERSATION_COMPLETED)):
                 raise ValueError("A death must match its killer, garden witnesses and source record.")
-            attacker_death = by_id[fact.subject_id].departure if not player_kill else None
-            if attacker_death and phase_index(attacker_death.day, attacker_death.phase) <= fact.phase:
-                raise ValueError("An archived resident cannot kill after their own death.")
-            if player_kill and player_death and player_death.phase <= fact.phase:
-                raise ValueError("The player cannot kill after their own death.")
-            phases.append(fact.phase)
-        phases.sort()
-        if any(b - a < KILLING_COOLDOWN_PHASES for a, b in zip(phases, phases[1:])):
-            raise ValueError("Killings share one cooldown across all residents and the player.")
+            if fact.subject_id in dead_ids or fact.object_id in dead_ids:
+                raise ValueError("Committed killings must retain their order; nobody can kill or be killed after their own death.")
+            dead_ids.add(fact.object_id)
+            phases_by_killer.setdefault(fact.subject_id, []).append(fact.phase)
+        for phases in phases_by_killer.values():
+            if any(b - a < KILLING_COOLDOWN_PHASES for a, b in zip(phases, phases[1:])):
+                raise ValueError("Each killer has their own phase cooldown.")
         if deaths and len(self.npcs) + int(self.mode == "player" and self.player.alive) < PROTECTED_POPULATION:
             raise ValueError("A killing cannot remove the protected population.")
         for meeting in self.conversations:
@@ -549,8 +547,7 @@ class SimulationState(SaveModel):
                     if (not belief or belief.stance != "believed" or not claim.affirmed
                             or retained.subject_id != meeting.recipient
                             or context.opinions["initiator"].get(meeting.recipient, 0) > CONFRONTATION_OPINION
-                            or by_id[meeting.initiator].opinions.get(meeting.recipient, {}).get("opinion", 0) > CONFRONTATION_OPINION
-                            or retained.kind == "killing" and belief.phase >= now):
+                            or by_id[meeting.initiator].opinions.get(meeting.recipient, {}).get("opinion", 0) > CONFRONTATION_OPINION):
                         raise ValueError("An accepted attack needs its retained, sourced grievance and final hostility.")
         for fact in facts.values():
             if (fact.kind == "harvest") != (fact.quantity is not None):

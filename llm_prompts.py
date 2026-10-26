@@ -104,7 +104,7 @@ not a destination, eating, or transfer command.
 
 KILLING_INSTRUCTION = f"""{KILLING_INDOOR_REASON}
 Killings can occur only in the garden. {SNAKE_NAME} cannot be killed.
-The player and residents share one killing allowance per phase; it resets when the phase changes.
+Each person can kill at most once per phase. Killing does not use another person's allowance.
 """
 
 GARDEN_INSTRUCTION = TREE_INSTRUCTION + """Current physical surroundings are authoritative: one grassy garden,
