@@ -118,7 +118,7 @@ def undisclosed_danger(npc):
 
 def refresh_concern(npc):
     """Choose locally at a safe decision boundary, never during an interaction."""
-    if npc.interaction is not None or npc.departure is not None:
+    if npc.interaction is not None or not npc.alive:
         return
     previous = npc.current_concern
     danger = undisclosed_danger(npc)
@@ -342,7 +342,7 @@ def assign_goal(npc, world):
             claim = claim_by_id(world, belief.claim_id)
             fact = fact_by_id(world, claim.fact_id)
             subject = world.participant_by_id(claim.subject_id)
-            if subject is npc or subject is world.snake or subject is world.player or subject.departure or belief.stance == "disbelieved":
+            if subject is npc or subject is world.snake or subject is world.player or not subject.alive or belief.stance == "disbelieved":
                 continue
             for target in candidates:
                 if target is not subject:
@@ -477,7 +477,7 @@ def validate_agreements(agreements, proposals, turns, initiator_id, recipient_id
 def validate_live_agreements(conversation, response, *, dialogue_validation=True):
     world = conversation.initiator.world
     pair = (conversation.initiator, conversation.recipient)
-    if any(npc.conversation is not conversation or world.actor_by_id(npc.id) is not npc or npc.departure or npc.location != pair[0].location for npc in pair):
+    if any(npc.conversation is not conversation or world.actor_by_id(npc.id) is not npc or not npc.alive or npc.location != pair[0].location for npc in pair):
         raise ValueError("The conversation participants are no longer available.")
     if conversation.context_references != conversation_references(conversation):
         raise ValueError("An objective or promise changed while the reply was being generated. Please try again.")

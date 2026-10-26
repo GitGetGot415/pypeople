@@ -14,7 +14,7 @@ from constants import (PLAYER_ID, STARTING_PLAYER_FRUIT, PLAYER_CALL_COOLDOWN, P
                        PLAYER_RUN_MULTIPLIER, PLAYER_APPROACH_TIMEOUT, PLAYER_EVIDENCE_LIMIT,
                        CONVERSATION_CANCELLED, CONVERSATION_PENDING_REPLY_STATUSES, FOOT_MARGIN)
 from conversation_history import remember
-from locations import Journey
+from locations import Journey, active_player
 from player_records import (PlayerCall, PlayerCallReason, PlayerPromiseOffer, PlayerReport)
 from dialogue_text import contains_question
 
@@ -89,10 +89,6 @@ class Player:
         return tuple(point) == clamp_point(self.location, point)
 
 
-def active_player(world):
-    return world.mode == "player" and world.player.alive
-
-
 def owns_resident(world, npc):
     interaction = world.reservations.get(npc.id, "player")
     return bool(interaction and interaction.npc_id == npc.id)
@@ -137,7 +133,7 @@ def start_approach(world, npc, *, incoming=False, gift=None, knock_room=None):
     from autonomy import arrival_greeting_reserved
     if arrival_greeting_reserved(npc, world):
         raise ValueError("Judy is welcoming a new arrival. Let them finish their first conversation.")
-    available_to_player = available(npc) or (not incoming and npc.journey is not None and npc.departure is None)
+    available_to_player = available(npc) or (not incoming and npc.journey is not None and npc.alive)
     if not can_claim(world) or world.actor_by_id(npc.id) is not npc or not available_to_player:
         raise ValueError("The player or resident is unavailable.")
     interrupt = not incoming and can_interrupt_approach(npc)
@@ -201,7 +197,7 @@ def update_interaction(world, dt):
     if not interaction or interaction.kind not in ("resident", "snake"):
         return
     npc = world.actor_by_id(interaction.npc_id)
-    if (not active_player(world) or npc is None or npc.departure
+    if (not active_player(world) or npc is None or not npc.alive
             or not interaction.knock_room and not colocated(world.player, npc)):
         end_interaction(world, "The participants are no longer available together.")
         return

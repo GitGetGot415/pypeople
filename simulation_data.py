@@ -1,7 +1,8 @@
 """Self-contained simulation saves. No character file paths are loaded."""
 
 import re
-from npc import ResidentProgress, Conversation, NPC, ResidentValues, Tree, validate_saved_conversations
+from conversation import ResidentProgress, Conversation, validate_saved_conversations
+from npc import NPC, ResidentValues, Tree
 from transfers import HandoffProgress, Handoff, validate_transfer_history, validate_saved_handoffs
 from transfer_records import TransferIntent, TransferReceipt
 from snake import Snake, SnakeValues

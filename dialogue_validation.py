@@ -338,22 +338,6 @@ def validate_speech_grounding(text, snapshot):
             raise ValueError("You witnessed this killing yourself. Do not deny seeing it or adopt a later report as your only source.")
 
 
-def validate_snake_account_roles(text, report, speaker, listener):
-    if report.get("kind") == "snake_claim":
-        hearer = report.get("object_name", "")
-        if report.get("subject_id") != report.get("object_id") and hearer:
-            reference = name_pattern(hearer)
-            if re.search(rf"\b(?:{reference})(?:['\u2019]s claims?\b| (?:claims?|claimed|made claims?|asserts?|asserted)\b)", unquoted_speech(text), re.I):
-                raise ValueError("The account's listener heard the guard's claims; do not make that listener the claimant.")
-        claimant = report.get("subject_id")
-        if claimant == speaker.get("actor_id") and re.search(
-                r"\byour claims? about (?:authority|the garden)\b|\byour claim to divine authority\b", unquoted_speech(text), re.I):
-            raise ValueError("You made these claims yourself. Use my claims, not your claims about the listener.")
-        if claimant == listener.get("actor_id") and re.search(
-                r"\bmy claims? about (?:authority|the garden)\b|\bmy claim to divine authority\b", unquoted_speech(text), re.I):
-            raise ValueError("The listener made these claims. Address the guard's claims as your claims; do not adopt them as my claims.")
-
-
 def _validate_denial(result, index, turn, speaker, options, info):
     """Someone accused of what they know they did may only deny it as a recorded lie, which a witness then sees through."""
     done = {options[b["claim_id"]]["fact_id"] for b in info.get("beliefs", {}).get(turn.speaker, [])

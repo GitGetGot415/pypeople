@@ -8,6 +8,7 @@ from constants import (INVENTORY_RECT, INVENTORY_ROW_HEIGHT, INVENTORY_PREVIEW_S
                       INVENTORY_STOP_RECT, INVENTORY_TITLE_POSITION, INVENTORY_DETAIL_POSITION,
                       INVENTORY_DETAIL_WIDTH, INVENTORY_STATUS_RECT, INVENTORY_TITLE_WIDTH,
                       INVENTORY_APPLES_POSITION)
+from locations import active_player
 from .button import Button
 from .creations import CreationsGallery
 from .text import draw_wrapped_text, scrollbar_rects, ScrollbarDrag
@@ -57,7 +58,6 @@ class InventoryPanel:
 
     def recipients(self, app):
         from locations import available as available_outdoors
-        from player import active_player
         if not active_player(app.simulation):
             return []
         return [n for n in app.npcs if n.location == app.simulation.player.location and available_outdoors(n)
@@ -112,7 +112,7 @@ class InventoryPanel:
                 self.media.play(work)
             elif self.stop.clicked(event):
                 self.media.stop()
-        if self.owner is not app.simulation.player or app.simulation.paused or app.simulation.mode != "player" or not app.simulation.player.alive:
+        if self.owner is not app.simulation.player or app.simulation.paused or not active_player(app.simulation):
             return
         if self.minus.clicked(event):
             self.quantity = max(1, self.quantity - 1)

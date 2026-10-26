@@ -170,9 +170,9 @@ class CreationsGallery:
             return rows, y
         add(work.title, app.heading_font)
         creator = app.simulation.actor_by_id(work.creator_id)
-        add(f"By {creator.name}" + (" (departed)" if creator.departure else ""), app.small_font)
+        add(f"By {creator.name}" + (" (departed)" if not creator.alive else ""), app.small_font)
         owner = app.simulation.participant_by_id(work.owner_id)
-        add(f"Owned by {owner.name}" + (" (departed)" if getattr(owner, "departure", None) else ""), app.small_font)
+        add(f"Owned by {owner.name}" + (" (departed)" if not owner.alive else ""), app.small_font)
         add(f"Day {work.day} / {work.phase.title()} / {work.kind.title()}", app.small_font, MUTED)
         if work.kind == "art":
             self.preview_top = max(y, CREATIONS_PREVIEW_TOP)

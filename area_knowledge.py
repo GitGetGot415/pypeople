@@ -109,7 +109,7 @@ def relative_position(actor, point):
 
 
 def area_knowledge(actor, listener=None):
-    from locations import targets, door_point
+    from locations import active_player, targets, door_point
     world = actor.world
     if isinstance(listener, str):
         listener = world.participant_by_id(listener)
@@ -132,7 +132,7 @@ def area_knowledge(actor, listener=None):
                      ("room exit", ROOM_EXIT)]
     visible = []
     people = [*world.npcs, world.snake]
-    if world.mode == "player" and world.player.alive:
+    if active_player(world):
         people.append(world.player)
     for other in people:
         if other is not actor and other.location == actor.location:

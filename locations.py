@@ -38,7 +38,7 @@ def hallway_location(floor):
     return f"hallway:{floor}"
 
 
-def player_has_room(world):
+def active_player(world):
     return world.mode == "player" and world.player.alive
 
 
@@ -51,7 +51,7 @@ def allocated_floors(world):
 
 
 def npc_capacity(world):
-    return MAX_RESIDENTS - int(player_has_room(world))
+    return MAX_RESIDENTS - int(active_player(world))
 
 
 def valid_location(world, location):
@@ -64,7 +64,7 @@ def valid_location(world, location):
         return False
     return (kind == "hallway" and number in allocated_floors(world)
             or kind == "room" and (number in {n.room_number for n in world.residents}
-                                  or number == PLAYER_ROOM_NUMBER and player_has_room(world)))
+                                  or number == PLAYER_ROOM_NUMBER and active_player(world)))
 
 
 def map_size(location):
@@ -107,12 +107,12 @@ def observers(world, *actors):
     if not actors or any(not colocated(actors[0], actor) for actor in actors):
         return []
     return [actor for actor in [*world.npcs, world.snake]
-            if getattr(actor, "departure", None) is None and colocated(actor, actors[0])]
+            if actor.alive and colocated(actor, actors[0])]
 
 
 def available(npc):
     from activity import Behavior
-    return (npc.departure is None and npc.behavior not in (Behavior.SLEEP, Behavior.GO_HOME)
+    return (npc.alive and npc.behavior not in (Behavior.SLEEP, Behavior.GO_HOME)
             and not npc.journey and npc.home_reason != "night")
 
 

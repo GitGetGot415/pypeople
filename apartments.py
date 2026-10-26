@@ -51,9 +51,9 @@ def entrance(npc):
 
 
 def assign_rooms(world):
-    from locations import player_has_room
+    from locations import active_player
     occupied = {npc.room_number for npc in world.npcs if npc.room_number}
-    if player_has_room(world):
+    if active_player(world):
         occupied.add(PLAYER_ROOM_NUMBER)
     for npc in world.npcs:
         if npc.room_number == 0:
@@ -333,11 +333,12 @@ def finish_visit(world):
 
 
 def update_visit(world, dt):
+    from locations import active_player
     visit = world.visit
     if not visit:
         return
     host = world.npc_by_id(visit.host_id)
-    if not host or not world.player.alive or world.mode != "player":
+    if not host or not active_player(world):
         finish_visit(world)
         return
     if visit.stage == "travel":
@@ -441,7 +442,7 @@ def validate_saved_home(ctx):
     residents, creations, player, mode, day, phase = ctx.residents, state.creations, state.player, state.mode, state.day, state.phase
     live_ids, owner_ids, visit, interaction, conversations = ctx.live_ids, ctx.owner_ids, state.visit, ctx.physical, state.conversations
     from types import SimpleNamespace
-    from locations import player_has_room
+    from locations import active_player
     from social_records import phase_index
     layout = SimpleNamespace(residents=residents, mode=mode, player=player)
     living = [n for n in residents if n.departure is None]
@@ -461,7 +462,7 @@ def validate_saved_home(ctx):
             raise ValueError("Invalid resident home state.")
         if n.departure and (n.creative_job or n.behavior in HOME_BEHAVIORS):
             raise ValueError("Departed residents cannot keep active home work.")
-        if n.room_number == PLAYER_ROOM_NUMBER and player_has_room(layout):
+        if n.room_number == PLAYER_ROOM_NUMBER and active_player(layout):
             raise ValueError(f"Room {PLAYER_ROOM_NUMBER} is reserved for the player.")
         if n.behavior == Behavior.GO_HOME and not n.journey and n.location != f"room:{n.room_number}":
             raise ValueError("A home trip needs a journey to the owned room.")

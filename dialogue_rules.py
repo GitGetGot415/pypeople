@@ -345,12 +345,6 @@ def view_subjects(reason, people=(), *, target="", you=""):
     return views
 
 
-def _owner_view(pattern, reason):
-    """Whether the reason holds this view itself, apart from denials, reported accusations and contrasts."""
-    kind = "hostile" if pattern is _HOSTILE_VIEW else "warm"
-    return any(view == kind for view, _ in view_subjects(reason))
-
-
 def states_no_change(reason):
     """A reason that says the view did not move is unchanged, however warmly it is worded."""
     return bool(re.search(r"\b(?:(?:feel|felt|feeling) no different|no different (?:about|toward|towards)|"

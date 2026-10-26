@@ -25,6 +25,16 @@ from constants import (STATS_PORTRAIT_PADDING, CONVERSATION_FAILED, ACCENT, FAIL
                        OPINION_NEGATIVE_COLOR, PLAYER_LABEL, STATS_VIEW_RECT, STATS_SUBTAB_RECTS, STATS_COLLAPSED_ROWS,
                        GRID_LABEL_WIDTH, GRID_MAX_CELL)
 
+# Row colors by conversation state: (unselected, selected).
+CONVERSATION_COLORS = {
+    "generating": (GENERATING_CONVERSATION_COLOR, GENERATING_CONVERSATION_SELECTED_COLOR),
+    "queued": (QUEUED_CONVERSATION_COLOR, QUEUED_CONVERSATION_SELECTED_COLOR),
+    "failed": (FAILED_CONVERSATION_COLOR, FAILED_CONVERSATION_SELECTED_COLOR),
+    "rewrite_failed": (REWRITE_FAILED_CONVERSATION_COLOR, REWRITE_FAILED_CONVERSATION_SELECTED_COLOR),
+    "gift": (GIFT_CONVERSATION_COLOR, GIFT_CONVERSATION_SELECTED_COLOR),
+    "normal": (GRASS, ACCENT),
+}
+
 
 class StatsScreen:
     """Browse NPCs, conversation history, and live or saved model diagnostics."""
@@ -64,15 +74,14 @@ class StatsScreen:
         self.scrollbars = {pane: ScrollbarDrag() for pane in ("list", "detail")}
         self.show_private = False
         self.private_toggle_top = None
-        self.promise_links = []
-        self.opinion_links = []
         self.opinion_bars = []
         self.opinion_sort = "Name"
         self.opinion_view = "Table"
         self.selected_opinion = None
         self.subtab = "Overview"
         self.expanded = set()
-        self.expand_links = []
+        self.show_departed = False
+        self.hits = []
         self.dividers = []
         self.grid = None
         self.dialogue_portraits = []
@@ -108,7 +117,14 @@ class StatsScreen:
                 for index, record in reversed(list(enumerate(app.conversation_history, start=1)))
             ]
         else:
-            entries = [(npc, npc.name + (" (departed)" if getattr(npc, "departure", None) else "")) for npc in app.simulation.actors]
+            sim = app.simulation
+            entries = [(npc, npc.name) for npc in (*sim.npcs, sim.snake)]
+            departed = [*sim.archived, *([] if sim.player.alive or self.tab == "Opinions" else [sim.player])]
+            if departed:
+                opened = self.show_departed or self.selected_npc in departed
+                entries.append(("departed", f"{'-' if opened else '+'} Departed ({len(departed)})"))
+                if opened:
+                    entries += [(npc, PLAYER_LABEL if npc is sim.player else npc.name) for npc in departed]
         for entry, label in entries:
             lines = ([line for paragraph in label.splitlines()
                       for line in wrap_text(paragraph, app.font, self.list_rect.width - 30)]
@@ -126,10 +142,8 @@ class StatsScreen:
     def _detail_lines(self, app):
         lines = []
         self.private_toggle_top = None
-        self.promise_links = []
-        self.opinion_links = []
         self.opinion_bars = []
-        self.expand_links = []
+        self.hits = []
         self.dividers = []
         self.grid = None
         self.dialogue_portraits = []
@@ -245,7 +259,7 @@ class StatsScreen:
                         opened = key in self.expanded
                         top = height()
                         add(f"{'-' if opened else '+'} {name}", color=ACCENT)
-                        self.expand_links.append((top, height(), key))
+                        self._link(top, height(), lambda key=key: self.expanded.symmetric_difference_update({key}))
                         if opened:
                             add(record.intended_subjects[name])
                         gap()
@@ -287,7 +301,7 @@ class StatsScreen:
                 top = height()
                 add(f"{'-' if opened else '+'} {summary}",
                     color=OPINION_POSITIVE_COLOR if direction > 0 else OPINION_NEGATIVE_COLOR if direction < 0 else INK)
-                self.expand_links.append((top, height(), key))
+                self._link(top, height(), lambda key=key: self.expanded.symmetric_difference_update({key}))
                 if opened:
                     add(reason, app.small_font, MUTED, 16)
                 gap()
@@ -325,8 +339,11 @@ class StatsScreen:
         if npc is None:
             add("Select an NPC to view their statistics and opinions.", color=MUTED)
             return lines
-        add(npc.name, app.heading_font)
+        add(PLAYER_LABEL if npc is app.simulation.player else npc.name, app.heading_font)
         gap()
+        if self.tab == "Opinions" and not npc.alive:
+            add("Departed. These opinions stopped changing at death.", app.small_font, MUTED)
+            gap()
         if npc is app.simulation.snake and self.tab == "Statistics":
             add(f"Activity: {npc.status}")
             add(f"Tree stock: {app.tree.fruit}")
@@ -337,7 +354,9 @@ class StatsScreen:
                 add(account["assertion"], app.small_font)
                 add(f"Source: {account['immediate_source_name']}; original: {account['original_speaker_name']}", app.small_font, MUTED)
             return lines
-        if self.tab == "Statistics":
+        if self.tab == "Statistics" and npc is app.simulation.player:
+            self._epitaph(app, npc, add, gap, rule, height)
+        elif self.tab == "Statistics":
             self._statistics(app, npc, add, gap, rule, height)
         elif self.opinion_view == "Grid":
             self._opinion_grid(app, npc, add, gap, height)
@@ -345,18 +364,50 @@ class StatsScreen:
             self._opinion_table(app, npc, add, gap, height)
         return lines
 
+    def _link(self, top, bottom, action):
+        """Make a span of the detail pane clickable."""
+        self.hits.append((top, bottom, action))
+
+    def _open_conversation(self, app, record_id):
+        record = next((entry for entry in app.conversation_history if entry.id == record_id), None)
+        if record is not None:
+            self.open_record(record)
+
     def _toggle(self, app, add, height, key, label):
         top = height()
         add(label, app.small_font, ACCENT)
-        self.expand_links.append((top, height(), key))
+        self._link(top, height(), lambda: self.expanded.symmetric_difference_update({key}))
+
+    def _epitaph(self, app, actor, add, gap, rule, height):
+        """What remains of someone who died: how, when, and what they left behind."""
+        sim = app.simulation
+        death = next(f for f in sim.facts if f.kind == "killing" and f.object_id == actor.id)
+        killer = sim.participant_by_id(death.subject_id)
+        add(f"Killed by {PLAYER_LABEL if killer is sim.player else killer.name} / {phase_label(death.phase)}")
+        if death.conversation_id:
+            top = height()
+            add("View confrontation", app.small_font, ACCENT)
+            self._link(top, height(), lambda: self._open_conversation(app, death.conversation_id))
+        rule()
+        if isinstance(actor, NPC):
+            add("Last on their mind", app.heading_font)
+            add(concern_description(actor, actor.current_concern))
+            rule()
+        add("Left behind", app.heading_font)
+        add(f"Inventory: {actor.inventory.get('fruit', 0)} apples")
+        add(f"Owned works: {len(sim.owned_works(actor.id))} / creations made: {sum(work.creator_id == actor.id for work in sim.creations)}")
+        if isinstance(actor, NPC):
+            add(f"Opinion of player: {actor.player_opinion.opinion:+d}. {actor.player_opinion.reason}")
 
     def _statistics(self, app, npc, add, gap, rule, height):
         sim = app.simulation
         page = self.subtab
-        if page == "Overview":
-            add("Last on their mind" if npc.departure else "On their mind", app.heading_font)
+        if page == "Overview" and not npc.alive:
+            self._epitaph(app, npc, add, gap, rule, height)
+        elif page == "Overview":
+            add("On their mind", app.heading_font)
             add(concern_description(npc, npc.current_concern))
-            if npc.current_concern and npc.current_concern.remaining == 0 and not npc.departure:
+            if npc.current_concern and npc.current_concern.remaining == 0:
                 add("Will choose a new subject when free.", app.small_font, MUTED)
             rule()
             add("Status", app.heading_font)
@@ -366,16 +417,10 @@ class StatsScreen:
             if npc.interaction_blocked:
                 add("Player request pending; new decisions are deferred.", app.small_font, MUTED)
             add(f"Arrival: day {npc.arrival_day} / Room {npc.room_number} / {npc.location}")
-            if npc.departure:
-                source = next(f for f in sim.facts if f.source_id == npc.departure["event_id"] and f.kind == "killing")
-                top = height()
-                add(f"Killed by {sim.participant_by_id(npc.departure['attacker_id']).name}. View confrontation", app.small_font, ACCENT)
-                self.promise_links.append((top, height(), source.conversation_id))
             rule()
             add("Condition", app.heading_font)
             add(f"Satisfaction: {npc.social:.0f}/100 / fatigue {npc.social_fatigue:.0f}/100")
-            inventory_label = "Inventory at departure" if npc.departure else "Carrying"
-            add(f"{inventory_label}: {npc.inventory.get('fruit', 0)} apples (unlimited storage)")
+            add(f"Carrying: {npc.inventory.get('fruit', 0)} apples (unlimited storage)")
             add(f"Owned works: {len(sim.owned_works(npc.id))} (unlimited storage) / creations made: {sum(work.creator_id == npc.id for work in sim.creations)}")
             add(f"Opinion of player: {npc.player_opinion.opinion:+d}. {npc.player_opinion.reason}")
             add(f"Sociability: {npc.preferences['sociability']:.0%}; generosity: {npc.preferences['generosity']:.0%}", app.small_font, MUTED)
@@ -409,7 +454,7 @@ class StatsScreen:
                 recipient = sim.participant_by_id(promise.recipient_id)
                 top = height()
                 add(f"{giver.name} -> {recipient.name}: one apple / {promise.status} [view]", app.small_font, ACCENT)
-                self.promise_links.append((top, height(), promise.conversation_id))
+                self._link(top, height(), lambda cid=promise.conversation_id: self._open_conversation(app, cid))
                 add(f"Due {phase_label(promise.deadline)}", app.small_font, MUTED)
                 if promise.outcome:
                     add(promise.outcome, app.small_font)
@@ -457,7 +502,7 @@ class StatsScreen:
                 top = height()
                 add(f"{'-' if opened else '+'} {assertion_text(sim, fact, claim.affirmed)}", app.small_font)
                 add(f"{belief.stance.title()} / {'firsthand' if belief.direct else 'personal assertion' if belief.source_id == npc.id else 'hearsay'}", app.small_font, MUTED)
-                self.expand_links.append((top, height(), key))
+                self._link(top, height(), lambda key=key: self.expanded.symmetric_difference_update({key}))
                 if opened:
                     source = sim.participant_by_id(belief.source_id)
                     originator = sim.participant_by_id(claim.originator_id)
@@ -469,7 +514,7 @@ class StatsScreen:
                         disclosure = next(d for d in sim.disclosures if d.id == belief.disclosure_id)
                         link = height()
                         add("View source conversation", app.small_font, ACCENT, 16)
-                        self.promise_links.append((link, height(), disclosure.conversation_id))
+                        self._link(link, height(), lambda cid=disclosure.conversation_id: self._open_conversation(app, cid))
                 gap()
 
     def _opinion_grid(self, app, npc, add, gap, height):
@@ -530,7 +575,8 @@ class StatsScreen:
                 if row["theirs"]:
                     add(f"Their reason: {row['theirs']['reason']}", app.small_font)
                 self.dialogue_backgrounds.append((top, height()))
-            self.opinion_links.append((top, height(), person))
+            self._link(top, height(), lambda person=person: setattr(
+                self, "selected_opinion", None if self.selected_opinion == person else person))
             gap()
 
     def _scroll_limits(self, app):
@@ -583,6 +629,8 @@ class StatsScreen:
                 if self.tab != name:
                     self.gallery.stop()
                 self.tab = name
+                if name == "Opinions" and self.selected_npc is app.simulation.player:
+                    self.selected_npc = None
                 if name == "Conversations" and self.selected_conversation is None and app.conversation_history:
                     self.selected_conversation = app.conversation_history[-1]
                 if name == "Model logs" and self.selected_log is None:
@@ -667,18 +715,9 @@ class StatsScreen:
                             self.opinion_view = "Table"
                             self.detail_scroll = 0
                             return
-                    for top, bottom, key in self.expand_links:
+                    for top, bottom, action in self.hits:
                         if top <= content_y < bottom:
-                            self.expanded ^= {key}
-                            return
-                    for top, bottom, person in self.opinion_links:
-                        if top <= content_y < bottom:
-                            self.selected_opinion = None if self.selected_opinion == person else person
-                            return
-                    for top, bottom, record_id in self.promise_links:
-                        if top <= content_y < bottom:
-                            record = next(entry for entry in app.conversation_history if entry.id == record_id)
-                            self.open_record(record)
+                            action()
                             return
                 if pane == "list":
                     rows, _ = self._list_rows(app)
@@ -690,6 +729,9 @@ class StatsScreen:
                                 self.selected_conversation = entry
                             elif self.tab == "Model logs":
                                 self.open_log(entry)
+                            elif isinstance(entry, str):
+                                self.show_departed = not self.show_departed
+                                return
                             else:
                                 self.selected_npc = entry
                                 self.show_private = False
@@ -782,16 +824,20 @@ class StatsScreen:
             selected = entry is selected_entry
             if self.tab == "Model logs":
                 color = MODEL_LOG_COLORS[entry.status]
-            elif self.tab == "Conversations" and entry.id in generating_ids:
-                color = GENERATING_CONVERSATION_SELECTED_COLOR if selected else GENERATING_CONVERSATION_COLOR
-            elif self.tab == "Conversations" and entry.id in queued_ids:
-                color = QUEUED_CONVERSATION_SELECTED_COLOR if selected else QUEUED_CONVERSATION_COLOR
-            elif self.tab == "Conversations" and (entry.status == CONVERSATION_FAILED or entry.dialogue_errors):
-                color = FAILED_CONVERSATION_SELECTED_COLOR if selected else FAILED_CONVERSATION_COLOR
-            elif self.tab == "Conversations" and has_failed_voice_rewrite(entry):
-                color = REWRITE_FAILED_CONVERSATION_SELECTED_COLOR if selected else REWRITE_FAILED_CONVERSATION_COLOR
-            elif self.tab == "Conversations" and entry.id in gift_ids and not entry.turns and not entry.failed_turns:
-                color = GIFT_CONVERSATION_SELECTED_COLOR if selected else GIFT_CONVERSATION_COLOR
+            elif self.tab == "Conversations":
+                if entry.id in generating_ids:
+                    state = "generating"
+                elif entry.id in queued_ids:
+                    state = "queued"
+                elif entry.status == CONVERSATION_FAILED or entry.dialogue_errors:
+                    state = "failed"
+                elif has_failed_voice_rewrite(entry):
+                    state = "rewrite_failed"
+                elif entry.id in gift_ids and not entry.turns and not entry.failed_turns:
+                    state = "gift"
+                else:
+                    state = "normal"
+                color = CONVERSATION_COLORS[state][selected]
             else:
                 color = ACCENT if selected else GRASS
             pygame.draw.rect(surface, color, row)

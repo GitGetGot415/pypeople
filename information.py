@@ -986,3 +986,13 @@ def resident_turn_choices(snapshot, draft, role, private, *, closing=False, asse
     if any(speech_only(snapshot[r]) for r in ("initiator", "recipient")):
         choices["leverage"] = []
     return info, accounts, choices, pending
+
+
+# Private former-life recollections come only from the authored Background.
+def remember_description(npc):
+    """Only authored Background supplies former-life knowledge."""
+    description = npc.character["Background"]
+    for index, memory in enumerate(split_sentences(description)):
+        add_fact(npc.world, "former_life", npc, npc.world.snake,
+                 f"{npc.id}:description:{index}", None,
+                 f"From {npc.name}'s own description: {memory}", [npc])

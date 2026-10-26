@@ -9,6 +9,7 @@ from constants import (GARDEN_LOCATION, GARDEN_FLOOR_ART, GARDEN_FLOOR_OFFSET, I
                       UI_SMALL_FONT_SIZE, NAME_TAG_FONT_SIZE, NAME_TAG_HEAD_GAP, PLAYER_NAME_TAG,
                       ROOM_BED_RECT, SLEEP_FACING, SLEEP_ROTATION, PLAYER_ROOM_NUMBER, TREE_BASE_OFFSET)
 from activity import Behavior
+from locations import active_player
 from npc import NPC
 from .fonts import UnicodeFont
 from .character_sprite import snake_artwork
@@ -64,7 +65,7 @@ def _active_bubble(npc):
 
 def player_bubble_visible(npc, offset=None, zoom=1.0):
     name = player_bubble_name(npc)
-    if not (name and not npc.departure and not npc.busy):
+    if not (name and npc.alive and not npc.busy):
         return False
     if name in ("Thinking", "Calling Player"):
         return True
@@ -108,7 +109,7 @@ def _draw_shadow(surface, rect):
 def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), phase="day", zoom=1.0, viewport=None, snake=None, *, world=None, location="garden"):
     # Use nearest-neighbor scaling throughout to keep the original pixels crisp.
     # Scale the ground separately; artwork is drawn directly at the camera zoom.
-    from locations import map_size, targets, player_has_room
+    from locations import map_size, targets
     from constants import INDOOR_BACKGROUND, HALLWAY_SIZE, ROOM_SIZE, ROOM_EXIT_RECT, HALLWAY_EXIT_RECT
     size = map_size(location)
     scene = pygame.Surface(size)
@@ -144,7 +145,7 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
                     if target["kind"] == "room":
                         number = target["room"]
                         owner = next((n for n in world.npcs if n.room_number == number), None)
-                        label = ("Your room" if number == PLAYER_ROOM_NUMBER and player_has_room(world)
+                        label = ("Your room" if number == PLAYER_ROOM_NUMBER and active_player(world)
                                  else owner.name if owner else "Vacant")
                         labels.append((label, (target_rect.centerx, target_rect.top - 2)))
     if zoom != 1.0:
@@ -174,7 +175,7 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
         surface.blit(label_image, label_image.get_rect(midbottom=(
             round(x * zoom + camera_offset[0]), round(y * zoom + camera_offset[1]))))
     npcs = [npc for npc in npcs if npc.location == location]
-    if world and world.mode == "player" and world.player.alive and world.player.location == location:
+    if world and active_player(world) and world.player.location == location:
         npcs.append(world.player)
     _draw_objects(surface, npcs, tree if location == "garden" else None, font, character_renderer,
                   camera_offset, phase, zoom, snake if location == "garden" else None,

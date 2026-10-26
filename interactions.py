@@ -124,7 +124,7 @@ def release_resident(world, kind, owner, resident, state, *cooldown_ids, preserv
     """Late cleanup must release the expected owner before restoring its activity."""
     if not world.reservations.release(kind, owner, resident):
         return False
-    if resident.world.actor_by_id(resident.id) is not resident or resident.departure:
+    if resident.world.actor_by_id(resident.id) is not resident or not resident.alive:
         return False
     resident.restore_after_interaction(state, *cooldown_ids, preserve_facing=preserve_facing)
     return True
@@ -230,9 +230,9 @@ def move_toward(actor, point, dt, speed):
     world = getattr(actor, "world", None)
     if world is not None and hasattr(actor, "location") and actor is not world.snake:
         from constants import SOFT_AVOIDANCE_DISTANCE
-        from locations import clamp_point
+        from locations import active_player, clamp_point
         neighbors = list(world.npcs)
-        if world.mode == "player" and world.player.alive:
+        if active_player(world):
             neighbors.append(world.player)
         for other in neighbors:
             if other is actor or other.location != actor.location:

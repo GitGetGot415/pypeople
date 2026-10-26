@@ -19,13 +19,12 @@ from dialogue import (AccountDisclosure, ActionResponse, ConversationResponse, C
     DialoguePartsResponse, DisclosureChoice, ResidentTurnResponse)
 from dialogue_rules import copied_share, mentions_private_recollection, states_no_change, validate_account_speech
 from dialogue_text import contains_question
-from generation_errors import InvalidResponseError, RequestError, StreamRepetitionError
+from validation_errors import InvalidResponseError, RecoveryKind, RequestError, StreamRepetitionError
 from llm_contracts import intent_snapshot, prepare_request, response_model
 from model_debug import admitted_provider, check_cancelled, provider_wait_seconds, record_output
 from model_transport import TransportSettings, provider_errors, request_gemini, request_ollama
 from ollama_manager import DEFAULT_OLLAMA_MODEL, mark_ollama_ready
 from information import resident_information
-from validation_errors import RecoveryKind
 from voice_rewrite import (parse_voice_rewrite, retain_voice_rewrite, voice_rewrite_batches,
     voice_rewrite_snapshot)
 

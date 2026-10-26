@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Annotated, Literal
 from pydantic import Field
 from uuid import uuid4
+from locations import active_player
 from constants import (COMPANY_SOCIAL_RECOVERY, DECISION_SECONDS, MAX_SIMULATION_STEP_SECONDS,
     PROTECTED_POPULATION, SATISFACTION_PHASE_LOSS, SOCIAL_RADIUS, STARTING_DAY, STARTING_PAUSED,
     STARTING_PHASE, COMPANY_FATIGUE_PER_SECOND, CONVERSATION_CANCELLED,
@@ -86,7 +87,7 @@ class Simulation:
             from player_story import prepare_player_start
             prepare_player_start(self)
         if assign_goals:
-            from purgatory import remember_description
+            from information import remember_description
             from social import assign_goal
             for npc in self.npcs:
                 remember_description(npc)
@@ -207,7 +208,7 @@ class Simulation:
 
     def start_conversation(self, initiator, recipient, topic, *, origin="player", purpose="chat", spacing=0,
                            opening_kind=None, focus_claim_id=None, goal_id=None):
-        from npc import Conversation
+        from conversation import Conversation
 
         from locations import available as available_outdoors, colocated
         from autonomy import arrival_greeter, arrival_greeting_reserved, awaiting_arrival_greeting
@@ -258,12 +259,8 @@ class Simulation:
                 record.outcomes.append(reason)
         self.pending_actions = retained
 
-    @property
-    def outdoor_npcs(self):
-        return [npc for npc in self.npcs if not npc.indoors]
-
     def is_outdoors(self, npc):
-        return ((self.npc_by_id(npc.id) is npc or npc is self.player and self.mode == "player" and npc.alive)
+        return ((self.npc_by_id(npc.id) is npc or npc is self.player and active_player(self))
                 and npc.location == "garden")
 
     def commit_creation(self, npc):
@@ -412,7 +409,6 @@ class Simulation:
     @property
     def population(self):
         """Living human residents, including the active player and excluding the snake."""
-        from player import active_player
         return len(self.npcs) + int(active_player(self))
 
     @property
@@ -428,7 +424,7 @@ class Simulation:
         return [*self.residents, self.snake]
 
     def actor_by_id(self, actor_id):
-        if actor_id == self.player.id and self.mode == "player" and self.player.alive:
+        if actor_id == self.player.id and active_player(self):
             return self.player
         return next((actor for actor in self.actors if actor.id == actor_id), None)
 
@@ -439,9 +435,9 @@ class Simulation:
     def harvest(self, actor, quantity=1):
         """The only stock-to-inventory commit, shared by residents and player."""
         from constants import HARVEST_DISTANCE, TREE_SHAKE_SECONDS
-        from player import active_player, can_claim
+        from player import can_claim
         from locations import available
-        human = self.npc_by_id(actor.id) is actor and not actor.departure
+        human = self.npc_by_id(actor.id) is actor and actor.alive
         player = actor is self.player and active_player(self)
         if (not (human or player) or actor.location != "garden" or actor.journey
                 or math.dist((actor.x, actor.y), self.tree.interaction_point) > HARVEST_DISTANCE
@@ -502,11 +498,10 @@ class Simulation:
         """Shared physical restrictions; each killer has their own phase cooldown."""
         from constants import (GARDEN_LOCATION, KILLING_COOLDOWN_PHASES, KILLING_DISTANCE,
                                KILLING_INDOOR_REASON, SNAKE_NAME)
-        from player import active_player
         if victim is self.snake:
             return f"{SNAKE_NAME} cannot be killed."
         living_victim = (victim is self.player and active_player(self) or
-                         self.npc_by_id(victim.id) is victim and victim.departure is None)
+                         self.npc_by_id(victim.id) is victim and victim.alive)
         if (not living_victim or attacker is victim
                 or not (self.npc_by_id(attacker.id) is attacker
                         or attacker is self.player and active_player(self))):
@@ -523,7 +518,6 @@ class Simulation:
         return ""
 
     def player_killing_unavailable(self, victim):
-        from player import active_player
         if not active_player(self):
             return "The player is unavailable."
         if self.paused:
@@ -633,7 +627,7 @@ class Simulation:
                  and bool(decision.evidence.strip()) and any(t.speaker == "recipient" and decision.evidence in t.text for t in meeting.turns)
                  and all(self.reservations.get(n.id, "conversation") is meeting
                          and meeting.accepted_revisions.get(n.id) == n.command_revision
-                         and not n.departure and available(n) and not n.interaction_blocked
+                         and n.alive and available(n) and not n.interaction_blocked
                          and not n.player_call for n in (attacker, victim)))
         meeting.escalation = None
         if not valid:
@@ -687,9 +681,9 @@ class Simulation:
         return departed
 
     def confront_interrupted_partner(self, partner, fact):
-        from player import active_player, start_approach
+        from player import start_approach
         from social_records import claim_by_id
-        if not active_player(self) or partner.departure or partner.location != self.player.location:
+        if not active_player(self) or not partner.alive or partner.location != self.player.location:
             return
         belief = next(b for b in partner.beliefs if b.direct and claim_by_id(self, b.claim_id).fact_id == fact.id)
         interaction = start_approach(self, partner, incoming=True)
@@ -865,7 +859,7 @@ class Simulation:
         """Archive a committed victim and release unfinished work through its owners."""
         from copy import deepcopy
         from social import resolve_goal
-        if (self.npc_by_id(target.id) is not target or target.departure or event.kind != "killing"
+        if (self.npc_by_id(target.id) is not target or not target.alive or event.kind != "killing"
                 or event.history != record.id or record.purpose not in ("confrontation", "killing")
                 or not any(f.kind == "killing" and f.source_id == event.id and f.subject_id == attacker.id
                            and f.object_id == target.id for f in self.facts)):
@@ -895,13 +889,12 @@ class Simulation:
         self.roster_revision += 1
         self.introductions[:] = [i for i in self.introductions if i != target.id]
         self.social_rotation %= max(1, len(self.npcs))
-        target.departure["event_id"] = event.id
         return True
 
     def deliver_arrivals(self):
         from character_data import random_character
         from npc import NPC, assign_npc_names
-        from purgatory import remember_description
+        from information import remember_description
         from social import assign_goal
         from locations import npc_capacity
         if len(self.npcs) >= npc_capacity(self):

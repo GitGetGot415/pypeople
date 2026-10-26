@@ -10,7 +10,7 @@ import httpx
 from google import genai
 from google.genai import errors, types
 from pydantic import ValidationError
-from generation_errors import RequestError, InvalidResponseError, StreamRepetitionError
+from validation_errors import RequestError, InvalidResponseError, StreamRepetitionError
 from constants import (MODEL_STREAM_REPEAT_CHECK_CHARACTERS, MODEL_STREAM_REPEAT_COUNT,
                        MODEL_STREAM_REPEAT_MAX_BLOCK_CHARACTERS, MODEL_STREAM_REPEAT_MIN_CHARACTERS,
                        MODEL_STREAM_REPEAT_PUNCTUATION_CHARACTERS, MODEL_STREAM_REPEAT_SYMBOL_CHARACTERS)

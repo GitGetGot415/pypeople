@@ -1,6 +1,7 @@
 """Actor identities and visible name tags, independent of prompt construction."""
 
 from constants import PLAYER_NAME_TAG, SNAKE_NAME
+from locations import active_player
 
 
 def actor_id(person):
@@ -28,7 +29,7 @@ def actor_catalog(world, location="garden"):
     catalog[world.snake.id] = {"name": SNAKE_NAME, "self_name": SNAKE_NAME,
                                "_visible": location == "garden", "references": ["the python wandering the garden"]}
     catalog[world.player.id] = {"name": PLAYER_NAME_TAG, "self_name": PLAYER_NAME_TAG, "kind": "player",
-        "_visible": world.mode == "player" and world.player.alive and world.player.location == location,
+        "_visible": active_player(world) and world.player.location == location,
         "references": ["the player"]}
     return catalog
 
