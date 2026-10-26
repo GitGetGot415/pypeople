@@ -6,7 +6,7 @@ from constants import (DIALOGUE_PANEL_HEIGHT, DIALOGUE_READING_Y, DIALOGUE_READI
                       APARTMENT_INSPECTOR_ROW_HEIGHT, APARTMENT_INSPECTOR_CONTENT_INSET,
                       APARTMENT_INSPECTOR_CONTENT_TOP, APARTMENT_INSPECTOR_TITLE_OFFSET, MODAL_OVERLAY_COLOR,
                       INVENTORY_BUTTON_RECT, GAME_PAUSE_RECT, GAME_CLOCK_RECT, GAME_SAVE_RECT, GAME_STATS_RECT, GAME_PHASE_POSITION,
-                      GAME_PAUSED_LABEL_RIGHT, GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT,
+                      GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT,
                       DIALOGUE_ORIGINAL_TOGGLE_RECT, BORDER_RADIUS, GAME_MENU_CONFIRM_RECT,
                       GAME_MENU_CONFIRM_TITLE_Y, GAME_MENU_CONFIRM_MESSAGE_RECT, GAME_MENU_KEEP_PLAYING_RECT,
                       GAME_MENU_LEAVE_RECT, PLAYER_ROOM_LOCATION, ROOM_BED_RECT,
@@ -478,7 +478,9 @@ class GameScreen:
         self.clock_button.draw(app.window, app.small_font, enabled=not paused and not app.simulation.phase_pending
                                and not app.simulation.player_attention_pending and not active_player(app.simulation))
         color = PAPER if app.screen == "game" and app.simulation.phase == "night" else INK
-        app.window.blit(app.small_font.render(app.simulation.phase_label, True, color), GAME_PHASE_POSITION)
+        phase_label = app.small_font.render(app.simulation.phase_label, True, color)
+        phase_rect = phase_label.get_rect(topright=GAME_PHASE_POSITION)
+        app.window.blit(phase_label, phase_rect)
         if app.simulation.player_attention_pending:
             draw_wrapped_text(app.window, "Address the waiting NPCs before changing the time.",
                               app.small_font, color, PHASE_PENDING_RECT)
@@ -487,7 +489,7 @@ class GameScreen:
                               app.small_font, color, PHASE_PENDING_RECT)
         if paused:
             label = app.small_font.render("Paused", True, color)
-            app.window.blit(label, label.get_rect(midright=(GAME_PAUSED_LABEL_RIGHT, self.pause_button.rect.centery)))
+            app.window.blit(label, label.get_rect(midright=(phase_rect.left - 16, self.pause_button.rect.centery)))
 
     def advance_conversation(self, app):
         conversation = self.dialogue.conversation
