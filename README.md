@@ -10,9 +10,11 @@
   - button.py - handles buttons
   - character_sprite.py - shares character sprites between the character creator and game
   - character.py - the character creator screen
+  - dialogue_view.py - tracks the transient dialogue panel and its pages
   - event_feed.py - displays recent world events
   - game.py - game screen
   - file_dialog.py - shared character JSON file picker
+  - fonts.py - loads the bundled Unicode font and measures text units
   - creations.py - displays resident artwork and plays music
   - inventory.py - player and resident inventory view
   - menu.py - menu screen
@@ -29,29 +31,51 @@
   - text.py - displays the text
   - world.py - draws the NPC and the tree
 
-- app_settings.py - loads and saves application preferences
+- activity.py - defines resident activity states and their persisted values
+- actor_identity.py - resolves actor identities, names and speech-only characters
 - apartments.py - manages home decisions, room assignment, and indoor transitions
 - autonomy.py - local activity priorities, target selection, and decision reasons
+- area_knowledge.py - describes the known map and each speaker's physical perspective
+- app_settings.py - loads and saves application preferences
 - character_data.py - validates, loads, and locally randomizes character descriptions and appearance
 - constants.py - hardcoded variables are stored here, other files reference them from this centralized location
+- conversation.py - coordinates generated conversation turns and commits their outcomes
 - conversation_history.py - stores conversation records, memories, and world events
+- conversation_results.py - accepts generated resident replies and dialogue outcomes
+- conversation_session.py - orchestrates conversations on the main thread
 - creations.py - validates and stores artwork and music payloads
-- dialogue_code.py - shared guidance for model-written speech delivery
+- deaths.py - applies character death and associated world changes
+- dialogue.py - shared typed contracts for actions, dialogue and model responses
+- dialogue_context.py - builds speaker-owned conversation context and identity guidance
 - dialogue_rules.py - validates dialogue, claims, continuity, and promises
 - dialogue_text.py - checks and splits generated dialogue text
+- dialogue_validation.py - validates generated responses and their speakers and effects
 - emotions.py - maps emotion and intensity to portrait expressions
+- information.py - prepares facts, claims, beliefs, and disclosures for conversation
 - interactions.py - manages character movement and generated conversation turns
 - llm.py - makes the llm calls required for the ai to function
+- llm_contracts.py - defines model response schemas and shared speech contracts
+- llm_prompts.py - builds instructions, schemas, and messages for model requests
+- locations.py - defines garden and apartment maps and movement routes
 - main.py - starts the code
 - model_debug.py - captures model request output and debug logs
+- model_transport.py - handles provider I/O, streaming, and response parsing
 - music.py - synthesizes music scores into PCM audio
-- name_knowledge.py - tracks character name knowledge and validates name use
 - ollama_manager.py - checks Ollama availability and manages model selection
 - ollama_parallel.py - edits local Ollama launch settings and reads loaded model processing slots
 - npc.py - backend
+- player_commands.py - normalizes player action identities and availability
 - simulation_data.py - validates, saves, and restores complete simulations
 - simulation.py - day phases, shared activity constants, and world updates
 - snake.py - the guarding python, movement, and generated encounters
-- purgatory.py - initial snake attitudes and private knowledge from character descriptions
 - player.py - player inventory, possessions, and shared player rules
+- player_records.py - defines player conversation records and response reasons
+- player_story.py - supplies authored events for new Player games
+- records.py - builds validation models for persisted record dataclasses
 - social.py - tracks social facts, beliefs, goals, promises, and relationships
+- social_records.py - defines persisted records for social knowledge, goals and promises
+- social_saves.py - validates persisted social records
+- transfers.py - handles item and invitation transfers between characters
+- transfer_records.py - defines persisted transfer offers and intents
+- validation_errors.py - defines model, dialogue, and recovery validation errors
+- voice_rewrite.py - optionally rewrites generated speech for character voice
