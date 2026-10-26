@@ -474,10 +474,6 @@ class GameScreen:
         phase_rect.topright = GAME_PHASE_POSITION
         rect = phase_rect.unionall([button.rect for button in (
             self.clock_button, self.pause_button, self.save_button, self.stats_button, self.menu_button)])
-        if app.simulation.paused:
-            paused_rect = pygame.Rect((0, 0), app.small_font.size("Paused"))
-            paused_rect.midright = (phase_rect.left - 16, self.pause_button.rect.centery)
-            rect = rect.union(paused_rect)
         return rect.inflate(2 * GAME_TOOLBAR_PADDING, 2 * GAME_TOOLBAR_PADDING)
 
     def draw_clock(self, app):
@@ -498,9 +494,6 @@ class GameScreen:
         elif app.simulation.phase_pending:
             draw_wrapped_text(app.window, f"{app.simulation.next_phase_label} pending: finishing conversations.",
                               app.small_font, color, PHASE_PENDING_RECT)
-        if paused:
-            label = app.small_font.render("Paused", True, INK)
-            app.window.blit(label, label.get_rect(midright=(phase_rect.left - 16, self.pause_button.rect.centery)))
 
     def advance_conversation(self, app):
         conversation = self.dialogue.conversation
