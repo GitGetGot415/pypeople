@@ -546,7 +546,8 @@ def validate_saved_conversations(ctx):
             if any(o.fact_id not in facts or o.quantity != facts[o.fact_id].quantity
                    or o.kind != facts[o.fact_id].kind or o.subject_id != facts[o.fact_id].subject_id for o in context.options):
                 raise ValueError("Missing snapshot facts.")
-        validate_agreements(interaction.accepted_proposals, interaction.proposals, record.generated_turns(), live[pair[0]].id, live[pair[1]].id)
+        validate_agreements(interaction.accepted_proposals, interaction.proposals, record.generated_turns(),
+                            live[pair[0]].id, live[pair[1]].id, current_phase=ctx.now)
         if ready:
             try:
                 validate_information(SimpleNamespace(turns=record.generated_turns(), disclosures=interaction.accepted_disclosures,

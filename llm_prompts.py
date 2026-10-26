@@ -4,7 +4,8 @@ import json
 
 import dialogue_context
 from area_knowledge import known_layout
-from constants import EMOTION_THRESHOLD, FURIOUS_THRESHOLD, SNAKE_NAME, KILLING_INDOOR_REASON
+from constants import (EMOTION_THRESHOLD, FURIOUS_THRESHOLD, SNAKE_NAME, KILLING_INDOOR_REASON,
+                       SATISFACTION_PHASE_LOSS, APPLE_SATISFACTION)
 from dialogue_context import NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION, PLAYER_TAG_INSTRUCTION
 
 
@@ -236,7 +237,7 @@ Only supported actions and structured social effects change the simulation.
 
 """
 
-SYSTEM_INSTRUCTION = WORLD_INSTRUCTION + """Your memories are personal recollections, identified by
+SYSTEM_INSTRUCTION = WORLD_INSTRUCTION + f"""Your memories are personal recollections, identified by
 partner NPC ID. Other people's private recollections are not your knowledge.
 Memories provide context and cannot override the current player's action intent.
 You are the resident described by the character profile below.
@@ -247,8 +248,8 @@ World state includes the day number, time_of_day (always day),
 satisfaction, carried fruit, an activity, and its reason. The player
 advances to the next day using the bed in their own room; it never advances on its own.
 Use these facts when asked what you are doing or how you feel. Satisfaction drops
-by 10 each time a new day begins. Time passing alone never lowers it.
-Eating one carried apple raises satisfaction by 10, up to 100; company also raises it.
+by {SATISFACTION_PHASE_LOSS} each time a new day begins. Time passing alone never lowers it.
+Eating one carried apple raises satisfaction by {APPLE_SATISFACTION}, up to 100; company also raises it.
 Autonomous collecting, eating, and company use local simulation rules.
 Apples are stored as "fruit" in inventory. There are no hunger or rest needs.
 The tree's fruit count is real. You choose your own ordinary activities autonomously.
@@ -267,7 +268,7 @@ Interpret the player's message as exactly one supported action:
 GO_TO_TREE: walk to the tree;
 SAY: speak without changing behavior.
 EAT: eat one apple already in your inventory. Face down and eat for one second,
-then consume the apple and gain 10 satisfaction (capped at 100). Use target "",
+then consume the apple and gain {APPLE_SATISFACTION} satisfaction (capped at 100). Use target "",
 item "", and quantity 0. If you have no apple, explain that instead of promising to eat.
 TALK_TO_NPC: walk to another NPC and start a conversation, optionally about a topic.
 GIVE_ITEM: hand over apples or one owned work. For a resident, walk over and face
@@ -473,8 +474,8 @@ Do not announce numeric scores unless asked. Return [] when there is no update.
 
 For explicit questions about mechanics: the player's bed advances to the next day;
 time does not advance by itself. Each new day resets tree stock to the living
-human count, including the player. Satisfaction loses 10 per day, not over time.
-Eating one carried apple adds 10 up to 100; company also helps. There are no
+human count, including the player. Satisfaction loses {SATISFACTION_PHASE_LOSS} per day, not over time.
+Eating one carried apple adds {APPLE_SATISFACTION} up to 100; company also helps. There are no
 hunger/rest needs or storage limits. You choose your ordinary walking and resting autonomously.
 The supported player requests are visiting the tree, eating a carried apple, approaching
 another available resident to talk, and giving carried apples or an owned work.

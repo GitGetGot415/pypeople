@@ -123,8 +123,6 @@ class ConversationSession:
             self.show_reply("Add an API key in Settings to generate a reply.")
             return
         snapshot = self.player_snapshot(npc, message)
-        snapshot["player_dialogue"] = [{"speaker": t.speaker, "text": t.text}
-                                      for t in self.record.turns[-PLAYER_CONTEXT_TURN_LIMIT:]] if self.record else []
         if command is not None:
             from player import work_choices
             snapshot["owned_works"] = work_choices(self.simulation, npc.id, command.get("item", ""))
@@ -434,8 +432,6 @@ class ConversationSession:
             if old["player_interaction"].get("call"):
                 from player import work_choices
                 snapshot["owned_works"] = work_choices(self.simulation, npc.id, old["player_interaction"]["call"]["reference"])
-        if self.record:
-            snapshot["player_dialogue"] = [{"speaker": t.speaker, "text": t.text} for t in self.record.turns[-PLAYER_CONTEXT_TURN_LIMIT:]]
         self._submit_player_message(npc, message, snapshot)
 
     def player_request(self, npc):
@@ -452,6 +448,8 @@ class ConversationSession:
         previous = self.player_request(npc)
         if previous and player_request_pending(previous):
             return
+        snapshot["player_dialogue"] = [{"speaker": t.speaker, "text": t.text}
+                                      for t in self.record.turns[-PLAYER_CONTEXT_TURN_LIMIT:]] if self.record else []
         kind = snapshot.get("request_kind")
         description = ""
         if kind == "player_command":
