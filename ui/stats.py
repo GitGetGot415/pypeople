@@ -651,8 +651,6 @@ class StatsScreen:
         if self.tab == "Statistics" and isinstance(self.selected_npc, NPC) and self.inventory_button.clicked(event):
             app.game.inventory.open(self.selected_npc)
             return
-        if app.game.handle_clock_event(app, event):
-            return
         if self.back_button.clicked(event) or (
             event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
         ):
@@ -796,7 +794,6 @@ class StatsScreen:
         self.back_button.draw(surface, app.small_font)
         surface.blit(app.heading_font.render("World Stats", True, INK), (380, 61))
         surface.blit(app.small_font.render("People, items, and conversations.", True, MUTED), (184, 108))
-        app.game.draw_clock(app)
         pygame.draw.rect(surface, PAPER, (184, 134, 296, 506))
         pygame.draw.rect(surface, PAPER, (496, 134, 600, 506))
         list_title = ("Model requests" if self.tab == "Model logs" else

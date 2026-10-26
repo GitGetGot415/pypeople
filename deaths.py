@@ -10,7 +10,7 @@ class DeathMixin:
 
     def killing_unavailable(self, attacker, victim):
         """Shared physical restrictions; each killer has their own phase cooldown."""
-        from constants import (GARDEN_LOCATION, KILLING_COOLDOWN_PHASES, KILLING_DISTANCE,
+        from constants import (GARDEN_LOCATION, KILLING_COOLDOWN_PHASES, KILLING_DISTANCE, PLAYER_KILLING_DISTANCE,
                                KILLING_INDOOR_REASON, SNAKE_NAME)
         if victim is self.snake:
             return f"{SNAKE_NAME} cannot be killed."
@@ -27,7 +27,8 @@ class DeathMixin:
         last_kill = self.last_killing_phase_for(attacker.id)
         if last_kill is not None and self.phase_index - last_kill < KILLING_COOLDOWN_PHASES:
             return "This attacker has already killed someone this phase. Wait for the next phase."
-        if math.dist((attacker.x, attacker.y), (victim.x, victim.y)) > KILLING_DISTANCE:
+        distance = PLAYER_KILLING_DISTANCE if attacker is self.player else KILLING_DISTANCE
+        if math.dist((attacker.x, attacker.y), (victim.x, victim.y)) > distance:
             return "Move closer to the resident first."
         return ""
 

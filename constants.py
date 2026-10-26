@@ -479,6 +479,7 @@ KILLING_COOLDOWN_PHASES = 1
 KILLING_INDOOR_REASON = ("Killing is forbidden inside the apartment building: bodies would not disappear. "
                        "Enough bodies would block the hallways and make movement through them impossible.")
 KILLING_DISTANCE = 160.0
+PLAYER_KILLING_DISTANCE = 64.0
 KILLING_WITNESS_PENALTY = 60
 BODY_SECONDS = 4.0
 BODY_FADE_SECONDS = 1.0
