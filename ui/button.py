@@ -52,5 +52,8 @@ class Button:
             for left, top, height in ((x - 10, y + 3, 7), (x - 2, y - 3, 13), (x + 6, y - 10, 20)):
                 pygame.draw.rect(surface, PAPER, (left, top, 5, height))
         elif self.icon == "menu":
-            for offset in (-7, 0, 7):
-                pygame.draw.line(surface, PAPER, (x - 11, y + offset), (x + 11, y + offset), 2)
+            pygame.draw.lines(surface, PAPER, False,
+                              ((x - 12, y - 1), (x, y - 12), (x + 12, y - 1)), 2)
+            pygame.draw.lines(surface, PAPER, False, (
+                (x - 9, y - 3), (x - 9, y + 11), (x - 3, y + 11), (x - 3, y + 3),
+                (x + 3, y + 3), (x + 3, y + 11), (x + 9, y + 11), (x + 9, y - 3)), 2)
