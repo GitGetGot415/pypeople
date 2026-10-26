@@ -141,7 +141,7 @@ class Simulation(DeathMixin):
 
     @property
     def phase_label(self):
-        return f"Day {self.day} / {self.phase.title()}"
+        return f"{self.phase.title()} {self.day}"
 
     @property
     def next_phase_label(self):
