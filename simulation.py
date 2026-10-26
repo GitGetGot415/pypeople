@@ -501,9 +501,54 @@ class Simulation:
             witness.remember_opinion(actor.id, max(-100, min(100, previous["opinion"] + delta)),
                                      (text + (f" Earlier: {earlier}" if earlier else ""))[:400])
 
+    def killing_unavailable(self, attacker, victim):
+        """Shared physical restrictions and one world-wide allowance per phase."""
+        from constants import (GARDEN_LOCATION, KILLING_COOLDOWN_PHASES, KILLING_DISTANCE,
+                               KILLING_INDOOR_REASON, SNAKE_NAME)
+        from player import active_player
+        if victim is self.snake:
+            return f"{SNAKE_NAME} cannot be killed."
+        if (self.npc_by_id(victim.id) is not victim or victim.departure or attacker is victim
+                or not (self.npc_by_id(attacker.id) is attacker
+                        or attacker is self.player and active_player(self))):
+            return "Choose a living resident."
+        if attacker.location != GARDEN_LOCATION or victim.location != GARDEN_LOCATION:
+            return KILLING_INDOOR_REASON
+        if self.population <= PROTECTED_POPULATION:
+            return "The remaining population is protected."
+        if (self.last_killing_phase is not None
+                and self.phase_index - self.last_killing_phase < KILLING_COOLDOWN_PHASES):
+            return "Someone has already been killed this phase. Wait for the next phase."
+        if math.dist((attacker.x, attacker.y), (victim.x, victim.y)) > KILLING_DISTANCE:
+            return "Move closer to the resident first."
+        return ""
+
+    def player_killing_unavailable(self, victim):
+        from player import active_player
+        if not active_player(self):
+            return "The player is unavailable."
+        if self.paused:
+            return "Resume the simulation first."
+        if (self.player.journey or self.visit and self.visit.stage == "travel"
+                or self.player_interaction and (self.player_interaction.npc_id != victim.id
+                                               or self.player_interaction.kind == "door")):
+            return "Finish the current journey or interaction first."
+        return self.killing_unavailable(self.player, victim)
+
+    def commit_player_killing(self, victim):
+        from constants import CONVERSATION_COMPLETED, PLAYER_LABEL
+        from conversation_history import ConversationRecord
+        reason = self.player_killing_unavailable(victim)
+        if reason:
+            raise ValueError(reason)
+        record = ConversationRecord((PLAYER_LABEL, victim.name), f"Killed {victim.name}", CONVERSATION_COMPLETED,
+                                    origin="player", purpose="killing", participant_ids=[self.player.id, victim.id])
+        self.history.append(record)
+        return self._finish_killing(self.player, victim, record)
+
     def escalation_choices(self, meeting, opinion=None):
         """opinion: the confronter's view to judge eligibility by, such as the one an exchange is about to commit."""
-        from constants import CONFRONTATION_OPINION, KILLING_COOLDOWN_PHASES, GRIEVANCE_FACT_KINDS
+        from constants import CONFRONTATION_OPINION, GRIEVANCE_FACT_KINDS
         from social_records import claim_by_id, fact_by_id
         first, target = meeting.initiator, meeting.recipient
         if (meeting.purpose != "confrontation" or self.npc_by_id(first.id) is not first
@@ -521,17 +566,13 @@ class Simulation:
         if (belief and belief.stance == "believed" and claim.affirmed and fact.subject_id == target.id
                 and fact.kind in GRIEVANCE_FACT_KINDS
                 and retained and (first.opinion_score(target.id) if opinion is None else opinion) <= CONFRONTATION_OPINION
-                and self.population > PROTECTED_POPULATION and self.last_killing_phase != self.phase_index
-                and (first.last_killing_phase is None or self.phase_index - first.last_killing_phase >= KILLING_COOLDOWN_PHASES)
+                and not self.killing_unavailable(first, target)
                 and (fact.kind != "killing" or belief.phase < self.phase_index)):
             actions.append("attack")
         return {"target_id": target.id, "grievance_id": meeting.grievance_id, "actions": actions}
 
     def commit_killing(self, meeting):
-        from constants import (KILLING_DISTANCE, KILLING_WITNESS_PENALTY, KILLING_RELIEF_OPINION, KILLING_RELIEF_CHANCE, KILLING_WITNESS_MAX_PENALTY, KILLING_WITNESS_SOCIAL_RANGE, KILLING_FRIENDSHIP_DIVISOR, KILLING_RELIEF_DELTA)
-        from locations import observers, available
-        from social_records import claim_by_id
-        from information import add_fact
+        from locations import available
         decision = meeting.escalation
         attacker, victim = meeting.initiator, meeting.recipient
         choices = self.escalation_choices(meeting)
@@ -540,8 +581,6 @@ class Simulation:
                  and choices and "attack" in choices["actions"]
                  and decision.target_id == victim.id and decision.grievance_id == meeting.grievance_id
                  and bool(decision.evidence.strip()) and any(t.speaker == "recipient" and decision.evidence in t.text for t in meeting.turns)
-                 and attacker.location == victim.location
-                 and math.dist((attacker.x, attacker.y), (victim.x, victim.y)) <= KILLING_DISTANCE
                  and all(self.reservations.get(n.id, "conversation") is meeting
                          and meeting.accepted_revisions.get(n.id) == n.command_revision
                          and not n.departure and available(n) and not n.interaction_blocked
@@ -550,13 +589,24 @@ class Simulation:
         if not valid:
             meeting.record.outcomes.append("The accepted attack was cancelled because eligibility or ownership changed.")
             return False
+        return self._finish_killing(attacker, victim, meeting.record, meeting=meeting)
+
+    def _finish_killing(self, attacker, victim, record, *, meeting=None):
+        """Commit one authorised death, preserving the same witnesses and consequences for either killer."""
+        from constants import (KILLING_WITNESS_PENALTY, KILLING_RELIEF_OPINION, KILLING_RELIEF_CHANCE,
+                               KILLING_WITNESS_MAX_PENALTY, KILLING_WITNESS_SOCIAL_RANGE,
+                               KILLING_FRIENDSHIP_DIVISOR, KILLING_RELIEF_DELTA)
+        from locations import observers
+        from social_records import claim_by_id
+        from information import add_fact
         witnesses = observers(self, attacker, victim)
         text = f"{attacker.name} killed {victim.name}."
-        event = self.publish("killing", (attacker, victim), text, meeting.record)
-        fact = add_fact(self, "killing", attacker, victim, event.id, meeting.record, text, witnesses,
+        event = self.publish("killing", (attacker, victim), text, record)
+        fact = add_fact(self, "killing", attacker, victim, event.id, record, text, witnesses,
                         location=victim.location)
-        meeting.outcome_event_id = event.id
-        meeting.record.outcomes.append(text)
+        if meeting:
+            meeting.outcome_event_id = event.id
+        record.outcomes.append(text)
         from conversation_history import remember
         for witness in witnesses:
             remember(witness, victim if witness is attacker else attacker, event, "killing", text, 0)
@@ -572,10 +622,13 @@ class Simulation:
             # A hostile relationship can make relief possible, never universal.
             if friend < KILLING_RELIEF_OPINION and witness.rng.random() < KILLING_RELIEF_CHANCE:
                 delta = KILLING_RELIEF_DELTA
-            witness.remember_opinion(attacker.id, max(-100, min(100, witness.opinion_score(attacker.id) + delta)),
-                                     f"Witnessed {text} My relationship with {victim.name} informed my reaction.")
-        self.depart_resident(victim, event, meeting, attacker)
-        return True
+            reason = f"Witnessed {text} My relationship with {victim.name} informed my reaction."
+            if attacker is self.player:
+                from player import update_player_opinion
+                update_player_opinion(witness, delta, reason, scaled=False)
+            else:
+                witness.remember_opinion(attacker.id, max(-100, min(100, witness.opinion_score(attacker.id) + delta)), reason)
+        return self.depart_resident(victim, event, record, attacker, meeting=meeting)
 
     def observed_event(self, kind, subject, target, text, record=None, *, witnesses=None):
         """Explicit visual event, or an explicitly selected private participant account."""
@@ -697,23 +750,24 @@ class Simulation:
             target.player_reply.release()
             target.begin_activity(Behavior.WAIT, self, reason=reason)
 
-    def depart_resident(self, target, event, source, attacker):
+    def depart_resident(self, target, event, record, attacker, *, meeting=None):
         """Archive a committed victim and release unfinished work through its owners."""
         from copy import deepcopy
         from social import resolve_goal
         if (self.npc_by_id(target.id) is not target or target.departure or event.kind != "killing"
-                or event.history != source.record.id or source.purpose != "confrontation"
+                or event.history != record.id or record.purpose not in ("confrontation", "killing")
                 or not any(f.kind == "killing" and f.source_id == event.id and f.subject_id == attacker.id
                            and f.object_id == target.id for f in self.facts)):
             return False
-        record = source.record
-        target.departure = {"day": self.day, "phase": self.phase, "cause": "killed by resident",
+        target.departure = {"day": self.day, "phase": self.phase,
+                            "cause": "killed by player" if attacker is self.player else "killed by resident",
                             "event_id": event.id, "attacker_id": attacker.id, "conversation_id": record.id}
         self.bodies.append({"appearance": deepcopy(target.character), "x": target.x, "y": target.y,
                             "location": target.location, "facing": target.facing, "elapsed": 0.0})
         # The source is accepted and complete; mark death before any release can re-enter.
-        source.finish(self.tree)
-        source.outcome_event_id = event.id
+        if meeting:
+            meeting.finish(self.tree)
+            meeting.outcome_event_id = event.id
         reason = f"Cancelled because {target.name} died; this is not a deliberate betrayal."
         for promise in self.promises:
             if promise.status == "pending" and target.id in (promise.promisor_id, promise.recipient_id):

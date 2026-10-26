@@ -172,6 +172,8 @@ class ConversationActor:
         return result
 
     def opinion_score(self, actor_id, default=0):
+        if self.world and actor_id == self.world.player.id:
+            return self.player_opinion.opinion
         return self.opinions.get(actor_id, {}).get("opinion", default)
 
     def remember_opinion(self, actor_id, opinion, reason):

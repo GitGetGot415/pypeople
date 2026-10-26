@@ -98,7 +98,7 @@ class InformationState(saved_record(InformationContext)):
 class DepartureState(SaveModel):
     day: int = Field(ge=1)
     phase: Literal["day", "night"]
-    cause: Literal["killed by resident"]
+    cause: Literal["killed by resident", "killed by player"]
     attacker_id: str = Field(min_length=1)
     conversation_id: str = Field(min_length=1)
     event_id: str = Field(min_length=1)
@@ -480,33 +480,37 @@ class SimulationState(SaveModel):
 
 
     def validate_killings(self, now, facts, history):
-        from constants import KILLING_COOLDOWN_PHASES, PROTECTED_POPULATION
+        from constants import KILLING_COOLDOWN_PHASES, PROTECTED_POPULATION, CONVERSATION_COMPLETED
         deaths = {n.departure.event_id: n for n in self.archived}
         killings = {f.source_id: f for f in facts.values() if f.kind == "killing"}
         if set(deaths) != set(killings):
             raise ValueError("Archived deaths must have exactly one retained committed killing fact.")
         by_id = {n.id: n for n in [*self.npcs, *self.archived]}
-        phases, by_killer = set(), {}
+        phases = []
         for event_id, victim in deaths.items():
             fact = killings[event_id]
             departure = victim.departure
             record = history.get(departure.conversation_id)
+            player_kill = fact.subject_id == self.player.id
             if (fact.subject_id != departure.attacker_id or fact.object_id != victim.id
-                    or departure.attacker_id not in by_id or fact.subject_id == victim.id
+                    or departure.attacker_id not in by_id.keys() | {self.player.id} or fact.subject_id == victim.id
                     or fact.phase != phase_index(departure.day, departure.phase)
                     or fact.conversation_id != departure.conversation_id or not record
-                    or record.purpose != "confrontation" or record.participant_ids != [fact.subject_id, victim.id]
-                    or fact.phase in phases or fact.location != victim.location):
-                raise ValueError("A death must match its killer, physical event and source confrontation.")
-            attacker_death = by_id[fact.subject_id].departure
+                    or record.purpose != ("killing" if player_kill else "confrontation")
+                    or departure.cause != ("killed by player" if player_kill else "killed by resident")
+                    or record.participant_ids != [fact.subject_id, victim.id]
+                    or fact.location != GARDEN_LOCATION or fact.location != victim.location
+                    or self.snake.id not in fact.witness_ids
+                    or player_kill and (record.origin != "player" or record.turns
+                                        or record.status != CONVERSATION_COMPLETED)):
+                raise ValueError("A death must match its killer, garden witnesses and source record.")
+            attacker_death = by_id[fact.subject_id].departure if not player_kill else None
             if attacker_death and phase_index(attacker_death.day, attacker_death.phase) <= fact.phase:
                 raise ValueError("An archived resident cannot kill after their own death.")
-            phases.add(fact.phase)
-            by_killer.setdefault(fact.subject_id, []).append(fact.phase)
-        for actor in by_id.values():
-            commits = sorted(by_killer.get(actor.id, []))
-            if any(b - a < KILLING_COOLDOWN_PHASES for a, b in zip(commits, commits[1:])):
-                raise ValueError("A killer cooldown must match committed deaths.")
+            phases.append(fact.phase)
+        phases.sort()
+        if any(b - a < KILLING_COOLDOWN_PHASES for a, b in zip(phases, phases[1:])):
+            raise ValueError("Killings share one cooldown across all residents and the player.")
         if deaths and len(self.npcs) + int(self.mode == "player" and self.player.alive) < PROTECTED_POPULATION:
             raise ValueError("A killing cannot remove the protected population.")
         for meeting in self.conversations:

@@ -4,7 +4,7 @@ import json
 
 import dialogue_context
 from area_knowledge import known_layout
-from constants import EMOTION_THRESHOLD, FURIOUS_THRESHOLD, SNAKE_NAME
+from constants import EMOTION_THRESHOLD, FURIOUS_THRESHOLD, SNAKE_NAME, KILLING_INDOOR_REASON
 from dialogue_context import NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION, PLAYER_TAG_INSTRUCTION
 
 
@@ -102,6 +102,11 @@ ordinary activities autonomously; a request for generic independence is conversa
 not a destination, eating, or transfer command.
 """
 
+KILLING_INSTRUCTION = f"""{KILLING_INDOOR_REASON}
+Killings can occur only in the garden. {SNAKE_NAME} cannot be killed.
+The player and residents share one killing allowance per phase; it resets when the phase changes.
+"""
+
 GARDEN_INSTRUCTION = TREE_INSTRUCTION + """Current physical surroundings are authoritative: one grassy garden,
 one living apple tree and an apartment building with residents' rooms.
 All residents, including the player, have unlimited fruit storage.
@@ -116,7 +121,7 @@ an invented venue or a vanished tree just because earlier dialogue mentioned it.
 """
 
 
-SPEAKING_BRIEF = NAME_TAG_INSTRUCTION + NPC_ARRIVAL_INSTRUCTION + TREE_INSTRUCTION + f"""Write all dialogue in English. Name the garden python {SNAKE_NAME} consistently;
+SPEAKING_BRIEF = NAME_TAG_INSTRUCTION + NPC_ARRIVAL_INSTRUCTION + TREE_INSTRUCTION + KILLING_INSTRUCTION + f"""Write all dialogue in English. Name the garden python {SNAKE_NAME} consistently;
 use I/my for the speaker and you/your for the listener in direct conversation.
 Write base speech and all opinion reasons in ordinary capitalization and plain prose.
 Personality controls behavior; presentation is applied separately. Never imitate historical delivery.
@@ -181,7 +186,7 @@ match each part's emotion to its speaker.
 
 """
 
-ORIENTATION_SPEAKING_BRIEF = NAME_TAG_INSTRUCTION + NPC_ARRIVAL_INSTRUCTION + TREE_INSTRUCTION + """Write direct English dialogue in ordinary capitalization.
+ORIENTATION_SPEAKING_BRIEF = NAME_TAG_INSTRUCTION + NPC_ARRIVAL_INSTRUCTION + TREE_INSTRUCTION + KILLING_INSTRUCTION + """Write direct English dialogue in ordinary capitalization.
 Use I/my for yourself and you/your for the listener. Give only this speaker's
 words, without narration, speaker labels or the listener's answer. Reply to
 what they actually just said before pursuing another concern.

@@ -160,6 +160,22 @@ class ConversationSession:
         end_interaction(self.simulation, reason)
         self.pending_offer = None
 
+    def kill_resident(self, npc):
+        """Apply the player's physical action and retire requests belonging to the victim."""
+        try:
+            self.simulation.commit_player_killing(npc)
+        except ValueError as exc:
+            self.notice(str(exc))
+            return
+        self.cancel_unowned()
+        for request_id, meeting in tuple(self.conversation_requests.items()):
+            if not meeting.active:
+                self.requests.cancel(self.session_id, request_id)
+                self.conversation_requests.pop(request_id)
+        self.pending_offer = None
+        self.close_view()
+        self.notice(f"You killed {npc.name}.")
+
     def open_player_dialogue(self, npc):
         if not self.player_owns(npc):
             return

@@ -97,6 +97,7 @@ SETUP_MODE_RECTS = ((740, 90, 126, 36), (878, 90, 142, 36))
 SETUP_PLAYER_NOTE_RECT = (272, 280, 736, 104)
 SETUP_TITLE_POSITION = (260, 88)
 END_CONVERSATION_RECT = (1040, 510, 216, 32)
+PLAYER_KILL_BUTTON_RECT = (380, 510, 168, 32)
 LOCATION_MENU_RECT = (500, 244, 280, 232)
 LOCATION_BUTTON_HEIGHT = 42
 LOCATION_BUTTON_GAP = 50
@@ -460,7 +461,9 @@ TREE_SHAKE_OFFSET = 3.0
 CONFRONTATION_OPINION = VERY_HOSTILE_OPINION
 # A confrontation's attack is rolled: each point the confronter's view falls past -60 adds 2.5%, so -61 is 2.5% and -100 is certain.
 KILLING_CHANCE_PER_POINT = 0.025
-KILLING_COOLDOWN_PHASES = 2
+KILLING_COOLDOWN_PHASES = 1
+KILLING_INDOOR_REASON = ("Killing is forbidden inside the apartment building: bodies would not disappear. "
+                       "Enough bodies would block the hallways and make movement through them impossible.")
 KILLING_DISTANCE = 160.0
 KILLING_WITNESS_PENALTY = 24
 BODY_SECONDS = 4.0

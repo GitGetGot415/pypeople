@@ -11,7 +11,7 @@ from constants import (DIALOGUE_PANEL_HEIGHT, DIALOGUE_READING_Y, DIALOGUE_READI
                       GAME_MENU_CONFIRM_TITLE_Y, GAME_MENU_CONFIRM_MESSAGE_RECT, GAME_MENU_KEEP_PLAYING_RECT,
                       GAME_MENU_LEAVE_RECT, PLAYER_ROOM_LOCATION, ROOM_BED_RECT,
                       BED_POPUP_RECT, BED_POPUP_TITLE_Y, BED_POPUP_MESSAGE_RECT, BED_ADVANCE_RECT,
-                      BED_CANCEL_RECT)
+                      BED_CANCEL_RECT, PLAYER_KILL_BUTTON_RECT)
 from emotions import portrait_expression
 from conversation_history import uses_original_dialogue
 from .dialogue_view import DialogueView
@@ -38,6 +38,7 @@ class GameScreen:
         self.location = "garden"
         self.location_menu = None
         self.end_button = Button(END_CONVERSATION_RECT, "End conversation")
+        self.kill_button = Button(PLAYER_KILL_BUTTON_RECT, "Kill")
         self.harvest_button = Button(HARVEST_BUTTON_RECT, "Harvest apples")
         self.harvest_amount = TextInput(HARVEST_AMOUNT_RECT, max_length=6, placeholder="1")
         self.harvest_amount.set_value("1")
@@ -179,6 +180,11 @@ class GameScreen:
             return
         if self.dialogue.picker is not None:
             self.handle_action_picker(app, event)
+            return
+        if self.dialogue.open and active_player(world) and self.kill_button.clicked(event):
+            app._sync_conversation_view()
+            app.conversations.kill_resident(self.dialogue.actor)
+            app._present_conversation_events()
             return
         if self.dialogue.open and self.dialogue.conversation is None and self.actions_button.clicked(event):
             if self.player_response_ready and not self.pending_offer:
@@ -631,11 +637,14 @@ class GameScreen:
                 label += " / arriving"
             draw_wrapped_text(app.window, label, app.small_font, color, (476, 110, 550, 64))
         if self.save_message_remaining:
-            color = PAPER if app.simulation.phase == "night" else INK
+            color = PAPER if app.simulation.phase == "night" or self.location != "garden" else INK
             draw_wrapped_text(app.window, self.save_message, app.small_font, color, (24, 480, 1232, 44))
 
         if self.dialogue.open and app.simulation.player_interaction:
             self.end_button.draw(app.window, app.small_font)
+        if self.dialogue.open and active_player(app.simulation):
+            reason = app.simulation.player_killing_unavailable(self.dialogue.actor)
+            self.kill_button.draw(app.window, app.small_font, enabled=not reason)
         if (self.dialogue.open and self.dialogue.conversation is None
                 and self.dialogue.actor is not app.simulation.snake and self.player_response_ready):
             reason = app.conversations.input_unavailable(self.dialogue.actor, active=app.screen == "game")

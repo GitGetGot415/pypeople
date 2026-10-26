@@ -49,7 +49,7 @@ class ConversationRecord:
     outcomes: list[str] = field(default_factory=list)
     error: str = ""
     origin: Literal["player", "autonomous"] = "player"
-    purpose: Literal["chat", "orientation", "food_request", "gossip", "confrontation"] = "chat"
+    purpose: Literal["chat", "orientation", "food_request", "gossip", "confrontation", "killing"] = "chat"
     id: Annotated[str, Field(min_length=1)] = field(default_factory=lambda: uuid4().hex)
     failed_turns: list[dict] = field(default_factory=list)
     name_forms: list[str] = field(default_factory=list)
