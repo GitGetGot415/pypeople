@@ -36,7 +36,6 @@ class GameScreen:
         from constants import END_CONVERSATION_RECT, HARVEST_BUTTON_RECT, HARVEST_AMOUNT_RECT, INVITATION_ACCEPT_RECT
         self.app = None
         self.location = "garden"
-        self.location_menu = None
         self.end_button = Button(END_CONVERSATION_RECT, "End conversation")
         self.kill_button = Button(PLAYER_KILL_BUTTON_RECT, "Kill")
         self.harvest_button = Button(HARVEST_BUTTON_RECT, "Harvest apples")
@@ -112,7 +111,6 @@ class GameScreen:
         self.menu_restore_focus = False
         self.inventory.close()
         self.apartment_open = False
-        self.location_menu = None
         self.apartment_scroll = 0
         self.close_dialogue()
         self.prompt_input.set_value("")
@@ -176,9 +174,6 @@ class GameScreen:
             elif self.leave_game_button.clicked(event):
                 self.confirm_menu = False
                 app.leave_game()
-            return
-        if self.location_menu:
-            self.handle_location_event(app, event)
             return
         if self.dialogue.picker is not None:
             self.handle_action_picker(app, event)
@@ -617,8 +612,6 @@ class GameScreen:
         if self.can_harvest(app.simulation):
             self.harvest_button.draw(app.window, app.small_font)
             self.harvest_amount.draw(app.window, app.small_font)
-        if self.location_menu:
-            self.draw_location_menu(app)
         self.menu_button.draw(app.window, app.small_font)
         self.stats_button.draw(app.window, app.small_font)
         self.save_button.draw(app.window, app.small_font)
@@ -956,9 +949,6 @@ class GameScreen:
         from apartments import pending_invitation
         return pending_invitation(world)
 
-    def open_location_menu(self, choices):
-        self.location_menu = dict(choices=choices)
-
     def observe_location(self, location):
         from locations import map_size
         self.close_dialogue()
@@ -966,42 +956,6 @@ class GameScreen:
         width, height = map_size(location)
         self.camera_offset[:] = ((WORLD_WIDTH - width * self.camera_zoom) / 2,
                                  (WORLD_HEIGHT - height * self.camera_zoom) / 2)
-
-    def location_buttons(self):
-        from constants import (LOCATION_MENU_RECT, LOCATION_BUTTON_HEIGHT, LOCATION_BUTTON_GAP,
-            LOCATION_BUTTON_WIDTH, LOCATION_BUTTON_INSET)
-        x, y = LOCATION_MENU_RECT[:2]
-        return [(Button((x + LOCATION_BUTTON_INSET[0], y + LOCATION_BUTTON_INSET[1] + row * LOCATION_BUTTON_GAP,
-            LOCATION_BUTTON_WIDTH, LOCATION_BUTTON_HEIGHT), label), value)
-            for row, (label, value) in enumerate(self.location_menu["choices"])]
-
-    def handle_location_event(self, app, event):
-        from player import active_player
-        from constants import LOCATION_MENU_RECT
-        if (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
-                or event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
-                and not pygame.Rect(LOCATION_MENU_RECT).collidepoint(event.pos)):
-            self.location_menu = None
-            return
-        for button, value in self.location_buttons():
-            if button.clicked(event):
-                if not active_player(app.simulation):
-                    self.observe_location(value)
-                elif value != app.simulation.player.location:
-                    from locations import start_journey
-                    from constants import ELEVATOR_ARRIVAL
-                    start_journey(app.simulation.player, value, ELEVATOR_ARRIVAL, purpose="elevator", fast=True)
-                self.location_menu = None
-                return
-
-    def draw_location_menu(self, app):
-        from constants import LOCATION_MENU_RECT
-        overlay = pygame.Surface(WINDOW_SIZE, pygame.SRCALPHA)
-        overlay.fill(MODAL_OVERLAY_COLOR)
-        app.window.blit(overlay, (0, 0))
-        pygame.draw.rect(app.window, PAPER, LOCATION_MENU_RECT, border_radius=BORDER_RADIUS)
-        for button, _ in self.location_buttons():
-            button.draw(app.window, app.small_font)
 
     def update_physical(self, app, dt):
         from player import active_player, move_player
@@ -1013,7 +967,7 @@ class GameScreen:
             self.inventory.close()
         if self.bed_open and not self.can_use_bed(world):
             self.bed_open = False
-        world.player_menu_blocked = bool(self.location_menu or self.inventory.visible or self.apartment_open
+        world.player_menu_blocked = bool(self.inventory.visible or self.apartment_open
             or self.confirm_menu or self.bed_open or app.screen != "game")
         if self.confirm_menu:
             return

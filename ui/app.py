@@ -149,7 +149,7 @@ class Application:
             voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation)
         self.conversations.set_view(actor=self.game.dialogue.actor,
             reply_open=self.game.dialogue.open, viewed_conversation=self.game.dialogue.conversation,
-            menu_open=bool(self.game.location_menu or self.screen != "game"),
+            menu_open=self.screen != "game",
             interaction_id=self.game.dialogue.interaction_id)
 
     def _present_conversation_events(self):
@@ -328,12 +328,9 @@ class Application:
 
 
     def use_door(self, target):
-        from locations import start_journey, allocated_floors, hallway_location, doorway_arrival, valid_location
+        from locations import start_journey, doorway_arrival, valid_location
         from constants import PLAYER_ROOM_NUMBER
         world, player = self.simulation, self.simulation.player
-        if target["kind"] == "elevator":
-            self.game.open_location_menu([(f"Floor {f}", hallway_location(f)) for f in allocated_floors(world)])
-            return
         if not active_player(world):
             if valid_location(world, target["destination"]):
                 self.game.observe_location(target["destination"])
@@ -359,7 +356,8 @@ class Application:
                     self.game.show_save_message(str(exc))
                 return
         destination = target["destination"]
-        start_journey(player, destination, doorway_arrival(target), purpose="doorway", fast=True)
+        start_journey(player, destination, doorway_arrival(target),
+                      purpose="elevator" if target["kind"] == "elevator" else "doorway", fast=True)
 
 
     def apply_pending_action(self, action):

@@ -148,7 +148,7 @@ def targets(world, location):
         result.append(dict(kind="room", rect=overlay_rect((x, y)), point=door_point(room),
                            destination=room_location(room), room=room))
     result.append(dict(kind="elevator", rect=overlay_rect(HALLWAY_ELEVATOR_ORIGIN),
-                       point=ELEVATOR_ARRIVAL))
+                       point=ELEVATOR_ARRIVAL, destination=hallway_location(2 if number == 1 else 1)))
     if number == 1:
         result.append(dict(kind="garden", rect=HALLWAY_EXIT_RECT,
                            point=HALLWAY_EXIT, destination=GARDEN_LOCATION))
@@ -158,6 +158,7 @@ def targets(world, location):
 def doorway_arrival(target):
     destination = target["destination"]
     return (ROOM_ARRIVAL if destination.startswith("room:") else
+            ELEVATOR_ARRIVAL if target["kind"] == "elevator" else
             GARDEN_BUILDING_ARRIVAL if destination == GARDEN_LOCATION else
             door_point(target["room"]) if target["kind"] == "exit_room" else HALLWAY_ENTRY)
 
