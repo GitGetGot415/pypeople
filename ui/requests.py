@@ -152,6 +152,12 @@ class RequestManager:
         return self.available_slots == 0
 
     @property
+    def active_calls(self):
+        """Count live calls immediately, excluding cancelled workers still closing."""
+        return sum(worker.control is not None and worker.control.provider_active
+                   and not worker.control.cancelled.is_set() for worker in self.workers.values())
+
+    @property
     def available_slots(self):
         return max(0, self.max_requests - self.admission.active - len(self.admission.waiting))
 

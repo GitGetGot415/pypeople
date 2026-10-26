@@ -100,7 +100,7 @@ class RequestStatus:
         pygame.draw.rect(surface, PAPER, self.rect)
         pygame.draw.rect(surface, INK, self.rect, width=1)
         pygame.draw.rect(surface, ACCENT, self.header)
-        title = f"{'+' if self.collapsed else '-'} LLM calls: {manager.admission.active}/{manager.max_requests}; exchanges: {len(workers) + queued}; Queued: {queued}"
+        title = f"{'+' if self.collapsed else '-'} LLM calls: {manager.active_calls}/{manager.max_requests}; exchanges: {len(workers) + queued}; Queued: {queued}"
         surface.blit(font.render(title, True, PAPER), (self.rect.x + 10, self.rect.y + 6))
         if self.collapsed:
             return
