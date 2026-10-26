@@ -6,7 +6,7 @@ from constants import (DIALOGUE_PANEL_HEIGHT, DIALOGUE_READING_Y, DIALOGUE_READI
                       APARTMENT_INSPECTOR_ROW_HEIGHT, APARTMENT_INSPECTOR_CONTENT_INSET,
                       APARTMENT_INSPECTOR_CONTENT_TOP, APARTMENT_INSPECTOR_TITLE_OFFSET, MODAL_OVERLAY_COLOR,
                       INVENTORY_BUTTON_RECT, GAME_PAUSE_RECT, GAME_CLOCK_RECT, GAME_SAVE_RECT, GAME_STATS_RECT, GAME_PHASE_POSITION,
-                      GAME_TOOLBAR_PADDING, GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT,
+                      GAME_MENU_RECT, GAME_TOOLBAR_PADDING, GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT,
                       DIALOGUE_ORIGINAL_TOGGLE_RECT, BORDER_RADIUS, GAME_MENU_CONFIRM_RECT,
                       GAME_MENU_CONFIRM_TITLE_Y, GAME_MENU_CONFIRM_MESSAGE_RECT, GAME_MENU_KEEP_PLAYING_RECT,
                       GAME_MENU_LEAVE_RECT, PLAYER_ROOM_LOCATION, ROOM_BED_RECT,
@@ -43,7 +43,7 @@ class GameScreen:
         self.harvest_amount.set_value("1")
         self.invitation_button = Button(INVITATION_ACCEPT_RECT, "Accept invitation")
         self.actions_button = Button(PLAYER_ACTION_BUTTON_RECT, "Request action")
-        self.menu_button = Button((1144, 16, 112, 38), "Menu")
+        self.menu_button = Button(GAME_MENU_RECT, "Menu")
         self.confirm_menu = False
         self.menu_restore_focus = False
         self.keep_playing_button = Button(GAME_MENU_KEEP_PLAYING_RECT, "Keep playing")
