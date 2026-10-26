@@ -25,6 +25,7 @@ from dialogue_rules import (is_name_reference, mentions_account, mentions_privat
                            validate_opinion_reason, validate_opinion_direction, validate_environment_speech, validate_speaker_identity,
                            personal_apple_request, short_player_answer, validate_snake_perspective, validate_snake_accusation,
                            validate_promise_mentions, validate_witness_denial, validate_listener_witness,
+                           validate_speaker_witness, denies_own_harvest,
                            copied_share, first_person_text, validate_addressee, validate_private_recital,
                            validate_unheard_quote, leverage_pressure, validate_reason_subject, validate_reason_voice,
                            validate_tree_permanence, validate_name_tag_talk, validate_self_name, validate_echo,
@@ -345,6 +346,11 @@ def _validate_denial(result, index, turn, speaker, options, info):
     """Someone accused of what they know they did may only deny it as a recorded lie, which a witness then sees through."""
     done = {options[b["claim_id"]]["fact_id"] for b in info.get("beliefs", {}).get(turn.speaker, [])
             if b["claim_id"] in options and b["direct"] and options[b["claim_id"]]["affirmed"]}
+    lying = any(d.turn == index and d.intent == "lie" for d in result.disclosures)
+    if not lying and denies_own_harvest(turn.text) and any(
+            o["fact_id"] in done and o["kind"] == "harvest" and o["subject_id"] == speaker["actor_id"] for o in options.values()):
+        raise ValueError("You have harvested apples from the tree yourself, and you know it. Do not say you never did; "
+                         "talk about it honestly in your own words.")
     accused = [options[d.claim_id] for d in result.disclosures if d.turn < index and d.claim_id in options
                and result.turns[d.turn].speaker != turn.speaker and options[d.claim_id]["affirmed"]
                and options[d.claim_id]["subject_id"] == speaker["actor_id"] and options[d.claim_id]["fact_id"] in done]
@@ -425,6 +431,13 @@ def validate_resident_grounding(result, snapshot):
                 for b in info.get("beliefs", {}).get(other_role, [])
                 if b["direct"] and b["claim_id"] in options and options[b["claim_id"]]["affirmed"]},
                 people=[name for name in dict.fromkeys(names) if name != listener_name], listener=listener_name)
+            validate_speaker_witness(turn.text, {
+                (snapshot.get("_name_actors", {}).get(options[b["claim_id"]]["subject_id"], {}).get("name", ""), options[b["claim_id"]]["kind"])
+                for b in info.get("beliefs", {}).get(turn.speaker, [])
+                if b["direct"] and b["claim_id"] in options and options[b["claim_id"]]["affirmed"]} | {
+                (snapshot.get("_name_actors", {}).get(options[d.claim_id]["subject_id"], {}).get("name", ""), options[d.claim_id]["kind"])
+                for d in result.disclosures if d.turn == index and d.intent == "lie" and d.claim_id in options},
+                people=list(dict.fromkeys(names)), speaker=speaker["name"])
         recent_memories = [options[entry.claim_id] for entry in result.disclosures
                            if entry.turn == index - 1 and entry.claim_id in options]
         validate_memory_ownership(turn.text, options.values(), speaker_id=speaker["actor_id"],
@@ -518,7 +531,8 @@ def _validate_response(raw, snapshot, model):
             raise ValueError("Choose one of the supplied changes.")
         if check_dialogue:
             validate_opinion_direction(snapshot["reason"], OPINION_CHANGES[result.change][0],
-                                       target=snapshot["target"], people=snapshot.get("people", ()), you=snapshot.get("you", ""))
+                                       target=snapshot["target"], people=snapshot.get("people", ()), you=snapshot.get("you", ""),
+                                       chosen=True)
         return result
     if check_dialogue:
         _validate_base_presentation(result, snapshot)
@@ -698,7 +712,8 @@ def _validate_speaker_standing(text, state):
     speaker = state["speaker"]
     if "inventory" in speaker:
         validate_own_apples(text, speaker["inventory"].get("fruit", 0))
-    validate_own_harvest(text, state.get("_speaker_harvested", True))
+    validate_own_harvest(text, state.get("_speaker_harvested", True),
+                         accusing=state.get("purpose") == "confrontation" and state.get("speaker_role") == "initiator")
     view = speaker.get("opinion_of_listener") or {}
     if view.get("opinion", 0) <= HOSTILE_OPINION:
         names = [actor["name"] for actor in state.get("_name_actors", {}).values() if actor.get("name")]
@@ -765,7 +780,7 @@ def fallback_assessment(snapshot, state):
             gossip.append(ReputationReason(claim_id=claim_id, subject_id=options[claim_id].subject_id,
                                            reason=f"Hearing it told stirred me up against {subject}." if retold_accusation(options[claim_id])
                                            else "No clear view formed from this account."))
-    choices = state.get("escalation_choices")
+    choices = state.get("_escalation_choices")
     return ResidentAssessment(
         escalation=EscalationChoice(action="leave", target_id=choices["target_id"], grievance_id=choices["grievance_id"], evidence="")
         if choices else None,
@@ -815,21 +830,12 @@ def gossip_delta(related, option, label):
 
 def apply_opinion_directions(snapshot, draft, state, change, gossip_changes):
     """Apply the separately chosen directions to an accepted assessment's reasons."""
-    from social import validate_escalation_snapshot
     projected = deepcopy(draft)
     role = state["speaker_role"]
     pending = projected["assessments"].pop(role)
     current = (state["speaker"].get("opinion_of_listener") or {}).get("opinion", 0)
     projected["opinions"][role] = OpinionUpdate(person=pending["person"], reason=pending["reason"],
                                                 opinion=max(-100, min(100, current + opinion_change(change))))
-    escalation = projected.get("escalation") if role == "initiator" else None
-    if escalation and escalation.action == "attack":
-        try:
-            validate_escalation_snapshot(escalation, {"purpose": snapshot.get("purpose"),
-                "escalation_choices": state.get("escalation_choices")}, draft["turns"], projected["opinions"][role].opinion)
-        except ValueError:
-            # The reason did not end hostile enough for an attack; the confrontation ends peacefully.
-            projected["escalation"] = escalation.model_copy(update={"action": "leave"})
     # Food requests carry no accounts, so there is nothing to weigh and no belief state to project.
     beliefs, _, _ = resident_information(snapshot, projected) if pending["gossip"] else ({}, None, None)
     options = {o.id: o for o in information_from_dict(snapshot["_information_validation"]).options} if pending["gossip"] else {}
@@ -868,14 +874,11 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
         entry = next(d for d in projected["disclosures"] if d.turn == reaction.disclosure_turn)
         entry.listener_stance = reaction.stance
     if isinstance(candidate, ResidentAssessment):
-        from social import validate_escalation_snapshot
-        # Directions are chosen afterwards; check escalation against the most hostile result still possible.
-        current = (state["speaker"].get("opinion_of_listener") or {}).get("opinion", 0)
-        validate_escalation_snapshot(candidate.escalation,
-            {"purpose": snapshot.get("purpose"), "escalation_choices": state.get("escalation_choices")},
-            draft["turns"], max(-100, current + min(low for low, _ in OPINION_CHANGES.values())))
-        if role == "initiator":
-            projected["escalation"] = candidate.escalation
+        choices = state.get("_escalation_choices")
+        if role == "initiator" and choices:
+            # The model never chooses violence; the game rolls leave or attack from the committed view (social.roll_escalation).
+            projected["escalation"] = EscalationChoice(action="leave", target_id=choices["target_id"],
+                                                       grievance_id=choices["grievance_id"], evidence="")
         other = "recipient" if role == "initiator" else "initiator"
         reason = candidate.opinion.reason
         if candidate.opinion.person != snapshot[other]["name"]:
@@ -929,6 +932,9 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
 
     turn = ConversationTurn(speaker=role, parts=candidate.parts)
     projected["turns"].append(turn)
+    if index and snapshot.get("_dialogue_validation", True):
+        from dialogue_rules import validate_partner_echo
+        validate_partner_echo(turn.text, projected["turns"][-2].text)
     if candidate.gift_offer:
         if projected["gift"] is not None or snapshot.get("arrival_focus") or snapshot.get("purpose") == "food_request":
             raise ValueError("Only one gift offer is available in an ordinary conversation.")
@@ -983,6 +989,19 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
         pending = pending_snake_accusation(snapshot, projected["turns"][:1], role)
         if pending:
             validate_snake_accusation(turn.text, pending[0], subject_is_listener=pending[1])
+    if index == 1 and snapshot.get("purpose") == "food_request" and snapshot.get("_dialogue_validation", True):
+        from dialogue_rules import validate_food_answer
+        validate_food_answer(turn.text, accepted=snapshot["food_request"]["outcome"] == "accepted")
+    if (index in (1, 2) and snapshot.get("purpose") == "confrontation" and snapshot.get("_dialogue_validation", True)
+            and (snapshot.get("_information_validation") or {}).get("focus_claim_id")):
+        # The accused answers the grievance, and until they have, the accuser keeps pressing it.
+        from dialogue_rules import answers_grievance, validate_grievance_answer, validate_grievance_pressed
+        info = snapshot["_information_validation"]
+        kind = next(o["kind"] for o in info["options"] if o["id"] == info["focus_claim_id"])
+        if index == 1:
+            validate_grievance_answer(turn.text, kind, snapshot["initiator"]["name"])
+        elif not answers_grievance(projected["turns"][1].text, kind):
+            validate_grievance_pressed(turn.text, kind, snapshot["recipient"]["name"])
     for entry in candidate.leverage:
         if entry.claim_id not in choices["leverage"]:
             raise ValueError("Leverage requires a permitted account known before this turn.")

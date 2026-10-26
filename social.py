@@ -763,7 +763,9 @@ def confrontation_topic(npc, claim_id):
     fact = fact_by_id(npc.world, claim.fact_id)
     # A harvest is raised as the whole collection this resident believes, not the one pickup the grievance names.
     assertion = believed_harvest(npc.world, npc.beliefs, fact) if fact.kind == "harvest" and claim.affirmed else account["assertion"]
-    return f"Seek an explanation for this unresolved account: {assertion} Source: {account['immediate_source_name']}; stance: {account['stance']}."
+    source = account["immediate_source_name"]
+    told = "I saw it myself." if source == npc.name else f"{source} told me about it."
+    return f"Ask for an explanation of what I hold against them: {assertion} {told}"
 
 
 def regards_as_dangerous(npc, target):
@@ -791,6 +793,27 @@ def validate_escalation_snapshot(decision, snapshot, turns, opinion):
         if opinion > CONFRONTATION_OPINION or not decision.evidence.strip() or not any(
                 decision.evidence in t.text for t in turns if t.speaker == "recipient"):
             raise ValueError("An attack requires final hostility and exact evidence from the target's accepted answer.")
+
+
+def roll_escalation(conversation, response, opinion):
+    """The confronter's leave or attack, rolled by the game rather than chosen by the model.
+
+    opinion is the view the exchange commits. Each point it falls past CONFRONTATION_OPINION adds
+    KILLING_CHANCE_PER_POINT; an accepted promise from the accused to make it right rules an attack out.
+    The accused's last answer is the evidence the attack rests on."""
+    from constants import CONFRONTATION_OPINION, KILLING_CHANCE_PER_POINT
+    decision = response.escalation
+    choices = conversation.initiator.world.escalation_choices(conversation, opinion=opinion)
+    if decision is None or not choices:
+        return decision
+    accused = conversation.recipient.id
+    promised = any(p.id == a.proposal_id and p.promisor_id == accused
+                   for a in response.accepted_proposals for p in conversation.proposals)
+    answer = next((t.text for t in reversed(response.turns) if t.speaker == "recipient"), "")[:400]
+    chance = (CONFRONTATION_OPINION + 1 - opinion) * KILLING_CHANCE_PER_POINT
+    attack = ("attack" in choices["actions"] and not promised and bool(answer.strip())
+              and conversation.initiator.rng.random() < chance)
+    return decision.model_copy(update={"action": "attack", "evidence": answer} if attack else {"action": "leave"})
 
 
 def validate_escalation(conversation, response, opinion=None):

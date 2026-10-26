@@ -10,6 +10,7 @@ class RecoveryKind(str, Enum):
     MISSING_PROMISE = "missing_promise"
     MISSING_ACCEPTANCE = "missing_acceptance"
     UNMATCHED_ACCOUNT = "unmatched_account"
+    MISSING_GIFT_OFFER = "missing_gift_offer"
 
 
 class DialogueValidationError(ValueError):

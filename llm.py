@@ -160,6 +160,24 @@ def _generated_dialogue(raw, snapshot):
     return turns
 
 
+def _own_speech_parts(response, state):
+    """The reply without the partner's answer written into its later parts, or None when no such part can be cut away."""
+    from dialogue_rules import validate_speaker_identity
+    parts = list(getattr(response, "parts", None) or [])
+    speaker = state["speaker"]["name"]
+    listener = state.get("_listener_identity", state["listener"]["name"])
+    for index, part in enumerate(parts):
+        try:
+            validate_speaker_identity(part.text, speaker, listener)
+        except ValueError:
+            if not index:
+                return None
+            candidate = response.model_copy(deep=True)
+            candidate.parts = parts[:index]
+            return candidate
+    return None
+
+
 def _deduplicate_dialogue_parts(turn):
     """Keep generated words while dropping exact repeated parts or long sentences."""
     parts, seen_parts, seen_sentences = [], set(), set()
@@ -315,13 +333,13 @@ def _resident_disclosure_choices(state, speech):
 
 
 _UNSUPPORTED_EFFECTS = {RecoveryKind.UNMATCHED_ACCOUNT: "disclosures", RecoveryKind.MISSING_PROMISE: "offers",
-                        RecoveryKind.MISSING_ACCEPTANCE: "acceptances"}
+                        RecoveryKind.MISSING_ACCEPTANCE: "acceptances", RecoveryKind.MISSING_GIFT_OFFER: "gift_offer"}
 
 
 def _without_unsupported_effects(state, exc, *, keep_disclosures):
     """The rejected reply minus metadata its speech never supported, if that alone made it fail; else None.
 
-    Small models tag accounts, offers and acceptances their words never made. Dropping only those tags keeps
+    Small models tag accounts, offers, acceptances and gifts their words never made. Dropping only those tags keeps
     good speech rather than regenerating it and piling up corrections. A required disclosure is never dropped.
     """
     candidate, error = exc.response, exc
@@ -331,7 +349,7 @@ def _without_unsupported_effects(state, exc, *, keep_disclosures):
                 or field == "disclosures" and keep_disclosures):
             return None
         candidate = candidate.model_copy(deep=True)
-        setattr(candidate, field, [])
+        setattr(candidate, field, None if field == "gift_offer" else [])
         try:
             return validate_response(candidate.model_dump_json(), state)
         except InvalidResponseError as retry:
@@ -401,6 +419,14 @@ def _corrected_request(state, request, report):
                     return validate_response(candidate.model_dump_json(), state)
                 except InvalidResponseError:
                     pass
+            if kind == "resident_turn":
+                # Whatever check failed first, a later part addressing the speaker is the partner's reply; cut it away.
+                candidate = _own_speech_parts(exc.response, state)
+                if candidate is not None:
+                    try:
+                        return validate_response(candidate.model_dump_json(), state)
+                    except InvalidResponseError:
+                        pass
             if kind == "resident_turn":
                 required = bool(disclosure_repair) or bool(state.get("discussion_focus_claim_id")) and state["turn_index"] == 0
                 stripped = _without_unsupported_effects(state, exc, keep_disclosures=required)

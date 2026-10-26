@@ -166,17 +166,8 @@ def _resident_contract(snapshot, *, correction=False):
         if reactions:
             properties["reactions"]["items"] = reactions[0] if len(reactions) == 1 else {"anyOf": reactions}
     if assessment:
-        choices = snapshot.get("escalation_choices")
-        if choices:
-            from dialogue import EscalationChoice
-            choice_schema = structured_schema(EscalationChoice)
-            choice_schema["properties"]["action"]["enum"] = choices["actions"]
-            choice_schema["properties"]["target_id"]["enum"] = [choices["target_id"]]
-            choice_schema["properties"]["grievance_id"]["enum"] = [choices["grievance_id"]]
-            properties["escalation"] = choice_schema
-        else:
-            properties["escalation"] = {"type": "null"}
-    if assessment:
+        # A confrontation's leave or attack is rolled by the game from the committed view, never chosen here.
+        properties["escalation"] = {"type": "null"}
         properties["opinion"]["properties"]["person"] = {"type": "string", "enum": [snapshot["opinion_target"]]}
         gossip = snapshot["choices"]["third_party_opinions"]
         if gossip:
@@ -195,7 +186,9 @@ def _resident_contract(snapshot, *, correction=False):
         pending = draft.get("gift")
         if not pending or pending.recipient_id != actor_id(snapshot["speaker"]) or pending.accept_turn is not None:
             properties.pop("accept_gift", None)
-        if snapshot.get("arrival_focus") or snapshot.get("purpose") == "food_request" or snapshot.get("social_only"):
+        # A confrontation is made right with a promised apple (offers), never an unasked gift.
+        if (snapshot.get("arrival_focus") or snapshot.get("purpose") in ("food_request", "confrontation")
+                or snapshot.get("social_only")):
             properties.pop("gift_offer", None)
             properties.pop("accept_gift", None)
         for field, limit in resident_effect_capacity(draft).items():
@@ -218,8 +211,6 @@ def _resident_contract(snapshot, *, correction=False):
         elif bool(snapshot.get("discussion_focus_claim_id")) and snapshot["turn_index"] == 0:
             properties["disclosures"]["minItems"] = 1
     schema["required"] = (["opinion"] if assessment else ["parts"])
-    if assessment and snapshot.get("escalation_choices"):
-        schema["required"].append("escalation")
     if assessment and snapshot["choices"]["third_party_opinions"]:
         schema["required"].append("third_party_opinions")
     if snapshot.get("pending_reactions"):
@@ -267,7 +258,8 @@ def _resident_contract(snapshot, *, correction=False):
         "Respond to what the partner actually said; do not invent transfers, events, discoveries or shared experiences.\n"
         + CONVERSATION_HISTORY_INSTRUCTION + "\n" + DIALOGUE_VARIETY_INSTRUCTION + "\n"
         + snapshot["speaker"].get("personality", "") + "\nCurrent task: " + snapshot["task"])
-    if not assessment and not thanks and not orientation and snapshot.get("purpose") != "food_request" and not snapshot.get("social_only"):
+    if (not assessment and not thanks and not orientation and snapshot.get("purpose") not in ("food_request", "confrontation")
+            and not snapshot.get("social_only")):
         instruction += (" You may offer one actual possession using gift_offer with recipient_id for this listener, item fruit or an exact owned_works ID, and quantity. "
             "Say clearly what you offer; name the work title if creative. Only one gift offer per conversation. "
             "Use accept_gift true only when you explicitly accept an earlier pending_gift directed to you. "
@@ -290,12 +282,6 @@ def _resident_contract(snapshot, *, correction=False):
         instruction += (" The python cannot harvest or possess apples. Never attribute a resident's harvest to the python, "
                         "whether you are speaking as the python or addressing it. Witnessing is not collecting. "
                         "This meeting permits conversation and sourced reports; do not bargain, demand payment, offer gifts or promise apples.")
-    if assessment and snapshot.get("escalation_choices"):
-        instruction += (" Choose escalation leave or attack only from escalation_choices. Peaceful endings are normal; "
-            "an explanation, apology or reconciliation can avert escalation. Evaluate your authored personality, actual history "
-            "and the accepted answer; selfishness or skepticism alone never establishes willingness to kill. "
-            "An attack is intentionally lethal and requires exact evidence from the target's accepted answer; "
-            "it requests a later local action, never an accomplished death. Do not invent motives or narrate a killing.")
     if assessment:
         instruction += ("\nThe transcript is fixed. Write a first-person reason in plain prose, in your own words, saying how "
                         "opinion_target's words or conduct in this exchange made you feel about them: better, worse or no different, and why. "

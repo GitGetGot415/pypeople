@@ -406,7 +406,9 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
                          "Keep hearsay uncertain and allow explanation, apology and reconciliation. "
                          "Threats are speech only; never narrate a completed attack or death. "
                          if index == 0 else
-                         "Answer the actual reply, allowing peaceful resolution. What you saw yourself stays true however "
+                         "Answer the actual reply. Until the listener explains, apologizes or promises to make it right, keep "
+                         "pressing them about the grievance you raised; do not change the subject or agree to unrelated plans. "
+                         "Peaceful resolution stays possible. What you saw yourself stays true however "
                          "confidently it is denied; a denial is not proof. Never narrate an uncommitted killing."
                          if role == "initiator" else
                          "Answer the grievance honestly: explain, apologize or justify what you did. Deny it only with your "
@@ -442,7 +444,8 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
             state["task"] += (f" You told what {pending[0]} did but have not yet judged it. Say plainly, in your own view, "
                               f"that it was selfish or greedy and shows {pending[0]} cares nothing for the listener.")
     if assessment and role == "initiator":
-        state["escalation_choices"] = deepcopy(snapshot.get("escalation_choices"))
+        # Hidden from the model: the game rolls leave or attack once the exchange is committed.
+        state["_escalation_choices"] = deepcopy(snapshot.get("escalation_choices"))
     if assessment:
         state["task"] = ("Assess your partner from the fixed transcript and your own knowledge. Resolve only your pending heard disclosures. "
                          "Add no speech or other effects beyond any required third_party_opinions.")

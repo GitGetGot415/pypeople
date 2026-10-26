@@ -856,9 +856,9 @@ class Conversation(ResidentProgress):
             change = entry.opinion - starts.get(role, {}).get(partner.id, live)
             change = max(-CONVERSATION_OPINION_STEP, min(CONVERSATION_OPINION_STEP, change))
             opinions.append((npc, partner, entry.model_copy(update={"opinion": max(-100, min(100, live + change))})))
-        from social import validate_escalation
+        from social import roll_escalation, validate_escalation
         validate_escalation(self, response, opinions[0][2].opinion)
-        self.escalation = response.escalation
+        self.escalation = roll_escalation(self, response, opinions[0][2].opinion)
         self.accepted_revisions = ({n.id: n.command_revision for n in (self.initiator, self.recipient)}
                                    if self.escalation and self.escalation.action == "attack" else {})
         self.handoff_thanks = response.handoff_thanks

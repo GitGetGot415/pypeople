@@ -323,7 +323,8 @@ def validate_gift_offer_speech(text, item, quantity, stock):
     speech = unquoted_speech(text).casefold()
     if (not re.search(r"\b(?:offer|would you like|want|give you|for you|have this|take this)\b", speech)
             or re.search(r"\b(?:not|never|won't|cannot|can't|don't|do not)\b[^.!?]{0,35}\b(?:offer|give|have|take|for you)\b", speech)):
-        raise ValueError("A gift offer needs supporting offer speech.")
+        from validation_errors import DialogueValidationError, RecoveryKind
+        raise DialogueValidationError("A gift offer needs supporting offer speech.", RecoveryKind.MISSING_GIFT_OFFER)
     if item == "fruit":
         counts = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
         spoken = re.findall(r"\b(\d+|one|two|three|four|five)\s+(?:of my\s+)?(?:apples?|fruit)\b", speech)

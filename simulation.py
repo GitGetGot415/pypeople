@@ -501,7 +501,8 @@ class Simulation:
             witness.remember_opinion(actor.id, max(-100, min(100, previous["opinion"] + delta)),
                                      (text + (f" Earlier: {earlier}" if earlier else ""))[:400])
 
-    def escalation_choices(self, meeting):
+    def escalation_choices(self, meeting, opinion=None):
+        """opinion: the confronter's view to judge eligibility by, such as the one an exchange is about to commit."""
         from constants import CONFRONTATION_OPINION, KILLING_COOLDOWN_PHASES, GRIEVANCE_FACT_KINDS
         from social_records import claim_by_id, fact_by_id
         first, target = meeting.initiator, meeting.recipient
@@ -519,7 +520,7 @@ class Simulation:
             for b in meeting.information_context.beliefs["initiator"]))
         if (belief and belief.stance == "believed" and claim.affirmed and fact.subject_id == target.id
                 and fact.kind in GRIEVANCE_FACT_KINDS
-                and retained and first.opinion_score(target.id) <= CONFRONTATION_OPINION
+                and retained and (first.opinion_score(target.id) if opinion is None else opinion) <= CONFRONTATION_OPINION
                 and self.population > PROTECTED_POPULATION and self.last_killing_phase != self.phase_index
                 and (first.last_killing_phase is None or self.phase_index - first.last_killing_phase >= KILLING_COOLDOWN_PHASES)
                 and (fact.kind != "killing" or belief.phase < self.phase_index)):

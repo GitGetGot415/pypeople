@@ -370,10 +370,19 @@ def validate_reason_subject(reason, *, target, people=(), you=""):
                          f"or conduct changed your view of {target}.")
 
 
-def validate_opinion_direction(reason, delta, *, target="", people=(), you=""):
-    """The chosen direction must agree with a one-sided reason about the target; mixed reasons may go either way."""
-    views = [kind for kind, person in view_subjects(reason, people, target=target, you=you) if person == target]
+def validate_opinion_direction(reason, delta, *, target="", people=(), you="", chosen=False):
+    """The chosen direction must agree with a one-sided reason about the target; mixed reasons may go either way.
+
+    chosen: the direction is the model's free choice, not a verdict the game fixed, so a grudge against
+    someone else cannot carry it down."""
+    every = view_subjects(reason, people, target=target, you=you)
+    views = [kind for kind, person in every if person == target]
     hostile, warm = "hostile" in views, "warm" in views
+    blamed = sorted({person for kind, person in every if kind == "hostile" and person != target})
+    if chosen and delta < 0 and not views and blamed:
+        # "Nachash's words made me see how selfish Sophia is" holds a grudge against Sophia, not the one who said it.
+        raise ValueError(f"The reason holds its grudge against {' and '.join(blamed)}, not {target}. A worse view of "
+                         f"{target} needs something {target} did; choose a change that agrees with the reason about {target}.")
     if delta > 0 and hostile and not warm:
         raise ValueError("The reason describes a worse view of this person, but the change chosen is better. "
                          "Choose a change that agrees with the reason.")
@@ -522,6 +531,12 @@ def validate_claim_source(text, *, names=(), speaker=None, listener=None, actor_
             raise ValueError("The speaker witnessed these claims firsthand. Describe what you heard directly; another named witness is not your source. Doubting the claims' truth is allowed.")
 
 
+_HARVEST_VERBS = r"harvest\w*|pick\w*|took|tak(?:e|es|en|ing)|collect\w*|gather\w*|grabb?\w*|strip\w*"
+_HARVEST_ACT = re.compile(rf"\b(?:{_HARVEST_VERBS})\b", re.I)
+_HARVEST_APPLES = re.compile(r"\b(?:apples\b|apple\b(?!\s+tree)|fruit\b|\d+\b|"
+                             r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(?:of\s+(?:them|those)|from)\b)", re.I)
+
+
 def validate_account_speech(text, assertion, *, names=(), speaker=None, listener=None, kind=None, firsthand=False,
                             actor_references=None, known_events=()):
     """Require content evidence, rather than an ID or a promise to tell it later.
@@ -592,7 +607,12 @@ def validate_account_speech(text, assertion, *, names=(), speaker=None, listener
                     for ref in [*identifying_forms(name, names), *(actor_references or {}).get(name, []),
                                 *(["the python", "the snake"] if name == SNAKE_NAME else [])])
         for name in names if name)
-    if missing_actor or not expected or len(expected & actual) < min(2, len(expected)):
+    if kind == "harvest":
+        # A harvest is told by what was done and to which apples; "the apple tree" alone only names the place.
+        told = bool(_HARVEST_ACT.search(spoken) and _HARVEST_APPLES.search(spoken))
+    else:
+        told = bool(expected) and len(expected & actual) >= min(2, len(expected))
+    if missing_actor or not told:
         direction = ("Explain the supplied private reason and what you want, in your own words. " if kind == "private_motive" else
                      "Report who made which claims and preserve how you heard them. " if kind == "snake_claim" else
                      "Describe a concrete event or memory from its assertion in your own words. ")
@@ -640,6 +660,25 @@ def validate_listener_witness(text, seen, *, people, listener):
                              rf"(?:{refs})\s+(?:\w+\s+)?(?:{acts})\b", sentence, re.I):
                     raise ValueError(f"{listener} did not see {name} do this firsthand. Say what you saw or heard yourself; "
                                      f"do not tell {listener} they witnessed it.")
+
+
+def validate_speaker_witness(text, seen, *, people, speaker):
+    """A speaker never says they saw an event they did not witness; hearing about it is told as hearing.
+
+    seen lists (actor name, fact kind) for events the speaker saw firsthand or is deliberately lying about now.
+    """
+    for sentence in split_sentences(unquoted_speech(text)):
+        if sentence.rstrip().endswith("?"):
+            continue
+        for name in people:
+            for kind, acts in _WITNESSED_ACTS.items():
+                if not name or name == speaker or (name, kind) in seen:
+                    continue
+                refs = "|".join(name_pattern(form) for form in dict.fromkeys((name, *identifying_forms(name, people))))
+                if re.search(rf"\bi(?:['’]ve|\s+have)?\s+(?:(?:just|already|also|personally|actually|myself)\s+)*"
+                             rf"(?:seen|saw|witnessed|watched)\s+(?:{refs})\s+(?:\w+\s+)?(?:{acts})\b", sentence, re.I):
+                    raise ValueError(f"You did not see {name} do this yourself. Say only what you saw; if you heard "
+                                     "about it, say you heard it, and from whom.")
 
 
 def validate_promise_mentions(text, *, promisors, people, listener):
@@ -944,7 +983,11 @@ def validate_private_recital(text, *, personality="", motives=(), run=6):
             # Account fields read aloud: "An account disputes: ...", "a believed stance", "As the original speaker".
             r"an account disputes|(?:a|my|your|the|their) (?:believed|uncertain|disbelieved) stance|"
             r"stance: (?:believed|uncertain|disbelieved)|as the original (?:speaker|source)|"
-            r"(?:don['’]t|do not) apologi[sz]e or threaten)\b",
+            r"(?:don['’]t|do not) apologi[sz]e or threaten|"
+            # World rules and layout notes read aloud: "Harvesting requires positive stock and local collection",
+            # "Stock is finite and replenishes...", "recorded in the garden's account book", "This is all I could see."
+            r"positive stock|local collection|stock is finite|cannot harvest (?:\w+\s+){0,2}again until|account book|"
+            r"this is all i could see|confirmed it by walking)\b",
             speech, re.I) or re.search(
             # A bare imperative is the stance field, not the speaker's own "I believe it's true".
             r"(?:^|[.!?]\s+)believe (?:it|this|that)(?:['’]s| is) true\b", speech, re.I):
@@ -1094,6 +1137,11 @@ _WARM_TALK = re.compile(
     r"\b(?:love (?:your|you|how you|that you)|(?:glad|happy|lucky|grateful) (?:to have you|we['’]ve got|we have|you['’]re|for you)|"
     r"each other['’]s backs?|(?:i['’]m|i am) with you|you['’]re (?:(?:so|really|such|very|truly)\s+)*(?:great|wonderful|amazing|sweet|"
     r"kind|generous|thoughtful|a good|a true|a real)|(?:trust|admire|adore) you|my (?:dear )?friend)\b", re.I)
+# Agreeing with someone or joining their plans: warmth too, from a speaker who is very hostile toward them.
+_COOPERATIVE_TALK = re.compile(
+    r"\b(?:(?:great|good|wonderful|fantastic|brilliant|excellent|lovely) (?:idea|point|plan|thought|suggestion)|"
+    r"i(?:['’]m| am)? (?:(?:totally|completely|definitely|really|fully)\s+)?(?:agree with you|with you on)|"
+    r"(?:willing|happy|glad) to work (?:it out )?together|work (?:on )?(?:it|this) together|count me in)\b", re.I)
 # "I always seem to have an apple to spare", "I've got two apples", "my spare apple".
 _OWN_APPLES = re.compile(
     r"\bi(?:['’]ve| have)?\s+(?:(?:always|still|usually|often|already|really|just|seem to|tend to|also)\s+)*"
@@ -1110,7 +1158,7 @@ def validate_hostile_warmth(text, listener, *, feeling, cause="", people=()):
     for sentence in split_sentences(unquoted_speech(text)):
         if sentence.rstrip().endswith("?") or not listener_ref.search(sentence):
             continue
-        talk = _WARM_TALK.search(sentence)
+        talk = _WARM_TALK.search(sentence) or (feeling == "very hostile" and _COOPERATIVE_TALK.search(sentence))
         if (talk and not _VIEW_NEGATED.search(sentence[:talk.start()])
                 or any(kind == "warm" and person == listener for kind, person in view_subjects(sentence, people, target=listener))):
             raise ValueError(f"You feel {feeling} toward {listener}" + (f": {cause}" if cause else ".") +
@@ -1125,11 +1173,41 @@ def validate_own_apples(text, fruit):
                          "if an account is about someone else's apples, keep it theirs.")
 
 
-def validate_own_harvest(text, harvested):
-    """A speaker who never harvested cannot tell a harvest as their own."""
-    if not harvested and _OWN_HARVEST.search(unquoted_speech(text)):
+# "I'm the one who actually took them", "it was me who harvested them".
+_CLAIMED_HARVEST = re.compile(
+    r"\b(?:i(?:['’]m| am| was) the one|it(?:['’]s| is| was) (?:me|i))\s+who\s+(?:(?:actually|really|just|already|also)\s+)*"
+    r"(?:took|taken|harvested|picked|gathered|collected)\b", re.I)
+
+
+def validate_own_harvest(text, harvested, *, accusing=False):
+    """A speaker who never harvested cannot tell a harvest as their own; an accuser never claims the act they raise."""
+    speech = unquoted_speech(text)
+    if accusing and _CLAIMED_HARVEST.search(speech):
+        raise ValueError("You are confronting your listener about what they did. Keep that act theirs, using you/your; "
+                         "never say you were the one who did it.")
+    if not harvested and (_OWN_HARVEST.search(speech) or _CLAIMED_HARVEST.search(speech)):
         raise ValueError("You have never harvested from the tree. Keep each harvest with the person who made it, "
                          "and use you/your when that person is your listener.")
+
+
+_ECHOED_CONDUCT = {"took", "taken", "take", "harvested", "picked", "collected", "ate", "eaten", "stole", "gave", "refused",
+                   "promised", "killed", "broke", "resist", "shouldnt", "couldnt", "fault", "sorry", "guilty", "mistake"}
+
+
+def validate_partner_echo(text, previous):
+    """A first-person line repeated from the partner's last turn is their experience, not the speaker's."""
+    def words(sentence):
+        return re.findall(r"[a-z]+", sentence.casefold().replace("’", "").replace("'", ""))
+    run = 6
+    earlier = {tuple(w[i:i + run]) for s in split_sentences(unquoted_speech(previous)) for w in [words(s)]
+               for i in range(len(w) - run + 1)}
+    for sentence in split_sentences(unquoted_speech(text)):
+        own = words(sentence)
+        # Shared small talk ("I'm glad we're talking about it") is fine; a copied confession or act moves conduct to the speaker.
+        if any(window in earlier and {"i", "my", "me", "im"} & set(window) and _ECHOED_CONDUCT & set(window)
+               for window in (tuple(own[i:i + run]) for i in range(len(own) - run + 1))):
+            raise ValueError("You repeated your partner's own first-person words as if they were yours. Their I/my belongs "
+                             "to them; answer what they said in your own words and keep each act with the person who did it.")
 
 
 # Giving up one's own recollection: "I must have misremembered", "I miscounted", "my eyes were playing tricks".
@@ -1144,6 +1222,18 @@ _DENIAL = re.compile(
     r"gather\w*|collect\w*|eat|ate|eaten|give|gave|given|refuse\w*|miss\w*|break|broke|broken|kill\w*|touch\w*)\b|"
     r"\bi\s+only\s+(?:took|picked|harvested|gathered|collected)\s+(?:a few|one|two|three|some|a couple|a little)\b|"
     r"\b(?:that|it|this)\s+(?:never|didn['’]t|did not)\s+happen", re.I)
+
+
+def denies_own_harvest(text):
+    """"I didn't harvest any apples", said flatly; a denial limited to a time ("today", "yet") may be true."""
+    for sentence in split_sentences(unquoted_speech(text)):
+        if (re.search(r"\bi\s+(?:didn['’]t|did not|never|haven['’]t|have not)\s+(?:ever\s+|even\s+|actually\s+|really\s+)?"
+                      r"(?:harvest\w*|pick\w*|take|took|taken|collect\w*|gather\w*)\b(?:\s+(?:any|an?|the|those|these|all|of|\d+))*"
+                      r"\s+(?:apples?|fruit|from the tree)\b", sentence, re.I)
+                and not re.search(r"\b(?:today|tonight|this (?:morning|day|night|time)|yet|since|again|recently|lately|"
+                                  r"now|anymore|any more|this time)\b", sentence, re.I)):
+            return True
+    return False
 
 
 def validate_memory_firm(text):
@@ -1185,6 +1275,65 @@ def validate_snake_accusation(text, subject_name, *, subject_is_listener=False):
         raise ValueError(f"Accuse {subject_name} directly: say what you witnessed {subject_name} do and call it selfish, "
                          "greedy or uncaring toward the listener in your own view. Neutral news, musing about the tree "
                          "or leaving the judgment to the listener is not enough.")
+
+
+_FOOD_REFUSAL = re.compile(
+    r"\b(?:no apples?(?! problem)|(?:isn['’]t|is not|not) possible|(?:can['’]t|cannot|could not|couldn['’]t|won['’]t|will not) "
+    r"(?:give|share|spare|fulfill)|(?:don['’]t|do not) have (?:any|an?|one)\b[^.!?]{0,15}\b(?:apples?|fruit|spare)|"
+    r"decline|refuse|have to say no)\b", re.I)
+_FOOD_GIVING = re.compile(
+    r"\b(?:here(?:['’]s| is) (?:an?|your|one|the) apple|(?:i['’]ll|i will|i can|happy to|glad to) (?:give|share|spare)|"
+    r"yes,? (?:you can|of course|i can|here)|you can have (?:it|one|an apple|my apple))\b", re.I)
+
+
+def validate_food_answer(text, *, accepted):
+    """The asked resident's answer says what the game already decided, so speech and the handoff agree."""
+    speech = unquoted_speech(text)
+    if accepted and _FOOD_REFUSAL.search(speech):
+        raise ValueError("You have agreed to share one of your carried apples; the handoff follows this conversation. "
+                         "Say yes in your own words; do not refuse, and do not talk about the tree's stock.")
+    if not accepted and _FOOD_GIVING.search(speech):
+        raise ValueError("You are not sharing an apple this time. Decline in your own words, following food_request.reason.")
+
+
+# What a confrontation's grievance is about, by fact kind; a report has no single act, so only answers count for it.
+_GRIEVANCE_ACTS = {"harvest": _HARVEST_VERBS, "promise_broken": r"promis\w*|apples?",
+                   "apple_refused": r"refus\w*|declin\w*|apples?", "killing": r"kill\w*|dead|death|murder\w*"}
+# An answer to a grievance: an apology, explanation, justification, admission or a promise to make it right.
+_GRIEVANCE_ANSWER = re.compile(
+    r"\b(?:sorry|apologi[sz]\w*|forgive|because|my fault|i (?:shouldn['’]t|should not|admit|needed|was (?:hungry|starving|afraid|scared))|"
+    r"i (?:didn['’]t|did not) (?:mean|think|realize|know)|make (?:it|this|that) (?:right|up to you)|promise)\b", re.I)
+
+
+def _names_grievance_act(speech, kind):
+    act = _GRIEVANCE_ACTS.get(kind)
+    return bool(act and re.search(rf"\b(?:{act})\b", speech, re.I)
+                and (kind != "harvest" or _HARVEST_APPLES.search(speech)))
+
+
+def answers_grievance(text, kind):
+    """Whether the accused's reply takes up the grievance at all; denials are judged by the denial rules."""
+    speech = unquoted_speech(text)
+    act = _GRIEVANCE_ACTS.get(kind)
+    # "I took them" owns up to the act even without naming the apples again.
+    owned = act and re.search(rf"\bi\b[^.!?]{{0,30}}\b(?:{act})\b", speech, re.I)
+    return bool(_GRIEVANCE_ANSWER.search(speech) or owned) or _names_grievance_act(speech, kind)
+
+
+def validate_grievance_answer(text, kind, accuser):
+    if not answers_grievance(text, kind):
+        raise ValueError(f"{accuser} has confronted you about what you did. Answer that grievance itself now: explain, "
+                         "apologize, justify or deny what you did, in your own words. Do not change the subject.")
+
+
+def validate_grievance_pressed(text, kind, accused):
+    """Until the accused has answered, the accuser keeps to the grievance instead of drifting into friendly plans."""
+    for sentence in split_sentences(unquoted_speech(text)):
+        if re.search(r"\b(?:why|explain\w*|answer|admit|own up|account for|justify|apologi[sz]e)\b", sentence, re.I) or (
+                re.search(r"\byou\b", sentence, re.I) and _names_grievance_act(sentence, kind)):
+            return
+    raise ValueError(f"{accused} has not answered your grievance yet. Press them about what they did and ask for an "
+                     "explanation; do not change the subject, agree to other plans or let it drop.")
 
 
 def validate_python_harvest(text, *, snake_role=None):
