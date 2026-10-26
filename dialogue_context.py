@@ -448,6 +448,14 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
     # A required task account (a python's accusation, a confrontation's grievance) opens the exchange; the schema,
     # prompt and corrections all have to know it is required, not just the final check.
     focus = (snapshot.get("_information_validation") or {}).get("focus_claim_id")
+    focus_kind = next((o["kind"] for o in (snapshot.get("_information_validation") or {}).get("options", [])
+                       if o["id"] == focus), None)
+    if focus_kind == "killing" and not assessment and not thanks:
+        state["task"] += (" Keep this exchange about the killing in the selected account and accepted speech. "
+                          "Answer the listener's actual point. Preserve the killer, victim and source; "
+                          "witnesses are not the killer. Do not invent a motive, justification or earlier argument. "
+                          "Express your own existing opinion without substituting unrelated apples, "
+                          "arrival memories or a recital of your personality.")
     if not orientation and not assessment and not thanks and role == "initiator" and index == 0 and focus:
         state["discussion_focus_claim_id"] = focus
         state["task"] += " Disclose the required task account or a permitted denial of the same fact now."

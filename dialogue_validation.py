@@ -633,12 +633,13 @@ def _validate_response(raw, snapshot, model):
             validate_speech_grounding(result.reply, {
                 "_name_actors": snapshot.get("_name_actors", {}),
                 "_player_message": snapshot.get("_player_message", ""),
+                "account_to_share": snapshot.get("opening_account") if snapshot.get("request_kind") == "player_opening" else None,
                 "speaker": {"name": snapshot.get("name", ""),
                             "actor_id": actor_id(snapshot),
                             "known_accounts": snapshot.get("private_context", {}).get("known_accounts", []),
                             "area_knowledge": snapshot.get("area_knowledge", {}),
                             "situation": snapshot.get("private_context", {}).get("situation", {})},
-                "listener": "You", "day": snapshot.get("day"),
+                "listener": {"name": PLAYER_NAME_TAG, "actor_id": snapshot.get("player_id")}, "day": snapshot.get("day"),
                 "time_of_day": snapshot.get("time_of_day"),
                 "environment": {"tree": {"fruit": snapshot["tree_fruit"]}} if snapshot.get("location", "garden") == "garden" and "tree_fruit" in snapshot else {},
             })

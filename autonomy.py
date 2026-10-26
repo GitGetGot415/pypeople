@@ -7,7 +7,7 @@ from constants import (APPLE_SATISFACTION, DECISION_SECONDS, MOVEMENT_SPEED, SOC
     SOCIAL_START, STARTING_DAY, JUDY_ROOM_NUMBER, SOCIAL_RADIUS)
 from interactions import company_point
 from social import (concern_topic, goal_attempt_cooling_down, last_conversation_partner, pair_objective,
-    pending_promises, repeat_partner_paused, regards_as_dangerous)
+    pending_promises, repeat_partner_paused, regards_as_dangerous, undisclosed_danger, danger_topic)
 
 JUDY_ARRIVAL_OPENING = (
     "Hi, I'm {name}. Arriving here can be a lot to take in. "
@@ -279,6 +279,9 @@ def social_pair(world, *, due=None):
         priority, _, npc, partner, objective = max(purposeful, key=lambda choice: choice[:2])
         goal = npc.goal if priority == 1 else None
         focus = goal.claim_id if goal and goal.kind == "sabotage_relationship" else None
+        danger = undisclosed_danger(npc)
+        if priority == 2 and danger and objective == danger_topic(npc, danger):
+            focus = danger
         return npc, partner, "chat", objective, f"Meeting {partner.name}: {objective}", "news" if priority == 2 else None, focus, goal.id if goal else None
 
     for npc in available:
@@ -302,5 +305,6 @@ def social_pair(world, *, due=None):
             rank(npc, other)))
         concern = npc.current_concern
         topic = concern_topic(npc, concern)
-        return npc, partner, "chat", topic, f"Seeking a chat with {partner.name}: {topic}", concern.kind, None, None
+        focus = concern.claim_id if concern.kind == "news" else None
+        return npc, partner, "chat", topic, f"Seeking a chat with {partner.name}: {topic}", concern.kind, focus, None
     return None

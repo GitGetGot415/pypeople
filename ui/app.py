@@ -149,7 +149,8 @@ class Application:
             voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation)
         self.conversations.set_view(actor=self.game.dialogue.actor,
             reply_open=self.game.dialogue.open, viewed_conversation=self.game.dialogue.conversation,
-            menu_open=bool(self.game.location_menu or self.screen != "game"))
+            menu_open=bool(self.game.location_menu or self.screen != "game"),
+            interaction_id=self.game.dialogue.interaction_id)
 
     def _present_conversation_events(self):
         events, self.conversations.events = self.conversations.events, []
@@ -163,6 +164,7 @@ class Application:
                 self.game.dialogue.show(value.initiator, value)
             elif kind == "open":
                 self.game.dialogue.show(value)
+                self.game.dialogue.interaction_id = self.conversations.view_interaction_id
 
     def start_game(self):
         try:

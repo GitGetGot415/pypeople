@@ -150,7 +150,7 @@ class Simulation:
 
     @property
     def player_attention_pending(self):
-        return bool(self.player_interaction and self.player_interaction.stage == "conversation")
+        return bool(self.player_interaction and self.player_interaction.kind in ("resident", "snake"))
 
     def next_phase(self):
         if self.paused or self.phase_pending or self.player_attention_pending:
@@ -593,9 +593,7 @@ class Simulation:
 
     def _finish_killing(self, attacker, victim, record, *, meeting=None):
         """Commit one authorised death, preserving the same witnesses and consequences for either killer."""
-        from constants import (KILLING_WITNESS_PENALTY, KILLING_RELIEF_OPINION, KILLING_RELIEF_CHANCE,
-                               KILLING_WITNESS_MAX_PENALTY, KILLING_WITNESS_SOCIAL_RANGE,
-                               KILLING_FRIENDSHIP_DIVISOR, KILLING_RELIEF_DELTA)
+        from constants import KILLING_WITNESS_PENALTY
         from locations import observers
         from social_records import claim_by_id
         from information import add_fact
@@ -615,19 +613,18 @@ class Simulation:
                 continue
             belief = next(b for b in witness.beliefs if claim_by_id(self, b.claim_id).fact_id == fact.id)
             belief.assessed = True  # One firsthand consequence; reports cannot repeat it.
-            friend = witness.opinion_score(victim.id)
-            low, high = KILLING_WITNESS_SOCIAL_RANGE
-            severity = round(KILLING_WITNESS_PENALTY * (low + witness.preferences["sociability"] * (high - low)))
-            delta = -min(KILLING_WITNESS_MAX_PENALTY, severity + max(0, friend) // KILLING_FRIENDSHIP_DIVISOR)
-            # A hostile relationship can make relief possible, never universal.
-            if friend < KILLING_RELIEF_OPINION and witness.rng.random() < KILLING_RELIEF_CHANCE:
-                delta = KILLING_RELIEF_DELTA
+            delta = -witness.opinion_score(victim.id) - KILLING_WITNESS_PENALTY
+            before = witness.opinion_score(attacker.id)
             reason = f"Witnessed {text} My relationship with {victim.name} informed my reaction."
             if attacker is self.player:
                 from player import update_player_opinion
                 update_player_opinion(witness, delta, reason, scaled=False)
             else:
                 witness.remember_opinion(attacker.id, max(-100, min(100, witness.opinion_score(attacker.id) + delta)), reason)
+            from conversation_history import describe_opinion_change
+            change = describe_opinion_change(witness.name, attacker.name, before, witness.opinion_score(attacker.id), reason)
+            record.outcomes.append(change)
+            self.publish("reputation_changed", (witness, attacker), change, record)
         return self.depart_resident(victim, event, record, attacker, meeting=meeting)
 
     def observed_event(self, kind, subject, target, text, record=None, *, witnesses=None):

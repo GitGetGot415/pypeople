@@ -109,6 +109,8 @@ def fact_context(world, fact, affirmed=True):
 def account_view(world, claim, belief):
     fact = fact_by_id(world, claim.fact_id)
     catalog = {actor.id: {"name": actor.name} for actor in [*world.actors, world.player]}
+    from constants import PLAYER_NAME_TAG
+    catalog[world.player.id] = {"name": PLAYER_NAME_TAG}
     account = {**fact_context(world, fact, claim.affirmed), "claim_id": claim.id,
                "subject_id": claim.subject_id, "object_id": fact.object_id,
                "original_speaker_id": claim.originator_id}

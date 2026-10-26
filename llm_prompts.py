@@ -121,7 +121,7 @@ an invented venue or a vanished tree just because earlier dialogue mentioned it.
 """
 
 
-SPEAKING_BRIEF = NAME_TAG_INSTRUCTION + NPC_ARRIVAL_INSTRUCTION + TREE_INSTRUCTION + KILLING_INSTRUCTION + f"""Write all dialogue in English. Name the garden python {SNAKE_NAME} consistently;
+SPEAKING_BRIEF = NAME_TAG_INSTRUCTION + NPC_ARRIVAL_INSTRUCTION + KILLING_INSTRUCTION + f"""Write all dialogue in English. Name the garden python {SNAKE_NAME} consistently;
 use I/my for the speaker and you/your for the listener in direct conversation.
 Write base speech and all opinion reasons in ordinary capitalization and plain prose.
 Personality controls behavior; presentation is applied separately. Never imitate historical delivery.
@@ -186,7 +186,7 @@ match each part's emotion to its speaker.
 
 """
 
-ORIENTATION_SPEAKING_BRIEF = NAME_TAG_INSTRUCTION + NPC_ARRIVAL_INSTRUCTION + TREE_INSTRUCTION + KILLING_INSTRUCTION + """Write direct English dialogue in ordinary capitalization.
+ORIENTATION_SPEAKING_BRIEF = NAME_TAG_INSTRUCTION + NPC_ARRIVAL_INSTRUCTION + KILLING_INSTRUCTION + """Write direct English dialogue in ordinary capitalization.
 Use I/my for yourself and you/your for the listener. Give only this speaker's
 words, without narration, speaker labels or the listener's answer. Reply to
 what they actually just said before pursuing another concern.
@@ -426,7 +426,18 @@ instead of repeating the partner's explanation. If nothing remains to discuss,
 end naturally instead of looping."""
 
 
-PLAYER_SAY_INSTRUCTION = NAME_TAG_INSTRUCTION + NPC_ARRIVAL_INSTRUCTION + TREE_INSTRUCTION + f"""You are the resident
+PLAYER_OPENING_INSTRUCTION = """You are the supplied resident, now standing with the human player.
+Start the conversation for opening_reason. Say what you came to discuss in one or two short,
+complete sentences, leaving room for a response. Use your personality and opinion of the player.
+For opening_account, preserve the actual actors, source and uncertainty. When the player
+is its subject, address them as you; never confess to their actions or ask them who did it.
+React to the event according to your existing opinion; an important death takes precedence
+over unrelated apples, arrival memories or ordinary activities. Do not recite your profile,
+world rules, inventory fields, movement instructions or harvest mechanics. No player has
+spoken yet. Use SAY with end_conversation false, empty target/item and quantity zero.
+"""
+
+PLAYER_SAY_INSTRUCTION = NAME_TAG_INSTRUCTION + NPC_ARRIVAL_INSTRUCTION + f"""You are the resident
 in the supplied character profile, replying only to the human player. Write direct
 English speech, using I/my for yourself and you/your for the player. Personality
 shapes your response; voice and mannerisms are applied separately. Use plain prose

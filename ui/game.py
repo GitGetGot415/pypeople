@@ -100,7 +100,9 @@ class GameScreen:
     def player_record(self):
         if self.dialogue.conversation is not None:
             return None
-        record = self.app.conversations.record if self.app and self.app.conversations else None
+        interaction = self.app.simulation.player_interaction if self.app and self.app.simulation else None
+        record = (self.app.conversations.record if self.app and self.app.conversations and interaction
+                  and interaction.id == self.dialogue.interaction_id else None)
         return record or self.dialogue.record
 
     def reset(self):
@@ -1019,6 +1021,9 @@ class GameScreen:
             self.location = world.player.location
             interaction = world.player_interaction
             if interaction and interaction.kind in ("resident", "snake"):
+                if (self.dialogue.open and self.dialogue.conversation is None
+                        and self.dialogue.interaction_id != interaction.id):
+                    self.close_dialogue()
                 if interaction.stage == "conversation" and not self.dialogue.open:
                     app._sync_conversation_view()
                     app.conversations.open_player_dialogue(world.actor_by_id(interaction.npc_id))

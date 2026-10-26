@@ -18,7 +18,7 @@ from dialogue_context import NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION, PLAY
 from dialogue_rules import is_name_reference, name_pattern, named_references
 from llm_prompts import (CONVERSATION_HISTORY_INSTRUCTION, DIALOGUE_VARIETY_INSTRUCTION, EMOTION_INSTRUCTION,
     GARDEN_INSTRUCTION, INTENT_INSTRUCTION, ORIENTATION_SPEAKING_BRIEF, PLAYER_POSSESSIONS_INSTRUCTION,
-    SPEAKING_BRIEF, WORLD_INSTRUCTION, build_system_instruction)
+    SPEAKING_BRIEF, WORLD_INSTRUCTION, PLAYER_OPENING_INSTRUCTION, build_system_instruction)
 from information import information_from_dict, resident_effect_capacity
 from voice_rewrite import VOICE_REWRITE_INSTRUCTION, voice_rewrite_parts
 
@@ -471,6 +471,8 @@ def response_contract(snapshot, *, correction=False):
     }}
     instruction = build_system_instruction(snapshot["character"],
         conversation_only=snapshot.get("request_intent", {}).get("action") == "SAY")
+    if snapshot.get("request_kind") == "player_opening":
+        instruction = PLAYER_OPENING_INSTRUCTION + "\n" + EMOTION_INSTRUCTION
     instruction += ("\nPhysical invitations: invitation selects only a supplied invitation_choices destination, with exact evidence from your reply. "
         "This creates an offer, not travel. invitation_acceptance identifies an existing pending_invitation only when the current player "
         "message accepts that actual offer in context, including short answers. Questions, refusals and quotations are not acceptance. "
@@ -498,7 +500,7 @@ def response_contract(snapshot, *, correction=False):
         instruction += " This is an engine-initiated turn, not a player command. Use action SAY, empty target/item, quantity zero. Generate speech from player_interaction, without inventing player speech."
         snapshot = {**snapshot, "request_intent": dict(action="SAY", target="", item="", quantity=0)}
     if snapshot.get("request_kind") == "player_opening":
-        instruction += (" Prepare the words you will say when you reach the player. Express your actual "
+        instruction += (" You have reached the player. Express your actual "
                         "player_interaction.call reason immediately, without asking permission to talk. "
                         "The player has said nothing yet. Leave room for their response: end_conversation false.")
         schema["properties"]["end_conversation"] = {"type": "boolean", "enum": [False]}
@@ -580,12 +582,13 @@ def _request_context(message, snapshot, correction):
     if snapshot.get("request_kind") == "voice_rewrite":
         speakers = snapshot["speakers"]
         parts = {key: {
-            "your_own_name": speakers[part["speaker"]]["name"],
             "speaker_name": speakers[part["speaker"]]["name"],
             "listener_name": part.get("listener_name", speakers[part["speaker"]]["listener_name"]),
             "Voice": speakers[part["speaker"]]["Voice"],
             "Mannerisms": speakers[part["speaker"]]["Mannerisms"],
             "emotion": part["emotion"], "original": part["original"],
+            "speaker_role": "The original's I/my; retain this speaker in every clause.",
+            "listener_role": "The original's you/your; never substitute the speaker's name.",
         } for key, part in voice_rewrite_parts(snapshot["turns"]).items()}
         # Repeat the exact references locally so small models need not resolve
         # names across other speakers' very similar lines.
@@ -615,6 +618,13 @@ def _request_context(message, snapshot, correction):
                 {"parts": parts})
     instruction, schema, _ = response_contract(snapshot, correction=bool(correction))
     context = dialogue_context.world_context(snapshot, correction=bool(correction))
+    opening = snapshot.get("request_kind") == "player_opening"
+    if opening:
+        context = {key: value for key, value in context.items() if key in (
+            "name", "actor_id", "player_relationship", "player_interaction", "opening_account",
+            "earlier_player_conversations", "inventory", "owned_works")}
+        context["personality"] = dialogue_context.character_context(snapshot["character"]).get("personality", "")
+        context["environment"] = dialogue_context.local_environment(snapshot.get("location", "garden"))["description"]
     if snapshot.get("_compact_rewrite") and snapshot.get("request_kind") != "resident_turn":
         instruction = (
             f"You are {dialogue_context._actor_name(snapshot['speaker'])}, speaking only to {dialogue_context._actor_name(snapshot['listener'])}. "
@@ -633,7 +643,12 @@ def _request_context(message, snapshot, correction):
             instruction += f"\nAnswer question_to_answer in at most {DIALOGUE_CLOSING_WORD_LIMIT} words. End on a statement, not a question or an invitation."
         elif "word_limit" in snapshot:
             instruction += f"\nAim for at most {snapshot['word_limit']} words, completing the sentence."
-    stock_instruction = "" if snapshot.get("request_kind") == "conversation_closing" or snapshot.get("_closing") else _tree_stock_instruction(context)
+    focused_account = snapshot.get("account_to_share") or snapshot.get("speaker", {}).get("account_focus")
+    tree_relevant = not (focused_account and focused_account.get("kind") == "killing")
+    if snapshot.get("player_id"):
+        tree_relevant = bool(re.search(r"\b(?:apples?|fruit|tree|harvest\w*)\b", message, re.I))
+    stock_instruction = ("" if opening or not tree_relevant or snapshot.get("request_kind") == "conversation_closing"
+                         or snapshot.get("_closing") else _tree_stock_instruction(context))
     instruction += stock_instruction
     if snapshot.get("request_kind") == "conversation_closing":
         instruction += (
@@ -649,10 +664,11 @@ def _request_context(message, snapshot, correction):
     if PLAYER_TAG_INSTRUCTION not in instruction and any(
             actor.get("kind") == "player" and actor.get("_visible") for actor in snapshot.get("_name_actors", {}).values()):
         instruction += PLAYER_TAG_INSTRUCTION
-    if NPC_ARRIVAL_INSTRUCTION not in instruction:
+    if not opening and NPC_ARRIVAL_INSTRUCTION not in instruction:
         instruction += "\n" + NPC_ARRIVAL_INSTRUCTION
-    instruction += "\n" + AREA_KNOWLEDGE_INSTRUCTION
-    if snapshot.get("_name_actors"):
+    if not opening:
+        instruction += "\n" + AREA_KNOWLEDGE_INSTRUCTION
+    if snapshot.get("_name_actors") and not opening:
         context["engine_identities"] = dialogue_context._catalog_for_prompt(snapshot["_name_actors"])
     if snapshot.get("request_kind") in ("resident_turn", "conversation_closing"):
         context["reply_context"] = dialogue_context._reply_context(snapshot)
@@ -690,10 +706,12 @@ def _request_context(message, snapshot, correction):
             "When the player answers your question, acknowledge what their answer changes instead of asking it again."
         )
     location = snapshot.get("location", snapshot.get("initiator", {}).get("location", "garden"))
-    if location == "garden":
+    if location == "garden" and not opening and tree_relevant:
         context.setdefault("environment", dialogue_context.local_environment(location))
         instruction += "\n" + GARDEN_INSTRUCTION
-    else:
+    elif location == "garden" and not opening:
+        instruction += "\nCurrent surroundings: " + dialogue_context.local_environment(location)["description"]
+    elif not opening:
         context["environment"] = dialogue_context.local_environment(location)
         instruction += ("\nYour current surroundings are " + context["environment"]["place"] + ". "
                         "Use environment.description and its visible objects when describing where you are. "
@@ -775,7 +793,9 @@ def _conversation_messages(payload, snapshot):
             if snapshot.get("request_kind") == "player_opening" and call:
                 messages.append({"role": "user", "content": {
                     "opening_reason": call["reason"],
-                    "reply_task": "Prepare the actual words you will say when you reach the player. "
+                    "opening_account": snapshot.get("opening_account"),
+                    "opinion_of_player": snapshot.get("player_relationship", {}).get("opinion"),
+                    "reply_task": "You have reached the player. Start the conversation about opening_reason now. "
                                   "Express opening_reason directly in your own voice, rather than a generic greeting "
                                   "or a request for permission to talk. If considering a gift, offer it or explain "
                                   "your decision to keep it. The player has not said anything. "

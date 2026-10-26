@@ -10,6 +10,7 @@ class DialogueView:
     actor: object = None
     conversation: object = None
     record: object = None
+    interaction_id: str | None = None
     status: str = ""
     pages: list = field(default_factory=list)
     index: int = 0

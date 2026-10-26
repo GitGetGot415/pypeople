@@ -25,6 +25,8 @@ Each part_N is an independent slot containing the current speaker's original.
 Optional speaker_name and listener_name identify only names already in that original.
 I/my belongs to the speaker; you/your belongs to the listener. Never answer as the
 listener or borrow a different slot's words. Return only the flat part_N JSON strings.
+An original statement stays a statement and an original question stays a question.
+A questioning mannerism changes delivery; it cannot make known facts uncertain.
 
 Preserve meaning first: facts, stance, refusals and objectives; keep
 uncertainty, negation, agreements, quantities and deadlines, sources and roles.
@@ -36,8 +38,7 @@ Keep names_to_preserve EXACTLY, in the same slot.
 These names are literal protected spans: do not translate, transliterate, respell,
 or replace them with emoji. All surrounding text follows the requested delivery.
 Internal role descriptions are context, never names or greetings to add to speech.
-Do not add a name absent from that original, even the listener's. The only exception is
-your_own_name, used exactly, when Voice asks you to refer to yourself by name; never invent another.
+Do not add a name absent from that original, even the speaker's or listener's.
 Keep every original person's name and exact form intact.
 When Voice asks for third-person self-reference or titles, apply it only where it
 can preserve the original names and identity. These preservation rules take priority.

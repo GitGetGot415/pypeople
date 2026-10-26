@@ -497,7 +497,12 @@ def _account_words(text, names, kind):
     elif kind == "conversation_seen":
         text = re.sub(r"\b(?:talk(?:ed|ing)?|spoke|speak(?:ing)?|convers(?:e[ds]?|ing)|chat(?:ted|ting)?)\b",
                       "talk", text, flags=re.I)
+    elif kind == "killing":
+        text = re.sub(r"\b(?:kill(?:ed|s|ing)?|murder(?:ed|s|ing)?|slew|slain)\b", "killed", text, flags=re.I)
     words = _content_words(text, names)
+    if kind == "killing":
+        # Narrator accounts use 'the player'; direct accusations address that same actor as 'you'.
+        words.discard("player")
     if kind == "snake_claim":
         words -= {"present", "presented", "presenting", "make", "made", "making", "assert", "asserted", "asserting", "dispute"}
     return words
@@ -1449,6 +1454,15 @@ def validate_killing_roles(text, account, speaker_id, listener_id, catalog):
     killer, victim = references(account.get("subject_id")), references(account.get("object_id"))
     if not killer or not victim:
         return
+    for sentence in re.split(r"\b(?:but|however|although)\b", unquoted_speech(text), flags=re.I):
+        if re.search(r"\b(?:not|never|didn't|if|would|could)\b", sentence, re.I):
+            continue
+        for identity in catalog:
+            if identity == account.get("subject_id"):
+                continue
+            other = references(identity)
+            if other and re.search(rf"\b{other}\s+(?:(?:have|has|had|just|already)\s+){{0,2}}(?:killed|murdered|slew)\s+{victim}\b", sentence, re.I):
+                raise ValueError("This account names a different killer. Preserve who killed whom; witnessing or discussing the event does not make the witness its killer.")
     for sentence in split_sentences(unquoted_speech(text)):
         if re.search(r"\b(?:not|never|didn't|if|would|could)\b", sentence, re.I):
             continue

@@ -465,7 +465,7 @@ KILLING_COOLDOWN_PHASES = 1
 KILLING_INDOOR_REASON = ("Killing is forbidden inside the apartment building: bodies would not disappear. "
                        "Enough bodies would block the hallways and make movement through them impossible.")
 KILLING_DISTANCE = 160.0
-KILLING_WITNESS_PENALTY = 24
+KILLING_WITNESS_PENALTY = 60
 BODY_SECONDS = 4.0
 BODY_FADE_SECONDS = 1.0
 BODY_ROTATION = 90
@@ -473,8 +473,6 @@ HARVEST_BUTTON_RECT = (24, 420, 180, 34)
 HARVEST_AMOUNT_RECT = (212, 420, 80, 34)
 CONFRONTATION_START_OPINION = HOSTILE_OPINION
 DANGEROUS_COMPANY_PENALTY = 60
-KILLING_RELIEF_OPINION = -70
-KILLING_RELIEF_CHANCE = 0.15
 SPOKEN_NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
                   "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
                   "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
@@ -484,10 +482,6 @@ GRIEVANCE_FACT_KINDS = ("promise_broken", "apple_refused", "killing", "report", 
 # Conduct an affirmed account can hold against its subject; believing one never improves the subject's standing.
 ACCUSATION_FACT_KINDS = ("harvest", "killing", "promise_broken", "apple_refused")
 TREE_SHAKE_FREQUENCY = 60
-KILLING_WITNESS_MAX_PENALTY = 40
 DANGEROUS_GIFT_PENALTY = 18
 DANGEROUS_OPTIONAL_GIFT_CHANCE = 0.15
-KILLING_WITNESS_SOCIAL_RANGE = (0.7, 1.3)
-KILLING_FRIENDSHIP_DIVISOR = 5
-KILLING_RELIEF_DELTA = 2
 CONFRONTATION_GRIEVANCE_PHASE_PAUSE = 1
