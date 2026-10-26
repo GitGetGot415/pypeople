@@ -43,7 +43,7 @@ class GameScreen:
         self.harvest_amount.set_value("1")
         self.invitation_button = Button(INVITATION_ACCEPT_RECT, "Accept invitation")
         self.actions_button = Button(PLAYER_ACTION_BUTTON_RECT, "Request action")
-        self.menu_button = Button(GAME_MENU_RECT, "Menu")
+        self.menu_button = Button(GAME_MENU_RECT, "Menu", icon="menu")
         self.confirm_menu = False
         self.menu_restore_focus = False
         self.keep_playing_button = Button(GAME_MENU_KEEP_PLAYING_RECT, "Keep playing")
