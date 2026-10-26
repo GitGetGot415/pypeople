@@ -6,7 +6,7 @@ from constants import (DIALOGUE_PANEL_HEIGHT, DIALOGUE_READING_Y, DIALOGUE_READI
                       APARTMENT_INSPECTOR_ROW_HEIGHT, APARTMENT_INSPECTOR_CONTENT_INSET,
                       APARTMENT_INSPECTOR_CONTENT_TOP, APARTMENT_INSPECTOR_TITLE_OFFSET, MODAL_OVERLAY_COLOR,
                       INVENTORY_BUTTON_RECT, GAME_PAUSE_RECT, GAME_CLOCK_RECT, GAME_SAVE_RECT, GAME_STATS_RECT, GAME_PHASE_POSITION,
-                      GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT,
+                      GAME_TOOLBAR_PADDING, GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT,
                       DIALOGUE_ORIGINAL_TOGGLE_RECT, BORDER_RADIUS, GAME_MENU_CONFIRM_RECT,
                       GAME_MENU_CONFIRM_TITLE_Y, GAME_MENU_CONFIRM_MESSAGE_RECT, GAME_MENU_KEEP_PLAYING_RECT,
                       GAME_MENU_LEAVE_RECT, PLAYER_ROOM_LOCATION, ROOM_BED_RECT,
@@ -469,6 +469,17 @@ class GameScreen:
         self.keep_playing_button.draw(app.window, app.small_font)
         self.leave_game_button.draw(app.window, app.small_font)
 
+    def toolbar_rect(self, app):
+        phase_rect = pygame.Rect((0, 0), app.small_font.size(app.simulation.phase_label))
+        phase_rect.topright = GAME_PHASE_POSITION
+        rect = phase_rect.unionall([button.rect for button in (
+            self.clock_button, self.pause_button, self.save_button, self.stats_button, self.menu_button)])
+        if app.simulation.paused:
+            paused_rect = pygame.Rect((0, 0), app.small_font.size("Paused"))
+            paused_rect.midright = (phase_rect.left - 16, self.pause_button.rect.centery)
+            rect = rect.union(paused_rect)
+        return rect.inflate(2 * GAME_TOOLBAR_PADDING, 2 * GAME_TOOLBAR_PADDING)
+
     def draw_clock(self, app):
         from player import active_player
         paused = app.simulation.paused
@@ -478,7 +489,7 @@ class GameScreen:
         self.clock_button.draw(app.window, app.small_font, enabled=not paused and not app.simulation.phase_pending
                                and not app.simulation.player_attention_pending and not active_player(app.simulation))
         color = PAPER if app.screen == "game" and app.simulation.phase == "night" else INK
-        phase_label = app.small_font.render(app.simulation.phase_label, True, color)
+        phase_label = app.small_font.render(app.simulation.phase_label, True, INK)
         phase_rect = phase_label.get_rect(topright=GAME_PHASE_POSITION)
         app.window.blit(phase_label, phase_rect)
         if app.simulation.player_attention_pending:
@@ -488,7 +499,7 @@ class GameScreen:
             draw_wrapped_text(app.window, f"{app.simulation.next_phase_label} pending: finishing conversations.",
                               app.small_font, color, PHASE_PENDING_RECT)
         if paused:
-            label = app.small_font.render("Paused", True, color)
+            label = app.small_font.render("Paused", True, INK)
             app.window.blit(label, label.get_rect(midright=(phase_rect.left - 16, self.pause_button.rect.centery)))
 
     def advance_conversation(self, app):
@@ -611,6 +622,7 @@ class GameScreen:
         if self.can_harvest(app.simulation):
             self.harvest_button.draw(app.window, app.small_font)
             self.harvest_amount.draw(app.window, app.small_font)
+        pygame.draw.rect(app.window, PAPER, self.toolbar_rect(app), border_radius=BORDER_RADIUS)
         self.menu_button.draw(app.window, app.small_font)
         self.stats_button.draw(app.window, app.small_font)
         self.save_button.draw(app.window, app.small_font)
