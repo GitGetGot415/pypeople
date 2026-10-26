@@ -607,6 +607,10 @@ def trim_information(world):
                 keep.update(b.claim_id for b in npc.conversation.information_context.beliefs[role])
         if npc.conversation and npc.conversation.initiator is npc and npc.conversation.focus_claim_id:
             keep.add(npc.conversation.focus_claim_id)
+        if world.player_interaction and world.player_interaction.npc_id == npc.id:
+            record = world.record_by_id(world.player_interaction.record_id)
+            if record and record.grievance_id:
+                keep.add(record.grievance_id)
         npc.beliefs[:] = [b for b in npc.beliefs if b.claim_id in keep]
     claim_ids = {b.claim_id for npc in world.actors for b in npc.beliefs}
     claim_ids.update(r.grievance_id for r in world.history if r.grievance_id)

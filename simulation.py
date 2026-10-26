@@ -136,9 +136,7 @@ class Simulation:
 
     @property
     def last_killing_phase(self):
-        from social_records import phase_index
-        return max((phase_index(n.departure["day"], n.departure["phase"])
-                    for n in self.archived), default=None)
+        return max((fact.phase for fact in self.facts if fact.kind == "killing"), default=None)
 
     @property
     def phase_label(self):
@@ -508,7 +506,9 @@ class Simulation:
         from player import active_player
         if victim is self.snake:
             return f"{SNAKE_NAME} cannot be killed."
-        if (self.npc_by_id(victim.id) is not victim or victim.departure or attacker is victim
+        living_victim = (victim is self.player and active_player(self) or
+                         self.npc_by_id(victim.id) is victim and victim.departure is None)
+        if (not living_victim or attacker is victim
                 or not (self.npc_by_id(attacker.id) is attacker
                         or attacker is self.player and active_player(self))):
             return "Choose a living resident."
@@ -529,6 +529,8 @@ class Simulation:
             return "The player is unavailable."
         if self.paused:
             return "Resume the simulation first."
+        if self.player_interaction and self.player_interaction.incoming and self.player_interaction.stage == "approach":
+            return "The resident is approaching. Wait until they reach you."
         if (self.player.journey or self.visit and self.visit.stage == "travel"
                 or self.player_interaction and (self.player_interaction.npc_id != victim.id
                                                or self.player_interaction.kind == "door")):
@@ -545,6 +547,41 @@ class Simulation:
                                     origin="player", purpose="killing", participant_ids=[self.player.id, victim.id])
         self.history.append(record)
         return self._finish_killing(self.player, victim, record)
+
+    def begin_incoming_conversation(self, npc, interaction):
+        """Roll once on arrival, before speech or player actions; the saved conversation stage prevents rerolls."""
+        from constants import CONFRONTATION_OPINION, CONVERSATION_COMPLETED, PLAYER_LABEL
+        from conversation_history import ConversationRecord
+        from social import grievance_against, confrontation_topic, killing_chance
+        from social_records import claim_by_id, fact_by_id
+        if (self.paused or self.player_interaction is not interaction or not interaction.incoming
+                or interaction.stage != "conversation" or interaction.record_id is not None
+                or self.npc_by_id(npc.id) is not npc):
+            return
+        grievance = grievance_against(npc, self.player)
+        if not grievance:
+            return
+        topic = confrontation_topic(npc, grievance)
+        if npc.player_call:
+            npc.player_call.kind, npc.player_call.reference = "news", grievance
+            npc.player_call.key = f"confrontation:{grievance}:{self.phase_index}"
+            npc.player_call.reason = topic
+        record = ConversationRecord((npc.name, PLAYER_LABEL), topic, CONVERSATION_COMPLETED,
+                                    origin="autonomous", purpose="confrontation",
+                                    participant_ids=[npc.id, self.player.id], grievance_id=grievance)
+        record.intended_subjects = {npc.name: topic, PLAYER_LABEL: "Responding to the resident's accusation."}
+        self.history.append(record)
+        interaction.record_id = record.id
+        belief = next(b for b in npc.beliefs if b.claim_id == grievance)
+        fact = fact_by_id(self, claim_by_id(self, grievance).fact_id)
+        eligible = (npc.opinion_score(self.player.id) <= CONFRONTATION_OPINION
+                    and not self.killing_unavailable(npc, self.player)
+                    and (fact.kind != "killing" or belief.phase < self.phase_index))
+        if eligible and npc.rng.random() < killing_chance(npc.opinion_score(self.player.id)):
+            record.outcomes.append("The resident attacked immediately on reaching the player.")
+            self._finish_killing(npc, self.player, record)
+        else:
+            record.outcomes.append("The resident began the conversation without attacking.")
 
     def escalation_choices(self, meeting, opinion=None):
         """opinion: the confronter's view to judge eligibility by, such as the one an exchange is about to commit."""
@@ -625,7 +662,54 @@ class Simulation:
             change = describe_opinion_change(witness.name, attacker.name, before, witness.opinion_score(attacker.id), reason)
             record.outcomes.append(change)
             self.publish("reputation_changed", (witness, attacker), change, record)
+        if victim is self.player:
+            self.depart_player()
+            return True
         return self.depart_resident(victim, event, record, attacker, meeting=meeting)
+
+    def cancel_death_promises(self, target, reason):
+        for promise in self.promises:
+            if promise.status == "pending" and target.id in (promise.promisor_id, promise.recipient_id):
+                promise.status, promise.resolved_phase, promise.outcome = "cancelled", self.phase_index, reason
+                cancellation = self.publish("promise_cancelled", (self.participant_by_id(promise.promisor_id), self.participant_by_id(promise.recipient_id)), reason,
+                                            self.record_by_id(promise.conversation_id))
+                promise.resolution_event_id = promise.consequence_event_id = cancellation.id
+
+    def depart_player(self):
+        from copy import deepcopy
+        from player import end_interaction, clear_call
+        from apartments import finish_visit
+        self.player.alive, self.mode = False, "spectator"
+        self.bodies.append({"appearance": deepcopy(self.player.appearance), "x": self.player.x, "y": self.player.y,
+                            "location": self.player.location, "facing": self.player.facing, "elapsed": 0.0})
+        reason = "Cancelled because the player died; this is not a deliberate betrayal."
+        self.cancel_death_promises(self.player, reason)
+        end_interaction(self, reason)
+        finish_visit(self)
+        self.player.journey = None
+        self.player_acknowledgments.clear()
+        for offer in self.player_invitations:
+            if offer.status == "offered":
+                offer.status = "withdrawn"
+        for npc in self.npcs:
+            if npc.gift and self.player in (npc.gift.initiator, npc.gift.recipient):
+                npc.gift.finish(reason)
+            clear_call(npc)
+        retained = []
+        for action in self.pending_actions:
+            if action.target_id != self.player.id:
+                retained.append(action)
+                continue
+            npc = self.npc_by_id(action.npc_id)
+            if npc:
+                npc.player_reply.release()
+                npc.command_revision += 1
+            source = self.record_by_id(action.record)
+            if source:
+                source.status, source.error = CONVERSATION_CANCELLED, reason
+                source.outcomes.append(reason)
+        self.pending_actions[:] = retained
+        self.roster_revision += 1
 
     def observed_event(self, kind, subject, target, text, record=None, *, witnesses=None):
         """Explicit visual event, or an explicitly selected private participant account."""
@@ -766,12 +850,7 @@ class Simulation:
             meeting.finish(self.tree)
             meeting.outcome_event_id = event.id
         reason = f"Cancelled because {target.name} died; this is not a deliberate betrayal."
-        for promise in self.promises:
-            if promise.status == "pending" and target.id in (promise.promisor_id, promise.recipient_id):
-                promise.status, promise.resolved_phase, promise.outcome = "cancelled", self.phase_index, reason
-                cancellation = self.publish("promise_cancelled", (self.participant_by_id(promise.promisor_id), self.participant_by_id(promise.recipient_id)), reason,
-                                     next(r for r in self.history if r.id == promise.conversation_id))
-                promise.resolution_event_id = promise.consequence_event_id = cancellation.id
+        self.cancel_death_promises(target, reason)
         for person in self.npcs:
             goal = person.goal
             if goal and goal.status == "active" and (person is target or target.id in (goal.target_id, goal.third_npc_id)):

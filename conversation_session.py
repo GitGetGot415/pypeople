@@ -273,6 +273,14 @@ class ConversationSession:
         record = self.record
         if record:
             snapshot["conversation_topic"] = record.intended_subjects.get(npc.name, record.topic)
+            if record.purpose == "confrontation" and record.grievance_id:
+                from information import account_view
+                from social_records import claim_by_id
+                belief = next(b for b in npc.beliefs if b.claim_id == record.grievance_id)
+                account = account_view(self.simulation, claim_by_id(self.simulation, record.grievance_id), belief)
+                snapshot["conversation_account"] = account
+                known = snapshot["private_context"]["known_accounts"]
+                snapshot["private_context"]["known_accounts"] = [account, *[a for a in known if a["claim_id"] != record.grievance_id]]
         earlier, remaining = [], PLAYER_CONTEXT_TURN_LIMIT
         for previous in reversed(self.conversation_history):
             if previous is record or not previous.between(self.simulation.player, npc):

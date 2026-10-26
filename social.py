@@ -676,7 +676,7 @@ def opinion_causes(npc, partner):
                   for phase, total in sorted(harvests.items(), reverse=True) if total > HARVEST_FREE_APPLES)
     causes.extend(p.outcome for p in world.promises if p.status == "broken" and p.outcome
                   and (p.promisor_id, p.recipient_id) == (partner.id, npc.id))
-    for belief in reversed(npc.beliefs):
+    for belief in sorted(reversed(npc.beliefs), key=lambda b: fact_by_id(npc.world, claim_by_id(npc.world, b.claim_id).fact_id).kind == "killing", reverse=True):
         claim = claim_by_id(world, belief.claim_id)
         fact = fact_by_id(world, claim.fact_id)
         if (belief.stance != "believed" or not claim.affirmed or fact.subject_id != partner.id
@@ -737,7 +737,10 @@ def grievance_against(npc, target):
     from constants import CONFRONTATION_START_OPINION, GRIEVANCE_FACT_KINDS, CONFRONTATION_GRIEVANCE_PHASE_PAUSE
     if npc.opinion_score(target.id) > CONFRONTATION_START_OPINION:
         return None
-    for belief in reversed(npc.beliefs):
+    def priority(belief):
+        fact = fact_by_id(npc.world, claim_by_id(npc.world, belief.claim_id).fact_id)
+        return fact.kind == "killing", fact.phase, belief.direct
+    for belief in sorted(reversed(npc.beliefs), key=priority, reverse=True):
         claim = claim_by_id(npc.world, belief.claim_id)
         fact = fact_by_id(npc.world, claim.fact_id)
         if (belief.stance != "believed" or not claim.affirmed or fact.subject_id != target.id
@@ -746,7 +749,7 @@ def grievance_against(npc, target):
         latest = next((r for r in reversed(npc.world.history) if r.purpose == "confrontation"
                        and r.between(npc, target) and r.grievance_id
                        and claim_by_id(npc.world, r.grievance_id).fact_id == fact.id and r.turns), None)
-        if latest is not None:
+        if latest is not None and target is not npc.world.player:
             discussed_phase = max((d.phase for d in npc.world.disclosures
                 if d.conversation_id == latest.id and d.speaker_id == npc.id
                 and claim_by_id(npc.world, d.claim_id).fact_id == fact.id), default=npc.world.phase_index)
@@ -795,13 +798,17 @@ def validate_escalation_snapshot(decision, snapshot, turns, opinion):
             raise ValueError("An attack requires final hostility and exact evidence from the target's accepted answer.")
 
 
+def killing_chance(opinion):
+    from constants import CONFRONTATION_OPINION, KILLING_CHANCE_PER_POINT
+    return max(0.0, min(1.0, (CONFRONTATION_OPINION + 1 - opinion) * KILLING_CHANCE_PER_POINT))
+
+
 def roll_escalation(conversation, response, opinion):
     """The confronter's leave or attack, rolled by the game rather than chosen by the model.
 
     opinion is the view the exchange commits. Each point it falls past CONFRONTATION_OPINION adds
     KILLING_CHANCE_PER_POINT; an accepted promise from the accused to make it right rules an attack out.
     The accused's last answer is the evidence the attack rests on."""
-    from constants import CONFRONTATION_OPINION, KILLING_CHANCE_PER_POINT
     decision = response.escalation
     choices = conversation.initiator.world.escalation_choices(conversation, opinion=opinion)
     if decision is None or not choices:
@@ -810,7 +817,7 @@ def roll_escalation(conversation, response, opinion):
     promised = any(p.id == a.proposal_id and p.promisor_id == accused
                    for a in response.accepted_proposals for p in conversation.proposals)
     answer = next((t.text for t in reversed(response.turns) if t.speaker == "recipient"), "")[:400]
-    chance = (CONFRONTATION_OPINION + 1 - opinion) * KILLING_CHANCE_PER_POINT
+    chance = killing_chance(opinion)
     attack = ("attack" in choices["actions"] and not promised and bool(answer.strip())
               and conversation.initiator.rng.random() < chance)
     return decision.model_copy(update={"action": "attack", "evidence": answer} if attack else {"action": "leave"})

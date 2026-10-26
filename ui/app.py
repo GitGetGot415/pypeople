@@ -516,8 +516,13 @@ class Application:
         if self.screen == "setup":
             self.setup.update(dt)
         if self.simulation is not None:
+            player_was_alive = self.simulation.player.alive
             self.simulation.advance(dt, active=simulation_active, action_handler=self.apply_pending_action,
                                     viewed_conversation=viewed)
+            if player_was_alive and not self.simulation.player.alive:
+                self.conversations.cancel_unowned()
+                self.game.close_dialogue(terminate=False)
+                self.game.show_save_message("You were killed. You are now in spectator mode.")
         if simulation_active:
             if self.game.dialogue.actor is not None and self.game.dialogue.actor is not self.simulation.snake and self.simulation.npc_by_id(self.game.dialogue.actor.id) is not self.game.dialogue.actor:
                 self.game.close_dialogue()

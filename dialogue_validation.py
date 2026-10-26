@@ -324,6 +324,18 @@ def validate_speech_grounding(text, snapshot):
                                 firsthand=account.get("basis") == "firsthand",
                                 actor_references=account_references(snapshot.get("_name_actors", {})),
                                 known_events=[event for event in firsthand if event.get("basis") == "firsthand"])
+    ongoing = snapshot.get("conversation_account")
+    if ongoing and ongoing.get("kind") == "killing":
+        victim = name_pattern(ongoing["object_name"])
+        speech = unquoted_speech(text)
+        if re.search(rf"\bi\s+(?:do not|don't|did not|didn't|cannot|can't)\s+"
+                     rf"(?:recall|remember|know|hear|heard)\s+(?:anything\s+about\s+)?{victim}"
+                     rf"\s*(?:[.!?,]|or\b|and\b|$)", speech, re.I):
+            raise ValueError("You already know the ongoing killing account. Retain the victim, event and actual source when answering the player.")
+        if ongoing.get("basis") == "firsthand" and re.search(
+                rf"\bi\s+(?:did not|didn't|never)\s+(?:see|witness\w*)\s+"
+                rf"(?:anything\s+happen\w*|it\s+happen\w*|[^.!?]*\b{victim}\b[^.!?]*\b(?:killed|murdered|die|dying)\b)", speech, re.I):
+            raise ValueError("You witnessed this killing yourself. Do not deny seeing it or adopt a later report as your only source.")
 
 
 def validate_snake_account_roles(text, report, speaker, listener):
@@ -634,6 +646,7 @@ def _validate_response(raw, snapshot, model):
                 "_name_actors": snapshot.get("_name_actors", {}),
                 "_player_message": snapshot.get("_player_message", ""),
                 "account_to_share": snapshot.get("opening_account") if snapshot.get("request_kind") == "player_opening" else None,
+                "conversation_account": snapshot.get("conversation_account"),
                 "speaker": {"name": snapshot.get("name", ""),
                             "actor_id": actor_id(snapshot),
                             "known_accounts": snapshot.get("private_context", {}).get("known_accounts", []),

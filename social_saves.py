@@ -137,10 +137,13 @@ def validate_social_records(ctx):
     for record in history.values():
         if record.purpose == "confrontation":
             grievance = claims.get(record.grievance_id)
+            player_confrontation = record.participant_ids[1] == PLAYER_ID
             if (not grievance or not grievance.affirmed or grievance.subject_id != record.participant_ids[1]
-                    or not set(record.participant_ids) <= {n.id for n in residents}):
-                raise ValueError("A confrontation history needs two human residents and its original sourced grievance.")
-            if record.turns and not any(d.conversation_id == record.id and d.speaker_id == record.participant_ids[0]
+                    or record.participant_ids[0] not in {n.id for n in residents}
+                    or record.participant_ids[1] not in {n.id for n in residents} | {PLAYER_ID}
+                    or player_confrontation and record.origin != "autonomous"):
+                raise ValueError("A confrontation history needs its human accuser, accused and original sourced grievance.")
+            if record.turns and not player_confrontation and not any(d.conversation_id == record.id and d.speaker_id == record.participant_ids[0]
                     and claims[d.claim_id].fact_id == grievance.fact_id for d in disclosures.values()):
                 raise ValueError("An accepted confrontation must retain its actual grievance discussion and date.")
         elif record.grievance_id is not None:
@@ -175,7 +178,7 @@ def validate_saved_promises(ctx):
         if promise.id in promise_ids or promise.promisor_id == promise.recipient_id or not all(i in ids and i in record.participant_ids for i in (promise.promisor_id, promise.recipient_id)):
             raise ValueError("Invalid promise participants.")
         promise_ids.add(promise.id)
-        if promise.status == "pending" and not {promise.promisor_id, promise.recipient_id} <= live_ids | {player_id}:
+        if promise.status == "pending" and not {promise.promisor_id, promise.recipient_id} <= live_ids | ({player_id} if ctx.state.player.alive else set()):
             raise ValueError("Impossible obligations must be cancelled.")
         if promise.deadline < promise.created_phase or promise.created_phase > now or (promise.status == "pending") != (promise.resolved_phase is None):
             raise ValueError("Invalid promise resolution.")

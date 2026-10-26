@@ -772,6 +772,14 @@ def _conversation_messages(payload, snapshot):
                                          "For questions, do not begin with a farewell, an unrelated "
                                          "memory, or your own plans; answer even if you choose end_conversation true. "
                                          "For a goodbye or declined offer of more conversation, just close. Return the required reply JSON."}
+                if snapshot.get("conversation_account"):
+                    content["ongoing_accusation"] = snapshot["conversation_account"]
+                    content["opinion_of_player"] = snapshot.get("player_relationship", {}).get("opinion")
+                    content["reply_task"] += (" Respond to these actual words while retaining the ongoing accusation. "
+                        "A joke, denial, boast or topic change does not erase what you know. "
+                        "Firsthand means you witnessed the event; hearsay stays attributed to its source. "
+                        "Do not claim you forgot the event, never heard of the victim, or just learned it from the player. "
+                        "Do not change the killer or claim that a witness committed the killing.")
                 recent = [turn for exchange in snapshot.get("earlier_player_conversations", [])
                           for turn in exchange["turns"]] + snapshot.get("player_dialogue", [])
                 if recent:

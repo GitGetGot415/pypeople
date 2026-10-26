@@ -205,9 +205,7 @@ class NPC(ResidentValues, ConversationActor):
 
     @property
     def last_killing_phase(self):
-        from social_records import phase_index
-        return max((phase_index(n.departure["day"], n.departure["phase"])
-                    for n in self.world.archived if n.departure["attacker_id"] == self.id), default=None)
+        return max((fact.phase for fact in self.world.facts if fact.kind == "killing" and fact.subject_id == self.id), default=None)
 
     @property
     def indoors(self):

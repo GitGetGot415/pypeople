@@ -195,6 +195,8 @@ def end_interaction(world, reason="Conversation ended."):
 def update_interaction(world, dt):
     from interactions import face_each_other, move_toward
     from locations import colocated
+    if world.paused:
+        return
     interaction = world.player_interaction
     if not interaction or interaction.kind not in ("resident", "snake"):
         return
@@ -217,6 +219,8 @@ def update_interaction(world, dt):
     if move_toward(mover, interaction.point, dt, MOVEMENT_SPEED * PLAYER_APPROACH_MULTIPLIER):
         face_each_other(world.player, npc)
         interaction.arrive()
+        if interaction.incoming:
+            world.begin_incoming_conversation(npc, interaction)
 
 
 def move_player(world, dx, dy, dt, *, running=False):
@@ -377,6 +381,11 @@ def accept_player_promises(world, npc, record, response, message, *, opening=Fal
 
 def call_reason(world, npc):
     """Select only concrete records that this resident actually owns or knows."""
+    from social import grievance_against, confrontation_topic
+    grievance = grievance_against(npc, world.player)
+    if grievance:
+        return PlayerCallReason(key=f"confrontation:{grievance}:{world.phase_index}", kind="news", reference=grievance,
+                                reason=confrontation_topic(npc, grievance))
     promises = [p for p in world.promises if p.status == "pending"
                 and {p.promisor_id, p.recipient_id} == {npc.id, world.player.id}]
     if promises:
