@@ -238,12 +238,21 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
     objects.sort(key=lambda obj: obj["y"] if isinstance(obj, dict) else tree.y + TREE_BASE_OFFSET if obj is tree else obj.y)
     for obj in objects:
         if isinstance(obj, dict):
-            from constants import BODY_SECONDS, BODY_FADE_SECONDS, BODY_ROTATION
+            from constants import BODY_SECONDS, BODY_FALL_SECONDS, BODY_FADE_SECONDS, BODY_ROTATION
             original = character_renderer.render(obj["appearance"], obj["facing"])
-            image = resized(pygame.transform.rotate(original, BODY_ROTATION), CHARACTER_SCALE * zoom).copy()
+            progress = min(1.0, max(0.0, obj["elapsed"] / BODY_FALL_SECONDS))
+            angle = BODY_ROTATION * progress ** 2
+            scale = CHARACTER_SCALE * zoom
+            image = resized(pygame.transform.rotate(original, angle), scale).copy()
+            # Rotate the canvas center around its original bottom-center pivot.
+            # Pygame's image rotation is counterclockwise in screen coordinates.
+            pivot = pygame.Vector2(screen_point((obj["x"], obj["y"])))
+            center = pivot - pygame.Vector2(0, original.get_height() / 2).rotate(-angle) * scale
+            rect = image.get_rect(topleft=(round(center.x - image.get_width() / 2),
+                                            round(center.y - image.get_height() / 2)))
             remaining = BODY_SECONDS - obj["elapsed"]
             image.set_alpha(round(255 * min(1.0, remaining / BODY_FADE_SECONDS)))
-            surface.blit(image, image.get_rect(midbottom=screen_point((obj["x"], obj["y"]))))
+            surface.blit(image, rect)
             continue
         if obj is tree:
             import math
