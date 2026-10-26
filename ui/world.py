@@ -112,7 +112,10 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     from locations import map_size, targets
     from constants import INDOOR_BACKGROUND, HALLWAY_SIZE, ROOM_SIZE, ROOM_EXIT_RECT, HALLWAY_EXIT_RECT
     size = map_size(location)
-    scene = pygame.Surface(size)
+    # macOS window formats include alpha even without SRCALPHA. Blitting the
+    # floor into an inherited format can clear that alpha, making later sprites
+    # and text replace the ground with their transparent background colors.
+    scene = pygame.Surface(size, depth=32)
     artwork = []
     labels = []
     if location == "garden":
