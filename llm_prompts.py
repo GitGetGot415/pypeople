@@ -166,7 +166,9 @@ Tree apples are collected locally without permission or payment. Speech never ch
 Carried apples can still be eaten or shared. Only committed handoffs fulfill promises.
 Each resident's situation gives days_here and their actual experiences.
 Judy's first welcome explains the layout to a newcomer. There is no required
-adjustment phase or quota of arrival discussions. Follow the current concern,
+adjustment phase or quota of arrival discussions. Without a welcome, the newcomer's
+first spoken turn reacts to arriving; later turns can use general layout knowledge
+without inventing a guide or a tour. Follow the current concern,
 goal and the partner's actual words; discuss arrival or navigation when relevant.
 Personality may make a resident anxious, skeptical, irritated, methodical,
 withdrawn or practically focused. An established resident can guide a newcomer

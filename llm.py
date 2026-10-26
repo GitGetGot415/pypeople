@@ -15,7 +15,8 @@ from actor_identity import account_references, actor_id, name_forms, speech_only
 from constants import (CONVERSATION_MAX_TURNS, DIALOGUE_REPEAT_PHRASE_WORDS, DIALOGUE_STAGE_ATTEMPTS,
     DIALOGUE_TIMEOUT_SECONDS, FOOD_REQUEST_TURN_COUNT, MODEL_DEFAULT_CONTEXT_TOKENS, MODEL_DIALOGUE_CONTEXT_TOKENS,
     OPINION_CHANGES, RESIDENT_TURN_COUNT, VOICE_REWRITE_TEMPERATURE)
-from dialogue import AccountDisclosure, ActionResponse, ConversationResponse, ConversationTurn, DialoguePartsResponse, DisclosureChoice
+from dialogue import (AccountDisclosure, ActionResponse, ConversationResponse, ConversationTurn,
+    DialoguePartsResponse, DisclosureChoice, ResidentTurnResponse)
 from dialogue_rules import copied_share, mentions_private_recollection, states_no_change, validate_account_speech
 from dialogue_text import contains_question
 from generation_errors import InvalidResponseError, RequestError, StreamRepetitionError
@@ -483,7 +484,14 @@ def _resident_exchange(snapshot, request, retain, report):
         limit = budget
     def turn(index, closing):
         state = dialogue_context._resident_turn_snapshot(snapshot, draft, closing=closing)
-        speech = request(state)
+        if index == 0 and snapshot.get("arrival_welcome"):
+            from autonomy import JUDY_ARRIVAL_OPENING
+            opening = ResidentTurnResponse(parts=[dict(
+                text=JUDY_ARRIVAL_OPENING.format(name=snapshot["initiator"]["character"]["Name"]),
+                emotion=dict(name="happy", intensity=25))])
+            speech = validate_response(opening.model_dump_json(), state)
+        else:
+            speech = request(state)
         accepted = dialogue_validation._apply_resident_candidate(snapshot, draft, speech, state)
         draft.update(accepted)
 

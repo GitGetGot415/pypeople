@@ -343,7 +343,15 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
                    opinion_record_name=person["name"], personality=character_context(person["character"]).get("personality", ""),
                    situation=private.get("situation", {}), concern=deepcopy(private.get("concern")),
                    opinion_of_listener=private.get("opinions", {}).get(partner["name"]))
-    speaker["area_knowledge"] = person.get("area_knowledge", {})
+    speaker["area_knowledge"] = deepcopy(person.get("area_knowledge", {}))
+    familiarity = speaker["area_knowledge"].get("familiarity", {})
+    if familiarity.get("source") == "unguided_arrival" and any(t.speaker == role for t in draft["turns"]):
+        from area_knowledge import unguided_familiarity
+        speaker["area_knowledge"]["familiarity"] = unguided_familiarity(first_turn=False)
+    elif (familiarity.get("source") == "awaiting_welcome" and snapshot.get("arrival_welcome")
+            and role == "recipient" and draft["turns"]):
+        speaker["area_knowledge"]["familiarity"] = dict(source="judy", guide_name=own_name(partner),
+            explanation="My conversation partner just explained the layout in this conversation. I have not toured it myself.")
     listener = dict(actor_id=actor_id(partner), name=own_name(partner), kind=partner.get("kind", "human resident"), location=partner.get("location", "garden"))
     if not assessment and speaker["opinion_of_listener"]:
         # Reasons are private assessments, often long or written in third person;
@@ -395,7 +403,7 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
     if orientation:
         state["task"] = ("Welcome the newcomer and explain the known garden, apartment layout and practical routes. "
                          "Give concrete layout details now; this is the first welcome explanation, not a repeated tour or earlier conversation. "
-                         "If you are also new, discuss your actual concern using the layout Judy already explained. "
+                         "Use only your supplied familiarity and what has actually been said in this conversation. "
                          "Do not suggest exploring for clues, new places or exits. "
                          "Names are visible on floating tags. The cause of arrival and a way back to the former world remain unknown. "
                          if index == 0 else
@@ -431,6 +439,12 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
         if not (role == "initiator" and index == 0 and focus) and index == 0 and snapshot.get("opening_kind") in ("recollection", "news"):
             state["task"] += (" Lead with your concern's selected account in your own words, retaining its actual owner, source and stance. "
                               "Discuss the account itself rather than promising a later story. Record a disclosure only if actually spoken.")
+    if (not assessment and not thanks and snapshot.get("purpose") == "chat"
+            and speaker["area_knowledge"].get("familiarity", {}).get("source") == "unguided_arrival"):
+        state["task"] = ("This is your first spoken turn since arriving without a welcome. "
+                         "React to the unexplained arrival in your own personality: confused, angry, skeptical or quietly uncertain. "
+                         "Answer the listener's actual words and retain your remembered elevator arrival. "
+                         "Defer routine goals for this opening. Do not invent a guide, tour or earlier welcome.")
     # A required task account (a python's accusation, a confrontation's grievance) opens the exchange; the schema,
     # prompt and corrections all have to know it is required, not just the final check.
     focus = (snapshot.get("_information_validation") or {}).get("focus_claim_id")

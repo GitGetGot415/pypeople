@@ -28,7 +28,7 @@ from constants import (MAX_RESIDENTS, PLAYER_CALL_COOLDOWN, REST_SECONDS_RANGE,
     DIALOGUE_TIMEOUT_SECONDS, EAT_SECONDS, CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE,
     FAILURE_COOLDOWN, GIFT_GIVE_SECONDS, MOVEMENT_SPEED, NPC_RADIUS, PARTNER_COOLDOWN, SNAKE_NAME,
     SOCIAL_RADIUS, SOCIAL_RECOVERED, WANDER_PAUSE, FOOT_MARGIN, STARTING_DAY, STARTING_NPC_FRUIT,
-    JUDY_ROOM_NUMBER, STARTING_NPC_GENEROSITY_RANGE, STARTING_NPC_POSITION,
+    STARTING_NPC_GENEROSITY_RANGE, STARTING_NPC_POSITION,
     STARTING_NPC_SATISFACTION_RANGE, STARTING_NPC_SOCIABILITY_RANGE, STARTING_TREE_POSITION,
     STARTING_FATIGUE_RANGE, EXCHANGE_FATIGUE, CONVERSATION_CANCELLED, CONVERSATION_DIALOGUE_READY,
     CONVERSATION_ENDED_BEFORE_DIALOGUE, CONVERSATION_ENDED_BEFORE_SHARING, CONVERSATION_FAILED,
@@ -1001,6 +1001,7 @@ class Conversation(ResidentProgress):
                 self.prepare_food_request()
 
     def snapshot(self, tree, npcs):
+        from autonomy import arrival_greeter
         if self.arrived and self.active:
             from interactions import observe_conversation
             observe_conversation(self.initiator.world, self.record, self.initiator, self.recipient)
@@ -1039,7 +1040,7 @@ class Conversation(ResidentProgress):
             "purpose": self.purpose,
             "opening_kind": self.opening_kind,
             "arrival_focus": self.opening_kind == "orientation",
-            "arrival_welcome": (self.opening_kind == "orientation" and self.initiator.room_number == JUDY_ROOM_NUMBER
+            "arrival_welcome": (self.opening_kind == "orientation" and self.initiator is arrival_greeter(self.initiator.world)
                                 and self.recipient.arrival_day > STARTING_DAY),
             "escalation_choices": self.initiator.world.escalation_choices(self),
             "food_request": {"item": "fruit", "quantity": 1, "outcome": self.food_outcome,

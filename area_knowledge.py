@@ -3,7 +3,7 @@
 import math
 import re
 
-from constants import (APARTMENT_FLOORS, ROOMS_PER_FLOOR, JUDY_ROOM_NUMBER, STARTING_PHASE,
+from constants import (APARTMENT_FLOORS, ROOMS_PER_FLOOR, STARTING_DAY, STARTING_PHASE,
     ROOM_BED_RECT, ROOM_EXIT, ELEVATOR_ARRIVAL, HALLWAY_EXIT, GARDEN_BUILDING_POINT, GARDEN_BRIDGE_RECT,
     APARTMENT_RECT, TREE_BASE_OFFSET, SPATIAL_NEAR_DISTANCE)
 
@@ -27,6 +27,16 @@ Use only your CURRENT familiarity source, never the conditional rules for a late
 phase. With source judy, you have not yet confirmed the layout yourself; do not say
 you already walked around, or narrate a time shift that has not happened. Retain
 your remembered elevator arrival; uncertainty about why you are here does not erase it.
+With awaiting_welcome, nobody has explained the layout to you yet. Listen to the
+current welcome; do not invent an earlier conversation or tour.
+With unguided_arrival, this is your first spoken turn after arriving without a welcome.
+React to the unexplained arrival in your own personality: confused, angry, skeptical
+or quietly uncertain. Answer the listener's actual words; routine goals can wait.
+With general_layout, you have the basic layout mapped out and can use known routes.
+You need not announce this or repeat your arrival confusion in every conversation.
+Neither unguided_arrival nor general_layout supplies a guide, a tour, an earlier
+welcome, or a firsthand walk through every location. Do not invent these experiences.
+Knowing the layout does not explain why you are here or how to return home.
 With own_observation or confirmed_by_walking, you have already walked through both
 the garden and building. Do not claim you have never been outside or only know the
 hallway. The garden is outside the building, connected by the bridge, not a room
@@ -51,21 +61,39 @@ def known_layout():
         routes="From a room, use the south doorway to its hallway. On floors above 1, take the elevator to floor 1. Use the garden exit at the southwestern end of floor 1, then cross the wooden bridge to the grass. This exits the building, not this world.")
 
 
+def unguided_familiarity(*, first_turn):
+    return dict(source="unguided_arrival" if first_turn else "general_layout",
+                explanation=("I remember my elevator arrival, but nobody welcomed me. I am still making sense of being here."
+                             if first_turn else
+                             "I have the general layout mapped out. This does not mean someone welcomed me or that I toured every location."))
+
+
 def familiarity(npc):
+    from autonomy import arrival_greeter
     from social_records import phase_index
     world = npc.world
-    greeter = next((p for p in [*world.npcs, *world.archived] if p.room_number == JUDY_ROOM_NUMBER), None)
-    name = greeter.name if greeter else "Judy Judge"
+    greeter = arrival_greeter(world, include_archived=True)
     if npc is greeter:
         return dict(source="own_observation", explanation="I already walked around the garden, building and rooms, and this is all I could see.")
     arrival = next((f.phase for f in world.facts if f.kind == "arrival" and f.subject_id == npc.id
                     and "arrived for dawn" in f.summary),
                    phase_index(npc.arrival_day, STARTING_PHASE))
-    if world.phase_index > arrival:
-        return dict(source="confirmed_by_walking", guide_name=name,
-                    explanation=f"{name} told me about the layout, and since then I confirmed it by walking around myself. This is all I could see.")
-    return dict(source="judy", guide_name=name,
-                explanation=f"{name} already told me what the garden, building and rooms look like and where their exits are.")
+    # Starting residents share the initial setup; later arrivals need an actual welcome.
+    welcomed = greeter is not None and (npc.arrival_day == STARTING_DAY or any(
+        record.between(greeter, npc) and any(turn.speaker_id == greeter.id for turn in record.turns)
+        for record in world.history))
+    if welcomed:
+        if world.phase_index > arrival:
+            return dict(source="confirmed_by_walking", guide_name=greeter.name,
+                        explanation=f"{greeter.name} told me about the layout, and since then I confirmed it by walking around myself. This is all I could see.")
+        return dict(source="judy", guide_name=greeter.name,
+                    explanation=f"{greeter.name} told me what the garden, building and rooms look like and where their exits are.")
+    if greeter in world.npcs:
+        return dict(source="awaiting_welcome", explanation="I remember arriving in the elevator. Nobody has explained the layout to me yet.")
+    # The immediate question mark on a player approach is a listening cue, not an arrival reaction.
+    has_spoken = any(turn.speaker_id == npc.id and turn.text.strip() != "?"
+                     for record in world.history for turn in record.turns)
+    return unguided_familiarity(first_turn=not has_spoken)
 
 
 def relative_position(actor, point):
@@ -183,14 +211,14 @@ def validate_area_speech(text, knowledge, *, question=""):
                 and re.search(r"\b(?:the room we(?: are|['’]re) in|we(?: are|['’]re) (?:in|inside) (?:a |the |this )?(?:private |apartment )?room|this (?:private )?room (?:has|is|contains))\b", sentence, re.I)
                 and not re.search(r"\b(?:if|imagine|remember|used to|earlier|thought|mistaken)\b", sentence, re.I)):
             raise ValueError("You are in the hallway, not a private room. Describe room furnishings as being inside the separate rooms, not where you currently stand.")
-        if (knowledge.get("familiarity", {}).get("source") == "judy"
+        if (source.get("source") in ("judy", "awaiting_welcome", "unguided_arrival", "general_layout")
                 and (layout_question or re.search(r"\b(?:layout|garden|building|hallways?|rooms?|this information)\b", sentence, re.I))
                 and re.search(r"\bi(?: already| have| personally)? (?:walked around|confirmed|checked)|\bmy firsthand experience\b|"
                               r"\b(?:i|we)(?:['’]ve| have)?(?: already| personally)? (?:walked|explored|toured|confirmed)\b|"
                               r"\bi (?:remember|recall) (?:walking|looking) around\b|"
                               r"\bi(?:['’]ve| have)(?: been)? (?:walking|looking) around\b", sentence, re.I)
                 and not re.search(r"\b(?:former life|past life|used to|not|never)\b", sentence, re.I)):
-            raise ValueError("You have not been here through a time shift yet. Judy supplied this layout knowledge; do not claim you already confirmed it by walking around or by firsthand experience.")
+            raise ValueError("Your current layout knowledge does not include a firsthand tour. Do not claim you already walked around or confirmed it by firsthand experience.")
         for landmark in knowledge.get("spatial_view", []):
             aliases = {"garden exit": r"(?:garden exit|exit door)", "room exit": r"(?:room exit|exit door)"}
             target = aliases.get(landmark["name"], re.escape(landmark["name"]))

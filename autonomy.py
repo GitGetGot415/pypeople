@@ -9,9 +9,20 @@ from interactions import company_point
 from social import (concern_topic, goal_attempt_cooling_down, last_conversation_partner, pair_objective,
     pending_promises, repeat_partner_paused, regards_as_dangerous)
 
+JUDY_ARRIVAL_OPENING = (
+    "Hi, I'm {name}. Arriving here can be a lot to take in. "
+    "You have a room in this building; the elevator connects the floors. "
+    "The garden is outside through the first-floor exit, across the bridge. "
+    "There's an apple tree there, and you can pick from it when there's fruit. "
+    "That's all I've found here: the building and the garden. "
+    "I don't know why we're here, or how to leave. How are you holding up?"
+)
 
-def arrival_greeter(world):
-    return next((person for person in world.npcs if person.room_number == JUDY_ROOM_NUMBER), None)
+
+def arrival_greeter(world, *, include_archived=False):
+    people = [*world.npcs, *world.archived] if include_archived else world.npcs
+    return next((person for person in people
+                 if person.room_number == JUDY_ROOM_NUMBER and person.arrival_day == STARTING_DAY), None)
 
 
 def awaiting_arrival_greeting(npc, world):

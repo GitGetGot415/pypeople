@@ -9,7 +9,7 @@ from constants import (APARTMENT_ID, BEDTIME_DELAY_RANGE, CREATION_WORK_SECONDS_
                       CREATIVE_QUEUE_SECONDS, INDOOR_RECOVERY_PER_SECOND, MINIMUM_INDOOR_SECONDS,
                       OUTDOOR_COOLDOWN_SECONDS, REST_SECONDS_RANGE, RETREAT_SOCIABILITY_WEIGHT,
                       RETREAT_THRESHOLD_BASE, WAKE_DELAY_RANGE, ROOM_SLEEP_POSITION, SLEEP_FACING,
-                      PLAYER_ROOM_NUMBER, JUDY_ROOM_NUMBER, JUDY_WAKE_DELAY, MAX_RESIDENTS)
+                      PLAYER_ROOM_NUMBER, JUDY_WAKE_DELAY, MAX_RESIDENTS)
 from creations import CreativeJob
 from activity import Behavior
 
@@ -86,8 +86,8 @@ def leave(npc, world):
     cancel_work(npc)
     from locations import start_journey, door_point, npc_capacity
     from constants import GARDEN_BUILDING_ARRIVAL, ARRIVAL_LOCATION
-    from autonomy import next_arrival_to_greet
-    greeting = (npc.room_number == JUDY_ROOM_NUMBER and world.phase == "day"
+    from autonomy import arrival_greeter, next_arrival_to_greet
+    greeting = (npc is arrival_greeter(world) and world.phase == "day"
                 and (world.pending_arrival_days and len(world.npcs) < npc_capacity(world)
                      or next_arrival_to_greet(world) is not None))
     start_journey(npc, ARRIVAL_LOCATION if greeting else "garden",
@@ -216,7 +216,8 @@ def update_home(npc, world, dt):
         if world.phase != "day":
             return
         if npc.wake_remaining is None:
-            npc.wake_remaining = (JUDY_WAKE_DELAY if npc.room_number == JUDY_ROOM_NUMBER
+            from autonomy import arrival_greeter
+            npc.wake_remaining = (JUDY_WAKE_DELAY if npc is arrival_greeter(world)
                                   else npc.rng.uniform(*WAKE_DELAY_RANGE))
         npc.wake_remaining = max(0.0, npc.wake_remaining - dt)
         if npc.wake_remaining == 0:
@@ -237,6 +238,7 @@ def update_home(npc, world, dt):
 
 def phase_changed(world):
     """Keep phase-sensitive state consistent even if the player saves immediately."""
+    from autonomy import arrival_greeter
     for npc in world.npcs:
         from player import owns_resident
         if owns_resident(world, npc) or world.visit and world.visit.host_id == npc.id or npc.interaction:
@@ -246,7 +248,7 @@ def phase_changed(world):
                 sleep(npc)
             if world.phase != "day":
                 npc.wake_remaining = None
-            elif npc.behavior == Behavior.SLEEP and npc.room_number == JUDY_ROOM_NUMBER:
+            elif npc.behavior == Behavior.SLEEP and npc is arrival_greeter(world):
                 update_home(npc, world, 0.0)
         elif world.phase != "night" and npc.home_reason == "night":
             npc.home_reason = None
