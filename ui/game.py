@@ -51,7 +51,7 @@ class GameScreen:
         self.leave_game_button = Button(GAME_MENU_LEAVE_RECT, "Return to menu")
         self.stats_button = Button(GAME_STATS_RECT, "Stats", icon="stats")
         self.save_button = Button(GAME_SAVE_RECT, "Save", icon="save")
-        self.inventory_button = Button(INVENTORY_BUTTON_RECT, "Inventory")
+        self.inventory_button = Button(INVENTORY_BUTTON_RECT, "Inventory", icon="inventory")
         self.inventory = InventoryPanel()
         self.accept_offer_button = Button(GIFT_ACCEPT_RECT, "Accept gift")
         self.decline_offer_button = Button(GIFT_DECLINE_RECT, "Decline")
@@ -263,9 +263,8 @@ class GameScreen:
             return
         if self.request_status.handle_event(app, event):
             return
-        world_buttons = (self.menu_button, self.stats_button, self.save_button, self.pause_button, self.clock_button)
-        if active_player(world):
-            world_buttons += (self.inventory_button,)
+        world_buttons = (self.menu_button, self.stats_button, self.save_button, self.pause_button,
+                         self.inventory_button if active_player(world) else self.clock_button)
         if event.type == pygame.MOUSEWHEEL:
             pos = getattr(event, "pos", pygame.mouse.get_pos())
             if self.world_viewport.collidepoint(pos) and not any(
@@ -411,16 +410,14 @@ class GameScreen:
             self.focus_player_reply(app)
 
     def handle_clock_event(self, app, event):
+        from player import active_player
         if self.pause_button.clicked(event):
             app.simulation.paused = not app.simulation.paused
             self.pan_start = self.pan_last = None
             self.panning = False
             return True
-        if self.clock_button.clicked(event):
-            from player import active_player
-            if active_player(app.simulation):
-                self.show_save_message("To pass time, go to your room and click your bed.")
-            elif not app.simulation.paused and not app.simulation.phase_pending and not app.simulation.player_attention_pending:
+        if not active_player(app.simulation) and self.clock_button.clicked(event):
+            if not app.simulation.paused and not app.simulation.phase_pending and not app.simulation.player_attention_pending:
                 app.simulation.next_phase()
             return True
         return False
@@ -492,8 +489,11 @@ class GameScreen:
         self.pause_button.label = "Resume" if paused else "Pause"
         self.pause_button.icon = "play" if paused else "pause"
         self.pause_button.draw(app.window, app.small_font)
-        self.clock_button.draw(app.window, app.small_font, enabled=not paused and not app.simulation.phase_pending
-                               and not app.simulation.player_attention_pending and not active_player(app.simulation))
+        if active_player(app.simulation):
+            self.inventory_button.draw(app.window, app.small_font)
+        else:
+            self.clock_button.draw(app.window, app.small_font, enabled=not paused and not app.simulation.phase_pending
+                                   and not app.simulation.player_attention_pending)
         color = PAPER if app.screen == "game" and app.simulation.phase == "night" else INK
         phase_label = app.small_font.render(app.simulation.phase_label, True, INK)
         phase_rect = phase_label.get_rect(topright=GAME_PHASE_POSITION)
@@ -640,8 +640,6 @@ class GameScreen:
         self.menu_button.draw(app.window, app.small_font)
         self.stats_button.draw(app.window, app.small_font)
         self.save_button.draw(app.window, app.small_font)
-        if active_player(app.simulation):
-            self.inventory_button.draw(app.window, app.small_font)
         self.draw_clock(app)
         self.feed.draw(app)
         self.request_status.draw(app)

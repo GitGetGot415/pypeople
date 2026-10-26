@@ -36,6 +36,11 @@ class Button:
             pygame.draw.circle(surface, PAPER, (x, y), 12, width=2)
             pygame.draw.line(surface, PAPER, (x, y), (x, y - 8), 2)
             pygame.draw.line(surface, PAPER, (x, y), (x + 6, y + 3), 2)
+        elif self.icon == "inventory":
+            pygame.draw.rect(surface, PAPER, (x - 4, y - 13, 8, 5), width=2, border_radius=2)
+            pygame.draw.rect(surface, PAPER, (x - 10, y - 9, 20, 22), width=2, border_radius=5)
+            pygame.draw.rect(surface, PAPER, (x - 6, y + 2, 12, 7), width=2, border_radius=2)
+            pygame.draw.line(surface, PAPER, (x - 6, y - 3), (x + 6, y - 3), 2)
         elif self.icon == "pause":
             pygame.draw.rect(surface, PAPER, (x - 8, y - 10, 5, 20))
             pygame.draw.rect(surface, PAPER, (x + 3, y - 10, 5, 20))
