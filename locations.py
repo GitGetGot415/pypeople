@@ -5,7 +5,7 @@ from constants import (GARDEN_LOCATION, GARDEN_FLOOR_SIZE, GARDEN_FLOOR_OFFSET, 
                       APARTMENT_OVERLAY_SIZE, APARTMENT_OVERLAY_SCALE, HALLWAY_ARRIVAL_Y, ROOM_ARRIVAL,
                       ELEVATOR_ARRIVAL, HALLWAY_EXIT, ROOM_EXIT, HALLWAY_ENTRY, HALLWAY_EXIT_RECT, ROOM_EXIT_RECT,
                       GARDEN_BUILDING_POINT, GARDEN_BUILDING_ARRIVAL, GARDEN_BRIDGE_RECT, GARDEN_BRIDGE_APPROACH,
-                      MOVEMENT_SPEED, TRAVEL_STEP_TIMEOUT, PLAYER_APPROACH_MULTIPLIER, PLAYER_ROOM_NUMBER,
+                      MOVEMENT_SPEED, TRAVEL_STEP_TIMEOUT, PLAYER_APPROACH_MULTIPLIER, PLAYER_RUN_MULTIPLIER, PLAYER_ROOM_NUMBER,
                       APARTMENT_FLOORS, MAX_RESIDENTS)
 from interactions import move_toward
 from dataclasses import dataclass, field
@@ -213,6 +213,8 @@ def update_journey(actor, dt):
         return False
     step = journey.steps[0]
     speed = MOVEMENT_SPEED * (PLAYER_APPROACH_MULTIPLIER if journey.fast else 1)
+    if actor is actor.world.player and journey.purpose == "walk" and actor.world.player_running:
+        speed = MOVEMENT_SPEED * PLAYER_RUN_MULTIPLIER
     destination = clamp_point(actor.location, step.point)
     waypoint = destination
     if actor.location == GARDEN_LOCATION:
@@ -221,7 +223,12 @@ def update_journey(actor, dt):
             waypoint = GARDEN_BRIDGE_APPROACH
         elif actor.y < FOOT_MARGIN and destination[1] >= FOOT_MARGIN:
             waypoint = GARDEN_BRIDGE_APPROACH
-    if move_toward(actor, waypoint, dt, speed) and waypoint == destination:
+    arrived = move_toward(actor, waypoint, dt, speed) and waypoint == destination
+    if actor is actor.world.player and journey.purpose == "walk":
+        from player import enter_touching_doorway
+        if enter_touching_doorway(actor.world):
+            return False
+    if arrived:
         if step.arrival is not None:
             world = actor.world
             world.observed_event("departure", actor, None, f"{actor.name} left the area.")

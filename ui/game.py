@@ -84,6 +84,7 @@ class GameScreen:
         self.pan_start = None
         self.pan_last = None
         self.panning = False
+        self.mouse_follow = False
         self.request_status = RequestStatus(max_requests)
         self.feed = EventFeed()
         self.apartment_open = False
@@ -119,6 +120,7 @@ class GameScreen:
         self.pan_start = None
         self.pan_last = None
         self.panning = False
+        self.mouse_follow = False
         self.save_message = ""
         self.save_message_remaining = 0
         self.feed = EventFeed()
@@ -162,6 +164,9 @@ class GameScreen:
     def handle_event(self, app, event):
         from player import active_player
         world = app.simulation
+        if (event.type == pygame.WINDOWFOCUSLOST
+                or event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP) and event.button == 1):
+            self.mouse_follow = False
         if self.dialogue.open and self.dialogue.conversation is None and self.dialogue.actor is not None:
             self.update_player_pages(app)
         if self.bed_open:
@@ -278,6 +283,11 @@ class GameScreen:
             if self.world_viewport.collidepoint(event.pos) and not any(
                 button.rect.collidepoint(event.pos) for button in world_buttons
             ):
+                if active_player(world):
+                    self.select_at(app, event.pos)
+                    self.mouse_follow = bool(world.player.journey and world.player.journey.purpose == "walk")
+                    self.pan_start = self.pan_last = None
+                    return
                 self.pan_start = event.pos
                 self.pan_last = event.pos
                 self.panning = False
@@ -546,12 +556,15 @@ class GameScreen:
         self.camera_offset[1] += world_pos[1] * (old_zoom - self.camera_zoom)
 
     def select_at(self, app, screen_pos):
-        from player import active_player, can_interrupt_approach, start_approach
-        from locations import targets
+        from player import active_player, can_claim, can_interrupt_approach, start_approach
+        from locations import clamp_point, start_journey, targets
         world = app.simulation
-        if active_player(world) and (world.player_interaction or world.player.journey
+        if active_player(world) and (world.player_interaction
+                                     or world.player.journey and (world.paused or world.player.journey.purpose != "walk")
                                      or world.visit and world.visit.stage == "travel"):
             return
+        if active_player(world) and world.player.journey:
+            world.player.journey = None
         point = self.screen_to_world(screen_pos)
         if self.can_use_bed(world) and pygame.Rect(ROOM_BED_RECT).collidepoint(point):
             self.close_dialogue()
@@ -566,7 +579,6 @@ class GameScreen:
         for target in targets(world, self.location):
             if hit_actor is None and pygame.Rect(target["rect"]).collidepoint(point):
                 if active_player(world):
-                    from locations import start_journey
                     self.close_dialogue()
                     start_journey(world.player, self.location, target["point"], purpose="door", fast=True)
                     world.player_interaction = PlayerInteraction(id="door", kind="door", stage="travel", target=target,
@@ -575,13 +587,14 @@ class GameScreen:
                     app.use_door(target)
                 return
         if active_player(world) and self.location == "garden" and hit_actor is None and abs(point[0] - world.tree.x) < 70 and abs(point[1] - world.tree.y) < 100:
-            from locations import start_journey
             self.close_dialogue()
             start_journey(world.player, "garden", world.tree.interaction_point, purpose="tree", fast=True)
             return
         npc = hit_actor
         if npc is None:
             self.close_dialogue()
+            if active_player(world) and not world.paused and can_claim(world):
+                start_journey(world.player, self.location, clamp_point(self.location, point), purpose="walk")
             return
         interaction = npc.conversation
         if interaction and (not active_player(world) or not can_interrupt_approach(npc)):
@@ -968,16 +981,20 @@ class GameScreen:
 
     def update_physical(self, app, dt):
         from player import active_player, move_player
-        from locations import map_size
+        from locations import clamp_point, map_size, start_journey
         from constants import GARDEN_LOCATION
         world = app.simulation
         self.app = app
+        world.player_running = False
         if not active_player(world) and self.inventory.visible and self.inventory.owner is world.player:
             self.inventory.close()
         if self.bed_open and not self.can_use_bed(world):
             self.bed_open = False
         world.player_menu_blocked = bool(self.inventory.visible or self.apartment_open
             or self.confirm_menu or self.bed_open or app.screen != "game")
+        if (world.paused or world.player_menu_blocked or not active_player(world)
+                or not pygame.display.get_init() or not pygame.mouse.get_pressed()[0]):
+            self.mouse_follow = False
         if self.confirm_menu:
             return
         if active_player(world):
@@ -997,10 +1014,25 @@ class GameScreen:
                 app.use_door(target)
             blocking = (world.player_menu_blocked or self.dialogue.open or self.prompt_input.active
                         or pygame.display.get_init() and pygame.key.get_mods() & (pygame.KMOD_CTRL | pygame.KMOD_ALT))
+            if blocking or world.player_interaction:
+                self.mouse_follow = False
             if not blocking and app.screen == "game" and dt > 0 and pygame.display.get_init():
                 keys = pygame.key.get_pressed()
-                move_player(world, keys[pygame.K_d] - keys[pygame.K_a], keys[pygame.K_s] - keys[pygame.K_w], dt,
-                            running=bool(keys[pygame.K_SPACE]))
+                world.player_running = bool(keys[pygame.K_SPACE])
+                dx, dy = keys[pygame.K_d] - keys[pygame.K_a], keys[pygame.K_s] - keys[pygame.K_w]
+                if dx or dy:
+                    self.mouse_follow = False
+                if self.mouse_follow:
+                    pos = pygame.mouse.get_pos()
+                    journey = world.player.journey
+                    if journey and journey.purpose != "walk":
+                        if journey.purpose != "doorway":
+                            self.mouse_follow = False
+                    elif (self.world_viewport.collidepoint(pos) and not any(rect.collidepoint(pos) for rect in (
+                            self.toolbar_rect(app), self.inventory_button.rect, self.feed.rect, self.request_status.rect))):
+                        point = clamp_point(self.location, self.screen_to_world(pos))
+                        start_journey(world.player, self.location, point, purpose="walk")
+                move_player(world, dx, dy, dt, running=world.player_running)
             width, height = map_size(self.location)
             # Dialogue clips the world view but must not move the camera anchor.
             # Follow freely in the garden, even when it fits inside the window.

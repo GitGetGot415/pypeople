@@ -57,6 +57,7 @@ class Simulation(DeathMixin):
         self.visit = None
         self.bodies = []
         self.player_menu_blocked = False
+        self.player_running = False
         self.player_call_check = 0.0
         self.player_acknowledgments = []
         from apartments import assign_rooms
