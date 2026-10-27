@@ -45,13 +45,13 @@ class GameScreen:
         self.invitation_button = Button(INVITATION_ACCEPT_RECT, "Accept invitation")
         self.actions_button = Button(PLAYER_ACTION_BUTTON_RECT, "Request action")
         self.give_apple_button = Button(PLAYER_GIVE_APPLE_RECT, "Give apple")
-        self.menu_button = Button(GAME_MENU_RECT, "Menu", icon="menu")
+        self.menu_button = Button(GAME_MENU_RECT, "Menu", icon="menu", show_label=True)
         self.confirm_menu = False
         self.menu_restore_focus = False
         self.keep_playing_button = Button(GAME_MENU_KEEP_PLAYING_RECT, "Keep playing")
         self.leave_game_button = Button(GAME_MENU_LEAVE_RECT, "Return to menu")
-        self.stats_button = Button(GAME_STATS_RECT, "Stats", icon="stats")
-        self.save_button = Button(GAME_SAVE_RECT, "Save", icon="save")
+        self.stats_button = Button(GAME_STATS_RECT, "Stats", icon="stats", show_label=True)
+        self.save_button = Button(GAME_SAVE_RECT, "Save", icon="save", show_label=True)
         self.inventory_button = Button(INVENTORY_BUTTON_RECT, "Inventory", icon="inventory")
         self.inventory = InventoryPanel()
         self.accept_offer_button = Button(GIFT_ACCEPT_RECT, "Accept gift")

@@ -1,13 +1,15 @@
 import pygame
 
-from constants import ACCENT, BORDER_RADIUS, PAPER
+from constants import (ACCENT, BORDER_RADIUS, PAPER, BUTTON_ICON_SIZE,
+                       BUTTON_ICON_LABEL_PADDING, BUTTON_ICON_LABEL_GAP)
 
 
 class Button:
-    def __init__(self, rect, label, *, icon=None):
+    def __init__(self, rect, label, *, icon=None, show_label=False):
         self.rect = pygame.Rect(rect)
         self.label = label
         self.icon = icon
+        self.show_label = show_label
 
     def clicked(self, event, enabled=True):
         return (
@@ -24,14 +26,21 @@ class Button:
             color = (152, 164, 151)
         pygame.draw.rect(surface, color, self.rect, border_radius=BORDER_RADIUS)
         if self.icon is not None:
-            self._draw_icon(surface)
+            if self.show_label:
+                icon_left = self.rect.left + BUTTON_ICON_LABEL_PADDING
+                self._draw_icon(surface, (icon_left + BUTTON_ICON_SIZE // 2, self.rect.centery))
+                label = font.render(self.label, True, PAPER)
+                surface.blit(label, label.get_rect(
+                    midleft=(icon_left + BUTTON_ICON_SIZE + BUTTON_ICON_LABEL_GAP, self.rect.centery)))
+            else:
+                self._draw_icon(surface)
             return
         label = font.render(self.label, True, PAPER)
         surface.blit(label, label.get_rect(center=self.rect.center))
 
-    def _draw_icon(self, surface):
+    def _draw_icon(self, surface, center=None):
         """Draw toolbar symbols with the same crisp strokes as the clock."""
-        x, y = self.rect.center
+        x, y = self.rect.center if center is None else center
         if self.icon == "clock":
             pygame.draw.circle(surface, PAPER, (x, y), 12, width=2)
             pygame.draw.line(surface, PAPER, (x, y), (x, y - 8), 2)
