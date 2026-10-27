@@ -1,7 +1,7 @@
 """Authored events for new Player games; ordinary simulation dialogue stays generated."""
 
 from player_records import PlayerCallReason
-from constants import (SNAKE_NAME, STARTING_DAY, STARTING_PHASE, STARTING_PLAYER_DAY, CONVERSATION_COMPLETED)
+from constants import SNAKE_NAME, STARTING_PLAYER_DAY, CONVERSATION_COMPLETED
 
 
 PLAYER_START_ENCOUNTER = "player-start-encounter"
@@ -117,25 +117,3 @@ def player_question_opening(world, npc):
     if not npc.unread_player_reply:
         clear_call(npc)
     return record
-
-
-def validate_starting_history(world, residents):
-    from social_records import phase_index
-
-    encounter = starting_encounter(world)
-    if encounter is not None:
-        resident = next((n for n in residents if n.id == encounter.object_id), None)
-        if (resident is None or resident.arrival_day != STARTING_DAY or world.day < STARTING_PLAYER_DAY
-                or encounter.subject_id != world.snake.id
-                or encounter.phase != phase_index(STARTING_DAY, STARTING_PHASE)
-                or encounter.conversation_id is not None
-                or encounter.witness_ids != [resident.id, world.snake.id]):
-            raise ValueError("Invalid prior-day starting encounter.")
-
-
-def resident_arrival_days(world):
-    days = set(range(2, world.day + 1))
-    if starting_encounter(world) is not None:
-        # This dawn brought the player; the next resident arrives the following day.
-        days.discard(STARTING_PLAYER_DAY)
-    return days

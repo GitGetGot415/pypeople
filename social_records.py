@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Annotated, Literal
 from pydantic import Field
-from constants import CONVERSATION_MAX_TURNS, PHASES, REPUTATION_FACT_LIMIT
+from constants import CONVERSATION_MAX_TURNS, REPUTATION_FACT_LIMIT
 
 
 GoalKind = Literal["obtain_apple", "help_with_apple", "repair_relationship", "sabotage_relationship"]
@@ -19,14 +19,6 @@ class ConversationConcern:
     remaining: float
 
 
-def phase_index(day, phase):
-    return len(PHASES) * (day - 1) + PHASES.index(phase)
-
-
-def phase_label(index):
-    return str(index + 1)
-
-
 @dataclass
 class Goal:
     id: Annotated[str, Field(min_length=1)]
@@ -36,14 +28,14 @@ class Goal:
     motive: Annotated[str, Field(min_length=1, max_length=400)]
     approach: Annotated[str, Field(min_length=1, max_length=400)]
     boundary: Annotated[str, Field(min_length=1, max_length=400)]
-    created_phase: Annotated[int, Field(ge=0)]
-    deadline: Annotated[int, Field(ge=0)]
+    created_day: Annotated[int, Field(ge=1)]
+    deadline: Annotated[int, Field(ge=1)]
     baseline_opinion: Annotated[int, Field(ge=-100, le=100)] = 0
     status: Literal["active", "completed", "failed", "cancelled"] = "active"
     resolution_event_id: str | None = None
-    resolved_phase: Annotated[int | None, Field(ge=0)] = None
+    resolved_day: Annotated[int | None, Field(ge=1)] = None
     outcome: str = ""
-    last_attempt_phase: Annotated[int | None, Field(ge=0)] = None
+    last_attempt_day: Annotated[int | None, Field(ge=1)] = None
     third_npc_id: str | None = None
     claim_id: str | None = None
 
@@ -53,7 +45,7 @@ class Proposal:
     id: Annotated[str, Field(min_length=1)]
     promisor_id: str
     recipient_id: str
-    deadline: Annotated[int, Field(ge=0)]
+    deadline: Annotated[int, Field(ge=1)]
 
 
 @dataclass
@@ -62,13 +54,13 @@ class Promise:
     promisor_id: str
     recipient_id: str
     conversation_id: Annotated[str, Field(min_length=1)]
-    created_phase: Annotated[int, Field(ge=0)]
-    deadline: Annotated[int, Field(ge=0)]
+    created_day: Annotated[int, Field(ge=1)]
+    deadline: Annotated[int, Field(ge=1)]
     item: Literal["fruit"] = "fruit"
     quantity: Literal[1] = 1
     status: Literal["pending", "fulfilled", "broken", "cancelled"] = "pending"
     resolution_event_id: str | None = None
-    resolved_phase: Annotated[int | None, Field(ge=0)] = None
+    resolved_day: Annotated[int | None, Field(ge=1)] = None
     outcome: str = ""
     consequence_event_id: str | None = None
 
@@ -82,7 +74,7 @@ class OpinionEffect:
     claim_id: str | None = None
     actor_id: str | None = None
     conversation_id: str | None = None
-    phase: Annotated[int | None, Field(ge=0)] = None
+    day: Annotated[int | None, Field(ge=1)] = None
 
 
 @dataclass
@@ -93,7 +85,7 @@ class Fact:
     object_id: str
     source_id: Annotated[str, Field(min_length=1)]
     conversation_id: str | None
-    phase: Annotated[int, Field(ge=0)]
+    day: Annotated[int, Field(ge=1)]
     summary: Annotated[str, Field(min_length=1)]
     witness_ids: list[str]
     quantity: Annotated[int | None, Field(strict=True, ge=1)] = None
@@ -109,7 +101,7 @@ class Claim:
     affirmed: bool
     parent_claim_id: str | None
     deliberate: bool
-    phase: Annotated[int, Field(ge=0)]
+    day: Annotated[int, Field(ge=1)]
     conversation_id: str | None
 
 
@@ -121,7 +113,7 @@ class Belief:
     source_id: str
     disclosure_id: str | None
     direct: bool
-    phase: Annotated[int, Field(ge=0)]
+    day: Annotated[int, Field(ge=1)]
     assessed: bool = False
     opinion_delta: Annotated[int, Field(ge=-REPUTATION_FACT_LIMIT, le=REPUTATION_FACT_LIMIT)] = 0
 
@@ -137,7 +129,7 @@ class Disclosure:
     intent: Literal["share", "challenge", "lie"]
     stance: Stance
     source_disclosure_id: str | None
-    phase: Annotated[int, Field(ge=0)]
+    day: Annotated[int, Field(ge=1)]
     event_id: Annotated[str, Field(min_length=1)]
 
 

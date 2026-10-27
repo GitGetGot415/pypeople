@@ -147,7 +147,7 @@ def _generated_dialogue(raw, snapshot):
     if not isinstance(data, dict):
         return []
     values = data.get("turns", [])
-    if snapshot.get("request_kind") in ("conversation_closing", "resident_turn", "handoff_thanks") and "parts" in data:
+    if snapshot.get("request_kind") in ("resident_turn", "handoff_thanks") and "parts" in data:
         values = [{"speaker": snapshot.get("speaker_role", "initiator"), "parts": data["parts"],
 }]
     if not isinstance(values, list):
@@ -227,12 +227,6 @@ def _speech_retry_snapshot(snapshot):
     if state["request_kind"] == "resident_turn":
         return state  # Keep the conversation messages and unanswered questions on every attempt.
     state["preceding_turns"] = state["preceding_turns"][-1:]
-    if state["request_kind"] == "conversation_closing" or state.get("_closing"):
-        # Retain the listener's actual words as well as the separate question.
-        state["task"] = ("State your intended next step based on the existing agreement. "
-                         if state["speaker"].get("existing_agreements") else
-                         "State your answer to question_to_answer using settled facts and your own views. ")
-        state["task"] += "This is your final reply; the listener will not respond."
     return state
 
 
@@ -244,7 +238,7 @@ def transport_settings(snapshot, *, correction=""):
     }
     if snapshot.get("request_kind") == "voice_rewrite":
         options["temperature"] = VOICE_REWRITE_TEMPERATURE
-    elif snapshot.get("request_kind") in ("resident_turn", "resident_assessment", "handoff_thanks", "conversation_closing"):
+    elif snapshot.get("request_kind") in ("resident_turn", "resident_assessment", "handoff_thanks"):
         # Greedy decoding encouraged small models to replay the supplied history.
         # Corrections need fresh wording too; intent routing stays deterministic.
         options["temperature"] = 0.7
@@ -294,7 +288,7 @@ def _stage_correction(state, exc):
             f"Do not describe {owner}'s personality or write {target}'s opinion of you. "
             "Use the fixed transcript as evidence; keep the target and pending reaction choices unchanged. "
             f"The previous assessment failed: {exc}. Return only the corrected assessment JSON.")
-    if exc.repeated_turns and kind in ("resident_turn", "conversation_closing"):
+    if exc.repeated_turns and kind == "resident_turn":
         earlier = [t["text"] for t in state.get("_preceding_turns", []) if t["role"] == state["speaker_role"]]
         correction += ("\nYour own accepted earlier speech, supplied only to avoid repeating it: "
             + json.dumps(earlier, ensure_ascii=False)
@@ -363,8 +357,7 @@ def _corrected_request(state, request, report):
     activity = (f"turn {state['turn_index'] + 1} for {state['speaker']['name']}" if kind == "resident_turn" else
                 f"assessment for {state['speaker']['name']}" if kind == "resident_assessment" else
                 f"opinion direction for {state['owner']}" if kind == "opinion_direction" else
-                {"conversation_closing": "closing answer",
-                 "handoff_thanks": "reserved handoff thanks", "intent": "player intent"}.get(kind, "reply"))
+                {"handoff_thanks": "reserved handoff thanks", "intent": "player intent"}.get(kind, "reply"))
     correction = ""
     corrections = []
     last_error = None
@@ -389,8 +382,8 @@ def _corrected_request(state, request, report):
                 # Transport validation reduces PlayerIntent to ActionIntent;
                 # that accepted value intentionally has no message_type field.
                 return result
-            # A compact retry retains the complete prefix and original rules.
-            return validate_response(result.model_dump_json(), state)
+            # A compact or narrowed retry is rechecked against the complete prefix and original rules.
+            return result if retry_state is state else validate_response(result.model_dump_json(), state)
         except InvalidResponseError as exc:
             last_error = exc
             # A chosen, concrete own memory needs speech and metadata together.
@@ -475,14 +468,24 @@ def _exchange_turns(snapshot, draft, request_turn, retain, *, budget, limit, con
     finish_conversation_turns()
 
 
-def _complete_exchange(result, snapshot, report):
+def _complete_exchange(result, snapshot, report, diagnosed):
     check_cancelled()
     report("Validating completed conversation")
-    return validate_response(result.model_dump_json(), snapshot)
+    validated = validate_response(result.model_dump_json(), snapshot)
+    # Speech was checked as each stage was generated; keep those diagnostics with the assembled result.
+    validated._dialogue_errors = list(dict.fromkeys([*diagnosed, *validated._dialogue_errors]))
+    return validated
 
 
-def _resident_exchange(snapshot, request, retain, report):
+def _resident_exchange(snapshot, validated_request, retain, report):
     draft = _resident_draft()
+    diagnosed = []
+
+    def request(state):
+        result = validated_request(state)
+        diagnosed.extend(result._dialogue_errors)
+        return result
+
     budget = FOOD_REQUEST_TURN_COUNT if snapshot.get("purpose") == "food_request" else RESIDENT_TURN_COUNT
     limit = FOOD_REQUEST_TURN_COUNT + 1 if snapshot.get("purpose") == "food_request" else CONVERSATION_MAX_TURNS
     if snapshot.get("arrival_welcome"):
@@ -551,7 +554,7 @@ def _resident_exchange(snapshot, request, retain, report):
         state["task"] = "Generate a brief acknowledgment reserved for AFTER the accepted possession is actually handed over. Preserve giver, recipient and creator roles."
         thanks = request(state).parts
     result = _assemble_resident(snapshot, draft, thanks)
-    return _complete_exchange(result, snapshot, report)
+    return _complete_exchange(result, snapshot, report, diagnosed)
 
 
 def _individual_reply(snapshot, request):

@@ -13,7 +13,7 @@ from dialogue import (AcceptedProposal, AccountReaction, ActionIntent, ActionRes
                      ConversationTurn, DialoguePartsResponse, EscalationChoice, LeverageUse, OpinionDirection, OpinionReason,
                      OpinionUpdate, PlayerIntent, ReputationReason, ResidentAssessment, ResidentGift, ResidentTurnResponse,
                      ThirdPartyOpinion)
-from constants import (RESIDENT_TURN_COUNT, CONVERSATION_MAX_TURNS, DIALOGUE_REPEAT_PHRASE_WORDS,
+from constants import (RESIDENT_TURN_COUNT, DIALOGUE_REPEAT_PHRASE_WORDS,
                       DIALOGUE_REPEAT_SENTENCE_WORDS, DIALOGUE_REPEAT_TURN_WORDS,
                       PLAYER_LABEL,
                       PLAYER_NAME_TAG, SNAKE_NAME, OPINION_CHANGES, HOSTILE_OPINION)
@@ -32,7 +32,6 @@ from dialogue_rules import (is_name_reference, mentions_account, mentions_privat
                            validate_own_memory_person, validate_snake_stance, validate_reason_belief, validate_snake_conviction,
                            validate_hostile_warmth, validate_own_apples, validate_own_harvest, validate_memory_firm, denies_conduct,
                            view_subjects, states_no_change)
-from social_records import phase_index
 from information import (assessment_turn, information_from_dict, related_beliefs, reputation_labels,
                          resident_information, resident_effect_limits, retold_accusation, opinion_change, reputation_deltas)
 from social import validate_agreements, proposals_from_snapshot
@@ -287,7 +286,7 @@ def validate_speech_grounding(text, snapshot):
     tree = snapshot.get("environment", {}).get("tree", {})
     validate_harvest_grounding(text, [*firsthand, *([focus] if focus else [])],
         speaker_id=actor_id(speaker), listener_id=actor_id(listener) if isinstance(listener, dict) else None,
-        current_time={"day": snapshot.get("day"), "phase": snapshot.get("time_of_day")},
+        current_time={"day": snapshot.get("day")},
         tree_stock=tree.get("fruit"), focus=focus, prefer_all=snake_role == "speaker")
     if actor_id(speaker):
         memories = [*firsthand, *speaker.get("heard_accounts", [])]
@@ -447,7 +446,7 @@ def validate_resident_grounding(result, snapshot):
             "account_to_share": next((a for a in private.get("permitted_accounts", [])
                 if any(d.turn == index and d.claim_id == a["claim_id"] for d in result.disclosures)), None),
             "environment": {"tree": {"fruit": speaker["tree_fruit"]}} if speaker.get("location", "garden") == "garden" and "tree_fruit" in speaker else {},
-            "day": speaker.get("day"), "time_of_day": speaker.get("time_of_day"), "known_actor_names": names})
+            "day": speaker.get("day"), "known_actor_names": names})
         # General beliefs can also be formed in the current discussion. Match
         # concrete recollections separately, including sentences in older accounts.
         private_accounts = [{**a, "assertion": sentence} for a in options.values() if a["kind"] == "former_life"
@@ -530,7 +529,7 @@ def _validate_response(raw, snapshot, model):
                                        target=snapshot["target"], people=snapshot.get("people", ()), you=snapshot.get("you", ""),
                                        chosen=True)
         return result
-    if check_dialogue:
+    if check_dialogue and not isinstance(result, ConversationResponse):
         _validate_base_presentation(result, snapshot)
     if isinstance(result, ResidentAssessment):
         _apply_resident_candidate(snapshot["_baseline"], snapshot["_draft"], result, snapshot)
@@ -548,7 +547,7 @@ def _validate_response(raw, snapshot, model):
             if selected:
                 snapshot = {**snapshot, "account_to_share": selected}
         validate_speech_grounding(current.text, snapshot)
-        if (snapshot.get("request_kind") in ("resident_turn", "conversation_closing") and isinstance(snapshot.get("speaker"), dict)
+        if (snapshot.get("request_kind") == "resident_turn" and isinstance(snapshot.get("speaker"), dict)
                 and snapshot["speaker"].get("kind") != "python"):
             _validate_speaker_standing(current.text, snapshot)
         if snapshot.get("request_kind") == "handoff_thanks":
@@ -564,7 +563,7 @@ def _validate_response(raw, snapshot, model):
             actor = snapshot.get(role)
             if isinstance(actor, dict) and actor.get("kind") == "python":
                 validate_snake_perspective(current.text, snake_role=role)
-        if (snapshot.get("request_kind") == "conversation_closing" or snapshot.get("_closing")) and any(
+        if snapshot.get("_closing") and any(
                 contains_question(part.text) for part in result.parts):
             raise ValueError("Answer the last question and close without asking another question.")
         if isinstance(result, ResidentTurnResponse):
@@ -573,7 +572,7 @@ def _validate_response(raw, snapshot, model):
         else:
             account = snapshot.get("account_to_share")
             facts = [account["assertion"]] if account else snapshot.get("_factual_context", [])
-        if snapshot.get("request_kind") in ("snake_turn", "conversation_closing", "resident_turn"):
+        if snapshot.get("request_kind") == "resident_turn":
             preceding = [ConversationTurn(speaker=turn["role"], parts=[ConversationPart(text=turn["text"])])
                          for turn in snapshot.get("_preceding_turns", snapshot["preceding_turns"])]
             validate_dialogue_repetition([*preceding, current], snapshot.get("shared_history", {}).get("recent_dialogue", []),
@@ -637,7 +636,6 @@ def _validate_response(raw, snapshot, model):
                             "area_knowledge": snapshot.get("area_knowledge", {}),
                             "situation": snapshot.get("private_context", {}).get("situation", {})},
                 "listener": {"name": PLAYER_NAME_TAG, "actor_id": snapshot.get("player_id")}, "day": snapshot.get("day"),
-                "time_of_day": snapshot.get("time_of_day"),
                 "environment": {"tree": {"fruit": snapshot["tree_fruit"]}} if snapshot.get("location", "garden") == "garden" and "tree_fruit" in snapshot else {},
             })
             validate_dialogue_format([ConversationTurn(speaker="initiator", parts=[ConversationPart(text=result.reply)])])
@@ -661,48 +659,23 @@ def _validate_response(raw, snapshot, model):
         resident_information(snapshot, vars(result), incomplete=False)
         validate_agreements(result.accepted_proposals, proposals_from_snapshot(snapshot),
                             result.turns, snapshot["initiator"]["actor_id"], snapshot["recipient"]["actor_id"],
-                            current_phase=phase_index(snapshot["initiator"].get("day", 1),
-                                                      snapshot["initiator"].get("time_of_day", "day")),
+                            current_day=snapshot["initiator"].get("day", 1),
                             dialogue_validation=check_dialogue)
-        if check_dialogue:
-            validate_dialogue_format(result.turns)
-            validate_dialogue_completion(result.turns)
-            validate_resident_grounding(result, snapshot)
-        history = snapshot.get("shared_history") or {}
         if snapshot.get("purpose") == "food_request":
             outcome = snapshot["food_request"]["outcome"]
             if (result.accepted_proposals or len(result.turns) not in (2, 3) or result.food_outcome != outcome
                     or bool(result.handoff_thanks) != (outcome == "accepted")):
                 raise ValueError("Dialogue must respect the food decision and reserve thanks for a successful handoff.")
-            if check_dialogue and len(result.turns) == 3 and (not contains_question(result.turns[-2].text)
-                                          or contains_question(result.turns[-1].text)):
-                raise ValueError("A third food-request turn may only answer a closing question.")
-            if check_dialogue and result.handoff_thanks:
-                thanks = ConversationTurn(speaker="initiator", parts=result.handoff_thanks)
-                validate_dialogue_format([thanks])
-                validate_dialogue_completion([thanks])
-                validate_english(thanks.text, [snapshot[role]["name"] for role in ("initiator", "recipient")])
-                validate_resident_grounding(SimpleNamespace(turns=[*result.turns, thanks], disclosures=result.disclosures), snapshot)
-                _validate_speaker(" ".join(part.text for part in result.handoff_thanks),
-                                  snapshot["initiator"]["name"], snapshot["recipient"]["name"])
         else:
             minimum = 2 if snapshot.get("_day_skip_requested") else RESIDENT_TURN_COUNT
             if len(result.turns) < minimum or result.food_outcome or (result.handoff_thanks and not (result.gift and result.gift.accept_turn is not None)):
                 raise ValueError(f"Chats need at least {minimum} turns and cannot include a food outcome or handoff thanks.")
-        if check_dialogue and len(result.turns) == CONVERSATION_MAX_TURNS and contains_question(result.turns[-1].text):
-            raise ValueError("At the turn limit, finish with an answer or closing rather than a new question.")
         for entry, partner in (
             (result.initiator_opinion, snapshot["recipient"]),
             (result.recipient_opinion, snapshot["initiator"]),
         ):
             if entry.person.strip().casefold() != partner["name"].casefold():
                 raise ValueError("Conversation opinions must refer to the other participant.")
-        if check_dialogue:
-            validate_dialogue_speakers(result.turns, {role: snapshot[role]["name"] for role in ("initiator", "recipient")})
-            validate_dialogue_repetition(result.turns, history.get("recent_dialogue", []),
-                                        factual_context=_resident_repetition_facts(snapshot, result),
-                                        actor_references=_repetition_references(snapshot),
-                                        participant_ids={role: actor_id(snapshot[role]) for role in ("initiator", "recipient")})
         validate_orientation(result, snapshot)
     return result
 
@@ -958,8 +931,7 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
             # genuinely spoken on a later turn before an agreement is assembled.
             from dialogue_rules import validate_apple_offer
             proposal = next(p for p in snapshot["permitted_proposals"] if p["id"] == proposal_id)
-            validate_apple_offer(turn.text, proposal["deadline"], current_phase=phase_index(
-                snapshot[role].get("day", 1), snapshot[role].get("time_of_day", "day")))
+            validate_apple_offer(turn.text, proposal["deadline"], current_day=snapshot[role].get("day", 1))
         projected["offers"][proposal_id] = index
     for proposal_id in candidate.acceptances:
         projected["accepted_proposals"].append(AcceptedProposal(
@@ -1018,7 +990,7 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
     resident_information(snapshot, projected)
     validate_agreements(projected["accepted_proposals"], proposals_from_snapshot(snapshot), projected["turns"],
                         snapshot["initiator"]["actor_id"], snapshot["recipient"]["actor_id"],
-                        current_phase=phase_index(snapshot[role].get("day", 1), snapshot[role].get("time_of_day", "day")),
+                        current_day=snapshot[role].get("day", 1),
                         dialogue_validation=snapshot.get("_dialogue_validation", True))
     if snapshot.get("_dialogue_validation", True):
         validate_resident_grounding(SimpleNamespace(**projected), snapshot)

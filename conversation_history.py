@@ -170,7 +170,6 @@ def uses_original_dialogue(parts, rewritten=(), *, original=False, speaker="", l
 class Memory:
     id: Annotated[str, Field(min_length=1)]
     day: Annotated[int, Field(ge=1)]
-    phase: Literal["day"]
     partner_id: str
     kind: Literal["gave_fruit", "received_fruit", "refused", "kept_fruit", "conversation",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
@@ -182,8 +181,7 @@ class Memory:
 @dataclass
 class WorldEvent:
     day: Annotated[int, Field(ge=1)]
-    phase: Literal["day"]
-    kind: Literal["phase", "food_requested", "food_refused", "fruit_shared", "conversation_completed", "interaction_failed",
+    kind: Literal["new_day", "food_requested", "food_refused", "fruit_shared", "conversation_completed", "interaction_failed",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
                   "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "departure", "apple_eaten", "conversation_seen", "harvest", "killing", "snake_claim", "goal_cancelled", "promise_cancelled", "work_shared", "player_call", "player_conversation", "travel_failed", "visit"]
     participants: list[str]
@@ -203,7 +201,7 @@ def memory_bias(npc, partner_id):
 def remember(npc, partner, event, kind, summary, weight):
     if any(memory.id == event.id for memory in npc.memories):
         return
-    npc.memories.append(Memory(event.id, event.day, event.phase, partner.id, kind, summary[:400], weight))
+    npc.memories.append(Memory(event.id, event.day, partner.id, kind, summary[:400], weight))
     del npc.memories[:-20]
 
 
@@ -271,7 +269,7 @@ def shared_conversation_history(conversation):
     return {"first_conversation": not records, "previous_conversation_count": len(records),
             "recorded_conversation_days": days, "has_undated_conversations": bool(records - dated),
             "recent_dialogue": recent_dialogue,
-            "confirmed_events": [{"kind": event.kind, "day": event.day, "phase": event.phase, "text": event.text}
+            "confirmed_events": [{"kind": event.kind, "day": event.day, "text": event.text}
                                  for event in shared_events[-6:]]}
 
 
@@ -298,39 +296,7 @@ def split_opinion_outcome(text):
     return None
 
 
-def validate_history_record(record, history, ids, player_id):
-    for witnesses in (record.pending_witness_ids,):
-        if len(set(witnesses)) != len(witnesses) or not set(witnesses) <= ids - {player_id}:
-            raise ValueError("Conversation witnesses require unique known knowledge owners.")
-    if set(record.pending_witness_ids) & set(record.participant_ids):
-        raise ValueError("Conversation observers must be bystanders.")
-    if record.authorization_id is not None and record.authorization_id not in history:
-        raise ValueError("Missing transfer authorization conversation.")
-    if (len(record.participant_ids) != 2 or len(set(record.participants)) != 2
-            or any(not label.strip() for label in record.participants) or not set(record.participant_ids) <= ids
-            or len(set(record.participant_ids)) != 2):
-        raise ValueError("Historical participant identities do not match the speakers.")
-    if (len(set(record.accepted_player_turns)) != len(record.accepted_player_turns)
-            or any(i >= len(record.turns) or record.turns[i].speaker_id != player_id for i in record.accepted_player_turns)):
-        raise ValueError("Player encounter effects need unique accepted player turns.")
-    if (not set(record.intended_subjects) <= set(record.participants)
-            or any(not subject.strip() for subject in record.intended_subjects.values())):
-        raise ValueError("Intended subjects must describe participants in their recorded conversation.")
-    if any(turn.speaker_id not in record.participant_ids
-           or turn.speaker != record.participants[record.participant_ids.index(turn.speaker_id)]
-           for turn in record.turns):
-        raise ValueError("Historical speech must retain its participant identity and recorded label.")
-
-
-def source_record(history, record_id):
-    record = history.get(record_id)
-    if record is None:
-        raise ValueError("Missing source conversation.")
-    return record
-
-
 def validate_history_turns(turns):
-    from constants import PLAYER_ID
     from dialogue import EmotionReaction
     for turn in turns:
         if not turn.parts:
@@ -340,14 +306,3 @@ def validate_history_turns(turns):
                 raise ValueError("Invalid historical speech part.")
             if "emotion" in part:
                 EmotionReaction.model_validate(part["emotion"])
-        if turn.rewritten and (turn.speaker_id == PLAYER_ID or not usable_rewrite(turn.parts, turn.rewritten)):
-            raise ValueError("A rewrite must match the original NPC dialogue parts.")
-
-
-def validate_history_events(events, history, ids, now):
-    from social_records import phase_index
-    for event in events:
-        if not set(event.participants) <= ids or phase_index(event.day, event.phase) > now:
-            raise ValueError("Invalid event actors or date.")
-        if event.history is not None and event.history not in history:
-            raise ValueError("Invalid event history link.")

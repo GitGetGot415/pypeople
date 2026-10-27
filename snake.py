@@ -26,7 +26,7 @@ SNAKE_BEHAVIOR = (
     "Use harvest_extent.share for the stock description: all means the entire stock, most means a majority with other fruit outside this collector's harvest. "
     "When the share is all, emphasize taking all the apples; do not soften it to most, deny it, or invent leftovers in later replies. "
     "When harvest_extent is absent, keep the scope limited to what you actually witnessed. "
-    "Totals cover only your witnessed pickups in the named phase; do not combine phases or assume you witnessed everything. "
+    "Totals cover only your witnessed pickups on the named day; do not combine days or assume you witnessed everything. "
     "Do not reduce the exchange to neutral news, mysterious tree behavior or omens. "
     "When the listener resists, press the accusation again rather than agreeing or changing the subject. "
     "You may claim religious authority, but your explanations remain claims. "
@@ -153,7 +153,7 @@ class Snake(SnakeValues, ConversationActor):
                  "activity": self.status}
         if private:
             state.update(memories=[vars(m) for m in self.memories], _name_actors=actor_catalog(self.world), area_knowledge=area_knowledge(self, partner_id),
-                         inventory={}, owned_works=[], day=self.world.day, time_of_day=self.world.phase,
+                         inventory={}, owned_works=[], day=self.world.day,
                          living_count=self.world.population, tree_fruit=self.world.tree.fruit,
                          tree_available_fruit=self.world.tree.fruit, private_context=private_context(self, partner_id))
             state["private_context"]["opinions"] = self.named_opinions()
@@ -173,7 +173,7 @@ class Snake(SnakeValues, ConversationActor):
             return
         if self.resume_pending:
             self.resume_pending = False
-        if not self.world.phase_pending and not self.conversation_pause_remaining and self.decision_remaining == 0:
+        if not self.world.day_pending and not self.conversation_pause_remaining and self.decision_remaining == 0:
             self.decision_remaining = DECISION_SECONDS
             choices = []
             harvests = witnessed_harvests(self.world, self.beliefs)
@@ -187,7 +187,7 @@ class Snake(SnakeValues, ConversationActor):
                     fact = fact_by_id(self.world, claim.fact_id)
                     # Telling the accused about their own conduct cannot turn anyone against them, and
                     # ordinary conduct (eating, sharing, a single apple) is no accusation at all.
-                    quantity = harvests.get((fact.phase, fact.subject_id), {}).get("quantity", fact.quantity) if fact.kind == "harvest" else 0
+                    quantity = harvests.get((fact.day, fact.subject_id), {}).get("quantity", fact.quantity) if fact.kind == "harvest" else 0
                     if (belief.stance != "believed" or not claim.affirmed or fact.subject_id == self.id
                             or fact.subject_id == human.id or fact.kind not in ACCUSATION_FACT_KINDS
                             or fact.kind == "harvest" and quantity <= HARVEST_FREE_APPLES):
@@ -198,16 +198,16 @@ class Snake(SnakeValues, ConversationActor):
                     if (any(b.assessed and b.claim_id == claim.id for b in known)
                             or sum(b.opinion_delta for b in known) <= -REPUTATION_FACT_LIMIT):
                         continue
-                    # One harvest story per collector and phase, however many pickups it took.
+                    # One harvest story per collector and day, however many pickups it took.
                     told = [fact_by_id(self.world, claim_by_id(self.world, d.claim_id).fact_id) for d in self.world.disclosures
                             if d.speaker_id == self.id and d.listener_id == human.id]
                     shared = any(t.id == fact.id or fact.kind == t.kind == "harvest"
-                                 and (t.phase, t.subject_id) == (fact.phase, fact.subject_id) for t in told)
+                                 and (t.day, t.subject_id) == (fact.day, fact.subject_id) for t in told)
                     if not shared:
                         choices.append((fact.kind == "killing", fact.kind == "harvest", quantity,
                                         -human.opinion_score(fact.subject_id)
                                         - math.dist((self.x, self.y), (human.x, human.y)) / SNAKE_SPEED,
-                                        belief.phase, human, claim))
+                                        belief.day, human, claim))
             if choices:
                 *_, human, claim = max(choices, key=lambda row: row[:-2])
                 subject = self.world.participant_by_id(claim.subject_id)

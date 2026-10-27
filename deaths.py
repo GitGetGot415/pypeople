@@ -10,7 +10,7 @@ class DeathMixin:
 
     def killing_unavailable(self, attacker, victim):
         """Shared physical restrictions; each killer has their own daily cooldown."""
-        from constants import (GARDEN_LOCATION, KILLING_COOLDOWN_PHASES, KILLING_DISTANCE, PLAYER_KILLING_DISTANCE,
+        from constants import (GARDEN_LOCATION, KILLING_COOLDOWN_DAYS, KILLING_DISTANCE, PLAYER_KILLING_DISTANCE,
                                KILLING_INDOOR_REASON, SNAKE_NAME)
         if victim is self.snake:
             return f"{SNAKE_NAME} cannot be killed."
@@ -27,8 +27,8 @@ class DeathMixin:
             return KILLING_INDOOR_REASON
         if self.population <= PROTECTED_POPULATION:
             return "The remaining population is protected."
-        last_kill = self.last_killing_phase_for(attacker.id)
-        if last_kill is not None and self.phase_index - last_kill < KILLING_COOLDOWN_PHASES:
+        last_kill = self.last_killing_day_for(attacker.id)
+        if last_kill is not None and self.day - last_kill < KILLING_COOLDOWN_DAYS:
             return "This attacker has already killed someone today. Wait for the next day."
         distance = PLAYER_KILLING_DISTANCE if attacker is self.player else KILLING_DISTANCE
         if math.dist((attacker.x, attacker.y), (victim.x, victim.y)) > distance:
@@ -66,7 +66,7 @@ class DeathMixin:
         topic = confrontation_topic(npc, grievance)
         if npc.player_call:
             npc.player_call.kind, npc.player_call.reference = "news", grievance
-            npc.player_call.key = f"confrontation:{grievance}:{self.phase_index}"
+            npc.player_call.key = f"confrontation:{grievance}:{self.day}"
             npc.player_call.reason = topic
         record = ConversationRecord((npc.name, PLAYER_LABEL), topic,
                                     CONVERSATION_WALKING_TO_MEET if approaching else CONVERSATION_COMPLETED,
@@ -212,7 +212,7 @@ class DeathMixin:
     def cancel_death_promises(self, target, reason):
         for promise in self.promises:
             if promise.status == "pending" and target.id in (promise.promisor_id, promise.recipient_id):
-                promise.status, promise.resolved_phase, promise.outcome = "cancelled", self.phase_index, reason
+                promise.status, promise.resolved_day, promise.outcome = "cancelled", self.day, reason
                 cancellation = self.publish("promise_cancelled", (self.participant_by_id(promise.promisor_id), self.participant_by_id(promise.recipient_id)), reason,
                                             self.record_by_id(promise.conversation_id))
                 promise.resolution_event_id = promise.consequence_event_id = cancellation.id
@@ -262,7 +262,7 @@ class DeathMixin:
                 or not any(f.kind == "killing" and f.source_id == event.id and f.subject_id == attacker.id
                            and f.object_id == target.id for f in self.facts)):
             return False
-        target.departure = {"day": self.day, "phase": self.phase,
+        target.departure = {"day": self.day,
                             "cause": "killed by player" if attacker is self.player else "killed by resident",
                             "event_id": event.id, "attacker_id": attacker.id, "conversation_id": record.id}
         self.bodies.append({"appearance": deepcopy(target.character), "x": target.x, "y": target.y,

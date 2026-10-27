@@ -708,12 +708,12 @@ def validate_promise_mentions(text, *, promisors, people, listener):
                                      "actually made; do not invent one.")
 
 
-def validate_apple_promise(offer, acceptance, deadline, *, current_phase=None):
-    validate_apple_offer(offer, deadline, current_phase=current_phase)
+def validate_apple_promise(offer, acceptance, deadline, *, current_day=None):
+    validate_apple_offer(offer, deadline, current_day=current_day)
     validate_apple_acceptance(acceptance)
 
 
-def validate_apple_offer(offer, deadline, *, current_phase=None):
+def validate_apple_offer(offer, deadline, *, current_day=None):
     offer = unquoted_speech(offer)
     giving = re.search(r"\bi\s+(?:(?:will|shall|can|could|promise to|intend to|plan to)\s+)?"
                       r"(?:give|bring|deliver|share|save|offer)\b|\bi['’]ll\s+(?:give|bring|deliver|share|save)\b|"
@@ -725,9 +725,9 @@ def validate_apple_offer(offer, deadline, *, current_phase=None):
     tomorrow = bool(re.search(r"\btomorrow\b", offer, re.I))
     today = bool(re.search(r"\btoday\b", offer, re.I))
     valid = (bool(day or tomorrow or today)
-             and (day is None or int(day[1]) == deadline + 1)
-             and (not tomorrow or current_phase is not None and deadline == current_phase + 1)
-             and (not today or current_phase is not None and deadline == current_phase)
+             and (day is None or int(day[1]) == deadline)
+             and (not tomorrow or current_day is not None and deadline == current_day + 1)
+             and (not today or current_day is not None and deadline == current_day)
              and not re.search(r"\b(?:tonight|night|nightfall)\b", offer, re.I))
     if not valid:
         raise ValueError("State the apple promise's actual deadline day in the offer.")
@@ -794,7 +794,7 @@ def validate_apple_roles(text, *, giver, receiver, speaker, apple_received=False
 
 
 def harvest_extent(account, tree_stock, current_time):
-    """Infer a stock share only with complete firsthand coverage of the current phase."""
+    """Infer a stock share only with complete firsthand coverage of the current day."""
     if type(tree_stock) is not int or account.get("event_time") != current_time or account.get("basis") != "firsthand":
         return None
     rows = account.get("harvest_context", [])
@@ -804,7 +804,7 @@ def harvest_extent(account, tree_stock, current_time):
     stock = sum(r["quantity"] for r in rows) + tree_stock
     quantity = collector["quantity"]
     return dict(share="all" if quantity == stock else "most" if quantity * 2 > stock else "some",
-                phase_stock=stock, remaining=tree_stock)
+                day_stock=stock, remaining=tree_stock)
 
 
 def validate_harvest_grounding(text, accounts, *, speaker_id, listener_id, current_time, tree_stock=None, focus=None,
@@ -813,7 +813,7 @@ def validate_harvest_grounding(text, accounts, *, speaker_id, listener_id, curre
     scope = (focus or {}).get("event_time") or current_time
     totals = {}
     extents = {}
-    other_phases = {}  # Witnessed totals for the same collector in other phases, e.g. yesterday's harvest.
+    other_days = {}  # Witnessed totals for the same collector on other days, e.g. yesterday's harvest.
     for account in accounts:
         if account.get("kind") != "harvest":
             continue
@@ -821,7 +821,7 @@ def validate_harvest_grounding(text, accounts, *, speaker_id, listener_id, curre
             if row.get("event_time") == scope:
                 totals[row["subject_id"]] = row
             else:
-                other_phases.setdefault(row["subject_id"], set()).add(row["quantity"])
+                other_days.setdefault(row["subject_id"], set()).add(row["quantity"])
         extent = harvest_extent(account, tree_stock, current_time)
         if extent:
             extents[account["subject_id"]] = extent
@@ -881,7 +881,7 @@ def validate_harvest_grounding(text, accounts, *, speaker_id, listener_id, curre
                 r"(?:harvest(?:ed)?|collect(?:ed)?|pick(?:ed)?(?: up)?|took|take)\s+(?:(?:only|exactly|all|the|last|just|at least|more than)\s+){0,3}"
                 rf"{number}\s+(?:apples?|fruit)\b", sentence, re.I):
             collectors = " and ".join(row["subject_name"] for row in totals.values())
-            raise ValueError(f"In this account's phase the harvest was by {collectors}, not by the listener. "
+            raise ValueError(f"On this account's day the harvest was by {collectors}, not by the listener. "
                              "Attribute it to the actual collector; do not tell the listener they harvested.")
         for identity, row in totals.items():
             name = row["subject_name"]
@@ -909,7 +909,7 @@ def validate_harvest_grounding(text, accounts, *, speaker_id, listener_id, curre
                     r"(?!\s+(?:of\s+)?(?:his|her|their|my|your)\b)|\b(?:without leaving (?:any|one)|leaving (?:none|nothing|no apples)|"
                     r"left (?:none|nothing|no apples)|emptied the tree|stripped the tree)\b", sentence, re.I) and not re.search(
                     r"\b(?:not|never|didn['’]t|did not|wasn['’]t)\b", sentence, re.I):
-                raise ValueError(f"{name} took {row['quantity']} of the {extent['phase_stock']} apples the tree had then, not all of them; "
+                raise ValueError(f"{name} took {row['quantity']} of the {extent['day_stock']} apples the tree had then, not all of them; "
                                  "someone else harvested the rest. Do not say they took everything or left none.")
             pattern = (rf"\b{subject}(?:['\u2019](?:ve|s|d)|\s+(?:has|have|had))?\s+"
                 r"(?:(?:just|already|recently|only)\s+){0,3}"
@@ -920,11 +920,11 @@ def validate_harvest_grounding(text, accounts, *, speaker_id, listener_id, curre
                 count, total = value(match["count"]), row["quantity"]
                 bound = (match["bound"] or "").strip().lower()
                 supported = count <= total if bound == "at least" else count < total if bound == "more than" else count == total
-                if not supported and not bound and count in other_phases.get(identity, ()) and not re.search(
+                if not supported and not bound and count in other_days.get(identity, ()) and not re.search(
                         r"\b(?:today|this (?:morning|day|phase)|right now|currently)\b", sentence, re.I):
-                    continue  # An accurate total from another witnessed phase.
+                    continue  # An accurate total from another witnessed day.
                 if not supported:
-                    raise ValueError(f"The witnessed total for {name} in this account's phase is {total} apples. "
+                    raise ValueError(f"The witnessed total for {name} on this account's day is {total} apples. "
                         "Do not present one pickup as the whole harvest. You may omit numbers or explicitly distinguish an individual pickup from the total.")
 
 

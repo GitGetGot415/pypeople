@@ -3,7 +3,7 @@
 import math
 import re
 
-from constants import (APARTMENT_FLOORS, ROOMS_PER_FLOOR, STARTING_DAY, STARTING_PHASE,
+from constants import (APARTMENT_FLOORS, ROOMS_PER_FLOOR, STARTING_DAY,
     ROOM_BED_RECT, ROOM_EXIT, ELEVATOR_ARRIVAL, HALLWAY_EXIT, GARDEN_BUILDING_POINT, GARDEN_BRIDGE_RECT,
     APARTMENT_RECT, TREE_BASE_OFFSET, SPATIAL_NEAR_DISTANCE)
 
@@ -70,20 +70,19 @@ def unguided_familiarity(*, first_turn):
 
 def familiarity(npc):
     from autonomy import arrival_greeter, awaiting_arrival_greeting
-    from social_records import phase_index
     world = npc.world
     greeter = arrival_greeter(world, include_archived=True)
     if npc is greeter:
         return dict(source="own_observation", explanation="I already walked around the garden, building and rooms, and this is all I could see.")
-    arrival = next((f.phase for f in world.facts if f.kind == "arrival" and f.subject_id == npc.id
+    arrival = next((f.day for f in world.facts if f.kind == "arrival" and f.subject_id == npc.id
                     and "arrived for dawn" in f.summary),
-                   phase_index(npc.arrival_day, STARTING_PHASE))
+                   npc.arrival_day)
     # Starting residents share the initial setup; later arrivals need an actual welcome.
     welcomed = greeter is not None and (npc.arrival_day == STARTING_DAY or any(
         record.between(greeter, npc) and any(turn.speaker_id == greeter.id for turn in record.turns)
         for record in world.history))
     if welcomed:
-        if world.phase_index > arrival:
+        if world.day > arrival:
             return dict(source="confirmed_by_walking", guide_name=greeter.name,
                         explanation=f"{greeter.name} told me about the layout, and since then I confirmed it by walking around myself. This is all I could see.")
         return dict(source="judy", guide_name=greeter.name,

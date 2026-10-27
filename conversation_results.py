@@ -59,8 +59,7 @@ def remember_response_opinions(world, npc, response, snapshot):
     return None
 
 
-def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_validation,
-                          visible, record_open):
+def accept_resident_reply(world, request, result, error, rewritten, *, visible, record_open):
     npc, record = request.actor, request.record
     snapshot, message = request.snapshot, request.message
     pending_offer = None
@@ -91,13 +90,6 @@ def accept_resident_reply(world, request, result, error, rewritten, *, dialogue_
         if (result.action != "SAY" or result.gift_offer or result.gift_acceptance or result.apple_promise
                 or result.invitation or result.invitation_acceptance or result.invitation_resolution):
             error = "The snake can speak but cannot carry out resident tasks, gifts or invitations."
-    if not error and dialogue_validation:
-        try:
-            from constants import PLAYER_NAME_TAG
-            from dialogue_rules import validate_speaker_identity
-            validate_speaker_identity(result.reply, npc.character["Name"], PLAYER_NAME_TAG)
-        except ValueError as exc:
-            error = str(exc)
     if not error:
         try:
             invitation = result.invitation

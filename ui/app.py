@@ -496,7 +496,7 @@ class Application:
             self._present_conversation_events()
         self.game.prompt_input.update(dt)
         self.settings.key_input.update(dt)
-        self.settings.update(self)
+        self.settings.update()
         if self.screen == "load_sim":
             self.load_sim.name_input.update(dt)
         if self.screen == "save_sim":
@@ -534,7 +534,7 @@ class Application:
                 conversations.append(self.simulation.snake.conversation)
             # Player conversations get the first free slot. While composing,
             # leave one slot free and let other conversations use the rest.
-            composing = self.screen == "game" and self.game.prompt_input.active and not self.simulation.phase_pending
+            composing = self.screen == "game" and self.game.prompt_input.active and not self.simulation.day_pending
             for conversation in sorted(conversations, key=lambda interaction: interaction.origin != "player"):
                 self._sync_conversation_view()
                 self.conversations.request_conversation_dialogue(conversation,

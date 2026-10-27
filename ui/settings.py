@@ -6,7 +6,6 @@ import pygame
 from app_settings import save_settings
 from character_data import NPC_TRAIT_MODES
 from ollama_manager import DEFAULT_OLLAMA_MODEL, list_models, save_model
-from ollama_parallel import inspect_parallelism, apply_parallel_limit
 
 from .button import Button
 from .text import draw_centered_text, draw_wrapped_text
@@ -32,7 +31,6 @@ class SettingsScreen:
         self.refresh_button = Button((750, 247, 190, 30), "Refresh Ollama")
         self.parallel_less = Button((710, 281, 32, 32), "-")
         self.parallel_more = Button((802, 281, 32, 32), "+")
-        self.parallel_apply = Button((850, 281, 90, 32), "Apply")
         self.save_button = Button((340, 604, 280, 48), "Save & Back")
         self.setup_button = Button((660, 604, 280, 48), "Setup Ollama")
         self.voice_rewrite_button = Button((340, 459, 600, 38), "")
@@ -58,13 +56,7 @@ class SettingsScreen:
         self.model_worker = None
         self.model_results = queue.Queue()
         self.model_message = ""
-        self.parallel_status = None
         self.parallel_limit = MAX_LLM_REQUESTS
-        self.parallel_worker = None
-        self.parallel_results = queue.Queue()
-        self.parallel_progress = queue.Queue()
-        self.parallel_message = ""
-        self.save_after_apply = False
         self.error = ""
 
     def open(self, provider, api_key, ollama_model, npc_trait_mode="normal", *,
@@ -75,7 +67,6 @@ class SettingsScreen:
         self.voice_rewrites = voice_rewrites
         self.dialogue_validation = dialogue_validation
         self.parallel_limit = max_requests
-        self.parallel_message = ""
         self.error = ""
         self.update_model_choices()
         self.key_input.set_value(api_key)
@@ -95,74 +86,24 @@ class SettingsScreen:
         if self.model_worker is not None:
             return
         self.model_message = "Loading installed models..."
-        self.parallel_status = None
 
         def fetch():
             try:
                 models, error = list_models(), ""
             except ValueError as exc:
                 models, error = {}, str(exc)
-            self.model_results.put((models, error, inspect_parallelism()))
+            self.model_results.put((models, error))
 
         self.model_worker = threading.Thread(target=fetch, daemon=True, name="Ollama-model-list")
         self.model_worker.start()
 
-    def apply_limit(self, app, *, save_and_back=False):
-        if self.parallel_worker is not None or self.model_worker is not None:
-            return
-        limit = self.parallel_limit
-        model = self.ollama_model
-        self.save_after_apply = save_and_back
-        self.error = ""
-        self.parallel_message = "Applying the local parallel request limit..."
-
-        def apply():
-            try:
-                status = apply_parallel_limit(limit, model, progress=self.parallel_progress.put)
-                self.parallel_results.put((limit, f"Launch limit and loaded model slots both set to {limit}.", "", status))
-            except ValueError as exc:
-                self.parallel_results.put((limit, "", str(exc), None))
-
-        self.parallel_worker = threading.Thread(target=apply, daemon=True, name="Ollama-parallel-setting")
-        self.parallel_worker.start()
-
-    def update(self, app=None):
-        while True:
-            try:
-                message = self.parallel_progress.get_nowait()
-                if self.parallel_worker is not None:
-                    self.parallel_message = message
-            except queue.Empty:
-                break
-        if app is not None:
-            try:
-                limit, message, error, status = self.parallel_results.get_nowait()
-            except queue.Empty:
-                pass
-            else:
-                self.parallel_worker = None
-                self.parallel_message = message
-                if error:
-                    self.error = error
-                    self.refresh_models()
-                else:
-                    self.parallel_status = status
-                    app.requests.max_requests = limit
-                    app.game.request_status.set_capacity(limit)
-                    try:
-                        save_settings(app.npc_trait_mode, app.voice_rewrites, app.dialogue_validation,
-                                      max_llm_requests=limit)
-                    except OSError:
-                        self.error = "Limit applied, but could not save it for the next game launch."
-                    if self.save_after_apply and not self.error:
-                        self._save(app)
+    def update(self):
         try:
-            models, error, parallel_status = self.model_results.get_nowait()
+            models, error = self.model_results.get_nowait()
         except queue.Empty:
             return
         self.model_worker = None
         self.installed_models = models
-        self.parallel_status = parallel_status
         self.update_model_choices()
         self.model_message = error
         if not error and not models:
@@ -174,8 +115,6 @@ class SettingsScreen:
         self.error = ""
 
     def handle_event(self, app, event):
-        if self.parallel_worker is not None:
-            return
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             self.key_input.set_value(app.api_key)
             self.key_input.active = False
@@ -196,12 +135,10 @@ class SettingsScreen:
             self.refresh_models()
         elif self.provider == "ollama" and self.parallel_less.clicked(event):
             self.parallel_limit = max(1, self.parallel_limit - 1)
-            self.parallel_message = self.error = ""
+            self.error = ""
         elif self.provider == "ollama" and self.parallel_more.clicked(event):
             self.parallel_limit = min(MAX_CONFIGURABLE_LLM_REQUESTS, self.parallel_limit + 1)
-            self.parallel_message = self.error = ""
-        elif self.provider == "ollama" and self.parallel_apply.clicked(event):
-            self.apply_limit(app)
+            self.error = ""
         elif self.provider == "ollama" and self.setup_button.clicked(event):
             app.ollama_setup.open()
             app.screen = "ollama_setup"
@@ -214,10 +151,7 @@ class SettingsScreen:
         elif self.validation_button.clicked(event):
             self.dialogue_validation = not self.dialogue_validation
         elif self.save_button.clicked(event):
-            if self.provider == "ollama" and self.parallel_limit != app.requests.max_requests:
-                self.apply_limit(app, save_and_back=True)
-            else:
-                self._save(app)
+            self._save(app)
         elif self.provider == "gemini":
             self.key_input.handle_event(event)
 
@@ -230,7 +164,7 @@ class SettingsScreen:
                 return
         try:
             save_settings(self.npc_trait_mode, self.voice_rewrites, self.dialogue_validation,
-                          max_llm_requests=app.requests.max_requests)
+                          max_llm_requests=self.parallel_limit)
         except OSError:
             self.error = "Could not save your settings. Check folder permissions and try again."
             return
@@ -240,10 +174,10 @@ class SettingsScreen:
         app.dialogue_validation = self.dialogue_validation
         app.provider = self.provider
         app.api_key = self.key_input.text.strip()
+        app.requests.max_requests = self.parallel_limit
+        app.game.request_status.set_capacity(self.parallel_limit)
         self.key_input.set_value(app.api_key)
         self.key_input.active = False
-        if self.parallel_message:
-            app.menu.message = self.parallel_message
         app.screen = "menu"
 
     def draw(self, app):
@@ -270,19 +204,13 @@ class SettingsScreen:
             app.window.blit(app.small_font.render(size_label, True, MUTED), (404, 252))
             self.refresh_button.draw(app.window, app.small_font, enabled=self.model_worker is None)
             app.window.blit(app.small_font.render("Parallel requests / LLM threads", True, INK), (340, 289))
-            enabled = self.parallel_worker is None
-            self.parallel_less.draw(app.window, app.small_font, enabled=enabled and self.parallel_limit > 1)
-            self.parallel_more.draw(app.window, app.small_font, enabled=enabled and self.parallel_limit < MAX_CONFIGURABLE_LLM_REQUESTS)
+            self.parallel_less.draw(app.window, app.small_font, enabled=self.parallel_limit > 1)
+            self.parallel_more.draw(app.window, app.small_font, enabled=self.parallel_limit < MAX_CONFIGURABLE_LLM_REQUESTS)
             value = app.font.render(str(self.parallel_limit), True, INK)
             app.window.blit(value, value.get_rect(center=(772, 297)))
-            self.parallel_apply.draw(app.window, app.small_font, enabled=enabled and self.model_worker is None)
-            if self.parallel_status is None:
-                parallel_lines = ("Checking local Ollama parallelism...",)
-            else:
-                parallel_lines = self.parallel_status.lines(self.ollama_model, app.requests.max_requests)
-            for index, line in enumerate(parallel_lines[:2]):
-                draw_wrapped_text(app.window, line, app.small_font, MUTED,
-                                  (340, 321 + index * 18, 600, 18))
+            draw_wrapped_text(app.window, f"Ollama runs this many at once only if its OLLAMA_NUM_PARALLEL environment "
+                              f"variable is at least {self.parallel_limit}. Set it, then restart Ollama.",
+                              app.small_font, MUTED, (340, 321, 600, 36))
         app.window.blit(app.font.render("Random NPC traits", True, INK), (340, 360))
         for mode, button in self.trait_mode_buttons.items():
             button.draw(app.window, app.font)
@@ -298,15 +226,15 @@ class SettingsScreen:
         self.validation_button.label = "Base dialogue validation: " + ("On" if self.dialogue_validation else "Off")
         self.validation_button.draw(app.window, app.font)
         app.window.blit(app.small_font.render("Off: show validation errors in red; dialogue and outcomes still apply.", True, MUTED), (340, 572))
-        self.save_button.draw(app.window, app.font, enabled=self.parallel_worker is None)
+        self.save_button.draw(app.window, app.font)
         if self.provider == "ollama":
             self.setup_button.draw(app.window, app.font)
         if self.provider == "gemini":
             hint = self.key_input.error or "Ctrl+V to paste. Escape discards your edits."
         else:
-            hint = self.parallel_message or self.model_message or "Apply restarts Ollama and reloads this model. Active Ollama requests will stop."
+            hint = self.model_message or "Escape discards your edits."
             installed = (self.ollama_model in self.installed_models
                          or f"{self.ollama_model}:latest" in self.installed_models)
-            if not self.model_message and not self.parallel_message and not installed:
+            if not self.model_message and not installed:
                 hint = "Selected model is not installed. Download it in Ollama, then Refresh Ollama."
         draw_wrapped_text(app.window, self.error or hint, app.small_font, INK, (280, 659, 720, 40))

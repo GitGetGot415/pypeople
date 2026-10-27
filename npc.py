@@ -376,7 +376,6 @@ class NPC(ResidentValues, ConversationActor):
             "tree_available_fruit": self.world.available_fruit if self.world else tree.fruit,
             "day": self.world.day if self.world else 1,
             "living_count": self.world.population if self.world else 1,
-            "time_of_day": self.world.phase if self.world else "day",
             "last_reply": self.reply,
         }
         if private:
@@ -388,7 +387,7 @@ class NPC(ResidentValues, ConversationActor):
             state["player_relationship"] = {"actor_id": self.world.player.id,
                 "opinion": asdict(self.player_opinion)}
             state["memories"] = [{"partner_id": memory.partner_id, "kind": memory.kind,
-                          "summary": memory.summary, "day": memory.day, "phase": memory.phase}
+                          "summary": memory.summary, "day": memory.day}
                                  for memory in relevant_memories(self, partner_id)]
             state["private_context"] = private_context(self, partner_id)
             starting_experience = starting_dialogue_context(self.world, self.id)

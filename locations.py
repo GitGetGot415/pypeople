@@ -277,25 +277,3 @@ def validate_destination(value, *, location=None):
             or not all(isinstance(coordinate, (int, float)) and math.isfinite(coordinate) for coordinate in value)
             or not any(tuple(value) == clamp_point(area, value) for area in maps)):
         raise ValueError(f"Invalid destination {value!r} for {location or 'the available maps'}.")
-
-
-def validate_saved_locations(actors, layout, player, visit):
-    for actor in actors:
-        if not valid_location(layout, actor.location):
-            raise ValueError("Unknown actor location.")
-        validate_feet(actor.location, (actor.x, actor.y))
-        journey = actor.journey
-        if journey:
-            if not valid_location(layout, journey.destination):
-                raise ValueError("Invalid journey identity.")
-            validate_feet(journey.destination, journey.point)
-            if (actor is player and journey.destination.startswith("room:")
-                    and journey.destination not in (f"room:{PLAYER_ROOM_NUMBER}", actor.location)
-                    and (not visit or visit.location != journey.destination)):
-                raise ValueError("Travel into a resident room requires its accepted hosted visit.")
-            if not 0 <= journey.elapsed <= TRAVEL_STEP_TIMEOUT or not journey.steps:
-                raise ValueError("Invalid journey progress.")
-            expected = route(actor.location, journey.destination, journey.point)
-            if [(step.point, step.destination, step.arrival) for step in journey.steps] != [
-                    (step.point, step.destination, step.arrival) for step in expected]:
-                raise ValueError("A journey must follow the actual doors and elevator connections.")

@@ -1,7 +1,7 @@
 """Validation for persisted value records, derived from their dataclass fields."""
 
-from dataclasses import dataclass, field, fields
-from typing import Any, get_type_hints
+from dataclasses import fields
+from typing import get_type_hints
 
 from pydantic import BaseModel, ConfigDict, create_model
 
@@ -21,23 +21,3 @@ def restore_record(record, source, **overrides):
     """Project a validated save onto a domain value, excluding enclosing records."""
     return record(**{field.name: overrides[field.name] if field.name in overrides else getattr(source, field.name)
                      for field in fields(record)})
-
-
-@dataclass
-class SaveContext:
-    """What the cross-record save validators share. Earlier stages fill in what later ones read."""
-    state: Any
-    residents: list
-    live: dict
-    live_ids: set
-    history: dict
-    events: dict
-    facts: dict
-    claims: dict
-    disclosures: dict
-    owner_ids: set
-    physical: Any
-    creation_ids: set = field(default_factory=set)
-    ids: set = field(default_factory=set)
-    now: int = 0
-    reserved: set = field(default_factory=set)

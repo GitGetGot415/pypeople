@@ -105,7 +105,7 @@ def _draw_shadow(surface, rect):
     surface.blit(shadow, rect, special_flags=pygame.BLEND_RGB_MULT)
 
 
-def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), phase="day", zoom=1.0, viewport=None, snake=None, *, world=None, location="garden"):
+def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), zoom=1.0, viewport=None, snake=None, *, world=None, location="garden"):
     # Use nearest-neighbor scaling throughout to keep the original pixels crisp.
     # Scale the ground separately; artwork is drawn directly at the camera zoom.
     from locations import map_size, targets
@@ -118,8 +118,8 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     artwork = []
     labels = []
     if location == "garden":
-        _draw_scene(scene, tree, phase)
-        surface.fill(WORLD_COLORS[phase][0])
+        _draw_scene(scene, tree)
+        surface.fill(WORLD_COLORS[0])
         artwork.extend((("garden_underside", GARDEN_UNDERSIDE_RECT),
                         ("apartment_underside", APARTMENT_UNDERSIDE_RECT)))
         artwork.append(("bridge", GARDEN_BRIDGE_RECT))
@@ -185,7 +185,7 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
     if world and active_player(world) and world.player.location == location:
         npcs.append(world.player)
     _draw_objects(surface, npcs, tree if location == "garden" else None, font, character_renderer,
-                  camera_offset, phase, zoom, snake if location == "garden" else None,
+                  camera_offset, zoom, snake if location == "garden" else None,
                   bodies=[body for body in world.bodies if body["location"] == location] if world else ())
     surface.set_clip(previous_clip)
 
@@ -195,17 +195,17 @@ def garden_floor_art():
     return pygame.image.load(str(Path(__file__).resolve().parent.parent / GARDEN_FLOOR_ART)).convert()
 
 
-@lru_cache(maxsize=2)
-def colored_garden_floor(phase):
+@lru_cache(maxsize=1)
+def colored_garden_floor():
     floor = garden_floor_art().copy()
     mask = pygame.mask.from_threshold(floor, (255, 0, 0), (1, 1, 1, 255))
-    overlay = mask.to_surface(setcolor=(*WORLD_COLORS[phase][1], 255), unsetcolor=(0, 0, 0, 0))
+    overlay = mask.to_surface(setcolor=(*WORLD_COLORS[1], 255), unsetcolor=(0, 0, 0, 0))
     floor.blit(overlay, (0, 0))
     return floor
 
 
-def _draw_scene(surface, tree, phase):
-    floor = colored_garden_floor(phase)
+def _draw_scene(surface, tree):
+    floor = colored_garden_floor()
     if floor.get_size() != surface.get_size():
         floor = pygame.transform.scale(floor, surface.get_size())
     surface.blit(floor, (0, 0))
@@ -215,7 +215,7 @@ def _draw_scene(surface, tree, phase):
     _draw_shadow(surface, pygame.Rect(tree_x - 43, round(tree.y) + 50 - GARDEN_FLOOR_OFFSET[1], 86, 20))
 
 
-def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, phase, zoom, snake=None, *, bodies=()):
+def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, zoom, snake=None, *, bodies=()):
     def screen_point(point):
         return (round(point[0] * zoom + camera_offset[0]),
                 round(point[1] * zoom + camera_offset[1]))

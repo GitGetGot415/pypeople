@@ -40,7 +40,6 @@ class PlayerReport:
     conversation_id: str
     turn: int
     day: int
-    phase: Literal["day"]
     text: str
     kind: Literal["report"]
     listener_ids: list[str]
@@ -51,8 +50,8 @@ class PlayerPromiseOffer:
     id: Annotated[str, Field(min_length=1)]
     giver_id: Annotated[str, Field(min_length=1)]
     recipient_id: Annotated[str, Field(min_length=1)]
-    deadline: Annotated[int, Field(strict=True, ge=0)]
-    created_phase: Annotated[int, Field(strict=True, ge=0)]
+    deadline: Annotated[int, Field(strict=True, ge=1)]
+    created_day: Annotated[int, Field(strict=True, ge=1)]
     offer_turn: Annotated[int, Field(strict=True, ge=0)]
     accept_turn: Annotated[int | None, Field(strict=True, ge=0)]
     status: Literal["offered", "accepted", "declined", "expired", "closed"]
@@ -63,18 +62,3 @@ class PlayerAcknowledgment:
     npc_id: Annotated[str, Field(min_length=1)]
     record_id: Annotated[str, Field(min_length=1)]
     transfer_id: Annotated[str, Field(min_length=1)]
-
-
-def validate_player_reports(reports, records, player_id, now):
-    from social_records import phase_index
-    claim_ids = set()
-    for claim in reports:
-        record = records.get(claim.conversation_id)
-        turn = claim.turn
-        if (claim.id in claim_ids or claim.speaker_id != player_id or claim.kind != "report"
-                or not record or type(turn) is not int or turn not in record.accepted_player_turns
-                or (record.turns[turn].speaker_id, record.turns[turn].text) != (player_id, claim.text)
-                or set(claim.listener_ids) != set(record.participant_ids) - {player_id}
-                or phase_index(claim.day, claim.phase) > now):
-            raise ValueError("Player claims require their actual accepted original speech and listener.")
-        claim_ids.add(claim.id)

@@ -5,7 +5,7 @@ import json
 import dialogue_context
 from area_knowledge import known_layout
 from constants import (EMOTION_THRESHOLD, FURIOUS_THRESHOLD, SNAKE_NAME, KILLING_INDOOR_REASON,
-                       SATISFACTION_PHASE_LOSS, APPLE_SATISFACTION)
+                       SATISFACTION_DAILY_LOSS, APPLE_SATISFACTION)
 from dialogue_context import NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION, PLAYER_TAG_INSTRUCTION
 
 
@@ -244,11 +244,11 @@ You are the resident described by the character profile below.
 The following are technical mechanics for choosing actions and answering explicit
 player questions about supported mechanics. Ordinary speech stays in your experience;
 do not discuss Pygame, UI controls, action identifiers or numeric satisfaction unasked.
-World state includes the day number, time_of_day (always day),
+World state includes the day number,
 satisfaction, carried fruit, an activity, and its reason. The player
 advances to the next day using the bed in their own room; it never advances on its own.
 Use these facts when asked what you are doing or how you feel. Satisfaction drops
-by {SATISFACTION_PHASE_LOSS} each time a new day begins. Time passing alone never lowers it.
+by {SATISFACTION_DAILY_LOSS} each time a new day begins. Time passing alone never lowers it.
 Only eating carried apples raises satisfaction, by {APPLE_SATISFACTION} per apple, up to 100.
 Autonomous collecting and eating use local simulation rules.
 Apples are stored as "fruit" in inventory. There are no hunger or rest needs.
@@ -474,7 +474,7 @@ Do not announce numeric scores unless asked. Return [] when there is no update.
 
 For explicit questions about mechanics: the player's bed advances to the next day;
 time does not advance by itself. Each new day resets tree stock to the living
-human count, including the player. Satisfaction loses {SATISFACTION_PHASE_LOSS} per day, not over time.
+human count, including the player. Satisfaction loses {SATISFACTION_DAILY_LOSS} per day, not over time.
 Only eating carried apples raises satisfaction, by {APPLE_SATISFACTION} per apple, up to 100. There are no
 hunger/rest needs or storage limits. You choose your ordinary walking and resting autonomously.
 The supported player requests are visiting the tree, eating a carried apple, approaching

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field, fields
 from enum import Enum
 from typing import Annotated, Literal
 from pydantic import Field
-from constants import APARTMENT_ID, EAT_SECONDS, STARTING_FACING, DECISION_SECONDS
+from constants import EAT_SECONDS, STARTING_FACING, DECISION_SECONDS
 
 
 class Behavior(str, Enum):
@@ -62,15 +62,3 @@ class ActivitySnapshot:
         if self.behavior == Behavior.EAT and (self.destination is not None or self.activity_elapsed >= EAT_SECONDS):
             raise ValueError("Invalid eating progress.")
         return self
-
-
-def validate_activity_target(activity, tree_id):
-    target = activity.target_id
-    if activity.behavior in (Behavior.GO_TO_TREE, Behavior.HARVEST):
-        if target != tree_id:
-            raise ValueError("Invalid tree task target.")
-    elif activity.behavior == Behavior.GO_HOME:
-        if target != APARTMENT_ID:
-            raise ValueError("Invalid apartment target.")
-    elif target is not None:
-        raise ValueError("Unexpected action target.")

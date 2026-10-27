@@ -1,13 +1,13 @@
 import pygame
 from player import PlayerInteraction
 from constants import (DIALOGUE_PANEL_HEIGHT, DIALOGUE_READING_Y, DIALOGUE_READING_HEIGHT, FAILED_CONVERSATION_SELECTED_COLOR, INK, MUTED,
-                      ORIGINAL_DIALOGUE_PAPER, PAPER, MAX_LLM_REQUESTS, PHASE_PENDING_RECT, WINDOW_SIZE,
+                      ORIGINAL_DIALOGUE_PAPER, PAPER, MAX_LLM_REQUESTS, DAY_PENDING_RECT, WINDOW_SIZE,
                       WORLD_HEIGHT, WORLD_WIDTH, APARTMENT_INSPECTOR_CLOSE_RECT, APARTMENT_INSPECTOR_RECT,
                       APARTMENT_INSPECTOR_ROW_HEIGHT, APARTMENT_INSPECTOR_CONTENT_INSET,
                       APARTMENT_INSPECTOR_CONTENT_TOP, APARTMENT_INSPECTOR_TITLE_OFFSET, MODAL_OVERLAY_COLOR,
-                      INVENTORY_BUTTON_RECT, GAME_PAUSE_RECT, GAME_CLOCK_RECT, GAME_SAVE_RECT, GAME_STATS_RECT, GAME_PHASE_POSITION,
-                      GAME_MENU_RECT, GAME_TOOLBAR_PADDING, GAME_PHASE_BACKGROUND, GAME_PHASE_TEXT_COLOR,
-                      GAME_PHASE_PADDING, GAME_TOOLBAR_BORDER_COLOR, GAME_TOOLBAR_BORDER_WIDTH,
+                      INVENTORY_BUTTON_RECT, GAME_PAUSE_RECT, GAME_CLOCK_RECT, GAME_SAVE_RECT, GAME_STATS_RECT, GAME_DAY_POSITION,
+                      GAME_MENU_RECT, GAME_TOOLBAR_PADDING, GAME_DAY_BACKGROUND, GAME_DAY_TEXT_COLOR,
+                      GAME_DAY_PADDING, GAME_TOOLBAR_BORDER_COLOR, GAME_TOOLBAR_BORDER_WIDTH,
                       GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT,
                       DIALOGUE_ORIGINAL_TOGGLE_RECT, BORDER_RADIUS, GAME_MENU_CONFIRM_RECT,
                       GAME_MENU_CONFIRM_TITLE_Y, GAME_MENU_CONFIRM_MESSAGE_RECT, GAME_MENU_KEEP_PLAYING_RECT,
@@ -413,7 +413,7 @@ class GameScreen:
             self.panning = False
             return True
         if not active_player(app.simulation) and self.clock_button.clicked(event):
-            if not app.simulation.paused and not app.simulation.phase_pending and not app.simulation.player_attention_pending:
+            if not app.simulation.paused and not app.simulation.day_pending and not app.simulation.player_attention_pending:
                 app.conversations.next_day()
             return True
         return False
@@ -426,7 +426,7 @@ class GameScreen:
 
     def can_advance_from_bed(self, world):
         return (self.can_use_bed(world) and not world.paused
-                and not world.phase_pending and not world.player_attention_pending)
+                and not world.day_pending and not world.player_attention_pending)
 
     def handle_bed_event(self, app, event):
         if self.bed_cancel_button.clicked(event) or event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
@@ -445,7 +445,7 @@ class GameScreen:
         pygame.draw.rect(app.window, PAPER, BED_POPUP_RECT, border_radius=BORDER_RADIUS)
         draw_centered_text(app.window, "Rest in your bed", app.heading_font, BED_POPUP_TITLE_Y)
         message = ("Resume the game before passing time." if world.paused else
-                   "Time will change after conversations wrap up and handoffs finish." if world.phase_pending else
+                   "Time will change after conversations wrap up and handoffs finish." if world.day_pending else
                    "Advance to the next day? Short chats end; longer chats wrap up. Handoffs finish first. A new resident arrives if there is room.")
         draw_wrapped_text(app.window, message, app.font, INK, BED_POPUP_MESSAGE_RECT)
         self.bed_advance_button.label = f"Advance to {world.day + 1}"
@@ -473,15 +473,15 @@ class GameScreen:
         self.leave_game_button.draw(app.window, app.small_font)
 
     def clock_layout(self, app):
-        phase_rect = pygame.Rect((0, 0), app.small_font.size(f"Day {app.simulation.day}"))
-        phase_rect.topleft = GAME_PHASE_POSITION
-        rect = phase_rect.inflate(*GAME_PHASE_PADDING).unionall([
+        day_rect = pygame.Rect((0, 0), app.small_font.size(f"Day {app.simulation.day}"))
+        day_rect.topleft = GAME_DAY_POSITION
+        rect = day_rect.inflate(*GAME_DAY_PADDING).unionall([
             pygame.Rect(GAME_CLOCK_RECT), pygame.Rect(GAME_PAUSE_RECT)])
         offset = (WINDOW_SIZE[0] // 2 - rect.centerx, 0)
         self.clock_button.rect = pygame.Rect(GAME_CLOCK_RECT).move(offset)
         self.inventory_button.rect = self.clock_button.rect.copy()
         self.pause_button.rect = pygame.Rect(GAME_PAUSE_RECT).move(offset)
-        return (phase_rect.move(offset),
+        return (day_rect.move(offset),
                 rect.move(offset).inflate(2 * GAME_TOOLBAR_PADDING, 2 * GAME_TOOLBAR_PADDING))
 
     def draw_toolbar_background(self, surface, rect):
@@ -495,7 +495,7 @@ class GameScreen:
 
     def draw_clock(self, app):
         from player import active_player
-        phase_rect, toolbar_rect = self.clock_layout(app)
+        day_rect, toolbar_rect = self.clock_layout(app)
         self.draw_toolbar_background(app.window, toolbar_rect)
         paused = app.simulation.paused
         self.pause_button.label = "Resume" if paused else "Pause"
@@ -504,19 +504,19 @@ class GameScreen:
         if active_player(app.simulation):
             self.inventory_button.draw(app.window, app.small_font)
         else:
-            self.clock_button.draw(app.window, app.small_font, enabled=not paused and not app.simulation.phase_pending
+            self.clock_button.draw(app.window, app.small_font, enabled=not paused and not app.simulation.day_pending
                                    and not app.simulation.player_attention_pending)
         color = INK
-        phase_label = app.small_font.render(f"Day {app.simulation.day}", True, GAME_PHASE_TEXT_COLOR)
-        pygame.draw.rect(app.window, GAME_PHASE_BACKGROUND, phase_rect.inflate(*GAME_PHASE_PADDING),
+        day_label = app.small_font.render(f"Day {app.simulation.day}", True, GAME_DAY_TEXT_COLOR)
+        pygame.draw.rect(app.window, GAME_DAY_BACKGROUND, day_rect.inflate(*GAME_DAY_PADDING),
                          border_radius=BORDER_RADIUS)
-        app.window.blit(phase_label, phase_rect)
+        app.window.blit(day_label, day_rect)
         if app.simulation.player_attention_pending:
             draw_wrapped_text(app.window, "Address the waiting NPCs before changing the time.",
-                              app.small_font, color, PHASE_PENDING_RECT)
-        elif app.simulation.phase_pending:
-            draw_wrapped_text(app.window, f"{app.simulation.next_phase_label} pending: finishing conversations.",
-                              app.small_font, color, PHASE_PENDING_RECT)
+                              app.small_font, color, DAY_PENDING_RECT)
+        elif app.simulation.day_pending:
+            draw_wrapped_text(app.window, f"{app.simulation.next_day_label} pending: finishing conversations.",
+                              app.small_font, color, DAY_PENDING_RECT)
 
     def advance_conversation(self, app):
         conversation = self.dialogue.conversation
@@ -647,7 +647,7 @@ class GameScreen:
     def draw(self, app):
         from player import active_player
         draw_world(app.window, app.npcs, app.tree, app.small_font, app.character.renderer,
-                   self.view_offset, phase=app.simulation.phase, zoom=self.camera_zoom,
+                   self.view_offset, zoom=self.camera_zoom,
                    viewport=self.world_viewport, snake=app.simulation.snake, world=app.simulation, location=self.location)
         if self.can_harvest(app.simulation):
             self.harvest_button.draw(app.window, app.small_font)

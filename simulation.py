@@ -9,8 +9,7 @@ from uuid import uuid4
 from deaths import DeathMixin
 from locations import active_player
 from constants import (DECISION_SECONDS, MAX_SIMULATION_STEP_SECONDS,
-    SATISFACTION_PHASE_LOSS, STARTING_DAY, STARTING_PAUSED,
-    STARTING_PHASE, CONVERSATION_CANCELLED,
+    SATISFACTION_DAILY_LOSS, STARTING_DAY, STARTING_PAUSED, CONVERSATION_CANCELLED,
     CONVERSATION_PENDING_REPLY_STATUSES)
 
 
@@ -68,9 +67,8 @@ class Simulation(DeathMixin):
         self.introductions = []
         self.roster_revision = 0
         self.day = STARTING_DAY
-        self.phase = STARTING_PHASE
         self.paused = STARTING_PAUSED
-        self.phase_pending = False
+        self.day_pending = False
         self.pending_actions = []
         self.history = []
         self.events = []
@@ -131,64 +129,47 @@ class Simulation(DeathMixin):
     def record_by_id(self, record_id):
         return next((record for record in self.history if record.id == record_id), None)
 
-    @property
-    def phase_index(self):
-        from social_records import phase_index
-        return phase_index(self.day, self.phase)
-
-    def last_killing_phase_for(self, actor_id):
-        return max((fact.phase for fact in self.facts if fact.kind == "killing" and fact.subject_id == actor_id), default=None)
-
-    @property
-    def phase_label(self):
-        return str(self.day)
-
-    @property
-    def next_phase_label(self):
-        return str(self.day + 1)
+    def last_killing_day_for(self, actor_id):
+        return max((fact.day for fact in self.facts if fact.kind == "killing" and fact.subject_id == actor_id), default=None)
 
     @property
     def player_attention_pending(self):
         return bool(self.player_interaction and self.player_interaction.kind in ("resident", "snake"))
 
-    def next_phase(self):
-        if self.paused or self.phase_pending or self.player_attention_pending:
-            return
-        self.phase_pending = True
-        self.finish_phase_change()
-
     def next_day(self):
-        self.next_phase()
+        if self.paused or self.day_pending or self.player_attention_pending:
+            return
+        self.day_pending = True
+        self.finish_day_change()
 
-    def finish_phase_change(self):
+    def finish_day_change(self):
         """Commit one clock request only after existing speech and handoffs finish."""
-        from social import advance_social_phase
+        from social import advance_social_day
         from autonomy import next_arrival_to_greet
-        if (not self.phase_pending or self.paused or self.player_attention_pending or self.snake.conversation is not None
+        if (not self.day_pending or self.paused or self.player_attention_pending or self.snake.conversation is not None
                 or self.snake.interaction_blocked or self.pending_actions
                 or next_arrival_to_greet(self) is not None
                 or any(npc.interaction is not None or npc.interaction_blocked
                        or npc.selected and npc.player_reply.closing for npc in self.npcs)):
             return
-        self.phase_pending = False
+        self.day_pending = False
         self.day += 1
-        self.phase = "day"
         from locations import npc_capacity
         if (len(self.npcs) < npc_capacity(self) and self.day not in self.pending_arrival_days
                 and self.day not in self.processed_arrival_days):
             self.pending_arrival_days.append(self.day)
         for npc in self.npcs:
-            npc.social = max(0.0, npc.social - SATISFACTION_PHASE_LOSS)
+            npc.social = max(0.0, npc.social - SATISFACTION_DAILY_LOSS)
         self.tree.fruit = self.population
-        advance_social_phase(self)
-        self.publish("phase", [], f"Day advanced to {self.day}.")
+        advance_social_day(self)
+        self.publish("new_day", [], f"Day advanced to {self.day}.")
         self.deliver_arrivals()
 
     def publish(self, kind, participants, text, record=None):
         from conversation_history import WorldEvent
 
         reference = record.id if record is not None else None
-        event = WorldEvent(self.day, self.phase, kind, [npc.id for npc in participants], text, reference)
+        event = WorldEvent(self.day, kind, [npc.id for npc in participants], text, reference)
         self.events.append(event)
         from information import record_event_fact
         record_event_fact(self, event, record)
@@ -205,7 +186,7 @@ class Simulation(DeathMixin):
                    and opening_kind == "orientation")
         if not welcome and any(arrival_greeting_reserved(p, self) for p in (initiator, recipient)):
             raise ValueError("The new arrival must speak with Judy first.")
-        if self.phase_pending and origin == "autonomous" and not welcome:
+        if self.day_pending and origin == "autonomous" and not welcome:
             raise ValueError("Waiting for the pending time change before starting another automatic conversation.")
         if not colocated(initiator, recipient) or any(self.actor_by_id(p.id) is not p or not available_outdoors(p) for p in (initiator, recipient)):
             raise ValueError("Only living residents can begin this conversation.")
@@ -259,7 +240,7 @@ class Simulation(DeathMixin):
             return
         if not any(work.job_id == job.id for work in self.creations):
             self.creations.append(Creation(id=uuid4().hex, job_id=job.id, creator_id=npc.id, owner_id=npc.id, kind=job.kind,
-                day=self.day, phase=self.phase, **job.accepted))
+                day=self.day, **job.accepted))
         npc.creative_job = None
         from activity import Behavior
         npc.behavior = Behavior.REST
@@ -374,9 +355,9 @@ class Simulation(DeathMixin):
             npc.update(dt, self.tree)
         observe_active_conversations(self)
         # Keep the pending flag through this tick's decision pass, so automatic
-        # work cannot reserve a fresh partner before the requested phase applies.
+        # work cannot reserve a fresh partner before the requested day applies.
         # Dawn arrivals then run before pairing on the following tick as usual.
-        self.finish_phase_change()
+        self.finish_day_change()
         from player import update_calls
         update_calls(self, dt)
 
@@ -434,7 +415,7 @@ class Simulation(DeathMixin):
         # Repeat pickups seen by exactly the same witnesses are one account of the
         # whole collection, so retelling it reports the total rather than one apple.
         fact = next((f for f in self.facts if f.kind == "harvest" and f.subject_id == actor.id
-                     and f.phase == self.phase_index and set(f.witness_ids) == witness_ids), None)
+                     and f.day == self.day and set(f.witness_ids) == witness_ids), None)
         if fact:
             fact.quantity += quantity
             fact.summary = harvest_summary(actor.name, fact.quantity)
@@ -445,14 +426,14 @@ class Simulation(DeathMixin):
         return event
 
     def harvest_impressions(self, actor, quantity, witnesses):
-        """Each resident watching minds every apple past a fair share that they saw this collector take this phase."""
+        """Each resident watching minds every apple past a fair share that they saw this collector take this day."""
         from constants import HARVEST_FREE_APPLES
         from player import update_player_opinion
         for witness in witnesses:
             if witness is actor or self.npc_by_id(witness.id) is not witness:
                 continue  # The python and the collector keep their own views.
             seen = sum(fact.quantity for fact in self.facts if fact.kind == "harvest" and fact.subject_id == actor.id
-                       and fact.phase == self.phase_index and witness.id in fact.witness_ids)
+                       and fact.day == self.day and witness.id in fact.witness_ids)
             # Apples numbered past the free share each cost one more point: the 2nd costs 1, the 3rd 2, and so on.
             delta = -sum(max(0, count - HARVEST_FREE_APPLES) for count in range(seen - quantity + 1, seen + 1))
             if not delta:
@@ -637,36 +618,3 @@ class Simulation(DeathMixin):
         from autonomy import greet_arrivals
         greet_arrivals(self)
         return npc
-
-
-def validate_saved_actions(ctx):
-    state = ctx.state
-    npcs, player, tree, pending_actions = state.npcs, state.player, state.tree, state.pending_actions
-    live_ids, reserved, history, creation_ids = ctx.live_ids, ctx.reserved, ctx.history, ctx.creation_ids
-    from activity import Behavior, validate_activity_target
-    from transfers import transfer_matches
-    for index, npc in enumerate(npcs):
-        if npc.id not in reserved:
-            validate_activity_target(npc, tree.id)
-        if npc.id in reserved and npc.behavior != Behavior.WAIT:
-            raise ValueError("Encounter participants must wait.")
-    pending_owners = set()
-    for action in pending_actions:
-        if action.target_id == player.id and action.action != "GIVE_ITEM":
-            raise ValueError("Only a gift can use the player as a queued action recipient.")
-        if action.npc_id not in live_ids or action.npc_id in pending_owners or action.target_id is not None and action.target_id not in live_ids | {player.id}:
-            raise ValueError("Queued actions need living actors.")
-        if action.target_id and action.action in ("TALK_TO_NPC", "GIVE_ITEM"):
-            positions = {n.id: n.location for n in npcs}
-            positions[player.id] = player.location
-            if positions[action.npc_id] != positions[action.target_id]:
-                raise ValueError("A queued interaction must share a location.")
-        pending_owners.add(action.npc_id)
-        if action.record is not None and action.record not in history:
-            raise ValueError("Invalid queued history record.")
-        if action.action == "GIVE_ITEM":
-            if (action.target_id is None or action.quantity < 1
-                    or action.item != "fruit" and (action.item not in creation_ids or action.quantity != 1)
-                    or action.record is None or not transfer_matches(history[action.record].transfer_intent,
-                        action.npc_id, action.target_id, action.item, action.quantity)):
-                raise ValueError("A queued gift needs its real item and accepted matching authorization.")

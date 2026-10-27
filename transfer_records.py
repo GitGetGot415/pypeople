@@ -1,7 +1,7 @@
 """Accepted transfer authorization and committed receipts, distinct from offers."""
 
 from dataclasses import asdict, dataclass
-from typing import Annotated, Literal
+from typing import Annotated
 from pydantic import Field
 
 
@@ -17,7 +17,6 @@ class TransferIntent:
 class TransferReceipt(TransferIntent):
     id: Annotated[str, Field(min_length=1)]
     day: Annotated[int, Field(strict=True, ge=1)]
-    phase: Literal["day"]
     sequence: Annotated[int, Field(strict=True, ge=0)]
 
     @classmethod

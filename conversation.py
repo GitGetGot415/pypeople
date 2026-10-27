@@ -3,7 +3,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 from dialogue import (AcceptedProposal, ConversationPart, DisclosureChoice, LeverageUse, ResidentGift,
                      ThirdPartyOpinion, EscalationChoice)
-from social_records import ConcernKind, phase_label
+from social_records import ConcernKind
 from information import information_views, prepare_information
 from social import (commit_agreements, commit_concern_use, commit_information, concern_description, concern_topic,
                     conversation_references, dialogue_failure_cooldown, permitted_proposals,
@@ -176,7 +176,6 @@ class Conversation(ResidentProgress):
     def set_response(self, response, *, reading=False, rewritten_parts=(), dialogue_validation=True):
         if not self.accepts_response:
             return
-        from dialogue_validation import dialogue_validation_errors, validate_dialogue_format, validate_dialogue_speakers, validate_resident_grounding
         # Reject stale actor snapshots before displaying or committing anything.
         if getattr(self, "request_roster_revision", self.initiator.world.roster_revision) != self.initiator.world.roster_revision:
             raise ValueError("The resident roster changed while dialogue was being prepared.")
@@ -196,22 +195,10 @@ class Conversation(ResidentProgress):
             world = self.initiator.world
             validate_transfer(world, world.npc_by_id(response.gift.giver_id), world.npc_by_id(response.gift.recipient_id),
                               response.gift.item, response.gift.quantity, interaction=self)
-        if dialogue_validation:
-            validate_dialogue_format(response.turns)
-            validate_dialogue_speakers(response.turns, {"initiator": self.initiator.name, "recipient": self.recipient.name})
-            initiator, recipient = getattr(self, "request_participants", None) or (
-                self.initiator.snapshot(self.initiator.world.tree), self.recipient.snapshot(self.initiator.world.tree))
-            validate_resident_grounding(response, {
-                "_name_actors": self.name_actors,
-                "initiator": initiator,
-                "recipient": recipient,
-                "_information_validation": asdict(self.information_context) if self.information_context else None})
         orientation_discussed = validate_orientation(response, {
             "arrival_focus": self.opening_kind == "orientation", "_dialogue_validation": dialogue_validation})
         if not dialogue_validation:
-            self.record.dialogue_errors = list(dict.fromkeys([
-                *response._dialogue_errors,
-                *dialogue_validation_errors(response, self.snapshot(self.initiator.world.tree, self.initiator.world.npcs))]))
+            self.record.dialogue_errors = list(dict.fromkeys(response._dialogue_errors))
         # The exchange moves each opinion from where it stood when generation began, and by at most one step;
         # anything that changed it meanwhile, such as a harvest seen, is kept rather than overwritten.
         starts = self.information_context.opinions if self.information_context is not None else {}
@@ -259,7 +246,7 @@ class Conversation(ResidentProgress):
             self.record.name_forms = name_forms(self.name_actors)
             goal = self.initiator.goal
             if goal and goal.id == self.goal_id and goal.status == "active":
-                goal.last_attempt_phase = self.initiator.world.phase_index
+                goal.last_attempt_day = self.initiator.world.day
             commit_concern_use(self)
             self.social_effects_applied = True
         for npc, partner, entry in opinions:
@@ -418,7 +405,7 @@ class Conversation(ResidentProgress):
             "_information_validation": asdict(self.information_context) if self.information_context else None,
             "topic": "The initiator will introduce their own concern or account; it is not shared knowledge yet.",
             "permitted_proposals": [dict(
-                asdict(p), item="fruit", quantity=1, deadline_label=phase_label(p.deadline),
+                asdict(p), item="fruit", quantity=1, deadline_label=str(p.deadline),
                 giver_name=self.initiator.world.npc_by_id(p.promisor_id).name,
                 receiver_name=self.initiator.world.npc_by_id(p.recipient_id).name,
                 offer_speaker="initiator" if p.promisor_id == self.initiator.id else "recipient",
@@ -490,80 +477,3 @@ class Conversation(ResidentProgress):
         Handoff(donor, requester, intent.item, intent.quantity, self.record,
              saved_states=states, already_met=True,
              thanks=self.handoff_thanks, rewritten_thanks=self.rewritten_handoff_thanks)
-
-
-def validate_saved_conversations(ctx):
-    state = ctx.state
-    conversations, history, facts, claims, creations, reserved, tree_id = (
-        state.conversations, ctx.history, ctx.facts, ctx.claims, state.creations, ctx.reserved, state.tree.id)
-    live = {**ctx.live, state.snake.id: state.snake}
-    from constants import CONVERSATION_MAX_TURNS
-    from activity import validate_activity_target
-    from information import validate_information
-    from social_saves import validate_saved_concern
-    from social import validate_agreements
-    from types import SimpleNamespace
-    for interaction in conversations:
-        pair = (interaction.initiator, interaction.recipient)
-        if pair[0] == pair[1] or any(i not in live or i in reserved for i in pair) or interaction.record not in history:
-            raise ValueError("Invalid live interaction participants.")
-        for index, activity in zip(pair, interaction.saved_states):
-            if live[pair[0]].location != live[pair[1]].location:
-                raise ValueError("Conversation participants must share a location.")
-            validate_activity_target(activity, tree_id)
-            if activity.destination is not None:
-                from locations import validate_destination
-                validate_destination(activity.destination, location=live[index].location)
-        record = history[interaction.record]
-        if set(record.participant_ids) != set(pair):
-            raise ValueError("An interaction must match its record.")
-        reserved.update(pair)
-        thanks = interaction.handoff_thanks
-        rewritten = interaction.rewritten_handoff_thanks
-        if rewritten and (len(rewritten) != len(thanks) or any(not text.strip() for text in rewritten)):
-            raise ValueError("Rewritten thanks must match the original parts.")
-        if set(interaction.concerns) != {"initiator", "recipient"}:
-            raise ValueError("A meeting must retain both frozen concerns.")
-        for role, index in zip(("initiator", "recipient"), pair):
-            validate_saved_concern(interaction.concerns[role], live[index], claims, facts)
-        if interaction.goal_id and (live[pair[0]].goal is None or interaction.goal_id != live[pair[0]].goal.id):
-            raise ValueError("A meeting goal must belong to its initiator.")
-        if interaction.focus_claim_id and not any(b.claim_id == interaction.focus_claim_id for b in live[pair[0]].beliefs):
-            raise ValueError("A required meeting account must be known to its initiator.")
-        if len(record.turns) > CONVERSATION_MAX_TURNS:
-            raise ValueError("A resident conversation exceeds its accepted turn budget.")
-        ready = interaction.dialogue_state == "ready"
-        statuses = (CONVERSATION_DIALOGUE_READY,) if ready else (CONVERSATION_WALKING_TO_MEET, CONVERSATION_WAITING_FOR_DIALOGUE)
-        if record.status not in statuses:
-            raise ValueError("A completed, failed or cancelled record cannot restore an active conversation.")
-        if record.id != interaction.id or ready != bool(record.generated_turns()) or ready != interaction.social_effects_applied:
-            raise ValueError("Invalid conversation commit progress.")
-        if interaction.information_context:
-            context = interaction.information_context
-            if context.participants != {"initiator": live[pair[0]].id, "recipient": live[pair[1]].id}:
-                raise ValueError("Invalid information speakers.")
-            if context.focus_claim_id != interaction.focus_claim_id:
-                raise ValueError("The required meeting account must match its information snapshot.")
-            if any(o.fact_id not in facts or o.quantity != facts[o.fact_id].quantity
-                   or o.kind != facts[o.fact_id].kind or o.subject_id != facts[o.fact_id].subject_id for o in context.options):
-                raise ValueError("Missing snapshot facts.")
-        validate_agreements(interaction.accepted_proposals, interaction.proposals, record.generated_turns(),
-                            live[pair[0]].id, live[pair[1]].id, current_phase=ctx.now)
-        if ready:
-            try:
-                validate_information(SimpleNamespace(turns=record.generated_turns(), disclosures=interaction.accepted_disclosures,
-                    third_party_opinions=interaction.third_party_opinions, leverage=interaction.leverage_uses),
-                    interaction.information_context)
-            except (KeyError, TypeError, AttributeError, IndexError) as exc:
-                raise ValueError("Invalid information snapshot references.") from exc
-        if interaction.accepted_gift:
-            from transfers import validate_resident_gift
-            validate_resident_gift(interaction.accepted_gift, record.generated_turns(), {
-                "purpose": interaction.purpose, "arrival_focus": interaction.opening_kind == "orientation",
-                **{
-                role: {"actor_id": live[index].id, "inventory": live[index].inventory,
-                       "owned_works": [{"id": w.id, "title": w.title} for w in creations
-                                       if w.owner_id == live[index].id]}
-                for role, index in zip(("initiator", "recipient"), pair)}})
-            if interaction.accepted_gift.accept_turn is None:
-                raise ValueError("A pending gift handoff needs an accepted offer.")

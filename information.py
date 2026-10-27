@@ -5,7 +5,7 @@ import re
 from copy import deepcopy
 from dataclasses import asdict
 from uuid import uuid4
-from constants import (SNAKE_NAME, CONVERSATION_MAX_AGREEMENTS, LEVERAGE_ACCOUNT_KINDS, PHASES,
+from constants import (SNAKE_NAME, CONVERSATION_MAX_AGREEMENTS, LEVERAGE_ACCOUNT_KINDS,
     CONVERSATION_MAX_DISCLOSURES, CONVERSATION_MAX_REPUTATION_EFFECTS, CONVERSATION_MAX_LEVERAGE,
     REPUTATION_FACT_LIMIT, OPINION_CHANGES, ROUTINE_FACT_KINDS, ACCUSATION_FACT_KINDS)
 from conversation_history import remember
@@ -13,14 +13,14 @@ from dialogue_text import split_sentences
 from dialogue_rules import (unquoted_speech, mentions_account, named_references, validate_account_speech, harvest_extent)
 from types import SimpleNamespace
 from actor_identity import account_references, actor_id, speech_only
-from social_records import (phase_label, Fact, Claim, Belief, Disclosure, ClaimOption, InformationContext, fact_by_id,
+from social_records import (Fact, Claim, Belief, Disclosure, ClaimOption, InformationContext, fact_by_id,
     claim_by_id, clear_record_indexes)
 
 
 def assertion_text(world, fact, affirmed=True):
     if affirmed:
         summary = harvest_summary(world.participant_by_id(fact.subject_id).name, fact.quantity) if fact.kind == "harvest" else fact.summary
-        return f"At {phase_label(fact.phase)}: {summary}"
+        return f"At {fact.day}: {summary}"
     subject, target = world.participant_by_id(fact.subject_id), world.participant_by_id(fact.object_id)
     action = {"apple_given": "give an apple to", "apple_refused": "refuse an apple to",
               "promise_kept": "keep the apple promise to", "promise_broken": "miss the apple promise to"}
@@ -28,7 +28,7 @@ def assertion_text(world, fact, affirmed=True):
         return f"{subject.name} does not have the motive described in this account: {fact.summary}"
     if fact.kind not in action:
         return f"An account disputes: {fact.summary}"
-    return f"{subject.name} did not {action[fact.kind]} {target.name} in the exchange at {phase_label(fact.phase)}."
+    return f"{subject.name} did not {action[fact.kind]} {target.name} in the exchange at {fact.day}."
 
 
 # A "you" right after these words is an object ("greeted you", "in front of you"); anywhere else it is the subject.
@@ -99,7 +99,7 @@ def account_content(world, fact, affirmed=True):
 
 
 def fact_context(world, fact, affirmed=True):
-    date = {"day": fact.phase // len(PHASES) + 1, "phase": PHASES[fact.phase % len(PHASES)]}
+    date = {"day": fact.day}
     return {"assertion": account_content(world, fact, affirmed), "kind": fact.kind,
             "recorded_at": date, "event_time": None if fact.kind == "former_life" else date,
             "time_scope": "remembered former life; event date unknown" if fact.kind == "former_life" else "life here",
@@ -118,14 +118,14 @@ def account_view(world, claim, belief):
     context = fact_context(world, fact, claim.affirmed)
     if fact.kind == "harvest":
         harvests = witnessed_harvests(world, world.participant_by_id(belief.npc_id).beliefs)
-        context["harvest_context"] = [row for (phase, _), row in harvests.items() if phase == fact.phase]
+        context["harvest_context"] = [row for (day, _), row in harvests.items() if day == fact.day]
     return harvest_account_view({**context,
             **{key: projected[key] for key in ("claim_id", "subject_id", "subject_name", "object_id", "object_name",
                 "knowledge_owner_name", "original_speaker_id", "immediate_source_id", "original_speaker_name", "immediate_source_name")},
             "source_disclosure_id": belief.disclosure_id, "stance": projected["stance"],
-            "learned_at": {"day": belief.phase // len(PHASES) + 1, "phase": PHASES[belief.phase % len(PHASES)]},
+            "learned_at": {"day": belief.day},
             "basis": projected["basis"]}, tree_stock=world.tree.fruit,
-            current_time={"day": world.day, "phase": world.phase})
+            current_time={"day": world.day})
 
 
 def harvest_summary(name, quantity):
@@ -133,7 +133,7 @@ def harvest_summary(name, quantity):
 
 
 def witnessed_harvests(world, beliefs):
-    """Derive totals from this observer's distinct witnessed events, within each phase."""
+    """Derive totals from this observer's distinct witnessed events, within each day."""
     claims = {claim.id: claim for claim in world.claims}
     facts = {fact.id: fact for fact in world.facts}
     totals, seen = {}, set()
@@ -143,27 +143,27 @@ def witnessed_harvests(world, beliefs):
         if not belief.direct or not claim.affirmed or fact.kind != "harvest" or fact.id in seen:
             continue
         seen.add(fact.id)
-        key = (fact.phase, fact.subject_id)
+        key = (fact.day, fact.subject_id)
         row = totals.setdefault(key, dict(subject_id=fact.subject_id,
             subject_name=world.participant_by_id(fact.subject_id).name,
-            event_time={"day": fact.phase // len(PHASES) + 1, "phase": PHASES[fact.phase % len(PHASES)]},
+            event_time={"day": fact.day},
             quantity=0, pickups=0))
         row["quantity"] += fact.quantity
         row["pickups"] += 1
-    unseen_phases = {fact.phase for fact in world.facts if fact.kind == "harvest" and fact.id not in seen}
-    for (phase, _), row in totals.items():
-        row["all_harvests_witnessed"] = phase not in unseen_phases
+    unseen_days = {fact.day for fact in world.facts if fact.kind == "harvest" and fact.id not in seen}
+    for (day, _), row in totals.items():
+        row["all_harvests_witnessed"] = day not in unseen_days
     return totals
 
 
 def believed_harvest(world, beliefs, fact):
-    """One harvest told as this person believes it: the collector's total over the distinct pickups they believe that phase."""
+    """One harvest told as this person believes it: the collector's total over the distinct pickups they believe that day."""
     pickups = {fact.id: fact}
     for belief in beliefs:
         claim = claim_by_id(world, belief.claim_id)
         other = fact_by_id(world, claim.fact_id)
         if (belief.stance == "believed" and claim.affirmed and other.kind == "harvest"
-                and (other.subject_id, other.phase) == (fact.subject_id, fact.phase)):
+                and (other.subject_id, other.day) == (fact.subject_id, fact.day)):
             pickups[other.id] = other
     return harvest_summary(world.participant_by_id(fact.subject_id).name, sum(p.quantity for p in pickups.values()))
 
@@ -202,20 +202,20 @@ def add_fact(world, kind, subject, target, source_id, record, summary, witnesses
     fact = next((fact for fact in world.facts if fact.source_id == source_id and fact.kind == kind), None)
     if fact is None:
         fact = Fact(uuid4().hex, kind, subject.id, target.id if target else subject.id, source_id,
-                    record.id if record else None, world.phase_index, summary, [], quantity, location)
+                    record.id if record else None, world.day, summary, [], quantity, location)
         world.facts.append(fact)
     for npc in witnesses:
         if npc.id in fact.witness_ids:
             continue
         fact.witness_ids.append(npc.id)
         claim = Claim(uuid4().hex, fact.id, subject.id, npc.id, True, None, False,
-                      world.phase_index, record.id if record else None)
+                      world.day, record.id if record else None)
         world.claims.append(claim)
         # Promise consequences already have their own opinion adjustment.
         assessed = npc is target and kind in ("promise_kept", "promise_broken")
         delta = (4 if kind == "promise_kept" else -6) if assessed else 0
         npc.beliefs.append(Belief(npc.id, claim.id, "believed", npc.id, None, True,
-                                 world.phase_index, assessed, delta))
+                                 world.day, assessed, delta))
     return fact
 
 
@@ -257,7 +257,7 @@ def selected_beliefs(npc, partner_id=None, *, pinned=()):
                 partner_id in (fact.subject_id, fact.object_id, belief.source_id),
                 bool(goal and fact.subject_id == goal.third_npc_id),
                 fact.kind == "promise_broken" or fact.kind == "private_motive" and fact.subject_id != npc.id,
-                fact.kind != "private_motive" or fact.subject_id != npc.id, belief.phase, order[id(belief)])
+                fact.kind != "private_motive" or fact.subject_id != npc.id, belief.day, order[id(belief)])
     selected = sorted(npc.beliefs, key=rank, reverse=True)[:6]
     if goal:
         motive = next((b for b in npc.beliefs if fact_by_id(world, claim_by_id(world, b.claim_id).fact_id).source_id == goal.id), None)
@@ -346,11 +346,11 @@ def information_views(context, world):
             if fact.kind == "former_life" and option.affirmed and option.subject_id == npc_id:
                 view["assertion"] = own_memory(fact)
             if fact.kind == "harvest":
-                view["harvest_context"] = [row for (phase, _), row in harvests.items() if phase == fact.phase]
+                view["harvest_context"] = [row for (day, _), row in harvests.items() if day == fact.day]
             if belief:
                 view.update(stance=projected["stance"], immediate_source_id=projected["immediate_source_id"],
                             immediate_source_name=projected["immediate_source_name"],
-                            learned_at={"day": belief.phase // len(PHASES) + 1, "phase": PHASES[belief.phase % len(PHASES)]},
+                            learned_at={"day": belief.day},
                             source_disclosure_id=belief.disclosure_id,
                             basis=projected["basis"],
                             already_assessed=any(b.assessed and (b.claim_id == claim_id if retold_accusation(option) else
@@ -367,7 +367,7 @@ def information_views(context, world):
                     view["permitted_use"] = ("report the named collector's actions you witnessed; witnessing is not collecting"
                                              if fact.kind == "harvest" else "share personal experience; its truth needs no confirmation")
             views.append(harvest_account_view(view, tree_stock=world.tree.fruit,
-                         current_time={"day": world.day, "phase": world.phase}))
+                         current_time={"day": world.day}))
         result[role] = views
     return result
 
@@ -428,10 +428,10 @@ def demote_contrary_beliefs(option, related, options, listener_id):
             belief.stance = "uncertain"
 
 
-def receive_belief(prior, *, listener_id, claim_id, stance, source_id, disclosure_id, phase, update_source=True):
+def receive_belief(prior, *, listener_id, claim_id, stance, source_id, disclosure_id, day, update_source=True):
     """Only hearsay may change stance; exact repeats keep assessment bookkeeping."""
     if prior is None:
-        return Belief(listener_id, claim_id, stance, source_id, disclosure_id, False, phase)
+        return Belief(listener_id, claim_id, stance, source_id, disclosure_id, False, day)
     if not prior.direct:
         prior.stance = stance
         if update_source:
@@ -557,7 +557,7 @@ def validate_information(response, context, *, names=(), participant_names=None,
                 demote_contrary_beliefs(option, related, options, context.participants[listener])
             beliefs[listener][option.id] = receive_belief(prior,
                 listener_id=context.participants[listener], claim_id=option.id, stance=entry.listener_stance,
-                source_id=npc_id, disclosure_id=None, phase=0, update_source=False)
+                source_id=npc_id, disclosure_id=None, day=1, update_source=False)
             acquired[listener].add(option.id)
             heard[listener, option.id] = turn
     if context.focus_claim_id and not incomplete:
@@ -676,11 +676,11 @@ def learn_account(world, speaker, listener, claim_id, record, turn, stance, *, p
     event = world.publish("claim_shared", (speaker, listener),
         f"{speaker.name} disclosed {'private information' if private else 'a sourced account'} to {listener.name}.", record)
     disclosure = Disclosure(uuid4().hex, claim_id, record.id, speaker.id, listener.id, turn,
-                            "share", stance, source.disclosure_id, world.phase_index, event.id)
+                            "share", stance, source.disclosure_id, world.day, event.id)
     world.disclosures.append(disclosure)
     existing = next((b for b in listener.beliefs if b.claim_id == claim_id), None)
     learned = receive_belief(existing, listener_id=listener.id, claim_id=claim_id, stance=stance,
-                             source_id=speaker.id, disclosure_id=disclosure.id, phase=world.phase_index)
+                             source_id=speaker.id, disclosure_id=disclosure.id, day=world.day)
     if existing is None:
         listener.beliefs.append(learned)
     if listener is not world.snake:

@@ -268,7 +268,7 @@ def record_claim(world, speaker, record, text, turn, listener_id):
             prior.listener_ids.append(listener_id)
         return prior
     claim = PlayerReport(id=uuid4().hex, speaker_id=speaker.id, conversation_id=record.id, turn=turn,
-                 day=world.day, phase=world.phase, text=text, kind="report", listener_ids=[listener_id])
+                 day=world.day, text=text, kind="report", listener_ids=[listener_id])
     world.player_claims.append(claim)
     return claim
 
@@ -353,12 +353,12 @@ def accept_player_evidence(world, npc, record, message, response, *, opening=Fal
 
 
 def accept_player_promises(world, npc, record, response, message, *, opening=False):
-    from social_records import Promise, phase_label
+    from social_records import Promise
     from dialogue_rules import validate_apple_promise
     for pending in record.player_promise_offers:
         if pending.status != "offered":
             continue
-        if pending.deadline < world.phase_index:
+        if pending.deadline < world.day:
             pending.status = "expired"
             continue
         if not message:
@@ -369,7 +369,7 @@ def accept_player_promises(world, npc, record, response, message, *, opening=Fal
             continue
         try:
             validate_apple_promise(record.turns[pending.offer_turn].text, message,
-                                   pending.deadline, current_phase=pending.created_phase)
+                                   pending.deadline, current_day=pending.created_day)
         except ValueError:
             continue
         pending.accept_turn = len(record.turns) - 1
@@ -380,15 +380,15 @@ def accept_player_promises(world, npc, record, response, message, *, opening=Fal
         record.player_promise_offers.append(PlayerPromiseOffer(id=uuid4().hex, giver_id=offer.giver_id,
             recipient_id=npc.id if player_giving else world.player.id, deadline=offer.deadline,
             offer_turn=len(record.turns) - 1 if player_giving else len(record.turns),
-            accept_turn=len(record.turns) if player_giving else None, created_phase=world.phase_index,
+            accept_turn=len(record.turns) if player_giving else None, created_day=world.day,
             status="accepted" if player_giving else "offered"))
     for pending in record.player_promise_offers:
         if pending.accept_turn is None or any(p.id == pending.id for p in world.promises):
             continue
         promise = Promise(pending.id, pending.giver_id, pending.recipient_id, record.id,
-                          world.phase_index, pending.deadline)
+                          world.day, pending.deadline)
         world.promises.append(promise)
-        text = f'One apple promised by {phase_label(promise.deadline)}; delivery is still pending.'
+        text = f'One apple promised by {promise.deadline}; delivery is still pending.'
         event = world.publish("promise_created", (world.player, npc), text, record)
         remember(npc, world.player, event, "promise_created", text, 1)
         record.outcomes.append(text)
@@ -399,7 +399,7 @@ def call_reason(world, npc):
     from social import grievance_against, confrontation_topic
     grievance = grievance_against(npc, world.player)
     if grievance:
-        return PlayerCallReason(key=f"confrontation:{grievance}:{world.phase_index}", kind="news", reference=grievance,
+        return PlayerCallReason(key=f"confrontation:{grievance}:{world.day}", kind="news", reference=grievance,
                                 reason=confrontation_topic(npc, grievance))
     promises = [p for p in world.promises if p.status == "pending"
                 and {p.promisor_id, p.recipient_id} == {npc.id, world.player.id}]
@@ -414,7 +414,7 @@ def call_reason(world, npc):
             return PlayerCallReason(key=f"gift:{work.id}", kind="gift", reference=work.id,
                         reason=f'Consider offering my {work.kind} "{work.title}" to the player. I may also keep it.')
         if npc.inventory["fruit"] > 1:
-            return PlayerCallReason(key=f"apples:{world.day}:{world.phase}", kind="gift", reference="fruit",
+            return PlayerCallReason(key=f"apples:{world.day}", kind="gift", reference="fruit",
                         reason="Consider offering one of my actual apples to the player.")
     concern = npc.current_concern
     if concern and concern.claim_id and concern.kind == "news":
@@ -478,7 +478,7 @@ def update_calls(world, dt):
             if owns_resident(world, npc):
                 end_interaction(world, "The reason for this call is no longer available.")
     world.player_call_check -= dt
-    if world.player_call_check > 0 or world.phase_pending or not can_claim(world):
+    if world.player_call_check > 0 or world.day_pending or not can_claim(world):
         return
     world.player_call_check = PLAYER_CALL_CHECK_SECONDS
     from locations import colocated
@@ -492,103 +492,3 @@ def update_calls(world, dt):
             except ValueError:
                 continue
             break
-
-
-def validate_saved_calls(ctx):
-    state = ctx.state
-    residents, npcs, player, facts, history, creations = ctx.residents, state.npcs, state.player, state.facts, ctx.history, state.creations
-    promises, pending_actions, interaction = state.promises, state.pending_actions, ctx.physical
-    live_ids, reserved, creation_ids = ctx.live_ids, ctx.reserved, ctx.creation_ids
-    from activity import Behavior
-    from constants import PLAYER_CALL_LIMIT
-    from conversation_history import source_record
-    from player_story import valid_introduction_call
-    from types import SimpleNamespace
-    layout = SimpleNamespace(player=player, facts=facts)
-    player_id = player.id
-    physical = interaction
-    reserved_ids = reserved
-    for npc in residents:
-        call = npc.player_call
-        if call and call.kind == "reply":
-            record = source_record(history, call.reference)
-            actions = [a for a in pending_actions if a.npc_id == npc.id]
-            if (npc.id not in live_ids or npc.id in reserved_ids
-                    or set(record.participant_ids) != {npc.id, player_id} or record.error
-                    or not record.turns or (record.turns[-1].speaker_id, record.turns[-1].text) != (npc.id, npc.reply)
-                    or (actions and (not call.closing or any(a.record is None or history[a.record].id != record.id for a in actions)))):
-                raise ValueError("A waiting reply needs its resident's accepted player conversation and matching queued task.")
-            offer = call.gift_offer
-            if offer and (offer.recipient_id != player_id
-                          or offer.item != "fruit" and offer.item not in creation_ids):
-                raise ValueError("A waiting reply's gift offer needs the player and a real item.")
-            continue
-        if call and (npc.id not in live_ids
-                or npc.behavior not in (Behavior.WANDER, Behavior.WAIT)
-                or npc.owner != "autonomous"
-                or npc.id in reserved_ids
-                or any(npc.id in (a.npc_id, a.target_id) for a in pending_actions)
-                or call.kind not in ("gift", "news", "followup", "introduction")
-                or call.key in npc.resolved_player_calls):
-            raise ValueError("Invalid waiting player call.")
-        if call:
-            ref = call.reference
-            valid = (valid_introduction_call(layout, npc, call,
-                         interaction=physical)
-                     if call.kind == "introduction" else
-                     npc.inventory["fruit"] > 0
-                     if call.kind == "gift" and ref == "fruit" else
-                     any(w.id == ref and w.owner_id == npc.id for w in creations) if call.kind == "gift" else
-                     any(b.claim_id == ref for b in npc.beliefs) if call.kind == "news" else
-                     any(m.id == ref and m.partner_id == player_id for m in npc.memories)
-                     or any(p.id == ref and p.status == "pending" and {p.promisor_id, p.recipient_id} == {npc.id, player_id} for p in promises))
-            if not valid or not call.reason.strip():
-                raise ValueError("A player call needs its resident's actual unresolved source.")
-    if sum(n.player_call is not None and n.player_call.kind != "reply" for n in npcs) > PLAYER_CALL_LIMIT:
-        raise ValueError("Too many simultaneous player calls.")
-
-
-def validate_saved_interaction(interaction, player, by_id, records, layout):
-    import json
-    from locations import validate_feet, floor_for_room, targets
-    from activity import ActivitySnapshot
-    exclusive = set()
-    if interaction:
-        if interaction.kind not in ("resident", "door", "snake") or not interaction.id:
-            raise ValueError("Invalid player interaction owner.")
-        if interaction.location != player.location:
-            raise ValueError("Player ownership must follow its current location.")
-        if interaction.kind in ("resident", "snake"):
-            if player.journey:
-                raise ValueError("A player cannot travel during a resident interaction.")
-            npc = by_id.get(interaction.npc_id)
-            if not npc or npc is player or npc.journey and interaction.incoming:
-                raise ValueError("The player needs one present resident.")
-            room = interaction.knock_room
-            if room:
-                if npc.room_number != room or npc.location != f"room:{room}" or player.location != f"hallway:{floor_for_room(room)}":
-                    raise ValueError("A knock must address the present owner of that door.")
-            elif npc.location != player.location:
-                raise ValueError("Player conversation participants must be together.")
-            if interaction.stage not in ("approach", "conversation", "handoff") or not 0 <= interaction.elapsed <= PLAYER_APPROACH_TIMEOUT:
-                raise ValueError("Invalid player approach progress.")
-            ActivitySnapshot.validate(interaction.saved_state)
-            validate_feet(npc.location if interaction.incoming else player.location, interaction.point)
-            if interaction.record_id and (interaction.record_id not in records
-                    or set(records[interaction.record_id].participant_ids) != {player.id, npc.id}):
-                raise ValueError("Player conversation ownership needs its actual source record.")
-            exclusive.add(npc.id)
-        elif interaction.kind == "door":
-            normalize = lambda value: json.loads(json.dumps(value))
-            if normalize(interaction.target) not in [normalize(t) for t in targets(layout, player.location)]:
-                raise ValueError("Door travel must retain an actual target in its map.")
-    return exclusive
-
-
-def validate_saved_player_mode(mode, player, interaction, visit, npcs):
-    live_player = mode == "player" and player.alive
-    if not player.alive and mode != "spectator":
-        raise ValueError("A dead player must remain in spectator mode.")
-    if not live_player and (interaction or player.journey or visit
-            or any(n.player_call for n in npcs)):
-        raise ValueError("Spectator mode cannot own physical player interactions.")

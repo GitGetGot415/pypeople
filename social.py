@@ -3,11 +3,11 @@
 from dataclasses import asdict
 from uuid import uuid4
 from constants import (CONCERN_LIFETIME_RANGE, CONCERN_WEIGHTS, FAILURE_COOLDOWN, GOAL_IMPROVEMENT,
-    MAX_DIALOGUE_FAILURE_COOLDOWN, PHASES, ROUTINE_FACT_KINDS)
+    MAX_DIALOGUE_FAILURE_COOLDOWN, ROUTINE_FACT_KINDS)
 from conversation_history import remember
 from dialogue_rules import validate_apple_promise
 from actor_identity import account_references
-from social_records import (ConversationConcern, phase_label, Goal, Proposal, Promise, OpinionEffect, Claim, Belief,
+from social_records import (ConversationConcern, Goal, Proposal, Promise, OpinionEffect, Claim, Belief,
     Disclosure, fact_by_id, claim_by_id, owns_recollection)
 from information import (account_content, account_view, record_intention, can_deceive, selected_beliefs, related_beliefs,
     demote_contrary_beliefs, receive_belief, validate_information, trim_information, harvest_summary, retold_accusation,
@@ -83,7 +83,7 @@ def concern_description(npc, concern):
     }
     if concern.kind == "plans":
         plans = [npc.goal.objective] if npc.goal and npc.goal.status == "active" else []
-        plans.extend(f"Deliver an apple to {npc.world.participant_by_id(p.recipient_id).name}, due {phase_label(p.deadline)}"
+        plans.extend(f"Deliver an apple to {npc.world.participant_by_id(p.recipient_id).name}, due {p.deadline}"
                      for p in pending_promises(npc.world, npc.id))
         return "Plans: " + "; ".join(plans) if plans else descriptions["plans"]
     if concern.kind in descriptions:
@@ -199,7 +199,7 @@ def commit_information(conversation):
             belief.assessed = True
             belief.opinion_delta += entry.delta
             speaker.pending_social_opinions.append(OpinionEffect(event.id, entry.subject_id, entry.delta,
-                                                                  reason, claim.id, source.id, conversation.record.id, world.phase_index))
+                                                                  reason, claim.id, source.id, conversation.record.id, world.day))
         for entry in [entry for entry in conversation.accepted_disclosures if entry.turn == turn]:
             option = options[entry.claim_id]
             source_belief = next((b for b in speaker.beliefs if b.claim_id == option.id), None)
@@ -208,10 +208,10 @@ def commit_information(conversation):
                 source_belief = parent
                 world.claims.append(Claim(option.id, option.fact_id, option.subject_id, speaker.id,
                                           option.affirmed, option.parent_claim_id, True,
-                                          world.phase_index, conversation.record.id))
+                                          world.day, conversation.record.id))
                 claims[option.id] = world.claims[-1]
                 speaker.beliefs.append(Belief(speaker.id, option.id, "disbelieved", speaker.id, None,
-                                              False, world.phase_index))
+                                              False, world.day))
             pickups = _witnessed_pickups(world, speaker, option, claims) if entry.intent == "share" else []
             assertion = option.assertion
             if pickups:
@@ -222,7 +222,7 @@ def commit_information(conversation):
             event = world.publish("claim_shared", (speaker, listener), text, conversation.record)
             disclosure = Disclosure(f"{conversation.id}:disclosure:{turn}", option.id, conversation.record.id,
                                     speaker.id, listener.id, turn, entry.intent, entry.listener_stance,
-                                    source_belief.disclosure_id, world.phase_index, event.id)
+                                    source_belief.disclosure_id, world.day, event.id)
             world.disclosures.append(disclosure)
             prior = next((b for b in listener.beliefs if b.claim_id == option.id), None)
             witnessed = any(b.direct and claims[b.claim_id].fact_id == option.fact_id for b in listener.beliefs if b.claim_id in claims)
@@ -231,17 +231,17 @@ def commit_information(conversation):
             if entry.listener_stance == "believed":
                 demote_contrary_beliefs(option, related_beliefs(option, listener.beliefs, claims), claims, listener.id)
             learned = receive_belief(prior, listener_id=listener.id, claim_id=option.id,
-                stance=entry.listener_stance, source_id=speaker.id, disclosure_id=disclosure.id, phase=world.phase_index)
+                stance=entry.listener_stance, source_id=speaker.id, disclosure_id=disclosure.id, day=world.day)
             if prior is None:
                 listener.beliefs.append(learned)
             for claim in pickups:
                 # Each pickup the telling covers is its own disclosed account, so hearsay keeps an exact source.
                 told = Disclosure(f"{disclosure.id}:{claim.id}", claim.id, conversation.record.id, speaker.id, listener.id,
-                                  turn, entry.intent, entry.listener_stance, None, world.phase_index, event.id)
+                                  turn, entry.intent, entry.listener_stance, None, world.day, event.id)
                 world.disclosures.append(told)
                 prior_pickup = next((b for b in listener.beliefs if b.claim_id == claim.id), None)
                 learned_pickup = receive_belief(prior_pickup, listener_id=listener.id, claim_id=claim.id, stance=entry.listener_stance,
-                                                source_id=speaker.id, disclosure_id=told.id, phase=world.phase_index)
+                                                source_id=speaker.id, disclosure_id=told.id, day=world.day)
                 if prior_pickup is None:
                     listener.beliefs.append(learned_pickup)
             heard[listener.id, option.id] = speaker
@@ -288,7 +288,7 @@ def unweighed_allegation(conversation, turn, listener, option, claims):
 
 
 def _witnessed_pickups(world, speaker, option, claims):
-    """The speaker's claims about the same collector's other pickups that phase, which a firsthand telling includes."""
+    """The speaker's claims about the same collector's other pickups that day, which a firsthand telling includes."""
     fact = fact_by_id(world, option.fact_id)
     if (fact.kind != "harvest" or not option.affirmed or world.participant_by_id(fact.subject_id) is None
             or not any(b.direct and claims[b.claim_id].fact_id == fact.id for b in speaker.beliefs if b.claim_id in claims)):
@@ -299,7 +299,7 @@ def _witnessed_pickups(world, speaker, option, claims):
         if claim is None or not belief.direct or not claim.affirmed or claim.fact_id == fact.id:
             continue
         other = fact_by_id(world, claim.fact_id)
-        if other.kind == "harvest" and other.subject_id == fact.subject_id and other.phase == fact.phase:
+        if other.kind == "harvest" and other.subject_id == fact.subject_id and other.day == fact.day:
             pickups.setdefault(other.id, claim)
     return list(pickups.values())
 
@@ -309,7 +309,7 @@ def check_sabotage_goal(world, effect, listener, actual_delta, record):
     goal = owner.goal if owner else None
     if (goal and goal.status == "active" and goal.kind == "sabotage_relationship"
             and goal.target_id == listener.id and goal.third_npc_id == effect.target_id and actual_delta < 0
-            and effect.phase is not None and goal.created_phase <= effect.phase <= world.phase_index <= goal.deadline
+            and effect.day is not None and goal.created_day <= effect.day <= world.day <= goal.deadline
             and claim_by_id(world, goal.claim_id).fact_id == claim_by_id(world, effect.claim_id).fact_id
             and listener.opinion_score(effect.target_id) <= goal.baseline_opinion - 4):
         resolve_goal(owner, world, "completed", "A committed opinion change from this exchange weakened the relationship.", record)
@@ -386,7 +386,7 @@ def assign_goal(npc, world):
     objective, motive, approach = descriptions[kind]
     npc.goal = Goal(uuid4().hex, kind, target.id, objective, motive, approach,
                     "Respect refusal; use only supported accounts or permitted denials, without inventing other events.",
-                    world.phase_index, world.phase_index + len(PHASES), baseline,
+                    world.day, world.day + 1, baseline,
                     third_npc_id=third.id if third else None, claim_id=claim.id if claim else None)
     record_intention(npc, world)
 
@@ -397,7 +397,7 @@ def resolve_goal(npc, world, status, outcome, record=None):
         return
     target = world.participant_by_id(goal.target_id)
     goal.status, goal.outcome = status, outcome
-    goal.resolved_phase = world.phase_index
+    goal.resolved_day = world.day
     kind = "goal_completed" if status == "completed" else "goal_cancelled" if status == "cancelled" else "goal_failed"
     event = world.publish(kind,
                           (npc, target), f"{npc.name}: {goal.objective}. {outcome}", record)
@@ -410,7 +410,7 @@ def check_relationship_goals(world, opinion_owner, record=None):
     for npc in world.npcs:
         goal = npc.goal
         if (goal and goal.status == "active" and goal.kind == "repair_relationship"
-                and goal.target_id == opinion_owner.id and world.phase_index <= goal.deadline
+                and goal.target_id == opinion_owner.id and world.day <= goal.deadline
                 and opinion_owner.opinion_score(npc.id)
                 >= goal.baseline_opinion + GOAL_IMPROVEMENT):
             resolve_goal(npc, world, "completed", "Their opinion improved through a real interaction.", record)
@@ -438,7 +438,7 @@ def permitted_proposals(conversation):
         pending = pending_promises(world, giver.id)
         if len(pending) < 2 and not any(p.recipient_id == recipient.id for p in pending):
             role = "initiator" if giver is conversation.initiator else "recipient"
-            proposals.append(Proposal(f"{conversation.id}:{role}_gives", giver.id, recipient.id, world.phase_index + 1))
+            proposals.append(Proposal(f"{conversation.id}:{role}_gives", giver.id, recipient.id, world.day + 1))
     return proposals
 
 
@@ -448,7 +448,7 @@ def proposals_from_snapshot(snapshot):
             for row in snapshot.get("permitted_proposals", [])]
 
 
-def validate_agreements(agreements, proposals, turns, initiator_id, recipient_id, *, current_phase=None,
+def validate_agreements(agreements, proposals, turns, initiator_id, recipient_id, *, current_day=None,
                         dialogue_validation=True):
     """Bound offers and acceptances to ordered speech by the correct participants."""
     permitted = {proposal.id: proposal for proposal in proposals}
@@ -471,7 +471,7 @@ def validate_agreements(agreements, proposals, turns, initiator_id, recipient_id
             raise ValueError("Only the apple's giver can offer and its recipient can accept.")
         if dialogue_validation:
             validate_apple_promise(turns[agreement.offer_turn].text, turns[agreement.accept_turn].text, proposal.deadline,
-                                   current_phase=current_phase)
+                                   current_day=current_day)
 
 
 def validate_live_agreements(conversation, response, *, dialogue_validation=True):
@@ -500,12 +500,12 @@ def validate_live_agreements(conversation, response, *, dialogue_validation=True
                          participant_names={"initiator": pair[0].name, "recipient": pair[1].name},
                          dialogue_validation=dialogue_validation, actor_references=account_references(conversation.name_actors))
     validate_agreements(response.accepted_proposals, conversation.proposals,
-                        response.turns, pair[0].id, pair[1].id, current_phase=world.phase_index,
+                        response.turns, pair[0].id, pair[1].id, current_day=world.day,
                         dialogue_validation=dialogue_validation)
     pending = [(p.promisor_id, p.recipient_id) for p in pending_promises(world)]
     for agreement in response.accepted_proposals:
         proposal = next(p for p in conversation.proposals if p.id == agreement.proposal_id)
-        if (conversation.purpose == "food_request" or world.phase_index > proposal.deadline
+        if (conversation.purpose == "food_request" or world.day > proposal.deadline
                 or {proposal.promisor_id, proposal.recipient_id} != {npc.id for npc in pair}
                 or (proposal.promisor_id, proposal.recipient_id) in pending
                 or sum(giver == proposal.promisor_id for giver, _ in pending) >= 2):
@@ -530,10 +530,10 @@ def commit_agreements(conversation):
     for agreement in conversation.accepted_proposals:
         proposal = next(p for p in conversation.proposals if p.id == agreement.proposal_id)
         promise = Promise(proposal.id, proposal.promisor_id, proposal.recipient_id,
-                          conversation.record.id, world.phase_index, proposal.deadline)
+                          conversation.record.id, world.day, proposal.deadline)
         world.promises.append(promise)
         giver, recipient = world.participant_by_id(promise.promisor_id), world.participant_by_id(promise.recipient_id)
-        text = f"{giver.name} promised {recipient.name} one apple by {phase_label(promise.deadline)}."
+        text = f"{giver.name} promised {recipient.name} one apple by {promise.deadline}."
         event = world.publish("promise_created", (giver, recipient), text, conversation.record)
         conversation.record.outcomes.append(text)
         for npc, partner in ((giver, recipient), (recipient, giver)):
@@ -580,10 +580,10 @@ def resolve_promise(world, promise, status, transfer=None):
         return
     giver, recipient = world.participant_by_id(promise.promisor_id), world.participant_by_id(promise.recipient_id)
     record = next(entry for entry in world.history if entry.id == promise.conversation_id)
-    promise.status, promise.resolved_phase = status, world.phase_index
+    promise.status, promise.resolved_day = status, world.day
     text = (f"{giver.name} kept the apple promise to {recipient.name} with an actual handoff."
             if status == "fulfilled" else
-            f"{giver.name} missed the apple promise to {recipient.name}, due {phase_label(promise.deadline)}; the reason is unknown.")
+            f"{giver.name} missed the apple promise to {recipient.name}, due {promise.deadline}; the reason is unknown.")
     event = world.publish("promise_fulfilled" if status == "fulfilled" else "promise_broken",
                           (giver, recipient), text, record)
     promise.consequence_event_id = event.id
@@ -603,8 +603,8 @@ def resolve_promise(world, promise, status, transfer=None):
 def on_transfer(world, giver, recipient, quantity, event, record):
     # A transfer is consumed by the oldest matching commitments once only.
     matching = sorted((p for p in pending_promises(world, giver.id)
-                       if p.recipient_id == recipient.id and p.created_phase <= world.phase_index <= p.deadline),
-                      key=lambda p: p.created_phase)
+                       if p.recipient_id == recipient.id and p.created_day <= world.day <= p.deadline),
+                      key=lambda p: p.created_day)
     for promise in matching[:quantity]:
         resolve_promise(world, promise, "fulfilled", event)
     for npc, partner, kind in ((giver, recipient, "help_with_apple"), (recipient, giver, "obtain_apple")):
@@ -612,19 +612,19 @@ def on_transfer(world, giver, recipient, quantity, event, record):
             continue
         goal = npc.goal
         if (goal and goal.status == "active" and goal.kind == kind and goal.target_id == partner.id
-                and goal.created_phase <= world.phase_index <= goal.deadline):
+                and goal.created_day <= world.day <= goal.deadline):
             resolve_goal(npc, world, "completed", "The apple was actually transferred.", record)
 
 
-def advance_social_phase(world):
+def advance_social_day(world):
     for promise in world.promises:
-        if promise.status == "pending" and promise.deadline < world.phase_index:
+        if promise.status == "pending" and promise.deadline < world.day:
             resolve_promise(world, promise, "broken")
     for npc in world.npcs:
         goal = npc.goal
-        if goal and goal.status == "active" and goal.deadline < world.phase_index:
+        if goal and goal.status == "active" and goal.deadline < world.day:
             resolve_goal(npc, world, "failed", "The deadline passed without completing the objective.")
-        elif goal is None or (goal.status != "active" and goal.resolved_phase < world.phase_index):
+        elif goal is None or (goal.status != "active" and goal.resolved_day < world.day):
             assign_goal(npc, world)
         apply_opinion_effects(npc)
     trim_information(world)
@@ -633,7 +633,7 @@ def advance_social_phase(world):
 def private_context(npc, partner_id=None):
     world = npc.world
     promises = [p for p in world.promises if npc.id in (p.promisor_id, p.recipient_id)] if world else []
-    promises.sort(key=lambda p: (p.status == "pending", partner_id in (p.promisor_id, p.recipient_id), p.created_phase), reverse=True)
+    promises.sort(key=lambda p: (p.status == "pending", partner_id in (p.promisor_id, p.recipient_id), p.created_day), reverse=True)
     known = []
     if world:
         for belief in selected_beliefs(npc, partner_id):
@@ -650,7 +650,7 @@ def private_context(npc, partner_id=None):
                          "guidance": concern_topic(npc, npc.current_concern)} if npc.current_concern else None),
             "goal": goal_view,
             "known_accounts": known,
-            "promises": [dict(asdict(p), deadline_label=phase_label(p.deadline)) for p in promises[:8]]}
+            "promises": [dict(asdict(p), deadline_label=str(p.deadline)) for p in promises[:8]]}
 
 
 def opinion_causes(npc, partner):
@@ -671,9 +671,9 @@ def opinion_causes(npc, partner):
             causes.append(f"{partner.name} lied to you, denying what you saw yourself: {fact_by_id(world, claims[told.claim_id].fact_id).summary}")
     for fact in world.facts:
         if fact.kind == "harvest" and fact.subject_id == partner.id and npc.id in fact.witness_ids:
-            harvests[fact.phase] = harvests.get(fact.phase, 0) + fact.quantity
-    causes.extend(f"You saw {partner.name} take {total} apples from the tree at {phase_label(phase)}."
-                  for phase, total in sorted(harvests.items(), reverse=True) if total > HARVEST_FREE_APPLES)
+            harvests[fact.day] = harvests.get(fact.day, 0) + fact.quantity
+    causes.extend(f"You saw {partner.name} take {total} apples from the tree at {day}."
+                  for day, total in sorted(harvests.items(), reverse=True) if total > HARVEST_FREE_APPLES)
     causes.extend(p.outcome for p in world.promises if p.status == "broken" and p.outcome
                   and (p.promisor_id, p.recipient_id) == (partner.id, npc.id))
     for belief in sorted(reversed(npc.beliefs), key=lambda b: fact_by_id(npc.world, claim_by_id(npc.world, b.claim_id).fact_id).kind == "killing", reverse=True):
@@ -697,7 +697,7 @@ def pair_objective(world, npc, other):
     if pending:
         promise = min(pending, key=lambda p: p.deadline)
         giver, recipient = world.participant_by_id(promise.promisor_id), world.participant_by_id(promise.recipient_id)
-        topic = f"Arrange {giver.name}'s promised apple for {recipient.name}, due {phase_label(promise.deadline)}"
+        topic = f"Arrange {giver.name}'s promised apple for {recipient.name}, due {promise.deadline}"
         if not discussed(topic):
             return 3, topic
     if promises and promises[-1].status == "broken":
@@ -721,25 +721,25 @@ def pair_objective(world, npc, other):
             # Nothing to hand over yet, so the doable step is a promise kept from a later harvest.
             if len(pending_promises(world, npc.id)) >= 2:
                 return 0, ""  # No further promise is permitted until one is kept.
-            return 1, f"Promise {other.name} an apple by {phase_label(world.phase_index + 1)}; I carry none right now"
-        return 1, f"{goal.objective}, by {phase_label(goal.deadline)}"
+            return 1, f"Promise {other.name} an apple by {world.day + 1}; I carry none right now"
+        return 1, f"{goal.objective}, by {goal.deadline}"
     return 0, ""
 
 
 def goal_attempt_cooling_down(npc, other, world):
     goal = npc.goal
     return bool(goal and goal.status == "active" and goal.target_id == other.id
-                and goal.last_attempt_phase is not None and world.phase_index < goal.last_attempt_phase + 2)
+                and goal.last_attempt_day is not None and world.day < goal.last_attempt_day + 2)
 
 
 def grievance_against(npc, target):
     """A retained believed allegation, with its original source and uncertainty intact."""
-    from constants import CONFRONTATION_START_OPINION, GRIEVANCE_FACT_KINDS, CONFRONTATION_GRIEVANCE_PHASE_PAUSE
+    from constants import CONFRONTATION_START_OPINION, GRIEVANCE_FACT_KINDS, CONFRONTATION_GRIEVANCE_DAY_PAUSE
     if npc.opinion_score(target.id) > CONFRONTATION_START_OPINION:
         return None
     def priority(belief):
         fact = fact_by_id(npc.world, claim_by_id(npc.world, belief.claim_id).fact_id)
-        return fact.kind == "killing", fact.phase, belief.direct
+        return fact.kind == "killing", fact.day, belief.direct
     for belief in sorted(reversed(npc.beliefs), key=priority, reverse=True):
         claim = claim_by_id(npc.world, belief.claim_id)
         fact = fact_by_id(npc.world, claim.fact_id)
@@ -750,10 +750,10 @@ def grievance_against(npc, target):
                        and r.between(npc, target) and r.grievance_id
                        and claim_by_id(npc.world, r.grievance_id).fact_id == fact.id and r.turns), None)
         if latest is not None and target is not npc.world.player:
-            discussed_phase = max((d.phase for d in npc.world.disclosures
+            discussed_day = max((d.day for d in npc.world.disclosures
                 if d.conversation_id == latest.id and d.speaker_id == npc.id
-                and claim_by_id(npc.world, d.claim_id).fact_id == fact.id), default=npc.world.phase_index)
-            if npc.world.phase_index - discussed_phase < CONFRONTATION_GRIEVANCE_PHASE_PAUSE:
+                and claim_by_id(npc.world, d.claim_id).fact_id == fact.id), default=npc.world.day)
+            if npc.world.day - discussed_day < CONFRONTATION_GRIEVANCE_DAY_PAUSE:
                 continue
         return claim.id
     return None

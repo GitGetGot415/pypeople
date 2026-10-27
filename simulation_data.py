@@ -1,40 +1,34 @@
 """Self-contained simulation saves. No character file paths are loaded."""
 
 import re
-from conversation import ResidentProgress, Conversation, validate_saved_conversations
+from conversation import ResidentProgress, Conversation
 from npc import NPC, ResidentValues, Tree
-from transfers import HandoffProgress, Handoff, validate_transfer_history, validate_saved_handoffs
+from transfers import HandoffProgress, Handoff
 from transfer_records import TransferIntent, TransferReceipt
 from snake import Snake, SnakeValues
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Literal, ClassVar
-from types import SimpleNamespace
 from pydantic import Field, field_validator, model_validator
-from records import SaveContext, SaveModel, saved_record, restore_record
+from records import SaveModel, saved_record, restore_record
 from interactions import DialogueProgress
 from character_data import normalize_character, normalize_opinions
-from constants import (CONCERN_LIFETIME_RANGE, SNAKE_NAME, WORLD_HEIGHT, WORLD_WIDTH, GARDEN_LOCATION,
-    PLAYER_LABEL, PLAYER_NAME_TAG, PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, TRAVEL_STEP_TIMEOUT,
+from constants import (CONCERN_LIFETIME_RANGE, WORLD_HEIGHT, WORLD_WIDTH, GARDEN_LOCATION,
+    PLAYER_CALL_COOLDOWN, PLAYER_CALL_CHECK_SECONDS, TRAVEL_STEP_TIMEOUT,
     PLAYER_APPROACH_TIMEOUT, CONVERSATION_REPLY_PENDING_WHEN_SAVED, MAX_RESIDENTS)
 from creations import Creation
-from apartments import (Invitation, HostedVisit,
-                        validate_saved_visit, validate_saved_invitations, validate_saved_home)
-from locations import Journey, RouteStep, clamp_point, validate_saved_locations, validate_destination, validate_feet
+from apartments import Invitation, HostedVisit
+from locations import Journey, RouteStep, clamp_point, validate_destination, validate_feet
 from player_records import (PlayerOpinion, PlayerCall, PlayerReplyCall, PlayerReport,
-                            PlayerPromiseOffer, PlayerAcknowledgment, validate_player_reports)
-from conversation_history import (RecordedTurn, ConversationRecord, Memory, WorldEvent,
-                                  validate_history_turns, validate_history_events)
+                            PlayerPromiseOffer, PlayerAcknowledgment)
+from conversation_history import RecordedTurn, ConversationRecord, Memory, WorldEvent, validate_history_turns
 from dialogue import ConversationTurn, EmotionReaction, EscalationChoice
 from activity import ActivitySnapshot
-from simulation import PendingAction, Simulation, validate_saved_actions
-from player import (Player, PlayerInteraction, validate_saved_calls, validate_saved_interaction,
-                    validate_saved_player_mode)
-from player_story import validate_starting_history, resident_arrival_days
+from simulation import PendingAction, Simulation
+from player import Player, PlayerInteraction
 from social_records import (Belief, Claim, ConversationConcern, Disclosure, Fact, Goal, OpinionEffect,
-    Promise, Proposal, ClaimOption, InformationContext, phase_index)
-from social_saves import validate_social_records, validate_saved_promises
+    Promise, Proposal, ClaimOption, InformationContext)
 
 
 SAVE_DIRECTORY = Path(__file__).resolve().parent / "saves"
@@ -98,7 +92,6 @@ class InformationState(saved_record(InformationContext)):
 
 class DepartureState(SaveModel):
     day: int = Field(ge=1)
-    phase: Literal["day"]
     cause: Literal["killed by resident", "killed by player"]
     attacker_id: str = Field(min_length=1)
     conversation_id: str = Field(min_length=1)
@@ -366,7 +359,6 @@ class SimulationState(SaveModel):
     player_call_check: float = Field(ge=0, le=PLAYER_CALL_CHECK_SECONDS)
     player_acknowledgments: list[PlayerAcknowledgmentState]
     npc_trait_mode: Literal["normal", "extreme", "both"]
-    phase: Literal["day"]
     events: list[EventState] = Field(max_length=200)
     promises: list[PromiseState]
     facts: list[FactState]
@@ -392,176 +384,51 @@ class SimulationState(SaveModel):
 
     @model_validator(mode="after")
     def validate_references(self):
-        from locations import npc_capacity
-        if len(self.npcs) > npc_capacity(self):
-            raise ValueError("The living population exceeds apartment capacity.")
+        """Every saved reference must name a record that exists, since restoration looks each one up."""
         residents = [*self.npcs, *self.archived]
-        live = {npc.id: npc for npc in self.npcs}
-        live_ids = set(live)
-        history = {h.id: h for h in self.history}
-        events = {e.id: e for e in self.events}
-        facts = {f.id: f for f in self.facts}
-        claims = {c.id: c for c in self.claims}
-        disclosures = {d.id: d for d in self.disclosures}
-        try:
-            physical = validate_physical_state(self, residents, live, history)
-        except (KeyError, TypeError, AttributeError, IndexError) as exc:
-            raise ValueError("Invalid physical state: required ownership, location or source data is missing.") from exc
-        owner_ids = {self.player.id, *[n.id for n in residents]}
-        ctx = SaveContext(state=self, residents=residents, live=live, live_ids=live_ids,
-                          history=history, events=events, facts=facts, claims=claims, disclosures=disclosures,
-                          owner_ids=owner_ids, physical=physical)
-        ctx.creation_ids = validate_saved_home(ctx)
-        actors = {n.id: (n.display_name or n.character["Name"]) for n in residents}
-        actors[self.snake.id] = SNAKE_NAME
-        ids = set(actors)
-        for npc in [*residents, self.snake]:
-            if any(target not in ids or target == npc.id for target in npc.opinions):
-                raise ValueError("Runtime opinions require distinct resident or snake actor IDs.")
-        ctx.ids, ctx.now = ids, phase_index(self.day, self.phase)
-        now = ctx.now
-        if len(ids) != len(residents) + 1 or self.tree.id in ids or len({v.casefold() for v in actors.values()}) != len(ids):
-            raise ValueError("Actor IDs and stable display names must be unique.")
-        if (self.player.id in ids or self.tree.id == self.player.id
-                or {PLAYER_LABEL.casefold(), PLAYER_NAME_TAG.casefold()} & {name.casefold() for name in actors.values()}):
-            raise ValueError("Player identity conflicts with a physical actor.")
-        actors[self.player.id] = PLAYER_LABEL
-        ids.add(self.player.id)
-        if physical and physical.pending_request and physical.pending_request.get("kind") == "player_command":
-            from dialogue import ActionIntent
-            command = ActionIntent(**physical.pending_request["context"]["command"])
-            if command.action in ("TALK_TO_NPC", "GIVE_ITEM"):
-                if (command.target not in owner_ids - {physical.npc_id}
-                        or command.action == "TALK_TO_NPC" and command.target == self.player.id):
-                    raise ValueError("A saved command must retain a known eligible recipient identity.")
-            elif command.target:
-                raise ValueError("Unexpected saved command recipient.")
-            if command.action == "GIVE_ITEM":
-                if command.quantity < 1 or command.item != "fruit" and (command.item not in ctx.creation_ids or command.quantity != 1):
-                    raise ValueError("A saved gift request needs its actual quantity and possession identity.")
-            elif command.item or command.quantity:
-                raise ValueError("Unexpected saved command possession.")
-        activities = [*residents, *[state for c in self.conversations for state in c.saved_states],
-                      *[state for h in self.handoffs for state in h.saved_states.values()]]
-        for owner in [physical, self.visit]:
-            if owner and getattr(owner, "saved_state", None):
-                activities.append(owner.saved_state)
-        if any(not set(state.eating_witness_ids) <= ids - {self.player.id} for state in activities):
-            raise ValueError("An unfinished apple action requires known observer identities.")
-        if self.social_rotation >= len(self.npcs):
-            raise ValueError("Invalid social rotation.")
-        if any(n.departure is not None for n in self.npcs) or any(n.departure is None for n in self.archived):
-            raise ValueError("Live and departed rosters disagree.")
-        validate_starting_history(self, residents)
-        for index, source in ((history, self.history), (events, self.events), (facts, self.facts), (claims, self.claims), (disclosures, self.disclosures)):
-            if len(index) != len(source):
-                raise ValueError("Duplicate social record IDs.")
-        if len({(f.source_id, f.kind) for f in self.facts}) != len(self.facts):
-            raise ValueError("Duplicate fact sources.")
-        validate_history_events(self.events, history, ids, now)
-        validate_transfer_history(ctx)
-        validate_social_records(ctx)
-        validate_saved_promises(ctx)
-        validate_saved_handoffs(ctx)
-        validate_saved_conversations(ctx)
-        self.validate_killings(now, facts, history)
-        validate_saved_actions(ctx)
-        pending, processed = self.pending_arrival_days, self.processed_arrival_days
-        arrival_days = resident_arrival_days(self)
-        if (pending != sorted(set(pending)) or processed != sorted(set(processed)) or set(pending) & set(processed)
-                or not (set(pending) | set(processed)) <= arrival_days):
-            raise ValueError("Pending and completed arrivals must be unique and belong to an eligible dawn. A full building skips that dawn's arrival.")
-        arrivals = [n.arrival_day for n in residents if n.arrival_day >= 2]
-        if sorted(arrivals) != processed:
-            raise ValueError("Completed arrivals must match their preserved residents.")
-        if not set(self.introductions) <= live_ids:
-            raise ValueError("Invalid introduction identity.")
-        validate_saved_calls(ctx)
+        actor_ids = {npc.id for npc in residents} | {self.snake.id}
+        if len(actor_ids) != len(residents) + 1 or self.player.id in actor_ids:
+            raise ValueError("Actor IDs must be unique.")
+        live_ids = {npc.id for npc in self.npcs} | {self.snake.id}
+        owner_ids = actor_ids | {self.player.id}
+        history = {record.id for record in self.history}
+        facts = {fact.id for fact in self.facts}
+        claims = {claim.id for claim in self.claims}
+        for records, ids in ((self.history, history), (self.facts, facts), (self.claims, claims),
+                             (self.disclosures, {d.id for d in self.disclosures})):
+            if len(records) != len(ids):
+                raise ValueError("Duplicate record IDs.")
+        interaction = self.player_interaction or {}
+        references = [
+            *[(c.initiator in live_ids and c.recipient in live_ids and c.record in history) for c in self.conversations],
+            *[({h.initiator, h.recipient} <= live_ids | {self.player.id} and h.record in history) for h in self.handoffs],
+            interaction.get("npc_id") in (None, *live_ids) and interaction.get("record_id") in (None, *history),
+            self.visit is None or self.visit.host_id in live_ids,
+            *[offer.conversation_id in history for offer in self.player_invitations],
+            *[claim.conversation_id in history for claim in self.player_claims],
+            *[ack.record_id in history and ack.npc_id in live_ids for ack in self.player_acknowledgments],
+            *[set(record.participant_ids) <= owner_ids for record in self.history],
+            *[event.history in (None, *history) and set(event.participants) <= owner_ids for event in self.events],
+            *[({f.subject_id, f.object_id, *f.witness_ids} <= owner_ids and f.conversation_id in (None, *history))
+              for f in self.facts],
+            *[claim.fact_id in facts for claim in self.claims],
+            *[d.claim_id in claims and d.conversation_id in history for d in self.disclosures],
+            *[p.conversation_id in history and {p.promisor_id, p.recipient_id} <= owner_ids for p in self.promises],
+            *[work.owner_id in owner_ids for work in self.creations],
+            *[a.npc_id in live_ids and a.target_id in (None, *live_ids, self.player.id) and a.record in (None, *history)
+              for a in self.pending_actions],
+            *[c.information_context is None or {o.fact_id for o in c.information_context.options} <= facts
+              for c in self.conversations],
+        ]
+        for actor in [*residents, self.snake]:
+            references.extend([set(actor.opinions) <= actor_ids - {actor.id},
+                               all(belief.claim_id in claims for belief in actor.beliefs)])
+        for npc in residents:
+            references.extend([npc.goal is None or npc.goal.claim_id in (None, *claims),
+                               npc.player_call is None or npc.player_call.kind != "reply" or npc.player_call.reference in history])
+        if not all(references):
+            raise ValueError("A saved reference names a missing record.")
         return self
-
-
-    def validate_killings(self, now, facts, history):
-        from constants import KILLING_COOLDOWN_PHASES, PROTECTED_POPULATION, CONVERSATION_COMPLETED
-        deaths = {n.departure.event_id: n for n in self.archived}
-        killings = {f.source_id: f for f in facts.values() if f.kind == "killing"}
-        player_deaths = [f for f in killings.values() if f.object_id == self.player.id]
-        if len(player_deaths) != int(not self.player.alive):
-            raise ValueError("The player's life state must match exactly one committed death or none.")
-        player_death = player_deaths[0] if player_deaths else None
-        if player_death:
-            deaths[player_death.source_id] = self.player
-        if set(deaths) != set(killings):
-            raise ValueError("Archived deaths must have exactly one retained committed killing fact.")
-        by_id = {n.id: n for n in [*self.npcs, *self.archived]}
-        phases_by_killer, dead_ids = {}, set()
-        for event_id, fact in killings.items():
-            victim = deaths[event_id]
-            player_victim = victim is self.player
-            departure = None if player_victim else victim.departure
-            record = history.get(fact.conversation_id)
-            player_kill = fact.subject_id == self.player.id
-            if (fact.object_id != victim.id or fact.subject_id not in by_id.keys() | {self.player.id}
-                    or fact.subject_id == victim.id or not record
-                    or departure and (fact.subject_id != departure.attacker_id
-                        or fact.phase != phase_index(departure.day, departure.phase)
-                        or fact.conversation_id != departure.conversation_id
-                        or departure.cause != ("killed by player" if player_kill else "killed by resident"))
-                    or record.purpose != ("killing" if player_kill else "confrontation")
-                    or record.participant_ids != [fact.subject_id, victim.id]
-                    or fact.location != GARDEN_LOCATION or fact.location != victim.location
-                    or self.snake.id not in fact.witness_ids
-                    or player_kill and (record.origin != "player" or record.turns
-                                        or record.status != CONVERSATION_COMPLETED)
-                    or player_victim and (record.origin != "autonomous" or record.turns
-                                          or record.status != CONVERSATION_COMPLETED)):
-                raise ValueError("A death must match its killer, garden witnesses and source record.")
-            if fact.subject_id in dead_ids or fact.object_id in dead_ids:
-                raise ValueError("Committed killings must retain their order; nobody can kill or be killed after their own death.")
-            dead_ids.add(fact.object_id)
-            phases_by_killer.setdefault(fact.subject_id, []).append(fact.phase)
-        for phases in phases_by_killer.values():
-            if any(b - a < KILLING_COOLDOWN_PHASES for a, b in zip(phases, phases[1:])):
-                raise ValueError("Each killer has their own phase cooldown.")
-        if deaths and len(self.npcs) + int(self.mode == "player" and self.player.alive) < PROTECTED_POPULATION:
-            raise ValueError("A killing cannot remove the protected population.")
-        for meeting in self.conversations:
-            grievance_id = history[meeting.record].grievance_id
-            if grievance_id != (meeting.focus_claim_id if meeting.purpose == "confrontation" else None):
-                raise ValueError("A confrontation must retain its sourced grievance.")
-            if meeting.escalation:
-                decision = meeting.escalation
-                if (meeting.purpose != "confrontation" or meeting.dialogue_state != "ready"
-                        or not meeting.social_effects_applied or meeting.initiator not in {n.id for n in self.npcs}
-                        or meeting.recipient not in {n.id for n in self.npcs}
-                        or decision.target_id != meeting.recipient or decision.grievance_id != grievance_id
-                        or meeting.outcome_event_id in deaths
-                        or set(meeting.accepted_revisions) != ({meeting.initiator, meeting.recipient} if decision.action == "attack" else set())
-                        or not any(t.speaker_id == meeting.recipient and decision.evidence in t.text
-                                   for t in history[meeting.record].turns) and decision.action == "attack"):
-                    raise ValueError("A pending attack must belong to an accepted, uncommitted confrontation.")
-                if decision.action == "attack":
-                    from constants import CONFRONTATION_OPINION
-                    context = meeting.information_context
-                    claim = next(c for c in self.claims if c.id == decision.grievance_id)
-                    belief = next((b for b in context.beliefs["initiator"] if b.claim_id == claim.id), None) if context else None
-                    retained = facts[claim.fact_id]
-                    if (not belief or belief.stance != "believed" or not claim.affirmed
-                            or retained.subject_id != meeting.recipient
-                            or context.opinions["initiator"].get(meeting.recipient, 0) > CONFRONTATION_OPINION
-                            or by_id[meeting.initiator].opinions.get(meeting.recipient, {}).get("opinion", 0) > CONFRONTATION_OPINION):
-                        raise ValueError("An accepted attack needs its retained, sourced grievance and final hostility.")
-        for fact in facts.values():
-            if (fact.kind == "harvest") != (fact.quantity is not None):
-                raise ValueError("Only harvesting records carry exact quantities.")
-            if fact.kind == "harvest":
-                collector = next((a for a in [*self.npcs, *self.archived, self.player] if a.id == fact.subject_id), None)
-                if collector is None or fact.location != "garden":
-                    raise ValueError("A harvest requires a human collector in the garden.")
-                from information import harvest_summary
-                name = (Player.name.fget(collector) if collector is self.player
-                        else collector.display_name or collector.character["Name"])
-                if fact.summary != harvest_summary(name, fact.quantity):
-                    raise ValueError("A harvest summary must match its actual collector and quantity.")
 
 
 class SimulationSave(SaveModel):
@@ -704,30 +571,6 @@ def _parse_player_interaction(value):
     return _restore_saved_activity(restore_record(PlayerInteraction, validated))
 
 
-def validate_physical_state(state, residents, live, records):
-    """Canonical map/ownership checks supplement the existing effect provenance checks."""
-    layout = SimpleNamespace(residents=residents, mode=state.mode, player=state.player)
-    by_id = {**live, state.player.id: state.player, state.snake.id: state.snake}
-    validate_saved_player_mode(state.mode, state.player, state.player_interaction, state.visit,
-                               state.npcs)
-    validate_saved_locations([state.player, *residents], layout, state.player, state.visit)
-    interaction = _parse_player_interaction(state.player_interaction)
-    exclusive = validate_saved_interaction(interaction, state.player, by_id, records, layout)
-    entries = []
-    reserved_ids = {i for c in [*state.conversations, *state.handoffs] for i in (c.initiator, c.recipient) if i != state.player.id}
-    player_handoff_ids = {actor_id for h in state.handoffs if state.player.id in (h.initiator, h.recipient)
-                          and interaction and h.record == interaction.record_id
-                          for actor_id in (h.initiator, h.recipient) if actor_id == interaction.npc_id}
-    if exclusive & (reserved_ids - player_handoff_ids):
-        raise ValueError("An actor cannot belong to two exclusive interactions.")
-    validate_saved_visit(state.visit, state.player_invitations, state.player, by_id, layout, interaction, entries,
-                         reserved_ids, {fact.id: fact for fact in state.facts})
-    validate_player_reports(state.player_claims, records, state.player.id, phase_index(state.day, state.phase))
-    validate_saved_invitations(state.player_invitations, records, residents, state.player.id, interaction,
-                               Tree(x=state.tree.x, y=state.tree.y).interaction_point)
-    return interaction
-
-
 def _restore_journey(value):
     if value is None:
         return None
@@ -798,7 +641,7 @@ def capture_simulation(world, *, camera_offset, camera_zoom):
             record=records[id(conversation.record)],
         ))
     return SimulationState(
-        day=world.day, npc_trait_mode=world.npc_trait_mode, phase=world.phase,
+        day=world.day, npc_trait_mode=world.npc_trait_mode,
         mode=world.mode, player_interaction=world.player_interaction.capture() if world.player_interaction else None,
         player_invitations=world.player_invitations, player_claims=world.player_claims,
         visit=world.visit,
@@ -875,7 +718,7 @@ def restore_simulation(state):
     world.processed_arrival_days = state.processed_arrival_days.copy()
     world.introductions = state.introductions.copy()
     world.roster_revision = state.roster_revision
-    world.day, world.phase = state.day, state.phase
+    world.day = state.day
     world.pending_actions = [restore_record(PendingAction, action) for action in state.pending_actions]
     history = [saved.restore() for saved in state.history]
     world.history = history

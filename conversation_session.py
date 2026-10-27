@@ -252,10 +252,9 @@ class ConversationSession:
         snapshot["player_claims"] = relevant_claims(self.simulation, npc.id, message)
         snapshot.update(player_id=self.simulation.player.id, player_inventory=self.player_target(),
                         owned_works=work_choices(self.simulation, npc.id, message))
-        from social_records import phase_label
-        snapshot.update(_player_message=message, phase_index=self.simulation.phase_index,
-            apple_promise_choices=[dict(deadline=self.simulation.phase_index + step,
-                label=phase_label(self.simulation.phase_index + step)) for step in PLAYER_PROMISE_DEADLINE_STEPS])
+        snapshot.update(_player_message=message,
+            apple_promise_choices=[dict(deadline=self.simulation.day + step, label=str(self.simulation.day + step))
+                                   for step in PLAYER_PROMISE_DEADLINE_STEPS])
         if npc.speech_only:
             snapshot["apple_promise_choices"] = []
         snapshot["resolved_work_id"] = requested_work_id(self.simulation, npc.id, message)
@@ -496,7 +495,7 @@ class ConversationSession:
         self.wrap_up_for_day_change()
 
     def wrap_up_for_day_change(self):
-        if not self.simulation.phase_pending or self.simulation.paused:
+        if not self.simulation.day_pending or self.simulation.paused:
             return
         conversations = {npc.conversation for npc in [*self.npcs, self.simulation.snake]
                          if npc.conversation is not None}
@@ -513,7 +512,7 @@ class ConversationSession:
             conversation.cancel("The day ended before this conversation was ready.")
 
     def request_conversation_dialogue(self, conversation, *, start=True):
-        if self.simulation.phase_pending:
+        if self.simulation.day_pending:
             self.wrap_up_conversation(conversation)
         if not conversation.accepts_response or not conversation.arrived:
             return
@@ -573,8 +572,7 @@ class ConversationSession:
         visible = (self.view_open and self.view_actor is npc
                    and self.viewed_conversation is None and self.view_interaction_id == interaction.id)
         accepted = accept_resident_reply(self.simulation, request, result, error, rewritten,
-            dialogue_validation=self.dialogue_validation, visible=visible,
-            record_open=self.record is record)
+            visible=visible, record_open=self.record is record)
         interaction.pending_request = None
         if not accepted.error and record is not None and visible:
             self.select_record(record)

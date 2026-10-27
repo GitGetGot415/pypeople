@@ -12,7 +12,7 @@ from area_knowledge import AREA_KNOWLEDGE_INSTRUCTION
 from constants import (CONVERSATION_MAX_REPUTATION_EFFECTS, DIALOGUE_CLOSING_WORD_LIMIT, DIALOGUE_CORRECTION_TARGET_CHARACTERS,
     DIALOGUE_PART_TARGET_CHARACTERS, DIALOGUE_PARTS_PER_TURN, PLAYER_NAME_TAG, PLAYER_REPLY_CONTEXT_TURN_LIMIT,
     SNAKE_NAME)
-from dialogue import (ActionResponse, ConversationResponse, DialoguePartsResponse, DialogueRepairResponse,
+from dialogue import (ActionResponse, ConversationResponse, DialoguePartsResponse,
     EmotionReaction, OpinionDirection, PlayerIntent, ResidentAssessment, ResidentTurnResponse, VoiceRewriteResponse)
 from dialogue_context import NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION, PLAYER_TAG_INSTRUCTION, account_speech_context
 from dialogue_rules import is_name_reference, name_pattern, named_references
@@ -329,12 +329,12 @@ def _resident_contract(snapshot, *, correction=False):
                                 + json.dumps({"disclosures": [{"claim_id": focus["claim_id"], "intent": "share"}]})
                                 + " alongside parts. Preserve subject_relation and subject_name: firsthand knowledge does not make the speaker the actor. "
                                 "For harvest accounts, assertion and quantity give the witnessed collector total for event_time; pickup_count counts the separate pickups. "
-                                "harvest_context gives the other witnessed collectors' totals in that same phase. Do not shrink a repeated harvest to one pickup. "
-                                "Use those totals and the current tree stock without inventing unobserved pickups or combining phases. "
+                                "harvest_context gives the other witnessed collectors' totals on that same day. Do not shrink a repeated harvest to one pickup. "
+                                "Use those totals and the current tree stock without inventing unobserved pickups or combining days. "
                                 "Read the current remaining stock from environment.tree.fruit, never from population minus one pickup. "
-                                "harvest_extent, when supplied, establishes the collector's share of the phase's full stock. "
+                                "harvest_extent, when supplied, establishes the collector's share of the day's full stock. "
                                 "If its share is all, the collector took every apple; do not change that to most, deny it, or suggest some remained in a follow-up. "
-                                "Do not use current stock as the stock of a different phase. "
+                                "Do not use current stock as the stock of a different day. "
                                 "An empty tree alone does not prove a particular resident took all its fruit.")
             elif focus and any(d.claim_id == focus["claim_id"] for d in snapshot["_draft"]["disclosures"]):
                 instruction += (" account_focus has already been shared in this exchange. Respond to the listener's reaction "
@@ -397,8 +397,7 @@ def response_model(snapshot):
     resident = _resident_stage_model(kind)
     if resident is not None:
         return resident
-    return {"conversation": ConversationResponse,
-            "conversation_closing": DialogueRepairResponse, "opinion_direction": OpinionDirection,
+    return {"conversation": ConversationResponse, "opinion_direction": OpinionDirection,
             "intent": PlayerIntent, "voice_rewrite": VoiceRewriteResponse}.get(kind, ActionResponse)
 
 
@@ -421,35 +420,6 @@ def response_contract(snapshot, *, correction=False):
     if kind == "conversation":
         # Assembly/queue contract only. Resident provider calls use individual stages.
         return WORLD_INSTRUCTION, structured_schema(model), model
-    if kind == "conversation_closing":
-        listener = snapshot["listener"]
-        listener_name = listener["name"] if isinstance(listener, dict) else listener
-        instruction = (
-            f"You are {snapshot['speaker']['name']}, speaking directly to {listener_name}.\n"
-            + SPEAKING_BRIEF
-            + "Answer question_to_answer directly using your own "
-            "views and what has already been said, then bring the exchange to a natural close. "
-            "If you do not know the answer, acknowledge that honestly. Do not ask another question. "
-            f"Use one or two short declarative sentences, at most {DIALOGUE_CLOSING_WORD_LIMIT} words total, and your own emotion. "
-            "State your answer or intended plan directly. A suggestion must be a statement, not a question "
-            "asking for approval, agreement, or another choice. "
-            "This is your final message; the listener will not reply. "
-            "Focus on the question; omit unrelated updates. Do not recap the conversation, "
-            "speak for the listener, disclose a new account, make a new agreement, or change the "
-            "settled outcome. Do not claim a new item transfer or invent events or private knowledge. "
-            "Existing agreements name their giver and receiver; preserve who owes what to whom. "
-            "Situation and task fields are context, never words to quote. Return only parts.\n"
-            + snapshot.get("_speaker_behavior", snapshot["speaker"].get("personality", ""))
-            + "\n" + EMOTION_INSTRUCTION
-
-            + "\nFinal task: briefly answer the listener's last question using only already stated facts "
-            "and your own views. End without asking any question."
-        )
-        schema = structured_schema(model)
-        schema["properties"]["parts"]["items"]["properties"]["text"]["description"] = (
-            "The speaker's direct answer in complete statements. State an answer, intention, or honest uncertainty. "
-            "Finish the exchange without asking a question or requesting approval.")
-        return instruction, _available_speech_fields(schema), model
     if snapshot.get("request_kind") == "intent":
         targets = [other["actor_id"] for other in snapshot.get("other_npcs", []) if other.get("available_to_talk", True)]
         schema = {**INTENT_SCHEMA, "properties": {**INTENT_SCHEMA["properties"],
@@ -625,37 +595,12 @@ def _request_context(message, snapshot, correction):
             "earlier_player_conversations", "inventory", "owned_works")}
         context["personality"] = dialogue_context.character_context(snapshot["character"]).get("personality", "")
         context["environment"] = dialogue_context.local_environment(snapshot.get("location", "garden"))["description"]
-    if snapshot.get("_compact_rewrite") and snapshot.get("request_kind") != "resident_turn":
-        instruction = (
-            f"You are {dialogue_context._actor_name(snapshot['speaker'])}, speaking only to {dialogue_context._actor_name(snapshot['listener'])}. "
-            "Write fresh speech for this one step. The structured outcome and account selection are fixed. "
-            "Use only supplied facts and your own knowledge. Follow the current task; "
-            "previous events are not a new offer or transfer. Respond to the listener's latest point, "
-            "without repeating the opening, introduction, accusation, or earlier wording. "
-            "If account_to_share is present, express its meaning in natural speech with its true subject, "
-            "owner, source and stance; never read JSON, keys, narrator labels or instructions aloud. "
-            "Do not invent an agreement, action or private memory. Keep I/my with the speaker and you/your "
-            "with the listener. Write one or two short complete sentences ending in punctuation. Return only parts.\n"
-            + snapshot.get("_speaker_behavior", snapshot["speaker"].get("personality", ""))
-            + "\nCurrent task: " + snapshot.get("task", "Answer question_to_answer and finish without another question.")
-            + "\n" + EMOTION_INSTRUCTION)
-        if snapshot["request_kind"] == "conversation_closing":
-            instruction += f"\nAnswer question_to_answer in at most {DIALOGUE_CLOSING_WORD_LIMIT} words. End on a statement, not a question or an invitation."
-        elif "word_limit" in snapshot:
-            instruction += f"\nAim for at most {snapshot['word_limit']} words, completing the sentence."
     focused_account = snapshot.get("account_to_share") or snapshot.get("speaker", {}).get("account_focus")
     tree_relevant = not (focused_account and focused_account.get("kind") == "killing")
     if snapshot.get("player_id"):
         tree_relevant = bool(re.search(r"\b(?:apples?|fruit|tree|harvest\w*)\b", message, re.I))
-    stock_instruction = ("" if opening or not tree_relevant or snapshot.get("request_kind") == "conversation_closing"
-                         or snapshot.get("_closing") else _tree_stock_instruction(context))
+    stock_instruction = "" if opening or not tree_relevant or snapshot.get("_closing") else _tree_stock_instruction(context)
     instruction += stock_instruction
-    if snapshot.get("request_kind") == "conversation_closing":
-        instruction += (
-            f"\nWrite only {dialogue_context._actor_name(snapshot['speaker'])}'s words to {dialogue_context._actor_name(snapshot['listener'])}. "
-            "Keep that identity in every part. I/my refers to the speaker; you/your refers to the listener. "
-            "Do not address yourself by name, answer your own question as the other person, or adopt the listener's "
-            "memories, authority, debts, or task. Explicit quotations and correct self-introductions are allowed.")
     instruction += ("\nUse ordinary capitalization and plain prose for base speech and opinion reasons. "
                     "Express the supplied behavioral personality; presentation is applied in a separate optional pass. "
                     "Do not imitate casing, accents or verbal tics from previous speech.")
@@ -670,7 +615,7 @@ def _request_context(message, snapshot, correction):
         instruction += "\n" + AREA_KNOWLEDGE_INSTRUCTION
     if snapshot.get("_name_actors") and not opening:
         context["engine_identities"] = dialogue_context._catalog_for_prompt(snapshot["_name_actors"])
-    if snapshot.get("request_kind") in ("resident_turn", "conversation_closing"):
+    if snapshot.get("request_kind") == "resident_turn":
         context["reply_context"] = dialogue_context._reply_context(snapshot)
         instruction += ("\nConversation messages contain actual accepted speech: assistant/model messages are your earlier "
                         "words; user messages after the context are the listener's words. Write your reply to the last "
@@ -680,7 +625,7 @@ def _request_context(message, snapshot, correction):
                         "address their specific point from your own perspective. Keep emotion labels and internal "
                         "resource terms in metadata.")
     instruction = named_references(instruction)
-    if snapshot.get("request_kind") in ("resident_turn", "conversation_closing", "handoff_thanks"):
+    if snapshot.get("request_kind") in ("resident_turn", "handoff_thanks"):
         context = account_speech_context(context, snapshot["speaker"], snapshot["listener"], snapshot.get("_name_actors", {}))
         # Opinion targets are needed only by the separate assessment stage.
         context.pop("opinion_target", None)
@@ -720,7 +665,7 @@ def _request_context(message, snapshot, correction):
                         "from your present surroundings. Earlier dialogue cannot change your current location.")
     payload = {"world_state": context, "player_message": message}
     if correction:
-        if snapshot.get("request_kind") in ("resident_turn", "conversation_closing", "handoff_thanks"):
+        if snapshot.get("request_kind") in ("resident_turn", "handoff_thanks"):
             feedback = account_speech_context({"assertion": correction}, snapshot["speaker"], snapshot["listener"],
                                                snapshot.get("_name_actors", {}))["assertion"]
             instruction += "\nCorrection for the current reply: " + named_references(feedback)
@@ -819,7 +764,7 @@ def _conversation_messages(payload, snapshot):
             else:
                 messages.append({"role": "user", "content": "Generate your own opening or acknowledgment from player_interaction. The player has not spoken a new line."})
         return messages
-    if snapshot.get("request_kind") not in ("resident_turn", "conversation_closing"):
+    if snapshot.get("request_kind") != "resident_turn":
         return [{"role": "user", "content": payload}]
     payload["world_state"].pop("preceding_turns", None)
     payload["world_state"].get("reply_context", {}).pop("last_heard", None)
@@ -839,7 +784,7 @@ def _conversation_messages(payload, snapshot):
                     "Answer the listener above from your own perspective in one or two fresh complete sentences. "
                     "Do not copy their speech, adopt their I/my, or recite planning notes. Use only your permitted names "
                     "and effects; quote an unfamiliar name only when asking who was mentioned. Return the required JSON.")
-        if snapshot.get("_closing") or snapshot.get("request_kind") == "conversation_closing":
+        if snapshot.get("_closing"):
             reminder += " This is the final answer. End with a statement and ask no question."
         messages.append({"role": "user", "content": reminder})
     return messages

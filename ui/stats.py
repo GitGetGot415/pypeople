@@ -6,7 +6,7 @@ from conversation_history import (has_failed_voice_rewrite, split_opinion_outcom
                                  uses_original_dialogue, voice_rewrite_errors)
 from emotions import portrait_expression
 from npc import NPC
-from social_records import claim_by_id, fact_by_id, phase_label
+from social_records import claim_by_id, fact_by_id
 from information import assertion_text, selected_beliefs
 from social import concern_description
 from .creations import CreationsGallery
@@ -385,7 +385,7 @@ class StatsScreen:
         sim = app.simulation
         death = next(f for f in sim.facts if f.kind == "killing" and f.object_id == actor.id)
         killer = sim.participant_by_id(death.subject_id)
-        add(f"Killed by {PLAYER_LABEL if killer is sim.player else killer.name} / {phase_label(death.phase)}")
+        add(f"Killed by {PLAYER_LABEL if killer is sim.player else killer.name} / {death.day}")
         if death.conversation_id:
             top = height()
             add("View confrontation", app.small_font, ACCENT)
@@ -431,7 +431,7 @@ class StatsScreen:
             goal = npc.goal
             if goal:
                 add(goal.objective)
-                add(f"{goal.status.title()} / due {phase_label(goal.deadline)}", app.small_font, MUTED)
+                add(f"{goal.status.title()} / due {goal.deadline}", app.small_font, MUTED)
                 if goal.outcome:
                     add(goal.outcome, app.small_font)
             else:
@@ -448,7 +448,7 @@ class StatsScreen:
         elif page == "Social":
             add("Apple promises", app.heading_font)
             promises = [p for p in sim.promises if npc.id in (p.promisor_id, p.recipient_id)]
-            promises.sort(key=lambda p: (p.status == "pending", p.created_phase), reverse=True)
+            promises.sort(key=lambda p: (p.status == "pending", p.created_day), reverse=True)
             if not promises:
                 add("No promises yet.", color=MUTED)
             for promise in (promises if "promises" in self.expanded else promises[:STATS_COLLAPSED_ROWS]):
@@ -457,7 +457,7 @@ class StatsScreen:
                 top = height()
                 add(f"{giver.name} -> {recipient.name}: one apple / {promise.status} [view]", app.small_font, ACCENT)
                 self._link(top, height(), lambda cid=promise.conversation_id: self._open_conversation(app, cid))
-                add(f"Due {phase_label(promise.deadline)}", app.small_font, MUTED)
+                add(f"Due {promise.deadline}", app.small_font, MUTED)
                 if promise.outcome:
                     add(promise.outcome, app.small_font)
             if len(promises) > STATS_COLLAPSED_ROWS:

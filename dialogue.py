@@ -108,7 +108,7 @@ class PlayerOpinionChange(StrictResponse):
 
 class PlayerApplePromise(StrictResponse):
     giver_id: str
-    deadline: int = Field(ge=0)
+    deadline: int = Field(ge=1)
 
 
 class PlayerInvitation(StrictResponse):
@@ -236,10 +236,6 @@ class ConversationResponse(StrictResponse):
             if turn.speaker != expected or not turn.text.strip():
                 raise ValueError("Conversation must contain alternating, nonempty turns.")
         return self
-
-
-class DialogueRepairResponse(DialoguePartsResponse):
-    parts: list[ConversationPart] = Field(min_length=1, max_length=1)
 
 
 class VoiceRewriteResponse(StrictResponse):

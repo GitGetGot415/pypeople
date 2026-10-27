@@ -90,7 +90,7 @@ def commit_transfer(world, interaction):
         description = f'{work.kind}: {work.title} [{work.id}]'
     interaction.transferred = True
     transfer = TransferReceipt.committed(id=uuid4().hex, giver_id=giver.id, recipient_id=recipient.id,
-                    item=item, quantity=quantity, day=world.day, phase=world.phase,
+                    item=item, quantity=quantity, day=world.day,
                     sequence=sum(len(r.transfers) for r in world.history))
     record.transfers.append(transfer)
     event = world.publish("fruit_shared" if item == "fruit" else "work_shared", (giver, recipient),
@@ -383,11 +383,11 @@ def validate_player_transfer(result, snapshot):
             raise ValueError("A future apple promise is separate from a current gift.")
         if promise.deadline not in [p["deadline"] for p in snapshot.get("apple_promise_choices", [])]:
             raise ValueError("Use an available apple deadline.")
-        now = snapshot.get("phase_index", 0)
+        now = snapshot.get("day", 1)
         if promise.giver_id == snapshot.get("actor_id"):
-            validate_apple_offer(result.reply, promise.deadline, current_phase=now)
+            validate_apple_offer(result.reply, promise.deadline, current_day=now)
         elif promise.giver_id == snapshot.get("player_id"):
-            validate_apple_promise(snapshot.get("_player_message", ""), result.reply, promise.deadline, current_phase=now)
+            validate_apple_promise(snapshot.get("_player_message", ""), result.reply, promise.deadline, current_day=now)
         else:
             raise ValueError("An apple promise must belong to the current participants.")
     if result.gift_acceptance:
@@ -417,94 +417,3 @@ def validate_player_transfer(result, snapshot):
             raise ValueError("SAY cannot claim an unperformed transfer.")
         if re.search(r"\bi(?: will|['’]ll| promise to)\b[^.!?]{0,35}\b(?:paint|compose|write|make)\b[^.!?]{0,50}\b(?:for you|you a|your commission)\b", speech):
             raise ValueError("A SAY reply cannot promise an unsupported creative commission.")
-
-
-def validate_transfer_history(ctx):
-    state = ctx.state
-    history, creations, promises, acknowledgments = ctx.history, state.creations, state.promises, state.player_acknowledgments
-    owner_ids, live_ids, player_id, now, creation_ids, ids = ctx.owner_ids, ctx.live_ids, state.player.id, ctx.now, ctx.creation_ids, ctx.ids
-    from conversation_history import validate_history_record
-    from social_records import phase_index
-    from social_saves import validate_player_promise_offers
-    transfer_ids, transfer_order, player_offer_ids = set(), [], set()
-    for record in history.values():
-        validate_player_promise_offers(record, promises, owner_ids, player_id, now, player_offer_ids)
-        validate_history_record(record, history, ids, player_id)
-        for transfer in record.transfers:
-            if (transfer.id in transfer_ids
-                    or transfer.giver_id not in owner_ids or transfer.recipient_id not in owner_ids
-                    or transfer.giver_id == transfer.recipient_id or transfer.item != "fruit" and (
-                        transfer.item not in creation_ids or transfer.quantity != 1)
-                    or phase_index(transfer.day, transfer.phase) > now):
-                raise ValueError("Invalid committed transfer provenance.")
-            transfer_ids.add(transfer.id)
-            transfer_order.append(transfer)
-    if sorted(t.sequence for t in transfer_order) != list(range(len(transfer_order))):
-        raise ValueError("Transfer history must retain its unique commit order.")
-    owners = {w.id: w.creator_id for w in creations}
-    for transfer in sorted(transfer_order, key=lambda t: t.sequence):
-        if transfer.item != "fruit":
-            if owners[transfer.item] != transfer.giver_id:
-                raise ValueError("Transfer provenance does not follow the actual previous owner.")
-            owners[transfer.item] = transfer.recipient_id
-    if any(owners[w.id] != w.owner_id for w in creations):
-        raise ValueError("Current work ownership must match its committed transfer history.")
-    for ack in acknowledgments:
-        record = history.get(ack.record_id)
-        if (ack.npc_id not in live_ids
-                or record is None or not any(t.id == ack.transfer_id
-                    and {t.giver_id, t.recipient_id} == {player_id, ack.npc_id} for t in record.transfers)):
-            raise ValueError("A pending acknowledgment needs its committed player handoff.")
-    if len({a.transfer_id for a in acknowledgments}) != len(acknowledgments):
-        raise ValueError("Duplicate pending transfer acknowledgment.")
-
-
-def transfer_matches(intent, giver_id, recipient_id, item, quantity):
-    return intent is not None and (intent.giver_id, intent.recipient_id, intent.item, intent.quantity) == (
-        giver_id, recipient_id, item, quantity)
-
-
-def validate_saved_handoffs(ctx):
-    state = ctx.state
-    handoffs, history, live, live_ids, player = state.handoffs, ctx.history, ctx.live, ctx.live_ids, state.player
-    ownership, mode, creation_ids, events, reserved, tree_id = ctx.physical, state.mode, ctx.creation_ids, ctx.events, ctx.reserved, state.tree.id
-    from activity import validate_activity_target
-    from conversation_history import source_record
-    for handoff in handoffs:
-        pair = {handoff.initiator, handoff.recipient}
-        residents_in_pair = pair - {player.id}
-        record = source_record(history, handoff.record)
-        if (len(pair) != 2 or not residents_in_pair <= live_ids
-                or residents_in_pair & reserved or set(record.participant_ids) != pair
-                or set(handoff.saved_states) != residents_in_pair):
-            raise ValueError("Invalid handoff participants, reservation, or source record.")
-        if player.id in pair:
-            resident_id = next(iter(residents_in_pair))
-            if (not ownership or ownership.kind != "resident"
-                    or ownership.npc_id != resident_id or ownership.record_id != record.id
-                    or ownership.stage not in ("conversation", "handoff")
-                    or mode != "player" or not player.alive):
-                raise ValueError("A player handoff requires its actual exclusive physical owner.")
-        locations = {live[i].location if i != player.id else player.location for i in pair}
-        if len(locations) != 1 or player.id in pair and not handoff.arrived:
-            raise ValueError("Handoff participants must share their physical location.")
-        if (handoff.transferred != bool(handoff.outcome_event_id)
-                or handoff.transferred != (handoff.elapsed >= GIFT_GIVE_SECONDS)
-                or not handoff.arrived and handoff.elapsed != 0
-                or handoff.item != "fruit" and (handoff.item not in creation_ids or handoff.quantity != 1)):
-            raise ValueError("Invalid handoff progress or possession.")
-        if not transfer_matches(record.transfer_intent, handoff.initiator, handoff.recipient, handoff.item, handoff.quantity):
-            raise ValueError("A handoff needs matching accepted authorization.")
-        receipts = [t for t in record.transfers
-                    if transfer_matches(t, handoff.initiator, handoff.recipient, handoff.item, handoff.quantity)]
-        if handoff.transferred and (not receipts or handoff.outcome_event_id not in events
-                or events[handoff.outcome_event_id].kind != ("fruit_shared" if handoff.item == "fruit" else "work_shared")
-                or events[handoff.outcome_event_id].history != record.id
-                or set(events[handoff.outcome_event_id].participants) != pair):
-            raise ValueError("A committed handoff needs its receipt and event.")
-        if handoff.rewritten_thanks and (len(handoff.rewritten_thanks) != len(handoff.thanks)
-                or any(not text.strip() for text in handoff.rewritten_thanks)):
-            raise ValueError("Rewritten thanks must match the original parts.")
-        reserved.update(residents_in_pair)
-        for participant_id, activity in handoff.saved_states.items():
-            validate_activity_target(activity, tree_id)

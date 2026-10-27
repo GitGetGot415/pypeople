@@ -96,7 +96,7 @@ def reconsider(npc, world, *, pressing_only=False):
         return
     if owns_resident(world, npc) or npc.journey or world.visit and world.visit.host_id == npc.id:
         return
-    if (world.phase_pending or npc.interaction is not None or npc.resume_pending or npc.player_call or npc.behavior in HOME_BEHAVIORS):
+    if (world.day_pending or npc.interaction is not None or npc.resume_pending or npc.player_call or npc.behavior in HOME_BEHAVIORS):
         return
     if not target_valid(npc, world):
         npc.finish_activity(world, failed=True)
@@ -114,7 +114,7 @@ def reconsider(npc, world, *, pressing_only=False):
     if npc.behavior in (Behavior.GO_TO_TREE, Behavior.HARVEST, Behavior.EAT):
         return
 
-    obligations = sorted(pending_promises(world, npc.id), key=lambda promise: (promise.deadline, promise.created_phase))
+    obligations = sorted(pending_promises(world, npc.id), key=lambda promise: (promise.deadline, promise.created_day))
     goal = npc.goal if npc.goal and npc.goal.status == "active" else None
     delivery_targets = [(promise.recipient_id, "Delivering a promised apple") for promise in obligations]
     goal_target = world.npc_by_id(goal.target_id) if goal else None
@@ -210,7 +210,7 @@ def actionable_obligation(npc, world):
 
 def social_pair(world, *, due=None):
     """Reserve through the caller immediately; rotate initiators and vary partners."""
-    if world.phase_pending:
+    if world.day_pending:
         return None
     ordered = world.npcs[world.social_rotation:] + world.npcs[:world.social_rotation]
     available = [npc for npc in ordered if world.company_available(npc)

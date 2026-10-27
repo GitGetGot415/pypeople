@@ -143,8 +143,7 @@ def _orientation_world_context(snapshot, *, correction=False):
     """A present concern must not compete with private goals."""
     context = {"request_kind": "conversation", "purpose": "chat", "arrival_focus": True,
                "environment": local_environment(snapshot["initiator"].get("location", "garden")),
-               "day": snapshot["initiator"].get("day", 1),
-               "time_of_day": snapshot["initiator"].get("time_of_day", "day")}
+               "day": snapshot["initiator"].get("day", 1)}
     for role, other in (("initiator", "recipient"), ("recipient", "initiator")):
         person, partner = snapshot[role], snapshot[other]
         private = person.get("private_context", {})
@@ -175,7 +174,7 @@ def world_context(snapshot, *, correction=False):
     """Supply relevant state without exposing other NPCs' private knowledge."""
     if snapshot.get("request_kind") == "conversation" and snapshot.get("arrival_focus", False):
         return _orientation_world_context(snapshot, correction=correction)
-    if snapshot.get("request_kind") in ("conversation_closing", "resident_turn", "resident_assessment", "handoff_thanks"):
+    if snapshot.get("request_kind") in ("resident_turn", "resident_assessment", "handoff_thanks"):
         context = {k: v for k, v in snapshot.items() if not k.startswith("_")}
         context["environment"] = local_environment(snapshot.get("location", "garden"))
         if snapshot.get("location", "garden") == "garden":
@@ -239,8 +238,8 @@ def world_context(snapshot, *, correction=False):
                     private["permitted_accounts"] = accounts if focus else accounts[:3]
                 if private.get("goal"):
                     private["goal"] = {key: value for key, value in private["goal"].items()
-                                       if key not in {"id", "created_phase", "resolution_event_id",
-                                                      "resolved_phase", "last_attempt_phase"}}
+                                       if key not in {"id", "created_day", "resolution_event_id",
+                                                      "resolved_day", "last_attempt_day"}}
                 person["private_context"] = private
         if "private_context" in person:
             private = person["private_context"] = person["private_context"].copy()
@@ -260,7 +259,7 @@ def world_context(snapshot, *, correction=False):
         }
     if conversation:
         current = snapshot["initiator"]
-        context["day"], context["time_of_day"] = current["day"], current["time_of_day"]
+        context["day"] = current["day"]
         if focus:
             context["discussion_focus"] = {key: focus[key] for key in ("assertion", "kind")}
             context["discussion_focus"]["subject_name"] = actor_names.get(focus["subject_id"])
@@ -370,7 +369,7 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
                  interaction_id=snapshot.get("interaction_id"), arrival_focus=orientation, speaker=speaker, listener=listener,
                  social_only=any(speech_only(snapshot[r]) for r in ("initiator", "recipient")),
                  opinion_target=partner["name"], pending_reactions=pending, choices=choices,
-                 day=person.get("day", 1), time_of_day=person.get("time_of_day", "day"),
+                 day=person.get("day", 1),
                  environment=local_environment(person.get("location", "garden")), location=person.get("location", "garden"),
                  preceding_turns=preceding, shared_history=deepcopy(owned_context.get("shared_history", {})),
                  _preceding_turns=preceding, _name_actors=catalog, _dialogue_validation=snapshot.get("_dialogue_validation", True),
