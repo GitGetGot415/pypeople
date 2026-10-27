@@ -495,7 +495,7 @@ def validate_saved_conversations(ctx):
     state = ctx.state
     conversations, history, facts, claims, creations, reserved, tree_id = (
         state.conversations, ctx.history, ctx.facts, ctx.claims, state.creations, ctx.reserved, state.tree.id)
-    live, live_ids = {**ctx.live, state.snake.id: state.snake}, ctx.live_ids | {state.snake.id}
+    live = {**ctx.live, state.snake.id: state.snake}
     from constants import CONVERSATION_MAX_TURNS
     from activity import validate_activity_target
     from information import validate_information
@@ -509,7 +509,7 @@ def validate_saved_conversations(ctx):
         for index, activity in zip(pair, interaction.saved_states):
             if live[pair[0]].location != live[pair[1]].location:
                 raise ValueError("Conversation participants must share a location.")
-            validate_activity_target(activity, live[index], tree_id, live_ids)
+            validate_activity_target(activity, tree_id)
             if activity.destination is not None:
                 from locations import validate_destination
                 validate_destination(activity.destination, location=live[index].location)

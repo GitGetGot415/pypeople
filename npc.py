@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 from social_records import ConversationConcern, Goal, OpinionEffect, Belief
 from social import check_relationship_goals, private_context
-from interactions import PlayerReplyProgress, company_point, face_toward, move_toward, suspended_activity
+from interactions import PlayerReplyProgress, face_toward, move_toward, suspended_activity
 from dataclasses import asdict, dataclass, field
 from activity import ActivitySnapshot, Behavior
 from uuid import uuid4
@@ -14,9 +14,9 @@ from emotions import portrait_expression
 from conversation_history import Memory, relevant_memories
 from constants import (MAX_RESIDENTS, PLAYER_CALL_COOLDOWN, REST_SECONDS_RANGE, CREATION_WORK_SECONDS_RANGE,
                        OUTDOOR_COOLDOWN_SECONDS, APPLE_SATISFACTION,
-                       COMPANY_MAX_SECONDS, DECISION_SECONDS, DEFAULT_CHARACTER_NAME, EAT_SECONDS,
+                       DECISION_SECONDS, DEFAULT_CHARACTER_NAME, EAT_SECONDS,
                        CONVERSATION_PAUSE_RANGE, CONVERSATION_RETURN_PAUSE, FAILURE_COOLDOWN, GIFT_GIVE_SECONDS,
-                       MOVEMENT_SPEED, NPC_RADIUS, PARTNER_COOLDOWN, SNAKE_NAME, SOCIAL_RADIUS, SOCIAL_RECOVERED,
+                       MOVEMENT_SPEED, NPC_RADIUS, PARTNER_COOLDOWN, SNAKE_NAME,
                        WANDER_PAUSE, FOOT_MARGIN, STARTING_DAY, STARTING_NPC_FRUIT, STARTING_NPC_GENEROSITY_RANGE,
                        STARTING_NPC_POSITION, STARTING_NPC_SATISFACTION_RANGE, STARTING_NPC_SOCIABILITY_RANGE,
                        STARTING_TREE_POSITION, STARTING_FATIGUE_RANGE, EXCHANGE_FATIGUE)
@@ -235,8 +235,8 @@ class NPC(ResidentValues, ConversationActor):
 
     def finish_activity(self, world, failed=False):
         target = self.target_id
-        if target is not None and (failed or self.behavior == Behavior.COMPANY):
-            self.cooldowns[target] = FAILURE_COOLDOWN if failed else PARTNER_COOLDOWN
+        if target is not None and failed:
+            self.cooldowns[target] = FAILURE_COOLDOWN
         self.behavior = Behavior.WAIT
         self.destination = None
         self.target_id = None
@@ -265,23 +265,12 @@ class NPC(ResidentValues, ConversationActor):
                 start_journey(self, "garden", world.tree.interaction_point, purpose="tree", fast=False)
                 return
             self.destination = world.tree.interaction_point
-        elif behavior == Behavior.COMPANY:
-            partner = world.npc_by_id(target)
-            self.destination = company_point(self, partner) if partner is not None else None
-            if self.destination is None:
-                self.finish_activity(world, failed=True)
 
     def resume_activity(self, world):
         """Resume suspended activity on a simulation tick, preserving committed progress."""
         self.resume_pending = False
         if self.behavior in (Behavior.HARVEST, Behavior.GO_TO_TREE):
             self.begin_activity(self.behavior, world, world.tree.id, self.reason, self.owner)
-        elif self.behavior == Behavior.COMPANY:
-            partner = world.npc_by_id(self.target_id)
-            if partner is None or not world.company_available(partner):
-                self.finish_activity(world, failed=True)
-            else:
-                self.destination = company_point(self, partner)
 
 
     @property
@@ -348,7 +337,6 @@ class NPC(ResidentValues, ConversationActor):
             Behavior.GO_TO_TREE: "Walking to tree",
             Behavior.HARVEST: "Collecting apples at the tree",
             Behavior.EAT: "Eating an apple",
-            Behavior.COMPANY: "Seeking company" if self.destination else "Spending time together",
             Behavior.WAIT: "Waiting",
             Behavior.GO_HOME: "Walking home",
             Behavior.REST: "Relaxing at home",
@@ -550,14 +538,7 @@ class NPC(ResidentValues, ConversationActor):
         left, right, top, bottom = self.movement_bounds
         dt = max(0.0, dt)
         behavior = self.behavior
-        if self.selected and behavior == Behavior.COMPANY:
-            return
         if behavior == Behavior.WANDER and not self.wandering_paused:
-            if any(other.behavior == Behavior.COMPANY and other.target_id == self.id
-                   and world.company_available(other) and math.hypot(other.x - self.x, other.y - self.y) <= SOCIAL_RADIUS
-                   for other in world.npcs):
-                self._face_when_still()
-                return
             remaining = self.pause_remaining
             self.pause_remaining = max(0.0, remaining - dt)
             movement_dt = max(0.0, dt - remaining)
@@ -581,23 +562,6 @@ class NPC(ResidentValues, ConversationActor):
                 self.finish_activity(world, failed=True)
                 return
             self.finish_activity(world)
-        elif behavior == Behavior.COMPANY:
-            partner = world.npc_by_id(self.target_id)
-            self.activity_elapsed += dt
-            if partner is None or not world.company_available(partner):
-                self.finish_activity(world, failed=True)
-            elif self.social >= SOCIAL_RECOVERED or self.activity_elapsed >= COMPANY_MAX_SECONDS:
-                self.finish_activity(world)
-            else:
-                point = company_point(self, partner)
-                if point is None:
-                    self.finish_activity(world, failed=True)
-                elif self.destination is not None or math.hypot(self.x - partner.x, self.y - partner.y) > SOCIAL_RADIUS:
-                    self.destination = point
-                    if self._move(dt):
-                        self.destination = None
-                else:
-                    face_toward(self, (partner.x, partner.y))
         elif behavior == Behavior.EAT:
             from interactions import collect_eating_witnesses
             collect_eating_witnesses(world, self)
@@ -621,7 +585,7 @@ class NPC(ResidentValues, ConversationActor):
         dx, dy = self.x - old_x, self.y - old_y
         if dx or dy:
             face_toward(self, (self.x + dx, self.y + dy))
-        elif self.behavior != Behavior.COMPANY:
+        else:
             self._face_when_still()
 
 

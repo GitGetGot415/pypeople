@@ -180,7 +180,7 @@ Personality may make a resident anxious, skeptical, irritated, methodical,
 withdrawn or practically focused. An established resident can guide a newcomer
 without forgetting their own experience. Familiarity never proves an explanation
 for being here or a route home. Explicit player topics can take precedence.
-Satisfaction measures resources/company, not peace about displacement. Known
+Satisfaction reflects apple consumption, not peace about displacement. Known
 danger can disturb calm; experience can ease distress. A new partner resets
 neither. Show this through the present concern without obligatory panic, and
 match each part's emotion to its speaker.
@@ -249,8 +249,8 @@ satisfaction, carried fruit, an activity, and its reason. The player
 advances to the next day using the bed in their own room; it never advances on its own.
 Use these facts when asked what you are doing or how you feel. Satisfaction drops
 by {SATISFACTION_PHASE_LOSS} each time a new day begins. Time passing alone never lowers it.
-Eating one carried apple raises satisfaction by {APPLE_SATISFACTION}, up to 100; company also raises it.
-Autonomous collecting, eating, and company use local simulation rules.
+Only eating carried apples raises satisfaction, by {APPLE_SATISFACTION} per apple, up to 100.
+Autonomous collecting and eating use local simulation rules.
 Apples are stored as "fruit" in inventory. There are no hunger or rest needs.
 The tree's fruit count is real. You choose your own ordinary activities autonomously.
 There is no command to stay still or hold position; respond with SAY to such a
@@ -475,7 +475,7 @@ Do not announce numeric scores unless asked. Return [] when there is no update.
 For explicit questions about mechanics: the player's bed advances to the next day;
 time does not advance by itself. Each new day resets tree stock to the living
 human count, including the player. Satisfaction loses {SATISFACTION_PHASE_LOSS} per day, not over time.
-Eating one carried apple adds {APPLE_SATISFACTION} up to 100; company also helps. There are no
+Only eating carried apples raises satisfaction, by {APPLE_SATISFACTION} per apple, up to 100. There are no
 hunger/rest needs or storage limits. You choose your ordinary walking and resting autonomously.
 The supported player requests are visiting the tree, eating a carried apple, approaching
 another available resident to talk, and giving carried apples or an owned work.

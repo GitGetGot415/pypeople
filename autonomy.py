@@ -86,10 +86,6 @@ def target_valid(npc, world):
         return (npc.target_id == world.tree.id
                 and (npc.behavior == Behavior.GO_TO_TREE or world.available_fruit > 0)
                 and npc.can_reach(world.tree.interaction_point))
-    if npc.behavior == Behavior.COMPANY:
-        partner = world.npc_by_id(npc.target_id)
-        return (partner is not None and partner is not npc and world.company_available(partner)
-                and company_point(npc, partner) is not None)
     return True
 
 
@@ -152,8 +148,6 @@ def reconsider(npc, world, *, pressing_only=False):
     npc.decision_remaining = DECISION_SECONDS
     if actionable_obligation(npc, world):
         return
-    if npc.behavior == Behavior.COMPANY and not needs_apple:
-        return
 
     def distance(point):
         return math.hypot(npc.x - point[0], npc.y - point[1]) / MOVEMENT_SPEED
@@ -165,33 +159,10 @@ def reconsider(npc, world, *, pressing_only=False):
         score = 12 + (100 - npc.social) * 0.2 + npc.preferences["generosity"] * 8 - sum(npc.inventory.values()) * 4 - distance(tree.interaction_point) + (110 if needs_apple else 0)
         candidates.append((score, collection_behavior, tree.id,
                            "Harvesting an apple to help someone" if needs_apple else "Harvesting apples from the tree"))
-    if npc.social <= SOCIAL_START:
-        partners = [other for other in world.npcs if other is not npc and world.company_available(other)
-                    and not regards_as_dangerous(npc, other)
-                    and other.id not in npc.cooldowns and company_point(npc, other) is not None]
-        if partners:
-            def company_score(other):
-                opinion = npc.opinion_score(other.id)
-                return opinion * 0.08 + memory_bias(npc, other.id) - distance((other.x, other.y))
-            partner = max(partners, key=company_score)
-            score = (100 - npc.social) * (0.8 + npc.preferences["sociability"] * 0.3) + company_score(partner)
-            candidates.append((score, Behavior.COMPANY, partner.id,
-                               f"Wanting company; spending time with {partner.name}{memory_reason(npc, partner)}"))
     _, behavior, target, reason = max(candidates, key=lambda c: c[0] + npc.rng.uniform(0, 3))
     if behavior == npc.behavior == Behavior.WANDER:
-        return  # Waiting for company must not reset an existing route.
+        return  # Keep the current wandering route.
     npc.begin_activity(behavior, world, target, reason)
-
-
-def memory_reason(npc, partner):
-    bias = memory_bias(npc, partner.id)
-    if bias >= 1:
-        if any(memory.partner_id == partner.id and memory.kind == "received_fruit" for memory in npc.memories):
-            return "; remembering that they shared an apple with me"
-        return "; remembering a positive experience with them"
-    if bias <= -1:
-        return "; cautious after an unpleasant experience with them"
-    return ""
 
 
 def donor_choice(donor, requester):

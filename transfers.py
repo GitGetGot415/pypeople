@@ -494,4 +494,4 @@ def validate_saved_handoffs(ctx):
             raise ValueError("Rewritten thanks must match the original parts.")
         reserved.update(residents_in_pair)
         for participant_id, activity in handoff.saved_states.items():
-            validate_activity_target(activity, live[participant_id], tree_id, live_ids)
+            validate_activity_target(activity, tree_id)

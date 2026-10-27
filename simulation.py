@@ -8,9 +8,9 @@ from pydantic import Field
 from uuid import uuid4
 from deaths import DeathMixin
 from locations import active_player
-from constants import (COMPANY_SOCIAL_RECOVERY, DECISION_SECONDS, MAX_SIMULATION_STEP_SECONDS,
-    SATISFACTION_PHASE_LOSS, SOCIAL_RADIUS, STARTING_DAY, STARTING_PAUSED,
-    STARTING_PHASE, COMPANY_FATIGUE_PER_SECOND, CONVERSATION_CANCELLED,
+from constants import (DECISION_SECONDS, MAX_SIMULATION_STEP_SECONDS,
+    SATISFACTION_PHASE_LOSS, STARTING_DAY, STARTING_PAUSED,
+    STARTING_PHASE, CONVERSATION_CANCELLED,
     CONVERSATION_PENDING_REPLY_STATUSES)
 
 
@@ -307,12 +307,11 @@ class Simulation(DeathMixin):
                 and (allow_player_call or not npc.player_call)
                 and npc.owner == "autonomous" and not npc.resume_pending
                 and not any(npc.id in (action.npc_id, action.target_id) for action in self.pending_actions)
-                and npc.behavior in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY))
+                and npc.behavior in (Behavior.WANDER, Behavior.WAIT))
 
     def step(self, dt, *, viewed_conversation=None):
         from autonomy import greet_arrivals, reconsider, social_pair
         from social import refresh_concern
-        from activity import Behavior
         from interactions import observe_active_conversations
 
         observe_active_conversations(self)
@@ -373,20 +372,6 @@ class Simulation(DeathMixin):
             reconsider(npc, self)
             npc.update(dt, self.tree)
         observe_active_conversations(self)
-        # Each person benefits once, regardless of how many neighbors are present.
-        socializing = []
-        for npc in self.npcs:
-            if not self.company_available(npc):
-                continue
-            if any(other is not npc and self.company_available(other)
-                   and npc.location == other.location
-                   and (npc.behavior == Behavior.COMPANY or other.behavior == Behavior.COMPANY)
-                   and math.hypot(npc.x - other.x, npc.y - other.y) <= SOCIAL_RADIUS
-                   for other in self.npcs):
-                socializing.append(npc)
-        for npc in socializing:
-            npc.social = min(100.0, npc.social + COMPANY_SOCIAL_RECOVERY * dt)
-            npc.social_fatigue = min(100.0, npc.social_fatigue + COMPANY_FATIGUE_PER_SECOND * dt)
         # Keep the pending flag through this tick's decision pass, so automatic
         # work cannot reserve a fresh partner before the requested phase applies.
         # Dawn arrivals then run before pairing on the following tick as usual.
@@ -661,7 +646,7 @@ def validate_saved_actions(ctx):
     from transfers import transfer_matches
     for index, npc in enumerate(npcs):
         if npc.id not in reserved:
-            validate_activity_target(npc, npc, tree.id, live_ids)
+            validate_activity_target(npc, tree.id)
         if npc.id in reserved and npc.behavior != Behavior.WAIT:
             raise ValueError("Encounter participants must wait.")
     pending_owners = set()

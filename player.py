@@ -505,7 +505,7 @@ def validate_saved_calls(ctx):
                 raise ValueError("A waiting reply's gift offer needs the player and a real item.")
             continue
         if call and (npc.id not in live_ids
-                or npc.behavior not in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY)
+                or npc.behavior not in (Behavior.WANDER, Behavior.WAIT)
                 or npc.owner != "autonomous"
                 or npc.id in reserved_ids
                 or any(npc.id in (a.npc_id, a.target_id) for a in pending_actions)

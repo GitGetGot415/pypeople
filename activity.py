@@ -14,7 +14,6 @@ class Behavior(str, Enum):
     GO_TO_TREE = "GO_TO_TREE"
     HARVEST = "HARVEST"
     EAT = "EAT"
-    COMPANY = "COMPANY"
     WAIT = "WAIT"
     GO_HOME = "GO_HOME"
     REST = "REST"
@@ -65,7 +64,7 @@ class ActivitySnapshot:
         return self
 
 
-def validate_activity_target(activity, owner, tree_id, live_ids):
+def validate_activity_target(activity, tree_id):
     target = activity.target_id
     if activity.behavior in (Behavior.GO_TO_TREE, Behavior.HARVEST):
         if target != tree_id:
@@ -73,8 +72,5 @@ def validate_activity_target(activity, owner, tree_id, live_ids):
     elif activity.behavior == Behavior.GO_HOME:
         if target != APARTMENT_ID:
             raise ValueError("Invalid apartment target.")
-    elif activity.behavior == Behavior.COMPANY:
-        if target not in live_ids or target == owner.id:
-            raise ValueError("A company target must be living.")
     elif target is not None:
         raise ValueError("Unexpected action target.")

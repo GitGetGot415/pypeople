@@ -149,7 +149,7 @@ def home_priority(npc, world, dt):
             if company_point(giver, receiver) is not None:
                 giver.decision_remaining = 0.0
                 return
-    if npc.behavior not in (Behavior.WANDER, Behavior.WAIT, Behavior.COMPANY):
+    if npc.behavior not in (Behavior.WANDER, Behavior.WAIT):
         return
     npc.command_revision += 1
     npc.begin_activity(Behavior.GO_HOME, world, APARTMENT_ID, "Taking some time alone")
