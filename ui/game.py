@@ -13,7 +13,7 @@ from constants import (DIALOGUE_PANEL_HEIGHT, DIALOGUE_READING_Y, DIALOGUE_READI
                       GAME_MENU_CONFIRM_TITLE_Y, GAME_MENU_CONFIRM_MESSAGE_RECT, GAME_MENU_KEEP_PLAYING_RECT,
                       GAME_MENU_LEAVE_RECT, PLAYER_ROOM_LOCATION, ROOM_BED_RECT,
                       BED_POPUP_RECT, BED_POPUP_TITLE_Y, BED_POPUP_MESSAGE_RECT, BED_ADVANCE_RECT,
-                      BED_CANCEL_RECT, PLAYER_KILL_BUTTON_RECT)
+                      BED_CANCEL_RECT)
 from emotions import portrait_expression
 from conversation_history import uses_original_dialogue
 from .dialogue_view import DialogueView
@@ -25,7 +25,7 @@ from .world import CHARACTER_SCALE, draw_world
 from .character_sprite import draw_actor_portrait
 from constants import GAME_PORTRAIT_BACKGROUND, GAME_PORTRAIT_PADDING, GAME_PORTRAIT_BORDER_WIDTH
 from .inventory import InventoryPanel
-from constants import (PLAYER_ACTION_BUTTON_RECT, PLAYER_GIVE_APPLE_RECT, PLAYER_ACTION_PICKER_RECT, PLAYER_ACTION_PICKER_ROWS,
+from constants import (PLAYER_ACTION_PICKER_RECT, PLAYER_ACTION_PICKER_ROWS,
                        PLAYER_ACTION_PICKER_ROW_HEIGHT, PLAYER_ACTION_PICKER_INSET,
                        PLAYER_ACTION_PICKER_TITLE_HEIGHT, PLAYER_ACTION_PICKER_FOOTER_HEIGHT,
                        PLAYER_ACTION_PICKER_BUTTON_WIDTH, PLAYER_ACTION_PICKER_ROW_BUTTON_HEIGHT,
@@ -34,17 +34,15 @@ from constants import (PLAYER_ACTION_BUTTON_RECT, PLAYER_GIVE_APPLE_RECT, PLAYER
 
 class GameScreen:
     def __init__(self, max_requests=MAX_LLM_REQUESTS):
-        from constants import END_CONVERSATION_RECT, HARVEST_BUTTON_RECT, HARVEST_AMOUNT_RECT, INVITATION_ACCEPT_RECT
+        from constants import HARVEST_BUTTON_RECT, HARVEST_AMOUNT_RECT
         self.app = None
         self.location = "garden"
-        self.end_button = Button(END_CONVERSATION_RECT, "End conversation")
-        self.kill_button = Button(PLAYER_KILL_BUTTON_RECT, "Kill")
+        self.end_button = Button((1192, 504, 64, 32), "End")
         self.harvest_button = Button(HARVEST_BUTTON_RECT, "Harvest apples")
         self.harvest_amount = TextInput(HARVEST_AMOUNT_RECT, max_length=6, placeholder="1")
         self.harvest_amount.set_value("1")
-        self.invitation_button = Button(INVITATION_ACCEPT_RECT, "Accept invitation")
-        self.actions_button = Button(PLAYER_ACTION_BUTTON_RECT, "Request action")
-        self.give_apple_button = Button(PLAYER_GIVE_APPLE_RECT, "Give apple")
+        self.actions_button = Button((184, 694, 112, 24), "Actions v")
+        self.action_menu = None
         self.menu_button = Button(GAME_MENU_RECT, "Menu", icon="menu", show_label=True)
         self.confirm_menu = False
         self.menu_restore_focus = False
@@ -66,9 +64,9 @@ class GameScreen:
         self.save_message_remaining = 0
         self.send_button = Button((1136, 644, 120, 44), "Send")
         self.done_button = Button((1136, 644, 120, 44), "Done")
-        self.next_button = Button((1144, 552, 112, 32), "Next")
-        self.back_button = Button((self.next_button.rect.left - 116, 552, 112, 32), "Back")
-        self.subjects_button = Button((self.back_button.rect.left - 116, 552, 112, 32), "Subjects")
+        self.next_button = Button((1176, 552, 80, 32), "Next")
+        self.back_button = Button((1092, 552, 80, 32), "Back")
+        self.subjects_button = Button((976, 552, 112, 32), "Subjects")
         self.portrait_rect = pygame.Rect(24, 552, 148, 148)
         self.original_toggle = Button(DIALOGUE_ORIGINAL_TOGGLE_RECT, "Original: Off")
         dialogue_x = self.portrait_rect.right + 16
@@ -137,6 +135,7 @@ class GameScreen:
             self.app.conversations.view_closed(terminate=terminate)
             self.app._present_conversation_events()
         self.dialogue.reset()
+        self.action_menu = None
         self.prompt_input.active = False
         self.prompt_input.backspace_held = False
 
@@ -183,26 +182,13 @@ class GameScreen:
         if self.dialogue.picker is not None:
             self.handle_action_picker(app, event)
             return
-        if self.dialogue.open and active_player(world) and self.kill_button.clicked(event):
-            app._sync_conversation_view()
-            app.conversations.kill_resident(self.dialogue.actor)
-            app._present_conversation_events()
+        if self.action_menu is not None:
+            self.handle_conversation_actions(app, event)
             return
-        if self.dialogue.open and self.give_apple_button.clicked(event):
-            if self.can_give_apple(app):
-                app._sync_conversation_view()
-                try:
-                    app.conversations.give_player_apple(self.dialogue.actor)
-                except ValueError as exc:
-                    self.show_save_message(str(exc))
-                app._present_conversation_events()
-            return
-        if self.dialogue.open and self.dialogue.conversation is None and self.actions_button.clicked(event):
-            if self.player_response_ready and not self.pending_offer:
-                reason = app.conversations.input_unavailable(self.dialogue.actor, active=app.screen == "game")
-                if not reason and self.dialogue.actor is not world.snake:
-                    self.dialogue.picker = dict(command={}, page=0, focus=self.prompt_input.active)
-                    self.prompt_input.active = self.prompt_input.backspace_held = False
+        if (self.dialogue.open and self.dialogue.conversation is None and active_player(world)
+                and self.actions_button.clicked(event)):
+            self.action_menu = "actions"
+            self.prompt_input.active = self.prompt_input.backspace_held = False
             return
         if self.can_harvest(world):
             self.harvest_amount.handle_event(event)
@@ -219,13 +205,6 @@ class GameScreen:
         if self.dialogue.open and world.player_interaction and self.end_button.clicked(event):
             self.close_dialogue()
             return
-        if self.dialogue.open and self.player_response_ready and self.invitation_button.clicked(event):
-            offer = self.pending_invitation(world)
-            if offer:
-                app._sync_conversation_view()
-                app.conversations.accept_player_invitation(offer.id)
-                app._present_conversation_events()
-                return
         if active_player(world) and self.inventory_button.clicked(event):
             self.pan_start = self.pan_last = None
             self.prompt_input.active = self.prompt_input.backspace_held = False
@@ -664,14 +643,6 @@ class GameScreen:
 
         if self.dialogue.open and app.simulation.player_interaction:
             self.end_button.draw(app.window, app.small_font)
-        if self.dialogue.open and active_player(app.simulation):
-            reason = app.simulation.player_killing_unavailable(self.dialogue.actor)
-            self.kill_button.draw(app.window, app.small_font, enabled=not reason)
-        if (self.dialogue.open and self.dialogue.conversation is None
-                and self.dialogue.actor is not app.simulation.snake and self.player_response_ready):
-            reason = app.conversations.input_unavailable(self.dialogue.actor, active=app.screen == "game")
-            self.actions_button.draw(app.window, app.small_font, enabled=not reason and not self.pending_offer)
-            self.give_apple_button.draw(app.window, app.small_font, enabled=self.can_give_apple(app))
         if not self.dialogue.open:
             if self.apartment_open:
                 self.draw_apartments(app)
@@ -714,16 +685,16 @@ class GameScreen:
         status_right = self.back_button.rect.left
         draw_wrapped_text(app.window, status, app.small_font, MUTED,
                           (title_rect.right + 16, 558, max(0, status_right - title_rect.right - 24), 24))
-        self.back_button.draw(app.window, app.small_font, enabled=self.dialogue.index > 0)
+        if len(self.dialogue.pages) > 1:
+            self.back_button.draw(app.window, app.small_font, enabled=self.dialogue.index > 0)
         closing = self.dialogue.actor.player_reply.closing
         self.next_button.label = "Next"
-        self.next_button.draw(app.window, app.small_font, enabled=not responding)
+        if len(self.dialogue.pages) > 1:
+            self.next_button.draw(app.window, app.small_font, enabled=not responding)
         rect = self.reply_rect if responding else pygame.Rect(self.reply_rect.x, DIALOGUE_READING_Y,
                                                              self.reply_rect.width, DIALOGUE_READING_HEIGHT)
         self.draw_dialogue_lines(app.window, wrap_text(text, app.font, rect.width - 12), app.font, rect,
                                  color=INK if turn else MUTED)
-        if responding and self.pending_invitation(app.simulation):
-            self.invitation_button.draw(app.window, app.small_font)
         if responding and self.pending_offer:
             self.accept_offer_button.draw(app.window, app.small_font, enabled=not app.simulation.paused)
             self.decline_offer_button.draw(app.window, app.small_font, enabled=not app.simulation.paused)
@@ -734,22 +705,127 @@ class GameScreen:
             self.send_button.draw(app.window, app.font, enabled=not self.dialogue.actor.interaction_blocked and not app.simulation.paused)
         if self.player_record and self.player_record.dialogue_errors:
             draw_wrapped_text(app.window, self.player_record.dialogue_errors[-1], app.small_font,
-                              FAILED_CONVERSATION_SELECTED_COLOR, (self.reply_rect.x, 696, self.reply_rect.width - 90, 24))
+                              FAILED_CONVERSATION_SELECTED_COLOR, (304, 696, self.reply_rect.width - 210, 24))
         elif responding and not closing and self.prompt_input.error:
-            app.window.blit(app.small_font.render(self.prompt_input.error, True, MUTED), (self.reply_rect.x, 696))
+            app.window.blit(app.small_font.render(self.prompt_input.error, True, MUTED), (304, 696))
         else:
             reason = self.dialogue.actor.decision_reason
-            while reason and app.small_font.size(reason)[0] > self.reply_rect.width - 90:
+            while reason and app.small_font.size(reason)[0] > self.reply_rect.width - 210:
                 reason = reason[:-4] + "..."
-            app.window.blit(app.small_font.render(reason, True, MUTED), (self.reply_rect.x, 696))
+            app.window.blit(app.small_font.render(reason, True, MUTED), (304, 696))
         if responding and not closing:
             count = app.small_font.render(f"{len(self.prompt_input.text)}/300", True, MUTED)
             app.window.blit(count, count.get_rect(topright=(1256, 696)))
         elif not responding:
             progress = app.small_font.render(f"{self.dialogue.index + 1}/{len(self.dialogue.pages)}", True, MUTED)
             app.window.blit(progress, progress.get_rect(topright=(1256, 696)))
+        if active_player(app.simulation):
+            self.actions_button.draw(app.window, app.small_font)
+        if self.action_menu is not None:
+            self.draw_conversation_actions(app)
         if self.dialogue.picker is not None:
             self.draw_action_picker(app)
+
+    def conversation_actions(self, app):
+        from transfers import validate_transfer
+        actor = self.dialogue.actor
+        reason = app.conversations.input_unavailable(actor, active=app.screen == "game")
+        if not self.player_response_ready:
+            reason = "Finish reading first"
+        elif self.pending_offer:
+            reason = "Respond to the gift first"
+        request_reason = reason or ("Unavailable for this character" if actor is app.simulation.snake else "")
+        apple_reason = reason
+        if not apple_reason:
+            try:
+                validate_transfer(app.simulation, app.simulation.player, actor, "fruit", 1)
+            except ValueError as exc:
+                apple_reason = str(exc)
+        actions = [("Request action", "request", request_reason),
+                   ("Give apple", "apple", apple_reason)]
+        if self.pending_invitation(app.simulation):
+            actions.append(("Accept invitation", "invitation", reason))
+        actions.append(("Kill", "kill", app.simulation.player_killing_unavailable(actor) or ""))
+        return actions
+
+    def action_menu_layout(self, app):
+        if self.action_menu == "confirm_kill":
+            rect = pygame.Rect(184, 544, 680, 150)
+            buttons = [(Button((200, 620, 170, 32), "Confirm kill"), "confirm", "", 32),
+                       (Button((380, 620, 170, 32), "Cancel"), "cancel", "", 32)]
+            return rect, buttons
+        actions = self.conversation_actions(app)
+        reason_width = 774
+        heights = [max(30, len(wrap_text(reason, app.small_font, reason_width)) * app.small_font.get_linesize())
+                   if reason else 30 for _, _, reason in actions]
+        rect = pygame.Rect(184, 694 - (sum(heights) + 3 * (len(actions) - 1) + 20), 1068,
+                           sum(heights) + 3 * (len(actions) - 1) + 20)
+        y = rect.top + 10
+        buttons = []
+        for (label, value, reason), height in zip(actions, heights):
+            buttons.append((Button((200, y, 250, 30), label), value, reason, height))
+            y += height + 3
+        return rect, buttons
+
+    def handle_conversation_actions(self, app, event):
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            self.action_menu = None
+            self.focus_player_reply(app)
+            return
+        menu_rect, buttons = self.action_menu_layout(app)
+        for button, value, reason, height in buttons:
+            if not button.clicked(event, enabled=not reason):
+                continue
+            if value == "kill":
+                self.action_menu = "confirm_kill"
+            elif value == "cancel":
+                self.action_menu = None
+                self.focus_player_reply(app)
+            elif value == "request":
+                self.action_menu = None
+                self.dialogue.picker = dict(command={}, page=0, focus=True)
+            elif value == "confirm":
+                self.action_menu = None
+                if not app.simulation.player_killing_unavailable(self.dialogue.actor):
+                    app._sync_conversation_view()
+                    app.conversations.kill_resident(self.dialogue.actor)
+                    app._present_conversation_events()
+            elif value == "apple":
+                self.action_menu = None
+                if self.can_give_apple(app):
+                    app._sync_conversation_view()
+                    try:
+                        app.conversations.give_player_apple(self.dialogue.actor)
+                    except ValueError as exc:
+                        self.show_save_message(str(exc))
+                    app._present_conversation_events()
+                self.focus_player_reply(app)
+            elif value == "invitation":
+                self.action_menu = None
+                offer = self.pending_invitation(app.simulation)
+                if offer:
+                    app._sync_conversation_view()
+                    app.conversations.accept_player_invitation(offer.id)
+                    app._present_conversation_events()
+                self.focus_player_reply(app)
+            return
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if not menu_rect.collidepoint(event.pos):
+                self.action_menu = None
+                self.focus_player_reply(app)
+
+    def draw_conversation_actions(self, app):
+        rect, buttons = self.action_menu_layout(app)
+        pygame.draw.rect(app.window, PAPER, rect)
+        pygame.draw.rect(app.window, INK, rect, width=2)
+        if self.action_menu == "confirm_kill":
+            draw_wrapped_text(app.window, f"Kill {self.dialogue.actor.name}?", app.font, INK,
+                              (200, 565, 630, 40))
+        for button, value, reason, height in buttons:
+            button.draw(app.window, app.small_font, enabled=not reason)
+            if reason:
+                draw_wrapped_text(app.window, reason, app.small_font, MUTED,
+                                  (462, button.rect.y, 774, height))
 
     def picker_options(self, app):
         from player_commands import command_options
