@@ -11,7 +11,7 @@ from uuid import uuid4
 from constants import (GIFT_GIVE_SECONDS, GIFT_SECONDS, PLAYER_TALK_DISTANCE, PLAYER_LABEL,
                        CONVERSATION_MAX_AGREEMENTS, CONVERSATION_COMPLETED, CONVERSATION_FAILED,
                        CONVERSATION_GIVING_ITEMS, CONVERSATION_THANKING, CONVERSATION_WALKING_TO_GIVE)
-from conversation_history import ConversationRecord, remember
+from conversation_history import ConversationRecord, remember, describe_opinion_change
 from interactions import company_point, face_each_other, release_resident
 from dialogue_rules import unquoted_speech
 from actor_identity import actor_id
@@ -105,12 +105,25 @@ def commit_transfer(world, interaction):
         (recipient, giver, "received_fruit" if item == "fruit" else "received_work", f"{giver.name} gave me {description}.", 6)):
         if actor is not world.player:
             remember(actor, partner, event, kind, summary, weight)
-            if partner is world.player:
+            if partner is world.player and not (item == "fruit" and actor is recipient):
                 update_player_opinion(actor, weight, summary)
     if item == "fruit":
         from social import on_transfer
         on_transfer(world, giver, recipient, quantity, event, record)
     record.outcomes[0:1] = [f"Gave {description} to {recipient.name}."]
+    if item == "fruit" and recipient is not world.player:
+        from information import opinion_change
+        delta = opinion_change("better")
+        previous = recipient.opinion_score(giver.id)
+        reason = f"{giver.name} gave me {description}."
+        if giver is world.player:
+            update_player_opinion(recipient, delta, reason, scaled=False, deduplicate=False)
+        else:
+            earlier = recipient.opinions.get(giver.id, {}).get("reason", "")
+            combined = reason + (f" Earlier: {earlier}" if earlier else "")
+            recipient.remember_opinion(giver.id, max(-100, min(100, previous + delta)), combined[:400])
+        record.outcomes.append(describe_opinion_change(recipient.name, giver.name, previous,
+            recipient.opinion_score(giver.id), reason))
     if giver is world.player or recipient is world.player:
         resident = recipient if giver is world.player else giver
         world.player_acknowledgments.append(PlayerAcknowledgment(npc_id=resident.id, record_id=record.id, transfer_id=transfer.id))
