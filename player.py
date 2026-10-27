@@ -401,6 +401,9 @@ def call_reason(world, npc):
     if grievance:
         return PlayerCallReason(key=f"confrontation:{grievance}:{world.day}", kind="news", reference=grievance,
                                 reason=confrontation_topic(npc, grievance))
+    errand = world.errand_for(npc.id, "done")
+    if errand:
+        return PlayerCallReason(key=f"report:{errand.id}", kind="followup", reference=errand.id, reason=errand.summary)
     promises = [p for p in world.promises if p.status == "pending"
                 and {p.promisor_id, p.recipient_id} == {npc.id, world.player.id}]
     if promises:
@@ -450,7 +453,8 @@ def call_valid(world, npc, call):
     if call.kind == "news":
         return any(b.claim_id == ref for b in npc.beliefs)
     return (any(m.id == ref for m in npc.memories)
-            or any(p.id == ref and p.status == "pending" for p in world.promises))
+            or any(p.id == ref and p.status == "pending" for p in world.promises)
+            or any(e.id == ref and e.status == "done" for e in world.errands))
 
 
 def clear_call(npc):

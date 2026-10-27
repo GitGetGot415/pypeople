@@ -126,12 +126,15 @@ class ConversationSession:
         if command is not None:
             from player import work_choices
             snapshot["owned_works"] = work_choices(self.simulation, npc.id, command.get("item", ""))
-            from player_commands import normalize_action, validate_action
+            from player_commands import Unavailable, normalize_action, validate_action
             try:
                 intent = normalize_action(command, snapshot)
                 if intent.action == "SAY":
                     raise ValueError("Choose a supported action.")
-                validate_action(self.simulation, npc, intent, accepting=True)
+                try:
+                    validate_action(self.simulation, npc, intent, accepting=True)
+                except Unavailable:
+                    pass  # Queued once the reply is accepted.
             except ValueError as exc:
                 self.notice(str(exc))
                 return
@@ -262,6 +265,9 @@ class ConversationSession:
         snapshot["other_npcs"] = [{**other.snapshot(self.tree, private=False),
             "available_to_talk": directed_recipient_available(other) and available(other)}
             for other in self.npcs if other is not npc and other.location == npc.location] + [self.player_target()]
+        # Residents elsewhere can still be asked about, or sent to; they are never present, so other_npcs excludes them.
+        snapshot["remote_npcs"] = [{**other.snapshot(self.tree, private=False), "available_to_talk": False}
+            for other in self.npcs if other is not npc and other.location != npc.location]
         record = self.record
         if record:
             snapshot["conversation_topic"] = record.intended_subjects.get(npc.name, record.topic)

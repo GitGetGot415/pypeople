@@ -343,6 +343,10 @@ class Application:
                 if not host or host.location != target["destination"]:
                     self.game.show_save_message("This room is vacant." if not host else "The resident is absent.")
                     return
+                from apartments import creating_kind
+                if creating_kind(host):
+                    self.game.show_save_message(f"The resident is busy making {creating_kind(host)}.")
+                    return
                 from player import start_approach
                 try:
                     start_approach(world, host, knock_room=room)

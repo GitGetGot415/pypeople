@@ -104,7 +104,14 @@ def reconsider(npc, world, *, pressing_only=False):
         return
     if any(npc.id in (action.npc_id, action.target_id) for action in world.pending_actions):
         return
-    if not pressing_only and npc.location.startswith("hallway:") and npc.behavior in (Behavior.WANDER, Behavior.WAIT):
+    if not pressing_only:
+        from errands import step
+        if step(npc, world):
+            return
+    from locations import room_location
+    away_from_home = npc.location.startswith("room:") and npc.location != room_location(npc.room_number)
+    if (not pressing_only and (npc.location.startswith("hallway:") or away_from_home)
+            and npc.behavior in (Behavior.WANDER, Behavior.WAIT)):
         from constants import GARDEN_BUILDING_ARRIVAL
         from locations import start_journey
         start_journey(npc, "garden", GARDEN_BUILDING_ARRIVAL, purpose="leave_hallway")

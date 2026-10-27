@@ -26,6 +26,7 @@ from conversation_history import RecordedTurn, ConversationRecord, Memory, World
 from dialogue import ConversationTurn, EmotionReaction, EscalationChoice
 from activity import ActivitySnapshot
 from simulation import PendingAction, Simulation
+from errands import Errand
 from player import Player, PlayerInteraction
 from social_records import (Belief, Claim, ConversationConcern, Disclosure, Fact, Goal, OpinionEffect,
     Promise, Proposal, ClaimOption, InformationContext)
@@ -336,6 +337,7 @@ class SnakeState(saved_record(SnakeValues)):
 
 
 PendingActionState = saved_record(PendingAction)
+ErrandState = saved_record(Errand)
 
 
 class PlayerState(saved_record(Player)):
@@ -376,6 +378,7 @@ class SimulationState(SaveModel):
     introductions: list[str]
     roster_revision: int = Field(ge=0)
     pending_actions: list[PendingActionState]
+    errands: list[ErrandState]
     history: list[HistoryState]
     conversations: list[ConversationState]
     handoffs: list[HandoffState]
@@ -417,6 +420,8 @@ class SimulationState(SaveModel):
             *[work.owner_id in owner_ids for work in self.creations],
             *[a.npc_id in live_ids and a.target_id in (None, *live_ids, self.player.id) and a.record in (None, *history)
               for a in self.pending_actions],
+            *[e.npc_id in live_ids and e.target_id in live_ids and e.record in (None, *history)
+              and e.conversation in (None, *history) for e in self.errands],
             *[c.information_context is None or {o.fact_id for o in c.information_context.options} <= facts
               for c in self.conversations],
         ]
@@ -661,6 +666,7 @@ def capture_simulation(world, *, camera_offset, camera_zoom):
         npcs=npcs, history=history, conversations=conversations, handoffs=handoffs,
         tree=_capture_fields(TreeState, world.tree),
         pending_actions=world.pending_actions,
+        errands=world.errands,
         camera_offset=tuple(camera_offset),
         camera_zoom=camera_zoom,
     )
@@ -720,6 +726,7 @@ def restore_simulation(state):
     world.roster_revision = state.roster_revision
     world.day = state.day
     world.pending_actions = [restore_record(PendingAction, action) for action in state.pending_actions]
+    world.errands = [restore_record(Errand, errand) for errand in state.errands]
     history = [saved.restore() for saved in state.history]
     world.history = history
     history = {record.id: record for record in history}

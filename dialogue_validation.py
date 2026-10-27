@@ -492,7 +492,7 @@ def _validate_base_presentation(result, snapshot):
     names = {SNAKE_NAME}
     people = [snapshot, *[snapshot[key] for key in ("initiator", "recipient", "resident", "snake", "speaker", "listener")
                          if isinstance(snapshot.get(key), dict)],
-              *snapshot.get("other_npcs", [])]
+              *snapshot.get("other_npcs", []), *snapshot.get("remote_npcs", [])]
     for person in people:
         name = person.get("name", person.get("name", person.get("character", {}).get("Name", "")))
         if name:

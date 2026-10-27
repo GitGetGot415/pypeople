@@ -17,6 +17,26 @@ INDOOR_BEHAVIORS = (Behavior.REST, Behavior.PAINT, Behavior.COMPOSE)
 HOME_BEHAVIORS = (Behavior.GO_HOME, *INDOOR_BEHAVIORS)
 
 
+def creating_kind(npc):
+    """'art' or 'music' while the resident is working on a creation, else None."""
+    return {Behavior.PAINT: "art", Behavior.COMPOSE: "music"}.get(npc.behavior)
+
+
+def entry_refusal(world, visitor, host):
+    """Why a knock at the host's door is not answered, and whether asking again today could still help."""
+    from player import directed_recipient_available
+    from constants import ENTRY_REFUSAL_SCORE, ENTRY_SOCIABILITY_WEIGHT
+    kind = creating_kind(host)
+    if kind:
+        return f"{host.name} is busy making {kind}.", False
+    if not directed_recipient_available(host):
+        return f"{host.name} is busy.", False
+    score = host.opinion_score(visitor.id) + (host.preferences["sociability"] - 0.5) * ENTRY_SOCIABILITY_WEIGHT
+    if score < ENTRY_REFUSAL_SCORE:
+        return f"{host.name} would not let {visitor.name} in.", True
+    return "", False
+
+
 @dataclass
 class Invitation:
     id: str

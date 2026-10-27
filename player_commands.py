@@ -11,6 +11,10 @@ COMMAND_LABELS = {
 }
 
 
+class Unavailable(ValueError):
+    """The request cannot start now but may later: the person is busy or somewhere else. It is queued, not refused."""
+
+
 def normalize_action(intent, snapshot, *, verbal=False):
     """Resolve a verbal label or structured ID once, before generating a reply."""
     if speech_only(snapshot):
@@ -19,7 +23,7 @@ def normalize_action(intent, snapshot, *, verbal=False):
     if result.action not in ("TALK_TO_NPC", "GIVE_ITEM"):
         result.target = ""
     else:
-        candidates = snapshot.get("other_npcs", [])
+        candidates = [*snapshot.get("other_npcs", []), *snapshot.get("remote_npcs", [])]
         exact = [p for p in candidates if p["actor_id"] == result.target]
         matches = exact or [p for p in candidates if p["name"].casefold() == result.target.strip().casefold()]
         if len(matches) != 1:
@@ -39,8 +43,6 @@ def normalize_action(intent, snapshot, *, verbal=False):
                 raise ValueError("That name identifies more than one resident. Ask which person is intended.")
         if result.action == "TALK_TO_NPC" and target.get("kind") == "player":
             return ActionIntent(action="SAY")
-        if not target.get("available_to_talk", True):
-            raise ValueError("That person is currently unavailable.")
         result.target = target["actor_id"]
     if result.action != "GIVE_ITEM":
         result.item, result.quantity = "", 0
@@ -63,13 +65,28 @@ def validate_action(world, npc, intent, *, accepting=False):
         raise ValueError("There are no carried apples to eat.")
     if intent.action in ("TALK_TO_NPC", "GIVE_ITEM"):
         target = world.participant_by_id(intent.target)
-        if target is None or target is npc or not colocated(npc, target):
-            raise ValueError("Choose another person in the same location.")
+        if target is None or target is npc:
+            raise ValueError("Choose another person.")
+        away = not colocated(npc, target)
         if target is world.player:
             if intent.action != "GIVE_ITEM":
                 raise ValueError("Choose another resident to talk to.")
-        elif not available(target) or not directed_recipient_available(target) or arrival_greeting_reserved(target, world):
-            raise ValueError("That person is currently unavailable.")
+            if away:
+                raise ValueError("Choose another person in the same location.")
+        busy = target is not world.player and (not available(target) or not directed_recipient_available(target)
+                                               or arrival_greeting_reserved(target, world))
+        if intent.action == "GIVE_ITEM" and (away or busy):
+            # A request that has to wait still needs something to give, so it cannot be queued for nothing.
+            if intent.item == "fruit":
+                holds = type(intent.quantity) is int and npc.inventory.get("fruit", 0) >= intent.quantity >= 1
+            else:
+                holds = intent.quantity == 1 and any(w.id == intent.item and w.owner_id == npc.id for w in world.creations)
+            if not holds:
+                raise ValueError(f"{npc.name} does not have that to give.")
+        if away:
+            raise Unavailable(f"{target.name} is not here; {npc.name} will go find them.")
+        if busy:
+            raise Unavailable(f"{target.name} is busy; {npc.name} will wait until they are free.")
         if intent.action == "GIVE_ITEM":
             npc.check_gift(target, intent.item, intent.quantity,
                 player_authorization=world.player_interaction.id if accepting and world.player_interaction else None)
@@ -77,7 +94,8 @@ def validate_action(world, npc, intent, *, accepting=False):
 
 def action_description(intent, snapshot):
     label = COMMAND_LABELS[intent.action]
-    target = next((p["name"] for p in snapshot.get("other_npcs", []) if p["actor_id"] == intent.target), "")
+    target = next((p["name"] for p in [*snapshot.get("other_npcs", []), *snapshot.get("remote_npcs", [])]
+                   if p["actor_id"] == intent.target), "")
     if intent.action == "TALK_TO_NPC":
         return f"{label}: {target}"
     if intent.action == "GIVE_ITEM":
@@ -103,7 +121,7 @@ def command_options(world, npc, action=None, target=None):
             options.append((label, dict(action=value), error))
         return options
     if target is None:
-        people = [p for p in world.npcs if p is not npc and p.location == npc.location]
+        people = [p for p in world.npcs if p is not npc]
         if action == "GIVE_ITEM":
             people.append(world.player)
         options = []
@@ -116,6 +134,8 @@ def command_options(world, npc, action=None, target=None):
                         continue
                 else:
                     validate_action(world, npc, intent, accepting=True)
+            except Unavailable:
+                pass  # Busy or elsewhere: the request is queued.
             except ValueError:
                 continue
             options.append(("You" if person is world.player else person.name, intent.model_dump(), ""))
@@ -129,6 +149,8 @@ def command_options(world, npc, action=None, target=None):
         intent = ActionIntent(action=action, target=target, item=item, quantity=1)
         try:
             validate_action(world, npc, intent, accepting=True)
+        except Unavailable:
+            pass
         except ValueError:
             continue
         options.append((label, intent.model_dump(), ""))

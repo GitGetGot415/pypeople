@@ -102,9 +102,10 @@ def accept_resident_reply(world, request, result, error, rewritten, *, visible, 
         except ValueError as exc:
             error = str(exc)
     planned_action = None
+    queued = ""
     opinion_outcomes = []
     if not error:
-        from player_commands import validate_action
+        from player_commands import Unavailable, validate_action
         from dialogue import ActionIntent
         intent = snapshot.get("request_intent") or result._authorized_intent
         command = snapshot.get("player_interaction", {}).get("command")
@@ -118,10 +119,13 @@ def accept_resident_reply(world, request, result, error, rewritten, *, visible, 
             try:
                 if not intent:
                     raise ValueError("This action has no interpreted player request.")
-                validate_action(world, npc, result, accepting=True)
-                planned_action = PendingAction(npc.id, result.action, npc.command_revision,
-                    result.target or None, message or record.topic, record.id if record else None,
-                    result.item, result.quantity)
+                try:
+                    validate_action(world, npc, result, accepting=True)
+                    planned_action = PendingAction(npc.id, result.action, npc.command_revision,
+                        result.target or None, message or record.topic, record.id if record else None,
+                        result.item, result.quantity)
+                except Unavailable as exc:
+                    queued = str(exc)
             except ValueError as exc:
                 error = str(exc)
     if not error:
@@ -129,7 +133,12 @@ def accept_resident_reply(world, request, result, error, rewritten, *, visible, 
             npc.opinion_score(result._opinion_targets.get(entry.person), default=None), entry.opinion, entry.reason)
             for entry in result.opinion_updates]
         error = remember_response_opinions(world, npc, result, snapshot)
-    if not error and planned_action is not None:
+    if not error and queued:
+        from errands import queue_errand
+        queue_errand(world, npc, result, message or (record.topic if record else ""), record.id if record else None)
+    elif not error and planned_action is not None:
+        from errands import cancel
+        cancel(world, npc.id)
         if planned_action.action == "GIVE_ITEM" and record is not None:
             record.transfer_intent = TransferIntent(giver_id=npc.id, recipient_id=planned_action.target_id,
                                           item=planned_action.item, quantity=planned_action.quantity)
@@ -187,6 +196,9 @@ def accept_resident_reply(world, request, result, error, rewritten, *, visible, 
             elif waiting_for_done:
                 record.status = CONVERSATION_WAITING_FOR_DONE
                 outcome = "Accepted; starts after the player closes the conversation."
+            elif queued:
+                record.status = CONVERSATION_COMPLETED
+                outcome = f"Queued: {queued}"
             elif npc.interaction_blocked:
                 record.status = CONVERSATION_APPLYING_PLAYER_REQUEST
                 outcome = "Accepted; applies on the next simulation tick."
@@ -233,6 +245,8 @@ def apply_pending_action(world, action, spacing):
         else:
             try:
                 meeting = world.start_conversation(npc, target, action.topic, spacing=spacing(npc, target))
+                from errands import attach
+                attach(world, npc, meeting.id)
             except ValueError as exc:
                 error = str(exc)
     elif action.action == "GIVE_ITEM":

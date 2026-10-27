@@ -163,6 +163,12 @@ PLAYER_REPLY_CONTEXT_TURN_LIMIT = 4
 PLAYER_CALL_GIFT_GENEROSITY = 0.65
 PLAYER_CALL_SOCIABILITY = 0.6
 PLAYER_PROMISE_DEADLINE_STEPS = (1,)
+# A knock is answered from opinion plus sociability; below the refusal score the host keeps the door shut.
+ENTRY_SOCIABILITY_WEIGHT = 40
+ENTRY_REFUSAL_SCORE = -10
+# Spoken lines of a finished errand conversation that a resident can report back to the player.
+ERRAND_REPORT_TURNS = 6
+ERRAND_REPORT_CHARACTERS = 1200
 PLAYER_OPINION_STEP = 4
 INVENTORY_RECT = (140, 92, 1000, 550)
 INVENTORY_ROW_HEIGHT = 36

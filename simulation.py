@@ -30,6 +30,10 @@ class Simulation(DeathMixin):
         """The queue is the sole authority for accepted, deferred commands."""
         return next((action for action in self.pending_actions if action.npc_id == actor_id), None)
 
+    def errand_for(self, actor_id, *statuses):
+        """A queued request waiting for its person or place, or a finished one waiting to be reported."""
+        return next((e for e in self.errands if e.npc_id == actor_id and (not statuses or e.status in statuses)), None)
+
     def __init__(self, npcs, tree=None, *, assign_goals=True, npc_trait_mode="normal", mode="player", player_start=False, initialize_opinions=True):
         from npc import Tree
         from snake import Snake
@@ -69,6 +73,7 @@ class Simulation(DeathMixin):
         self.day = STARTING_DAY
         self.paused = STARTING_PAUSED
         self.pending_actions = []
+        self.errands = []
         self.history = []
         self.events = []
         self.promises = []
@@ -138,6 +143,8 @@ class Simulation(DeathMixin):
             return
         for conversation in {actor.conversation for actor in [*self.npcs, self.snake] if actor.conversation}:
             conversation.cancel("The day ended before this conversation finished.")
+        from errands import expire
+        expire(self)
         self.day += 1
         from locations import npc_capacity
         if (len(self.npcs) < npc_capacity(self) and self.day not in self.pending_arrival_days
@@ -272,6 +279,7 @@ class Simulation(DeathMixin):
                 and (allow_player_call or not npc.player_call)
                 and npc.owner == "autonomous" and not npc.resume_pending
                 and not any(npc.id in (action.npc_id, action.target_id) for action in self.pending_actions)
+                and self.errand_for(npc.id, "waiting", "started") is None
                 and npc.behavior in (Behavior.WANDER, Behavior.WAIT))
 
     def step(self, dt, *, viewed_conversation=None):
@@ -527,6 +535,8 @@ class Simulation(DeathMixin):
             else:
                 remaining.append(action)
         self.pending_actions[:] = remaining
+        from errands import release
+        release(self, target.id, reason, as_target=mode != "arrival")
         for person in self.npcs:
             if mode != "arrival" and person.target_id == target.id:
                 person.finish_activity(self, failed=True)

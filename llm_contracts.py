@@ -87,10 +87,7 @@ def intent_snapshot(snapshot):
         "_player_message": snapshot.get("_player_message", ""),
         "answering_npc_utterance": previous,
         "resolved_work_id": snapshot.get("resolved_work_id"),
-        "other_npcs": [
-            {**identity(other), "available_to_talk": other.get("available_to_talk", True)}
-            for other in snapshot.get("other_npcs", [])
-        ],
+        "other_npcs": [identity(other) for other in [*snapshot.get("other_npcs", []), *snapshot.get("remote_npcs", [])]],
     }
 
 
@@ -401,12 +398,17 @@ def response_model(snapshot):
             "intent": PlayerIntent, "voice_rewrite": VoiceRewriteResponse}.get(kind, ActionResponse)
 
 
-def _player_command_brief(intent):
+def _player_command_brief(intent, snapshot):
     """The same action meaning accompanies either player input route and retries."""
     if not intent or intent["action"] == "SAY":
         return ""
     brief = ("Briefly acknowledge the current action request in your own voice, before carrying it out. "
              "Do not answer an earlier conversation question or claim the task already happened. ")
+    target = next((other for other in [*snapshot.get("other_npcs", []), *snapshot.get("remote_npcs", [])]
+                   if other["actor_id"] == intent["target"]), None)
+    if target is not None and not target.get("available_to_talk", True):
+        brief += (f"{target['name']} is not free or not here right now. Say you will do it once you can reach "
+                  "them or they are free; do not say it has started.")
     return brief
 
 
@@ -421,7 +423,7 @@ def response_contract(snapshot, *, correction=False):
         # Assembly/queue contract only. Resident provider calls use individual stages.
         return WORLD_INSTRUCTION, structured_schema(model), model
     if snapshot.get("request_kind") == "intent":
-        targets = [other["actor_id"] for other in snapshot.get("other_npcs", []) if other.get("available_to_talk", True)]
+        targets = [other["actor_id"] for other in snapshot.get("other_npcs", [])]
         schema = {**INTENT_SCHEMA, "properties": {**INTENT_SCHEMA["properties"],
             "item": {"type": "string", "enum": ["", "fruit", *[w["id"] for w in snapshot.get("owned_works", [])]]},
             "target": {"type": "string", "enum": ["", *targets]}}}
@@ -476,7 +478,7 @@ def response_contract(snapshot, *, correction=False):
         schema["properties"]["end_conversation"] = {"type": "boolean", "enum": [False]}
     if snapshot.get("request_intent"):
         intent = snapshot["request_intent"]
-        instruction += "\n" + _player_command_brief(intent)
+        instruction += "\n" + _player_command_brief(intent, snapshot)
         giving = intent["action"] == "GIVE_ITEM"
         schema = {**schema, "properties": {
             **schema["properties"],
@@ -739,7 +741,7 @@ def _conversation_messages(payload, snapshot):
                                                   ("explanation", "way_home") if key in situation}
             if snapshot.get("request_intent", {}).get("action") not in (None, "SAY"):
                 content = {"player_message": message, "request_intent": snapshot["request_intent"],
-                           "reply_task": _player_command_brief(snapshot["request_intent"])}
+                           "reply_task": _player_command_brief(snapshot["request_intent"], snapshot)}
             messages.append({"role": "user", "content": content})
         else:
             call = snapshot.get("player_interaction", {}).get("call")
@@ -760,7 +762,7 @@ def _conversation_messages(payload, snapshot):
                                   "Respond to the structured request using request_intent. A gift may be declined. "
                                   "Acknowledge an accepted task before it starts; do not claim it already happened. "
                                   "This selection does not accept a separate social offer. Return the required reply JSON. "
-                                  + _player_command_brief(snapshot["request_intent"])}})
+                                  + _player_command_brief(snapshot["request_intent"], snapshot)}})
             else:
                 messages.append({"role": "user", "content": "Generate your own opening or acknowledgment from player_interaction. The player has not spoken a new line."})
         return messages
