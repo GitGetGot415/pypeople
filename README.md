@@ -11,7 +11,6 @@
   - character_sprite.py - shares character sprites between the character creator and game
   - character.py - the character creator screen
   - dialogue_view.py - tracks the transient dialogue panel and its pages
-  - event_feed.py - displays recent world events
   - game.py - game screen
   - file_dialog.py - shared character JSON file picker
   - fonts.py - loads the bundled Unicode font and measures text units
@@ -45,6 +44,7 @@
 - conversation_session.py - orchestrates conversations on the main thread
 - creations.py - validates and stores artwork and music payloads
 - deaths.py - applies character death and associated world changes
+- errands.py - manages resident errands and their outcomes
 - dialogue.py - shared typed contracts for actions, dialogue and model responses
 - dialogue_context.py - builds speaker-owned conversation context and identity guidance
 - dialogue_rules.py - validates dialogue, claims, continuity, and promises
@@ -62,7 +62,6 @@
 - model_transport.py - handles provider I/O, streaming, and response parsing
 - music.py - synthesizes music scores into PCM audio
 - ollama_manager.py - checks Ollama availability and manages model selection
-- ollama_parallel.py - edits local Ollama launch settings and reads loaded model processing slots
 - npc.py - backend
 - player_commands.py - normalizes player action identities and availability
 - simulation_data.py - validates, saves, and restores complete simulations
@@ -74,7 +73,6 @@
 - records.py - builds validation models for persisted record dataclasses
 - social.py - tracks social facts, beliefs, goals, promises, and relationships
 - social_records.py - defines persisted records for social knowledge, goals and promises
-- social_saves.py - validates persisted social records
 - transfers.py - handles item and invitation transfers between characters
 - transfer_records.py - defines persisted transfer offers and intents
 - validation_errors.py - defines model, dialogue, and recovery validation errors
