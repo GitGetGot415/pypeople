@@ -12,7 +12,7 @@ from constants import (PLAYER_ID, STARTING_PLAYER_FRUIT, PLAYER_CALL_COOLDOWN, P
                        PLAYER_CALL_SOCIABILITY, ARRIVAL_LOCATION, STARTING_PLAYER_POSITION, STARTING_FACING,
                        PLAYER_DEFAULT_APPEARANCE, MOVEMENT_SPEED, PLAYER_APPROACH_MULTIPLIER,
                        PLAYER_RUN_MULTIPLIER, PLAYER_APPROACH_TIMEOUT, PLAYER_EVIDENCE_LIMIT,
-                       CONVERSATION_CANCELLED, CONVERSATION_PENDING_REPLY_STATUSES, FOOT_MARGIN)
+                       CONVERSATION_CANCELLED, CONVERSATION_PENDING_REPLY_STATUSES, FOOT_MARGIN, GIFT_GIVE_SECONDS)
 from conversation_history import remember
 from locations import Journey, active_player
 from player_records import (PlayerCall, PlayerCallReason, PlayerPromiseOffer, PlayerReport)
@@ -78,6 +78,14 @@ class Player:
     @property
     def name(self):
         return "the player"
+
+    @property
+    def giving(self):
+        world = getattr(self, "world", None)
+        interaction = world.player_interaction if world else None
+        handoff = world.reservations.get(interaction.npc_id, "handoff") if interaction else None
+        return bool(handoff and handoff.initiator is self and handoff.arrived
+                    and handoff.elapsed < GIFT_GIVE_SECONDS)
 
     @property
     def movement_bounds(self):

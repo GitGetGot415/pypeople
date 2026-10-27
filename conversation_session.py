@@ -350,6 +350,20 @@ class ConversationSession:
                 self.close_view()
                 return
 
+    def give_player_apple(self, recipient):
+        from transfers import Handoff
+        reason = self.input_unavailable(recipient)
+        if reason:
+            raise ValueError(reason)
+        if self.pending_offer:
+            raise ValueError("Accept or decline the current gift offer first.")
+        record = self.record
+        handoff = Handoff(self.simulation.player, recipient, "fruit", 1, record)
+        if record is None:
+            self.conversation_history.append(handoff.record)
+        self.end_player_conversation()
+        self.close_view()
+
     def offer_player_item(self, recipient, item, quantity):
         from player import start_approach
         if self.simulation.paused:

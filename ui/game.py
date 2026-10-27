@@ -187,7 +187,7 @@ class GameScreen:
             if self.can_give_apple(app):
                 app._sync_conversation_view()
                 try:
-                    app.conversations.offer_player_item(self.dialogue.actor, "fruit", 1)
+                    app.conversations.give_player_apple(self.dialogue.actor)
                 except ValueError as exc:
                     self.show_save_message(str(exc))
                 app._present_conversation_events()
