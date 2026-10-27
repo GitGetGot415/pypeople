@@ -470,6 +470,8 @@ class Application:
         paused = self.simulation is not None and self.simulation.paused
         simulation_active = self.screen in ("game", "stats") and not paused and not self.game.confirm_menu
         session_active = self.screen in ("game", "stats", "save_sim")
+        if simulation_active:
+            self.conversations.wrap_up_for_day_change()
         active_session = self.session_id if session_active else None
         # Live dialogue and Stats share the version toggle and reading hold.
         viewed = self.game.dialogue.conversation if self.screen in ("game", "stats") and self.game.dialogue.open else None

@@ -240,6 +240,11 @@ MODEL_LOG_REFRESH_SECONDS = 0.2
 RESIDENT_TURN_COUNT = 4
 CONVERSATION_MAX_TURNS = 12
 FOOD_REQUEST_TURN_COUNT = 2
+# Next day: cancel chats below this turn (the turn in progress counts; queued = 0).
+DAY_SKIP_CANCEL_BEFORE_TURN = 3
+# Allow up to this many more turns after the current one; the last must close.
+# Use at least 1. Natural endings and CONVERSATION_MAX_TURNS still take priority.
+DAY_SKIP_WRAP_UP_TURNS = 1
 DIALOGUE_STAGE_ATTEMPTS = 3  # Initial, correction, then current-turn repair.
 DIALOGUE_REPEAT_PHRASE_WORDS = 12
 DIALOGUE_REPEAT_SENTENCE_WORDS = 6

@@ -482,7 +482,9 @@ def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, tha
             speaker.pop(field, None)
     elif closing:
         state["question_to_answer"] = _last_question(draft["turns"][-1].text)
-        state["task"] += " Answer the last question and finish with a statement. The listener will not reply; make no new offer."
+        state["task"] += (" Respond to what was just said, answer any outstanding question, and bring the conversation "
+                          "to a natural close with a statement. This is the final turn; the listener will not reply. "
+                          "Ask no new question and make no new offer.")
     elif snapshot.get("purpose") == "food_request" and index == FOOD_REQUEST_TURN_COUNT - 1:
         state["task"] += " Finish naturally; prefer a statement rather than a new question."
     # Permit third-party identification only for accounts actually available to

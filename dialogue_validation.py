@@ -685,8 +685,10 @@ def _validate_response(raw, snapshot, model):
                 validate_resident_grounding(SimpleNamespace(turns=[*result.turns, thanks], disclosures=result.disclosures), snapshot)
                 _validate_speaker(" ".join(part.text for part in result.handoff_thanks),
                                   snapshot["initiator"]["name"], snapshot["recipient"]["name"])
-        elif len(result.turns) < RESIDENT_TURN_COUNT or result.food_outcome or (result.handoff_thanks and not (result.gift and result.gift.accept_turn is not None)):
-            raise ValueError("Chats need at least four turns and cannot include a food outcome or handoff thanks.")
+        else:
+            minimum = 2 if snapshot.get("_day_skip_requested") else RESIDENT_TURN_COUNT
+            if len(result.turns) < minimum or result.food_outcome or (result.handoff_thanks and not (result.gift and result.gift.accept_turn is not None)):
+                raise ValueError(f"Chats need at least {minimum} turns and cannot include a food outcome or handoff thanks.")
         if check_dialogue and len(result.turns) == CONVERSATION_MAX_TURNS and contains_question(result.turns[-1].text):
             raise ValueError("At the turn limit, finish with an answer or closing rather than a new question.")
         for entry, partner in (

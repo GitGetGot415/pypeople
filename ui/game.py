@@ -406,7 +406,7 @@ class GameScreen:
             return True
         if not active_player(app.simulation) and self.clock_button.clicked(event):
             if not app.simulation.paused and not app.simulation.phase_pending and not app.simulation.player_attention_pending:
-                app.simulation.next_phase()
+                app.conversations.next_day()
             return True
         return False
 
@@ -425,7 +425,7 @@ class GameScreen:
             self.bed_open = False
         elif self.bed_advance_button.clicked(event, enabled=self.can_advance_from_bed(app.simulation)):
             self.bed_open = False
-            app.simulation.next_day()
+            app.conversations.next_day()
 
     def draw_bed_popup(self, app):
         if not self.bed_open:
@@ -437,8 +437,8 @@ class GameScreen:
         pygame.draw.rect(app.window, PAPER, BED_POPUP_RECT, border_radius=BORDER_RADIUS)
         draw_centered_text(app.window, "Rest in your bed", app.heading_font, BED_POPUP_TITLE_Y)
         message = ("Resume the game before passing time." if world.paused else
-                   "Time will change after the current conversations finish." if world.phase_pending else
-                   "Advance to the next day? Current conversations and handoffs will finish first. A new resident arrives if there is room.")
+                   "Time will change after conversations wrap up and handoffs finish." if world.phase_pending else
+                   "Advance to the next day? Short chats end; longer chats wrap up. Handoffs finish first. A new resident arrives if there is room.")
         draw_wrapped_text(app.window, message, app.font, INK, BED_POPUP_MESSAGE_RECT)
         self.bed_advance_button.label = f"Advance to {world.day + 1}"
         self.bed_advance_button.draw(app.window, app.small_font, enabled=self.can_advance_from_bed(world))

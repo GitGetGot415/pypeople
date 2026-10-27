@@ -10,7 +10,7 @@ from threading import Condition, Event, Lock, Thread
 from time import monotonic
 from uuid import uuid4
 
-from constants import MODEL_LOG_FLUSH_SECONDS
+from constants import MODEL_LOG_FLUSH_SECONDS, DAY_SKIP_CANCEL_BEFORE_TURN, DAY_SKIP_WRAP_UP_TURNS
 
 
 LOG_DIRECTORY = Path(__file__).resolve().parent / "logs" / "model_requests"
@@ -118,6 +118,36 @@ class RequestControl:
         self.wait_seconds = 0.0
         self.waiting_since = None
 
+        self.conversation_turn = 0
+        self.conversation_turns_done = False
+        self.conversation_finish_turn = None
+
+    def wrap_up_conversation(self):
+        """Freeze a closing deadline, or cancel a chat that has barely started."""
+        with self._lock:
+            if self.conversation_turns_done:
+                return True
+            if self.conversation_turn < DAY_SKIP_CANCEL_BEFORE_TURN:
+                # Stop the worker before it can start another turn. The request
+                # manager then disconnects its stream using ordinary cancellation.
+                self.cancelled.set()
+                return False
+            if self.conversation_finish_turn is None:
+                # Even with a zero cutoff, let both speakers have a turn.
+                self.conversation_finish_turn = max(2, self.conversation_turn + max(1, DAY_SKIP_WRAP_UP_TURNS))
+            return True
+
+    def start_conversation_turn(self, turn):
+        with self._lock:
+            self.check()
+            self.conversation_turn = turn
+            return self.conversation_finish_turn is not None and turn >= self.conversation_finish_turn
+
+    def finish_conversation_turns(self):
+        with self._lock:
+            self.check()
+            self.conversation_turns_done = True
+
     @property
     def queued_seconds(self):
         return self.wait_seconds + (monotonic() - self.waiting_since if self.waiting_since is not None else 0.0)
@@ -188,6 +218,17 @@ def check_cancelled():
     control = _current_control.get()
     if control is not None:
         control.check()
+
+
+def start_conversation_turn(turn):
+    control = _current_control.get()
+    return control.start_conversation_turn(turn) if control is not None else False
+
+
+def finish_conversation_turns():
+    control = _current_control.get()
+    if control is not None:
+        control.finish_conversation_turns()
 
 
 def provider_wait_seconds():

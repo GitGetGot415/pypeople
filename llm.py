@@ -21,7 +21,8 @@ from dialogue_rules import copied_share, mentions_private_recollection, states_n
 from dialogue_text import contains_question
 from validation_errors import InvalidResponseError, RecoveryKind, RequestError, StreamRepetitionError
 from llm_contracts import intent_snapshot, prepare_request, response_model
-from model_debug import admitted_provider, check_cancelled, provider_wait_seconds, record_output
+from model_debug import (admitted_provider, check_cancelled, provider_wait_seconds, record_output,
+                         start_conversation_turn, finish_conversation_turns)
 from model_transport import TransportSettings, provider_errors, request_gemini, request_ollama
 from ollama_manager import DEFAULT_OLLAMA_MODEL, mark_ollama_ready
 from information import resident_information
@@ -464,9 +465,14 @@ def _exchange_turns(snapshot, draft, request_turn, retain, *, budget, limit, con
         if index >= budget and not forced and (not snapshot.get("_dialogue_validation", True)
                 or not contains_question(draft["turns"][-1].text)):
             break
-        request_turn(index, index == limit - 1)
+        wrap_up = start_conversation_turn(index + 1)
+        request_turn(index, wrap_up or index == limit - 1)
         check_cancelled()
         retain(draft["turns"], snapshot)
+        if wrap_up:
+            snapshot["_day_skip_requested"] = True
+            break
+    finish_conversation_turns()
 
 
 def _complete_exchange(result, snapshot, report):

@@ -213,6 +213,10 @@ class RequestManager:
             return False
         return True
 
+    def wrap_up_conversation(self, session_id, request_id):
+        worker = self.workers.get((session_id, request_id))
+        return bool(worker and worker.control and worker.control.wrap_up_conversation())
+
     def cancel(self, session_id, request_id):
         worker = self.workers.pop((session_id, request_id), None)
         if worker is None:
