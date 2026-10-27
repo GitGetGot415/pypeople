@@ -185,7 +185,6 @@ class Application:
             self.setup.message = f"Could not start game: {error}"
             return
         self.setup.message = ""
-        self.setup.count_input.active = False
         npcs = []
         other_count = max(0, len(characters) - 1)
         columns = max(1, math.ceil(math.sqrt(other_count / 2)))
