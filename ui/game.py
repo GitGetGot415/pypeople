@@ -708,11 +708,6 @@ class GameScreen:
                               FAILED_CONVERSATION_SELECTED_COLOR, (304, 696, self.reply_rect.width - 210, 24))
         elif responding and not closing and self.prompt_input.error:
             app.window.blit(app.small_font.render(self.prompt_input.error, True, MUTED), (304, 696))
-        else:
-            reason = self.dialogue.actor.decision_reason
-            while reason and app.small_font.size(reason)[0] > self.reply_rect.width - 210:
-                reason = reason[:-4] + "..."
-            app.window.blit(app.small_font.render(reason, True, MUTED), (304, 696))
         if responding and not closing:
             count = app.small_font.render(f"{len(self.prompt_input.text)}/300", True, MUTED)
             app.window.blit(count, count.get_rect(topright=(1256, 696)))
