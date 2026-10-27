@@ -4,13 +4,15 @@ An errand never performs the action itself. Once both people are in the same pla
 ordinary pending action, so validation, conversations and handoffs stay in their owning code.
 """
 
+import math
 from dataclasses import dataclass
 from typing import Annotated, Literal
 from uuid import uuid4
 from pydantic import Field
 from activity import Behavior
 from constants import (CONVERSATION_CANCELLED, CONVERSATION_COMPLETED, CONVERSATION_FINISHED,
-                       ERRAND_REPORT_CHARACTERS, ERRAND_REPORT_TURNS, SOCIAL_RADIUS, ROOM_ARRIVAL)
+                       ERRAND_REPORT_CHARACTERS, ERRAND_REPORT_TURNS, ERRAND_STAND_SLACK, SOCIAL_RADIUS,
+                       ROOM_ARRIVAL)
 
 
 @dataclass
@@ -94,11 +96,10 @@ def step(npc, world):
         return False
     if npc.location != target.location:
         return _approach(world, npc, errand, target)
-    if not _ready(world, target):
-        _wait(world, errand, f"{target.name} is busy.")
-        return True
     from interactions import company_point
-    if company_point(npc, target) is None:
+    if not _ready(world, target) or company_point(npc, target) is None:
+        _wait(world, errand, f"{target.name} is busy.")
+        _stand_near(npc, target)
         return True
     from simulation import PendingAction
     from transfer_records import TransferIntent
@@ -107,9 +108,32 @@ def step(npc, world):
         record.transfer_intent = TransferIntent(giver_id=npc.id, recipient_id=errand.target_id,
                                                 item=errand.item, quantity=errand.quantity)
     world.pending_actions.append(PendingAction(npc.id, errand.action, npc.command_revision, errand.target_id,
-                                               errand.topic, errand.record, errand.item, errand.quantity))
+                                               command_topic(npc, target, errand.action, errand.topic),
+                                               errand.record, errand.item, errand.quantity))
     errand.status = "started"
     return True
+
+
+def command_topic(npc, target, action, message):
+    """The player's own words when typed; a picked command has none, so say who asked for what."""
+    if message:
+        return message
+    task = "talk with" if action == "TALK_TO_NPC" else "give something to"
+    return f"{npc.name} was asked by the player to {task} {target.name}."
+
+
+def _hold(npc, reason):
+    """Stand still instead of wandering off while the errand waits."""
+    npc.behavior, npc.destination, npc.reason = Behavior.WAIT, None, reason
+
+
+def _stand_near(npc, target):
+    """Wait beside the busy person, leaving room for whoever they are with, and follow if they shift."""
+    from interactions import company_point
+    npc.behavior, npc.reason = Behavior.WAIT, f"Waiting to talk to {target.name}"
+    point = company_point(npc, target, SOCIAL_RADIUS, allow_vertical=True)
+    if point is not None and math.dist(point, (npc.x, npc.y)) > ERRAND_STAND_SLACK:
+        npc.destination = point
 
 
 def _holds(world, npc, errand):
@@ -140,6 +164,7 @@ def _approach(world, npc, errand, target):
     from locations import clamp_point, floor_for_room, hallway_location, door_point, start_journey
     from apartments import entry_refusal
     if target.journey:
+        _hold(npc, f"Waiting to see where {target.name} goes")
         return True
     destination = target.location
     try:
@@ -155,6 +180,7 @@ def _approach(world, npc, errand, target):
                 return False
             if reason:
                 _wait(world, errand, reason)
+                _hold(npc, f"Waiting outside {target.name}'s door")
                 return True
             start_journey(npc, destination, ROOM_ARRIVAL, purpose="errand")
             return True
@@ -182,7 +208,8 @@ def _follow_action(world, npc, errand):
 def _summary(world, errand, record):
     target = world.npc_by_id(errand.target_id)
     spoken = " ".join(f"{turn.speaker}: {turn.text}" for turn in record.turns[-ERRAND_REPORT_TURNS:])
-    return (f'You were asked to talk to {target.name} about "{errand.topic}", and you did. '
+    about = f' about "{errand.topic}"' if errand.topic else ""
+    return (f"You were asked to talk to {target.name}{about}, and you did. "
             f"What was said: {spoken}")[:ERRAND_REPORT_CHARACTERS]
 
 
@@ -196,12 +223,14 @@ def _report(world, npc, errand):
         return False
     player = world.player
     if colocated(npc, player) or player.journey:
+        _hold(npc, "Waiting to tell the player what happened")
         return True
     destination, point = player.location, clamp_point(player.location, (player.x + SOCIAL_RADIUS, player.y))
     if destination.startswith("room:"):
         number = int(destination.split(":")[1])
         destination, point = hallway_location(floor_for_room(number)), door_point(number)
         if npc.location == destination:
+            _hold(npc, "Waiting to tell the player what happened")
             return True
     try:
         start_journey(npc, destination, point, purpose="errand")

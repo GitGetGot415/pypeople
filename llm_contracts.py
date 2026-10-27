@@ -406,9 +406,22 @@ def _player_command_brief(intent, snapshot):
              "Do not answer an earlier conversation question or claim the task already happened. ")
     target = next((other for other in [*snapshot.get("other_npcs", []), *snapshot.get("remote_npcs", [])]
                    if other["actor_id"] == intent["target"]), None)
-    if target is not None and not target.get("available_to_talk", True):
-        brief += (f"{target['name']} is not free or not here right now. Say you will do it once you can reach "
-                  "them or they are free; do not say it has started.")
+    if target is not None:
+        # The request carries only an ID; name the person so the reply cannot substitute someone else.
+        if intent["action"] == "TALK_TO_NPC":
+            brief += f"You are being asked to go and talk to {target['name']}. Name {target['name']} as that person, nobody else. "
+        else:
+            title = next((w["title"] for w in snapshot.get("owned_works", []) if w["id"] == intent["item"]), None)
+            item = title or f"{intent['quantity']} apple" + ("s" if intent["quantity"] != 1 else "")
+            if target.get("kind") == "player":
+                brief += f"You are being asked to give {item} to the player you are speaking with. "
+            else:
+                brief += f"You are being asked to give {item} to {target['name']}. Name {target['name']} as the recipient, nobody else. "
+        if not target.get("available_to_talk", True):
+            brief += (f"{target['name']} is not free or not here right now. Say you will do it once you can reach "
+                      "them or they are free; do not say it has started. ")
+    if intent["action"] != "GIVE_ITEM":
+        brief += "Use one or two short sentences and do not ask a question."
     return brief
 
 
@@ -487,6 +500,9 @@ def response_contract(snapshot, *, correction=False):
             "item": {"type": "string", "enum": [intent["item"], ""] if giving else [intent["item"]]},
             "quantity": {"type": "integer", "enum": [intent["quantity"], 0] if giving else [intent["quantity"]]},
         }}
+        if not giving and intent["action"] != "SAY":
+            # An accepted task always closes the exchange (ActionResponse enforces it), so ask for that directly.
+            schema["properties"]["end_conversation"] = {"type": "boolean", "enum": [True]}
         if giving:
             instruction += (" A requested gift is not yet a commitment. If you decline, lack the item, "
                             "or need an answer before agreeing, use SAY with empty target/item and quantity 0. "

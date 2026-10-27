@@ -576,6 +576,9 @@ class NPC(ResidentValues, ConversationActor):
                 else:
                     self.finish_activity(world, failed=True)
         elif behavior == Behavior.WAIT:
+            # A waiting resident only moves when an errand gave them a spot beside someone.
+            if self.destination is not None and self._move(dt):
+                self.destination = None
             self.activity_elapsed += dt
             if self.activity_elapsed >= DECISION_SECONDS:
                 self.decision_remaining = 0.0

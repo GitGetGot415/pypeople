@@ -169,6 +169,8 @@ ENTRY_REFUSAL_SCORE = -10
 # Spoken lines of a finished errand conversation that a resident can report back to the player.
 ERRAND_REPORT_TURNS = 6
 ERRAND_REPORT_CHARACTERS = 1200
+# A resident waiting beside a busy person only steps again once that person has moved this far from the waiting spot.
+ERRAND_STAND_SLACK = 24
 PLAYER_OPINION_STEP = 4
 INVENTORY_RECT = (140, 92, 1000, 550)
 INVENTORY_ROW_HEIGHT = 36

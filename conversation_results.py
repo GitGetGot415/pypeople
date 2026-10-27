@@ -121,8 +121,11 @@ def accept_resident_reply(world, request, result, error, rewritten, *, visible, 
                     raise ValueError("This action has no interpreted player request.")
                 try:
                     validate_action(world, npc, result, accepting=True)
+                    from errands import command_topic
+                    topic = (command_topic(npc, world.npc_by_id(result.target), result.action, message)
+                             if result.action == "TALK_TO_NPC" else message or record.topic)
                     planned_action = PendingAction(npc.id, result.action, npc.command_revision,
-                        result.target or None, message or record.topic, record.id if record else None,
+                        result.target or None, topic, record.id if record else None,
                         result.item, result.quantity)
                 except Unavailable as exc:
                     queued = str(exc)
@@ -135,7 +138,7 @@ def accept_resident_reply(world, request, result, error, rewritten, *, visible, 
         error = remember_response_opinions(world, npc, result, snapshot)
     if not error and queued:
         from errands import queue_errand
-        queue_errand(world, npc, result, message or (record.topic if record else ""), record.id if record else None)
+        queue_errand(world, npc, result, message, record.id if record else None)
     elif not error and planned_action is not None:
         from errands import cancel
         cancel(world, npc.id)

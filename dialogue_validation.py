@@ -518,6 +518,25 @@ def _validate_base_presentation(result, snapshot):
         validate_environment_speech(text, location=snapshot.get("location", snapshot.get("initiator", {}).get("location", "garden")))
 
 
+def _validate_named_recipient(reply, target_id, snapshot):
+    """An acknowledgment that names someone must name the actual recipient, not a substitute."""
+    people = [*snapshot.get("other_npcs", []), *snapshot.get("remote_npcs", [])]
+    target = next((p for p in people if p["actor_id"] == target_id), None)
+    if target is None or target.get("kind") == "player":
+        return
+
+    def named(name):
+        return any(re.search(rf"\b{re.escape(form)}\b", reply, re.IGNORECASE) for form in (name, name.split()[0]))
+
+    if named(target["name"]):
+        return
+    others = [p["name"] for p in people if p.get("kind") != "player" and p["actor_id"] != target_id] + [SNAKE_NAME]
+    wrong = next((name for name in others if named(name)), None)
+    if wrong:
+        raise ValueError(f"This request is about {target['name']}, not {wrong}. "
+                         f"Name {target['name']} as the person and do not substitute anyone else.")
+
+
 def _validate_response(raw, snapshot, model):
     result = model.model_validate_json(raw)
     check_dialogue = snapshot.get("_dialogue_validation", True)
@@ -648,6 +667,8 @@ def _validate_response(raw, snapshot, model):
                 "can answer, or keep it true and finish without questions. Other actions must keep "
                 "end_conversation true and acknowledge the task without questions."
             )
+        if check_dialogue and isinstance(result, ActionResponse) and result.action in ("TALK_TO_NPC", "GIVE_ITEM"):
+            _validate_named_recipient(result.reply, result.target, snapshot)
         from player_commands import normalize_action
         normalized = normalize_action(result, snapshot)
         if (result.target, result.item, result.quantity) != (normalized.target, normalized.item, normalized.quantity):
