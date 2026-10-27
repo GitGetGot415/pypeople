@@ -28,7 +28,7 @@ class EventFeed:
         controls = app.game.save_button.rect.unionall([app.game.stats_button.rect, app.game.menu_button.rect])
         # Keep event text readable when toolbar buttons only contain symbols.
         self.header.width = max(EVENT_FEED_WIDTH, controls.width)
-        self.header.topright = (controls.right, app.game.toolbar_rect(app).bottom + EVENT_FEED_TOOLBAR_GAP)
+        self.header.topright = (controls.right, app.game.toolbar_rect().bottom + EVENT_FEED_TOOLBAR_GAP)
         self.body.topleft = self.header.bottomleft
         self.body.width = self.header.width
 

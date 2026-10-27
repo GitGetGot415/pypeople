@@ -7,7 +7,8 @@ from constants import (DIALOGUE_PANEL_HEIGHT, DIALOGUE_READING_Y, DIALOGUE_READI
                       APARTMENT_INSPECTOR_CONTENT_TOP, APARTMENT_INSPECTOR_TITLE_OFFSET, MODAL_OVERLAY_COLOR,
                       INVENTORY_BUTTON_RECT, GAME_PAUSE_RECT, GAME_CLOCK_RECT, GAME_SAVE_RECT, GAME_STATS_RECT, GAME_PHASE_POSITION,
                       GAME_MENU_RECT, GAME_TOOLBAR_PADDING, GAME_PHASE_BACKGROUND, GAME_PHASE_TEXT_COLOR,
-                      GAME_PHASE_PADDING, GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT,
+                      GAME_PHASE_PADDING, GAME_TOOLBAR_BORDER_COLOR, GAME_TOOLBAR_BORDER_WIDTH,
+                      GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT,
                       DIALOGUE_ORIGINAL_TOGGLE_RECT, BORDER_RADIUS, GAME_MENU_CONFIRM_RECT,
                       GAME_MENU_CONFIRM_TITLE_Y, GAME_MENU_CONFIRM_MESSAGE_RECT, GAME_MENU_KEEP_PLAYING_RECT,
                       GAME_MENU_LEAVE_RECT, PLAYER_ROOM_LOCATION, ROOM_BED_RECT,
@@ -164,6 +165,7 @@ class GameScreen:
 
     def handle_event(self, app, event):
         from player import active_player
+        self.clock_layout(app)
         world = app.simulation
         if (event.type == pygame.WINDOWFOCUSLOST
                 or event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP) and event.button == 1):
@@ -475,16 +477,31 @@ class GameScreen:
         self.keep_playing_button.draw(app.window, app.small_font)
         self.leave_game_button.draw(app.window, app.small_font)
 
-    def toolbar_rect(self, app):
+    def clock_layout(self, app):
         phase_rect = pygame.Rect((0, 0), app.small_font.size(f"Day {app.simulation.day}"))
         phase_rect.topright = GAME_PHASE_POSITION
-        phase_rect = phase_rect.inflate(*GAME_PHASE_PADDING)
-        rect = phase_rect.unionall([button.rect for button in (
-            self.clock_button, self.pause_button, self.save_button, self.stats_button, self.menu_button)])
+        rect = phase_rect.inflate(*GAME_PHASE_PADDING).unionall([
+            pygame.Rect(GAME_CLOCK_RECT), pygame.Rect(GAME_PAUSE_RECT)])
+        offset = (WINDOW_SIZE[0] // 2 - rect.centerx, 0)
+        self.clock_button.rect = pygame.Rect(GAME_CLOCK_RECT).move(offset)
+        self.inventory_button.rect = self.clock_button.rect.copy()
+        self.pause_button.rect = pygame.Rect(GAME_PAUSE_RECT).move(offset)
+        return (phase_rect.move(offset),
+                rect.move(offset).inflate(2 * GAME_TOOLBAR_PADDING, 2 * GAME_TOOLBAR_PADDING))
+
+    def draw_toolbar_background(self, surface, rect):
+        pygame.draw.rect(surface, PAPER, rect, border_radius=BORDER_RADIUS)
+        pygame.draw.rect(surface, GAME_TOOLBAR_BORDER_COLOR, rect,
+                         width=GAME_TOOLBAR_BORDER_WIDTH, border_radius=BORDER_RADIUS)
+
+    def toolbar_rect(self):
+        rect = self.menu_button.rect.unionall([self.save_button.rect, self.stats_button.rect])
         return rect.inflate(2 * GAME_TOOLBAR_PADDING, 2 * GAME_TOOLBAR_PADDING)
 
     def draw_clock(self, app):
         from player import active_player
+        phase_rect, toolbar_rect = self.clock_layout(app)
+        self.draw_toolbar_background(app.window, toolbar_rect)
         paused = app.simulation.paused
         self.pause_button.label = "Resume" if paused else "Pause"
         self.pause_button.icon = "play" if paused else "pause"
@@ -496,7 +513,6 @@ class GameScreen:
                                    and not app.simulation.player_attention_pending)
         color = INK
         phase_label = app.small_font.render(f"Day {app.simulation.day}", True, GAME_PHASE_TEXT_COLOR)
-        phase_rect = phase_label.get_rect(topright=GAME_PHASE_POSITION)
         pygame.draw.rect(app.window, GAME_PHASE_BACKGROUND, phase_rect.inflate(*GAME_PHASE_PADDING),
                          border_radius=BORDER_RADIUS)
         app.window.blit(phase_label, phase_rect)
@@ -641,7 +657,7 @@ class GameScreen:
         if self.can_harvest(app.simulation):
             self.harvest_button.draw(app.window, app.small_font)
             self.harvest_amount.draw(app.window, app.small_font)
-        pygame.draw.rect(app.window, PAPER, self.toolbar_rect(app), border_radius=BORDER_RADIUS)
+        self.draw_toolbar_background(app.window, self.toolbar_rect())
         self.menu_button.draw(app.window, app.small_font)
         self.stats_button.draw(app.window, app.small_font)
         self.save_button.draw(app.window, app.small_font)
@@ -1033,7 +1049,7 @@ class GameScreen:
                         if journey.purpose != "doorway":
                             self.mouse_follow = False
                     elif (self.world_viewport.collidepoint(pos) and not any(rect.collidepoint(pos) for rect in (
-                            self.toolbar_rect(app), self.inventory_button.rect, self.feed.rect, self.request_status.rect))):
+                            self.toolbar_rect(), self.clock_layout(app)[1], self.feed.rect, self.request_status.rect))):
                         point = clamp_point(self.location, self.screen_to_world(pos))
                         start_journey(world.player, self.location, point, purpose="walk")
                 move_player(world, dx, dy, dt, running=world.player_running)
