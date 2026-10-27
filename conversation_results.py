@@ -192,6 +192,7 @@ def accept_resident_reply(world, request, result, error, rewritten, *, visible, 
         if error:
             record.status = CONVERSATION_FAILED
             record.outcomes.insert(0, f"The request could not be completed: {error}")
+            record.add_note(error)
         else:
             if npc.unread_player_reply:
                 record.status = CONVERSATION_REPLY_WAITING_FOR_PLAYER
@@ -273,6 +274,7 @@ def apply_pending_action(world, action, spacing):
         if error:
             record.error = error
             record.outcomes[0:1] = [error]
+            record.add_note(error)
         else:
             outcomes = {
                 "GO_TO_TREE": "Started walking to the tree.",

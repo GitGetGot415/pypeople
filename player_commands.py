@@ -104,6 +104,23 @@ def action_description(intent, snapshot):
     return label
 
 
+def command_speech(intent, snapshot):
+    """What picking an action amounts to saying, shown as the player's own line in the conversation."""
+    if intent.action == "GO_TO_TREE":
+        return "Go to the tree."
+    if intent.action == "EAT":
+        return "Eat an apple."
+    target = next((p for p in [*snapshot.get("other_npcs", []), *snapshot.get("remote_npcs", [])]
+                   if p["actor_id"] == intent.target), None)
+    name = "me" if target is None or target.get("kind") == "player" else target["name"]
+    if intent.action == "TALK_TO_NPC":
+        return f"Go talk to {name}."
+    title = next((w["title"] for w in snapshot.get("owned_works", []) if w["id"] == intent.item), None)
+    item = (f'your work "{title}"' if title else "an apple" if intent.quantity == 1
+            else f"{intent.quantity} apples")
+    return f"Give {name} {item}."
+
+
 def command_options(world, npc, action=None, target=None):
     """Return labelled requests and live reasons for the compact picker."""
     if action is None:

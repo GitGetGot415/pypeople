@@ -325,9 +325,19 @@ class StatsScreen:
                 gap()
             if not record.turns and not record.failed_turns:
                 add("No generated draft was retained for this failure." if record.error else "No dialogue generated yet.", color=MUTED)
-            for turn in record.display_turns():
+            # Errors appear where they happened, between the turns recorded before and after them.
+            notes = sorted(record.notes, key=lambda note: note["turn"])
+
+            def show_notes(before):
+                while notes and notes[0]["turn"] <= before:
+                    add(f"Error: {notes.pop(0)['text']}", app.small_font, FAILED_CONVERSATION_SELECTED_COLOR)
+                    gap()
+
+            for index, turn in enumerate(record.display_turns()):
+                show_notes(index)
                 message(turn,
                         original=uses_original_dialogue(turn.parts, turn.rewritten, original=app.original_dialogue))
+            show_notes(len(record.turns))
             if record.failed_turns:
                 rule()
                 add("Generated draft (not applied)", app.heading_font)

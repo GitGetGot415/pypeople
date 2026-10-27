@@ -74,6 +74,7 @@ def _drop(world, errand, reason=""):
         if record.status == CONVERSATION_COMPLETED:
             record.status, record.error = CONVERSATION_CANCELLED, reason
         record.outcomes.append(reason)
+        record.add_note(reason)
 
 
 def step(npc, world):

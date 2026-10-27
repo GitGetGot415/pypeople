@@ -286,6 +286,7 @@ class Conversation(ResidentProgress):
         record_failed_dialogue(self, failed_turns)
         self.dialogue.dialogue_state = "failed"
         self.record.error = reason
+        self.record.add_note(reason)
         self.finish(self.initiator.world.tree)
 
     def prepare_food_request(self):

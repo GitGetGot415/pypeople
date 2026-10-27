@@ -219,6 +219,7 @@ class ConversationSession:
         pending = self.simulation.player_interaction.pending_request
         if record and pending and not npc.generation_pending and self.player_request(npc) is None:
             record.status, record.error = CONVERSATION_FAILED, "Generation was interrupted by saving."
+            record.add_note(record.error)
             interaction.pending_request = None
         self.show_reply(record.error if record and record.error else "")
         self.emit("focus")
@@ -446,7 +447,7 @@ class ConversationSession:
         description = ""
         if kind == "player_command":
             from dialogue import ActionIntent
-            from player_commands import action_description
+            from player_commands import action_description, command_speech
             snapshot["request_intent"] = snapshot["player_interaction"]["command"].copy()
             description = action_description(ActionIntent(**snapshot["request_intent"]), snapshot)
         if kind in ("player_opening", "player_gift", "player_acknowledgment"):
@@ -493,9 +494,12 @@ class ConversationSession:
             record=record, actor_revision=npc.command_revision, roster_revision=self.simulation.roster_revision)
         record.status = CONVERSATION_WAITING_FOR_REPLY
         record.error = ""
-        if message and not (record.turns and record.turns[-1].speech == ("You", message)
+        # A picked action reads as the player's own line, both in the live panel and in Stats. It is a display line only:
+        # the request still carries the structured command, and no claim or evidence is taken from these words.
+        said = message or (command_speech(ActionIntent(**snapshot["request_intent"]), snapshot) if kind == "player_command" else "")
+        if said and not (record.turns and record.turns[-1].speech == ("You", said)
                 and len(record.turns) - 1 not in record.accepted_player_turns):
-            record.add_turn("You", message, speaker_id=self.simulation.player.id)
+            record.add_turn("You", said, speaker_id=self.simulation.player.id)
         if snapshot.get("request_kind") != "player_acknowledgment":
             self.emit("clear_input")
         if prepared is not None:
@@ -640,6 +644,7 @@ class ConversationSession:
                 self.show_reply(reason)
             if record is not None:
                 record.status, record.error = CONVERSATION_FAILED, reason
+                record.add_note(reason)
             interaction = self.simulation.player_interaction
             if self.player_owns(npc):
                 interaction.pending_request = None

@@ -18,6 +18,12 @@ class RecordedPart(TypedDict):
     emotion: NotRequired[dict]
 
 
+class ConversationNote(TypedDict):
+    """An error logged between turns, shown in Stats at that point in the dialogue."""
+    turn: Annotated[int, Field(strict=True, ge=0)]
+    text: Annotated[str, Field(min_length=1)]
+
+
 @dataclass
 class RecordedTurn:
     speaker: Annotated[str, Field(min_length=1)]
@@ -64,6 +70,12 @@ class ConversationRecord:
     player_promise_offers: list[PlayerPromiseOffer] = field(default_factory=list)
     grievance_id: str | None = None
     pending_witness_ids: list[str] = field(default_factory=list)
+    notes: list[ConversationNote] = field(default_factory=list)
+
+    def add_note(self, text):
+        """Review-only error marker placed after the turns recorded so far; never part of any model context."""
+        if text and text.strip():
+            self.notes.append(ConversationNote(turn=len(self.turns), text=text.strip()))
 
     @property
     def transcript(self):
