@@ -243,7 +243,8 @@ class ConversationSession:
         invitation = pending_invitation(self.simulation)
         snapshot["pending_invitation"] = asdict(invitation) if invitation else None
         interaction = self.simulation.player_interaction
-        snapshot["closed_door_knock"] = interaction.knock_room if interaction else None
+        # Only the player's own knock asks this resident for entry; a resident knocking on the player's door does not.
+        snapshot["closed_door_knock"] = interaction.knock_room if interaction and not interaction.incoming else None
         pending = interaction.pending_request if interaction else None
         call = asdict(npc.player_call) if npc.player_call else (pending or {}).get("context", {}).get("call")
         if call and call["kind"] == "news":
@@ -345,7 +346,11 @@ class ConversationSession:
             snapshot = self.player_snapshot(npc)
             from player import work_choices
             snapshot["owned_works"] = work_choices(self.simulation, npc.id, call["reference"])
-            snapshot.update(request_kind="player_opening", player_interaction={"call": call})
+            context = {"call": call}
+            if interaction.knock_room:
+                context["setting"] = ("You knocked on the player's closed apartment door and are talking to them "
+                                      "through it from the hallway.")
+            snapshot.update(request_kind="player_opening", player_interaction=context)
             snapshot["other_npcs"] = [self.player_target()]
             self._submit_player_message(npc, "", snapshot,
                 prepared=ActionResponse(action="SAY", reply=opening, end_conversation=False) if opening else None)

@@ -21,7 +21,7 @@ from .button import Button
 from .request_status import RequestStatus
 from .text import draw_centered_text, draw_wrapped_text, wrap_text, scrollbar_rects, ScrollbarDrag
 from .text_input import TextInput
-from .world import CHARACTER_SCALE, draw_world
+from .world import CHARACTER_SCALE, draw_world, generation_bubbles
 from .character_sprite import draw_actor_portrait
 from constants import GAME_PORTRAIT_BACKGROUND, GAME_PORTRAIT_PADDING, GAME_PORTRAIT_BORDER_WIDTH
 from .inventory import InventoryPanel
@@ -616,7 +616,8 @@ class GameScreen:
         from player import active_player
         draw_world(app.window, app.npcs, app.tree, app.small_font, app.character.renderer,
                    self.view_offset, zoom=self.camera_zoom,
-                   viewport=self.world_viewport, snake=app.simulation.snake, world=app.simulation, location=self.location)
+                   viewport=self.world_viewport, snake=app.simulation.snake, world=app.simulation, location=self.location,
+                   speaking=generation_bubbles(app.conversation_requests, app.requests.statuses()))
         if self.can_harvest(app.simulation):
             self.harvest_button.draw(app.window, app.small_font)
             self.harvest_amount.draw(app.window, app.small_font)

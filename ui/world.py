@@ -1,3 +1,4 @@
+import re
 import pygame
 from functools import lru_cache
 from pathlib import Path
@@ -56,6 +57,27 @@ def _bubble_rect(npc, name, offset, zoom):
                        max(1, round(image.get_height() * zoom))).move(anchor[0], anchor[1] - max(1, round(image.get_height() * zoom)))
 
 
+_TURN_STAGE = re.compile(r"^(?:Generating|Correcting|Recovery: rewriting) turn \d+ for (.+)$")
+
+
+def generation_bubbles(conversations, workers):
+    """Bubbles for both participants of each conversation being generated, keyed by actor ID.
+
+    The person whose turn is being written talks; any other stage (waiting for the model, assessments,
+    validation, voice rewrites) shows the initiator thinking. The other participant shows nothing.
+    """
+    stages = {worker.request_id: worker.stage for worker in workers}
+    bubbles = {}
+    for request_id, conversation in conversations.items():
+        match = _TURN_STAGE.match(stages.get(request_id, ""))
+        speaker = next((person for person in (conversation.initiator, conversation.recipient)
+                        if match and person.name == match[1]), None)
+        bubbles[conversation.initiator.id] = None
+        bubbles[conversation.recipient.id] = None
+        bubbles[(speaker or conversation.initiator).id] = "Talking" if speaker else "Thinking"
+    return bubbles
+
+
 def _active_bubble(npc):
     if npc.conversation is not None and npc.conversation.arrived and npc.conversation.initiator is npc:
         return "Talking"
@@ -105,7 +127,7 @@ def _draw_shadow(surface, rect):
     surface.blit(shadow, rect, special_flags=pygame.BLEND_RGB_MULT)
 
 
-def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), zoom=1.0, viewport=None, snake=None, *, world=None, location="garden"):
+def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 0), zoom=1.0, viewport=None, snake=None, *, world=None, location="garden", speaking=None):
     # Use nearest-neighbor scaling throughout to keep the original pixels crisp.
     # Scale the ground separately; artwork is drawn directly at the camera zoom.
     from locations import map_size, targets
@@ -186,7 +208,8 @@ def draw_world(surface, npcs, tree, font, character_renderer, camera_offset=(0, 
         npcs.append(world.player)
     _draw_objects(surface, npcs, tree if location == "garden" else None, font, character_renderer,
                   camera_offset, zoom, snake if location == "garden" else None,
-                  bodies=[body for body in world.bodies if body["location"] == location] if world else ())
+                  bodies=[body for body in world.bodies if body["location"] == location] if world else (),
+                  speaking=speaking or {})
     surface.set_clip(previous_clip)
 
 
@@ -215,7 +238,8 @@ def _draw_scene(surface, tree):
     _draw_shadow(surface, pygame.Rect(tree_x - 43, round(tree.y) + 50 - GARDEN_FLOOR_OFFSET[1], 86, 20))
 
 
-def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, zoom, snake=None, *, bodies=()):
+def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, zoom, snake=None, *, bodies=(), speaking=None):
+    speaking = speaking or {}
     def screen_point(point):
         return (round(point[0] * zoom + camera_offset[0]),
                 round(point[1] * zoom + camera_offset[1]))
@@ -274,6 +298,7 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
             image = resized(snake_artwork(snake.facing, snake.frame), zoom)
             rect = image.get_rect(midbottom=screen_point((snake.x, snake.y)))
             surface.blit(image, rect)
+            snake_rect = rect
             tags.append((snake.name, image, rect))
             label = label_font.render(snake.status, True, label_color)
             surface.blit(label, label.get_rect(midtop=screen_point((snake.x, snake.y + 30))))
@@ -300,9 +325,17 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
             surface.blit(line, line.get_rect(midtop=(rect.centerx, top)))
             top += line.get_height()
     # Thinking draws above ordinary speech; ready replies have the final priority.
+    if snake is not None:
+        # The python's bubble follows the same rules, anchored to its own artwork.
+        bubble_name = speaking.get(snake.id, "Talking" if snake.conversation is not None and snake.conversation.arrived
+                                   and snake.conversation.initiator is snake else None)
+        if bubble_name is not None:
+            bubble = resized(interaction_bubble(bubble_name), zoom)
+            surface.blit(bubble, bubble.get_rect(bottomleft=(snake_rect.right - round(6 * zoom),
+                                                             snake_rect.top + round(8 * zoom))))
     for npc in sorted((n for n in npcs if isinstance(n, NPC)), key=lambda person: (bool(person.unread_player_reply), person.generation_pending)):
         bubble_name = (player_bubble_name(npc) if player_bubble_visible(npc, camera_offset, zoom)
-                       else _active_bubble(npc))
+                       else speaking[npc.id] if npc.id in speaking else _active_bubble(npc))
         if bubble_name is not None:
             width, height = npc.sprite_size or (
                 round(character_renderer.character_size[0] * CHARACTER_SCALE),

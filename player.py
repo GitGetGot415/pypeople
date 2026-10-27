@@ -438,7 +438,9 @@ def call_reason(world, npc):
 
 def call_valid(world, npc, call):
     from locations import available, colocated
-    if not active_player(world) or not available(npc) or not colocated(world.player, npc):
+    interaction = world.player_interaction
+    knocking = bool(interaction and interaction.npc_id == npc.id and interaction.knock_room)
+    if not active_player(world) or not available(npc) or not (colocated(world.player, npc) or knocking):
         return False
     ref = call.reference
     if call.kind == "introduction":
@@ -465,12 +467,16 @@ def clear_call(npc):
     npc.player_call_cooldown = PLAYER_CALL_COOLDOWN
 
 
-def start_call(world, npc, reason):
-    """Claim an incoming meeting before normal activities can reserve its actors."""
-    start_approach(world, npc, incoming=True)
-    npc.reason = "Walking to the player to talk"
+def start_call(world, npc, reason, *, knock_room=None):
+    """Claim an incoming meeting before normal activities can reserve its actors.
+
+    With knock_room, the resident talks through the player's closed door instead of walking over.
+    """
+    start_approach(world, npc, incoming=True, knock_room=knock_room)
+    npc.reason = "Knocking on the player's door" if knock_room else "Walking to the player to talk"
     npc.player_call = PlayerCall(**asdict(reason), event_id="")
-    event = world.publish("player_call", (npc,), f"{npc.name} would like to talk to you.")
+    text = f"{npc.name} is knocking on your door." if knock_room else f"{npc.name} would like to talk to you."
+    event = world.publish("player_call", (npc,), text)
     npc.player_call.event_id = event.id
 
 
@@ -487,7 +493,9 @@ def update_calls(world, dt):
     world.player_call_check = PLAYER_CALL_CHECK_SECONDS
     from locations import colocated
     for npc in sorted(world.npcs, key=lambda n: n.player_opinion.opinion + n.preferences["sociability"], reverse=True):
-        if npc.player_call or npc.player_call_cooldown or not world.company_available(npc) or not colocated(world.player, npc):
+        # The cooldown stops residents pestering the player; a report the player asked for is not pestering.
+        cooling = npc.player_call_cooldown and world.errand_for(npc.id, "done") is None
+        if npc.player_call or cooling or not world.company_available(npc) or not colocated(world.player, npc):
             continue
         reason = call_reason(world, npc)
         if reason and reason.key not in npc.resolved_player_calls:

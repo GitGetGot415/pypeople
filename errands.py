@@ -12,7 +12,7 @@ from pydantic import Field
 from activity import Behavior
 from constants import (CONVERSATION_CANCELLED, CONVERSATION_COMPLETED, CONVERSATION_FINISHED,
                        ERRAND_REPORT_CHARACTERS, ERRAND_REPORT_TURNS, ERRAND_STAND_SLACK, SOCIAL_RADIUS,
-                       ROOM_ARRIVAL)
+                       ROOM_ARRIVAL, PLAYER_ROOM_NUMBER)
 
 
 @dataclass
@@ -213,6 +213,22 @@ def _summary(world, errand, record):
             f"What was said: {spoken}")[:ERRAND_REPORT_CHARACTERS]
 
 
+def _call_player(world, npc, errand, knock_room=None):
+    """Walk straight over to the player with the report, without waiting for the periodic call check.
+
+    With knock_room, knock on the player's door and report through it instead."""
+    from player import call_reason, can_claim, start_call
+    reason = call_reason(world, npc)
+    if (npc.player_call or not can_claim(world) or not world.company_available(npc)
+            or reason is None or reason.key != f"report:{errand.id}"):
+        return False
+    try:
+        start_call(world, npc, reason, knock_room=knock_room)
+    except ValueError:
+        return False
+    return True
+
+
 def _report(world, npc, errand):
     """Find the player and wait to be called over; the call itself is the ordinary player call."""
     from locations import active_player, colocated, clamp_point, floor_for_room, hallway_location, door_point, start_journey
@@ -222,7 +238,13 @@ def _report(world, npc, errand):
     if npc.behavior not in (Behavior.WANDER, Behavior.WAIT):
         return False
     player = world.player
+    if colocated(npc, player) and _call_player(world, npc, errand):
+        return True
     if colocated(npc, player) or player.journey:
+        # The player is busy (or moving between places), so the call waits. Outdoors, carry on as usual meanwhile;
+        # indoors, stay put, since an idle resident would otherwise leave the hallway and walk straight back.
+        if npc.location == "garden":
+            return False
         _hold(npc, "Waiting to tell the player what happened")
         return True
     destination, point = player.location, clamp_point(player.location, (player.x + SOCIAL_RADIUS, player.y))
@@ -230,6 +252,9 @@ def _report(world, npc, errand):
         number = int(destination.split(":")[1])
         destination, point = hallway_location(floor_for_room(number)), door_point(number)
         if npc.location == destination:
+            # The player's own door can be knocked on; anyone else's room means the player is a guest there.
+            if number == PLAYER_ROOM_NUMBER and _call_player(world, npc, errand, knock_room=number):
+                return True
             _hold(npc, "Waiting to tell the player what happened")
             return True
     try:
