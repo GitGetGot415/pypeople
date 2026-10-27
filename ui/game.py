@@ -474,7 +474,7 @@ class GameScreen:
 
     def clock_layout(self, app):
         phase_rect = pygame.Rect((0, 0), app.small_font.size(f"Day {app.simulation.day}"))
-        phase_rect.topright = GAME_PHASE_POSITION
+        phase_rect.topleft = GAME_PHASE_POSITION
         rect = phase_rect.inflate(*GAME_PHASE_PADDING).unionall([
             pygame.Rect(GAME_CLOCK_RECT), pygame.Rect(GAME_PAUSE_RECT)])
         offset = (WINDOW_SIZE[0] // 2 - rect.centerx, 0)
