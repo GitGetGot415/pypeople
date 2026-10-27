@@ -6,7 +6,8 @@ from constants import (DIALOGUE_PANEL_HEIGHT, DIALOGUE_READING_Y, DIALOGUE_READI
                       APARTMENT_INSPECTOR_ROW_HEIGHT, APARTMENT_INSPECTOR_CONTENT_INSET,
                       APARTMENT_INSPECTOR_CONTENT_TOP, APARTMENT_INSPECTOR_TITLE_OFFSET, MODAL_OVERLAY_COLOR,
                       INVENTORY_BUTTON_RECT, GAME_PAUSE_RECT, GAME_CLOCK_RECT, GAME_SAVE_RECT, GAME_STATS_RECT, GAME_PHASE_POSITION,
-                      GAME_MENU_RECT, GAME_TOOLBAR_PADDING, GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT,
+                      GAME_MENU_RECT, GAME_TOOLBAR_PADDING, GAME_PHASE_BACKGROUND, GAME_PHASE_TEXT_COLOR,
+                      GAME_PHASE_PADDING, GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT,
                       DIALOGUE_ORIGINAL_TOGGLE_RECT, BORDER_RADIUS, GAME_MENU_CONFIRM_RECT,
                       GAME_MENU_CONFIRM_TITLE_Y, GAME_MENU_CONFIRM_MESSAGE_RECT, GAME_MENU_KEEP_PLAYING_RECT,
                       GAME_MENU_LEAVE_RECT, PLAYER_ROOM_LOCATION, ROOM_BED_RECT,
@@ -475,8 +476,9 @@ class GameScreen:
         self.leave_game_button.draw(app.window, app.small_font)
 
     def toolbar_rect(self, app):
-        phase_rect = pygame.Rect((0, 0), app.small_font.size(app.simulation.phase_label))
+        phase_rect = pygame.Rect((0, 0), app.small_font.size(f"Day {app.simulation.day}"))
         phase_rect.topright = GAME_PHASE_POSITION
+        phase_rect = phase_rect.inflate(*GAME_PHASE_PADDING)
         rect = phase_rect.unionall([button.rect for button in (
             self.clock_button, self.pause_button, self.save_button, self.stats_button, self.menu_button)])
         return rect.inflate(2 * GAME_TOOLBAR_PADDING, 2 * GAME_TOOLBAR_PADDING)
@@ -493,8 +495,10 @@ class GameScreen:
             self.clock_button.draw(app.window, app.small_font, enabled=not paused and not app.simulation.phase_pending
                                    and not app.simulation.player_attention_pending)
         color = INK
-        phase_label = app.small_font.render(app.simulation.phase_label, True, INK)
+        phase_label = app.small_font.render(f"Day {app.simulation.day}", True, GAME_PHASE_TEXT_COLOR)
         phase_rect = phase_label.get_rect(topright=GAME_PHASE_POSITION)
+        pygame.draw.rect(app.window, GAME_PHASE_BACKGROUND, phase_rect.inflate(*GAME_PHASE_PADDING),
+                         border_radius=BORDER_RADIUS)
         app.window.blit(phase_label, phase_rect)
         if app.simulation.player_attention_pending:
             draw_wrapped_text(app.window, "Address the waiting NPCs before changing the time.",
