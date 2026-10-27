@@ -5,7 +5,7 @@ from pathlib import Path
 from constants import (GARDEN_LOCATION, GARDEN_FLOOR_ART, GARDEN_FLOOR_OFFSET, INK, PAPER, SHADOW_COLOR, CHARACTER_SHADOW_HEIGHT,
                       CHARACTER_SHADOW_OFFSET_Y, WORLD_COLORS,
                       APARTMENT_DOOR_RECT, APARTMENT_RECT, APARTMENT_FLOORS, APARTMENT_FLOOR_SIZE,
-                      APARTMENT_BASE_Y, APARTMENT_ROOF_RECT, GARDEN_BRIDGE_RECT, DEFAULT_BUBBLE_SPRITE_SIZE,
+                      APARTMENT_BASE_Y, APARTMENT_ROOF_RECT, GARDEN_BRIDGE_RECT,
                       GARDEN_UNDERSIDE_RECT, APARTMENT_UNDERSIDE_RECT,
                       UI_SMALL_FONT_SIZE, NAME_TAG_FONT_SIZE, NAME_TAG_HEAD_GAP, PLAYER_NAME_TAG,
                       ROOM_BED_RECT, PLAYER_ROOM_NUMBER, TREE_BASE_OFFSET)
@@ -30,31 +30,6 @@ def npc_name_font(size):
 def interaction_bubble(name):
     path = Path(__file__).resolve().parent.parent / "assets" / f"{name}.png"
     return pygame.image.load(str(path)).convert_alpha()
-
-
-def player_bubble_name(npc):
-    interaction = npc.world.player_interaction if npc.world else None
-    if interaction and interaction.npc_id == npc.id and interaction.incoming:
-        if interaction.stage == "approach":
-            return None
-    if npc.generation_pending:
-        return "Thinking"
-    if npc.player_call and not npc.selected:
-        return "Calling Player" if npc.unread_player_reply else "Requesting Player"
-    return None
-
-
-def player_bubble_rect(npc, offset, zoom):
-    return _bubble_rect(npc, player_bubble_name(npc), offset, zoom)
-
-
-def _bubble_rect(npc, name, offset, zoom):
-    image = interaction_bubble(name)
-    width, height = npc.sprite_size or DEFAULT_BUBBLE_SPRITE_SIZE
-    anchor = (round((npc.x + width / 2 - 6) * zoom + offset[0]),
-              round((npc.y - height + 8) * zoom + offset[1]))
-    return pygame.Rect(0, 0, max(1, round(image.get_width() * zoom)),
-                       max(1, round(image.get_height() * zoom))).move(anchor[0], anchor[1] - max(1, round(image.get_height() * zoom)))
 
 
 _TURN_STAGE = re.compile(r"^(?:Generating|Correcting|Recovery: rewriting) turn \d+ for (.+)$")
@@ -82,29 +57,6 @@ def _active_bubble(npc):
     if npc.conversation is not None and npc.conversation.arrived and npc.conversation.initiator is npc:
         return "Talking"
     return "Eating" if npc.eating else "Giving" if npc.giving else "Thanking" if npc.thanking else None
-
-
-def player_bubble_visible(npc, offset=None, zoom=1.0):
-    name = player_bubble_name(npc)
-    if not (name and npc.alive and not npc.busy):
-        return False
-    if name in ("Thinking", "Calling Player"):
-        return True
-    if _active_bubble(npc):
-        return False
-    if offset is not None:
-        rect = player_bubble_rect(npc, offset, zoom)
-        for other in (n for n in npc.world.npcs if n.location == npc.location):
-            if other is npc:
-                continue
-            active = _active_bubble(other)
-            if active and rect.colliderect(_bubble_rect(other, active, offset, zoom)):
-                return False
-            if ((other.unread_player_reply or other.generation_pending or other.id < npc.id)
-                    and player_bubble_name(other) and not other.busy and not active
-                    and rect.colliderect(player_bubble_rect(other, offset, zoom))):
-                return False
-    return True
 
 
 def tree_artwork():
@@ -324,7 +276,7 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
         for line in lines:
             surface.blit(line, line.get_rect(midtop=(rect.centerx, top)))
             top += line.get_height()
-    # Thinking draws above ordinary speech; ready replies have the final priority.
+    # Thinking draws above ordinary speech.
     if snake is not None:
         # The python's bubble follows the same rules, anchored to its own artwork.
         bubble_name = speaking.get(snake.id, "Talking" if snake.conversation is not None and snake.conversation.arrived
@@ -333,8 +285,11 @@ def _draw_objects(surface, npcs, tree, font, character_renderer, camera_offset, 
             bubble = resized(interaction_bubble(bubble_name), zoom)
             surface.blit(bubble, bubble.get_rect(bottomleft=(snake_rect.right - round(6 * zoom),
                                                              snake_rect.top + round(8 * zoom))))
-    for npc in sorted((n for n in npcs if isinstance(n, NPC)), key=lambda person: (bool(person.unread_player_reply), person.generation_pending)):
-        bubble_name = (player_bubble_name(npc) if player_bubble_visible(npc, camera_offset, zoom)
+    for npc in sorted((n for n in npcs if isinstance(n, NPC)), key=lambda person: person.generation_pending):
+        interaction = npc.world.player_interaction if npc.world else None
+        approaching = (interaction and interaction.npc_id == npc.id and interaction.incoming
+                       and interaction.stage == "approach")
+        bubble_name = ("Thinking" if npc.generation_pending and npc.alive and not npc.busy and not approaching
                        else speaking[npc.id] if npc.id in speaking else _active_bubble(npc))
         if bubble_name is not None:
             width, height = npc.sprite_size or (
