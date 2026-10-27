@@ -26,7 +26,7 @@ class DeathMixin:
         if attacker.location != GARDEN_LOCATION or victim.location != GARDEN_LOCATION:
             return KILLING_INDOOR_REASON
         if self.population <= PROTECTED_POPULATION:
-            return "The remaining population is protected."
+            return f"You cannot kill while there are {PROTECTED_POPULATION} or less people remaining."
         last_kill = self.last_killing_day_for(attacker.id)
         if last_kill is not None and self.day - last_kill < KILLING_COOLDOWN_DAYS:
             if attacker is self.player:
