@@ -1,7 +1,7 @@
 """Authored events for new Player games; ordinary simulation dialogue stays generated."""
 
 from player_records import PlayerCallReason
-from constants import SNAKE_NAME, STARTING_PLAYER_DAY, CONVERSATION_COMPLETED
+from constants import SNAKE_NAME, STARTING_DAY, CONVERSATION_COMPLETED
 
 
 PLAYER_START_ENCOUNTER = "player-start-encounter"
@@ -45,7 +45,7 @@ def starting_dialogue_context(world, resident_id):
 
 
 def prepare_player_start(world):
-    """Give Judy her prior day here before assigning current-day goals."""
+    """Set the player's arrival day and give Judy her prior encounter."""
     from information import add_fact
 
     resident = world.npcs[0]
@@ -56,7 +56,7 @@ def prepare_player_start(world):
              f"{resident.name} heard these claims without knowing whether they are true. "
              f"At that time, {resident.name} had seen no other human here.",
              [resident, world.snake])
-    world.day = STARTING_PLAYER_DAY
+    world.day = STARTING_DAY + len(world.npcs)
     from constants import ARRIVAL_LOCATION
     from locations import door_point
     resident.location = ARRIVAL_LOCATION
@@ -84,7 +84,16 @@ def starting_player_opening(world, npc):
             and not any(previous.between(world.player, npc)
                         and any(turn.speaker_id == npc.id for turn in previous.turns)
                         for previous in world.history)):
-        return JUDY_OPENING.format(name=npc.character["Name"])
+        # Include archived residents: the choice describes who was present at
+        # the start, even if someone leaves before the introduction happens.
+        starting_npcs = [person for person in (*world.npcs, *world.archived)
+                         if person.arrival_day == STARTING_DAY]
+        if len(starting_npcs) == 1:
+            opening = JUDY_OPENING
+        else:
+            from autonomy import JUDY_ARRIVAL_OPENING
+            opening = JUDY_ARRIVAL_OPENING
+        return opening.format(name=npc.character["Name"])
     return ""
 
 
