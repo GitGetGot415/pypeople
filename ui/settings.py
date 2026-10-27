@@ -8,9 +8,9 @@ from character_data import NPC_TRAIT_MODES
 from ollama_manager import DEFAULT_OLLAMA_MODEL, list_models, save_model
 
 from .button import Button
-from .text import draw_centered_text, draw_wrapped_text
+from .text import draw_wrapped_text
 from .text_input import TextInput
-from constants import BORDER_RADIUS, GRASS, INK, MAX_CONFIGURABLE_LLM_REQUESTS, MAX_LLM_REQUESTS, MUTED, PAPER
+from constants import ACCENT, BORDER_RADIUS, GRASS, INK, MAX_CONFIGURABLE_LLM_REQUESTS, MAX_LLM_REQUESTS, MUTED, PAPER
 
 
 def format_model_size(size):
@@ -24,19 +24,23 @@ def format_model_size(size):
 
 class SettingsScreen:
     def __init__(self):
-        self.gemini_button = Button((340, 110, 280, 42), "Gemini")
-        self.ollama_button = Button((660, 110, 280, 42), "Ollama")
-        self.previous_model_button = Button((340, 192, 48, 48), "<")
-        self.next_model_button = Button((892, 192, 48, 48), ">")
-        self.refresh_button = Button((750, 247, 190, 30), "Refresh Ollama")
-        self.parallel_less = Button((710, 281, 32, 32), "-")
-        self.parallel_more = Button((802, 281, 32, 32), "+")
-        self.save_button = Button((340, 604, 280, 48), "Save & Back")
-        self.setup_button = Button((660, 604, 280, 48), "Setup Ollama")
-        self.voice_rewrite_button = Button((340, 459, 600, 38), "")
-        self.validation_button = Button((340, 527, 600, 38), "")
+        # Content controls use coordinates relative to this area; the header
+        # and footer use window coordinates.
+        self.content_rect = pygame.Rect(260, 116, 760, 478)
+        self.gemini_button = Button((0, 28, 366, 74), "Gemini - Online")
+        self.ollama_button = Button((378, 28, 366, 74), "Ollama - On this computer")
+        self.previous_model_button = Button((0, 138, 38, 36), "<")
+        self.next_model_button = Button((392, 138, 38, 36), ">")
+        self.refresh_button = Button((454, 109, 138, 26), "Refresh models")
+        self.parallel_less = Button((626, 145, 32, 32), "-")
+        self.parallel_more = Button((712, 145, 32, 32), "+")
+        self.cancel_button = Button((260, 638, 140, 36), "Cancel")
+        self.save_button = Button((820, 638, 200, 36), "Save & Back")
+        self.setup_button = Button((604, 109, 140, 26), "Setup Ollama")
+        self.voice_rewrite_button = Button((626, 382, 118, 34), "")
+        self.validation_button = Button((626, 434, 118, 34), "")
         self.key_input = TextInput(
-            (340, 192, 600, 48),
+            (0, 138, 744, 36),
             max_length=512,
             secret=True,
             strip_paste=True,
@@ -47,7 +51,7 @@ class SettingsScreen:
         self.voice_rewrites = True
         self.dialogue_validation = True
         self.trait_mode_buttons = {
-            mode: Button((340 + index * 205, 389, 190, 38), mode.title())
+            mode: Button((index * 252, 279, 240, 68), "Mixed" if mode == "both" else mode.title())
             for index, mode in enumerate(NPC_TRAIT_MODES)
         }
         self.ollama_model = DEFAULT_OLLAMA_MODEL
@@ -107,20 +111,45 @@ class SettingsScreen:
         self.update_model_choices()
         self.model_message = error
         if not error and not models:
-            self.model_message = "No models installed. Use Setup Ollama, then Refresh Ollama."
+            self.model_message = "No models installed. Use Setup Ollama, then Refresh models."
 
     def change_model(self, direction):
         index = self.models.index(self.ollama_model)
         self.ollama_model = self.models[(index + direction) % len(self.models)]
         self.error = ""
 
+    def _cancel(self, app):
+        self.provider = app.provider
+        self.ollama_model = app.ollama_model
+        self.npc_trait_mode = app.npc_trait_mode
+        self.voice_rewrites = app.voice_rewrites
+        self.dialogue_validation = app.dialogue_validation
+        self.parallel_limit = app.requests.max_requests
+        self.key_input.set_value(app.api_key)
+        self.key_input.active = False
+        self.error = ""
+        app.screen = "menu"
+
     def handle_event(self, app, event):
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-            self.key_input.set_value(app.api_key)
-            self.key_input.active = False
-            self.npc_trait_mode = app.npc_trait_mode
-            app.screen = "menu"
-        elif self.gemini_button.clicked(event):
+        if self.cancel_button.clicked(event) or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+            self._cancel(app)
+            return
+        if self.save_button.clicked(event):
+            self._save(app)
+            return
+        if hasattr(event, "pos"):
+            if not self.content_rect.collidepoint(event.pos):
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    self.key_input.active = False
+                return
+            event = pygame.event.Event(event.type, {
+                **event.dict,
+                "pos": (event.pos[0] - self.content_rect.x,
+                        event.pos[1] - self.content_rect.y),
+            })
+        if self.provider == "gemini":
+            self.key_input.handle_event(event)
+        if self.gemini_button.clicked(event):
             self.provider = "gemini"
             self.key_input.focus()
         elif self.ollama_button.clicked(event):
@@ -150,10 +179,6 @@ class SettingsScreen:
             self.voice_rewrites = not self.voice_rewrites
         elif self.validation_button.clicked(event):
             self.dialogue_validation = not self.dialogue_validation
-        elif self.save_button.clicked(event):
-            self._save(app)
-        elif self.provider == "gemini":
-            self.key_input.handle_event(event)
 
     def _save(self, app):
         if self.ollama_model != app.ollama_model:
@@ -180,61 +205,117 @@ class SettingsScreen:
         self.key_input.active = False
         app.screen = "menu"
 
+    def _content_mouse(self):
+        x, y = pygame.mouse.get_pos()
+        if not self.content_rect.collidepoint(x, y):
+            return (-1, -1)
+        return (x - self.content_rect.x, y - self.content_rect.y)
+
+    def _draw_secondary(self, surface, font, button, enabled=True, *, content=True):
+        mouse = self._content_mouse() if content else pygame.mouse.get_pos()
+        color = ACCENT if enabled else (152, 164, 151)
+        if enabled and button.rect.collidepoint(mouse):
+            pygame.draw.rect(surface, (225, 232, 210), button.rect)
+        pygame.draw.rect(surface, color, button.rect, width=1)
+        label = font.render(button.label, True, color)
+        surface.blit(label, label.get_rect(center=button.rect.center))
+
+    @staticmethod
+    def _draw_choice(surface, app, button, selected, description):
+        rect = button.rect
+        pygame.draw.rect(surface, (225, 235, 216) if selected else (255, 254, 248), rect)
+        pygame.draw.rect(surface, ACCENT if selected else (181, 191, 174), rect,
+                         width=2 if selected else 1)
+        center = (rect.x + 18, rect.y + 18)
+        pygame.draw.circle(surface, ACCENT if selected else MUTED, center, 7, 1)
+        if selected:
+            pygame.draw.circle(surface, ACCENT, center, 4)
+        surface.blit(app.font.render(button.label, True, INK), (rect.x + 34, rect.y + 8))
+        draw_wrapped_text(surface, description, app.small_font, MUTED,
+                          (rect.x + 34, rect.y + 32, rect.width - 44, rect.height - 34))
+
+    def _draw_toggle(self, surface, app, button, value):
+        button.label = "On" if value else "Off"
+        pygame.draw.rect(surface, (225, 235, 216) if value else (255, 254, 248), button.rect)
+        self._draw_secondary(surface, app.font, button)
+        center = (button.rect.x + 20, button.rect.centery)
+        pygame.draw.circle(surface, ACCENT if value else MUTED, center, 5, 0 if value else 1)
+
     def draw(self, app):
-        app.window.fill(GRASS)
-        pygame.draw.rect(app.window, PAPER, (280, 45, 720, 660), border_radius=BORDER_RADIUS)
-        draw_centered_text(app.window, "Settings", app.heading_font, 65)
-        self.gemini_button.draw(app.window, app.font, enabled=self.provider != "gemini")
-        self.ollama_button.draw(app.window, app.font, enabled=self.provider != "ollama")
+        surface = app.window
+        surface.fill(GRASS)
+        pygame.draw.rect(surface, PAPER, (230, 32, 820, 656), border_radius=BORDER_RADIUS)
+        surface.blit(app.heading_font.render("Settings", True, INK), (260, 52))
+        surface.blit(app.small_font.render("Set up dialogue and choose how your characters feel.", True, MUTED), (260, 87))
+        content = pygame.Surface((744, self.content_rect.height))
+        content.fill(PAPER)
+        content.blit(app.font.render("1. Choose how dialogue is generated", True, INK), (0, 0))
+        self._draw_choice(content, app, self.gemini_button, self.provider == "gemini",
+                          "Generate dialogue with Google's AI. Requires an API key.")
+        self._draw_choice(content, app, self.ollama_button, self.provider == "ollama",
+                          "Generate dialogue with a locally installed model.")
         if self.provider == "gemini":
-            app.window.blit(app.font.render("Gemini API key", True, INK), (340, 163))
-            self.key_input.draw(app.window, app.font)
-            app.window.blit(app.small_font.render("Session only. Get a key at aistudio.google.com/apikey", True, MUTED), (340, 251))
+            content.blit(app.font.render("Gemini API key", True, INK), (0, 114))
+            self.key_input.draw(content, app.font)
+            # The input is drawn in content coordinates, but the OS needs its
+            # window position for text composition and the on-screen keyboard.
+            if self.key_input.active:
+                pygame.key.set_text_input_rect(self.key_input.rect.move(
+                    self.content_rect.x, self.content_rect.y))
+            draw_wrapped_text(content,
+                              "Used for this session only. Get a key at aistudio.google.com/apikey. "
+                              "Ctrl+V or Cmd+V to paste.", app.small_font, MUTED, (0, 181, 744, 32))
+            draw_wrapped_text(content, self.key_input.error, app.small_font, INK, (0, 216, 744, 32))
         else:
             index = self.models.index(self.ollama_model) + 1
-            label = f"Local Ollama model ({index}/{len(self.models)})"
-            app.window.blit(app.font.render(label, True, INK), (340, 163))
-            self.previous_model_button.draw(app.window, app.font, enabled=len(self.models) > 1)
-            self.next_model_button.draw(app.window, app.font, enabled=len(self.models) > 1)
-            draw_wrapped_text(app.window, self.ollama_model, app.font, INK, (404, 196, 472, 44))
+            content.blit(app.font.render(f"Local model ({index}/{len(self.models)})", True, INK), (0, 114))
+            self._draw_secondary(content, app.small_font, self.refresh_button, self.model_worker is None)
+            self._draw_secondary(content, app.small_font, self.setup_button)
+            self._draw_secondary(content, app.font, self.previous_model_button, len(self.models) > 1)
+            self._draw_secondary(content, app.font, self.next_model_button, len(self.models) > 1)
+            draw_wrapped_text(content, self.ollama_model, app.small_font, INK, (50, 140, 330, 32))
             size = self.installed_models.get(self.ollama_model)
             if size is None and ":" not in self.ollama_model:
                 size = self.installed_models.get(f"{self.ollama_model}:latest")
-            size_label = f"Size on disk: {format_model_size(size)}"
-            app.window.blit(app.small_font.render(size_label, True, MUTED), (404, 252))
-            self.refresh_button.draw(app.window, app.small_font, enabled=self.model_worker is None)
-            app.window.blit(app.small_font.render("Parallel requests / LLM threads", True, INK), (340, 289))
-            self.parallel_less.draw(app.window, app.small_font, enabled=self.parallel_limit > 1)
-            self.parallel_more.draw(app.window, app.small_font, enabled=self.parallel_limit < MAX_CONFIGURABLE_LLM_REQUESTS)
-            value = app.font.render(str(self.parallel_limit), True, INK)
-            app.window.blit(value, value.get_rect(center=(772, 297)))
-            draw_wrapped_text(app.window, f"Ollama runs this many at once only if its OLLAMA_NUM_PARALLEL environment "
-                              f"variable is at least {self.parallel_limit}. Set it, then restart Ollama.",
-                              app.small_font, MUTED, (340, 321, 600, 36))
-        app.window.blit(app.font.render("Random NPC traits", True, INK), (340, 360))
-        for mode, button in self.trait_mode_buttons.items():
-            button.draw(app.window, app.font)
-            if mode == self.npc_trait_mode:
-                pygame.draw.rect(app.window, INK, button.rect, 3, border_radius=BORDER_RADIUS)
-        explanation = "Typical personalities and speech." if self.npc_trait_mode == "normal" else (
-            "Unusually conspicuous personalities and speech." if self.npc_trait_mode == "extreme"
-            else "Choose from both typical and conspicuous traits.")
-        app.window.blit(app.small_font.render(explanation, True, MUTED), (340, 434))
-        self.voice_rewrite_button.label = "Voice rewrites: " + ("On" if self.voice_rewrites else "Off")
-        self.voice_rewrite_button.draw(app.window, app.font)
-        app.window.blit(app.small_font.render("Add each speaker's style to make dialogue more interesting.", True, MUTED), (340, 504))
-        self.validation_button.label = "Base dialogue validation: " + ("On" if self.dialogue_validation else "Off")
-        self.validation_button.draw(app.window, app.font)
-        app.window.blit(app.small_font.render("Off: show validation errors in red; dialogue and outcomes still apply.", True, MUTED), (340, 572))
-        self.save_button.draw(app.window, app.font)
-        if self.provider == "ollama":
-            self.setup_button.draw(app.window, app.font)
-        if self.provider == "gemini":
-            hint = self.key_input.error or "Ctrl+V to paste. Escape discards your edits."
-        else:
-            hint = self.model_message or "Escape discards your edits."
+            content.blit(app.small_font.render(f"Size on disk: {format_model_size(size)}", True, MUTED), (0, 182))
             installed = (self.ollama_model in self.installed_models
                          or f"{self.ollama_model}:latest" in self.installed_models)
-            if not self.model_message and not installed:
-                hint = "Selected model is not installed. Download it in Ollama, then Refresh Ollama."
-        draw_wrapped_text(app.window, self.error or hint, app.small_font, INK, (280, 659, 720, 40))
+            hint = self.model_message
+            if not hint and not installed:
+                hint = "Selected model is not installed. Use Setup Ollama to get started, then Refresh models."
+            draw_wrapped_text(content, hint, app.small_font, MUTED, (0, 210, 430, 32))
+            content.blit(app.font.render("Ollama threads", True, INK), (454, 152))
+            self._draw_secondary(content, app.font, self.parallel_less, self.parallel_limit > 1)
+            self._draw_secondary(content, app.font, self.parallel_more,
+                                 self.parallel_limit < MAX_CONFIGURABLE_LLM_REQUESTS)
+            value = app.font.render(str(self.parallel_limit), True, INK)
+            content.blit(value, value.get_rect(center=(685, 161)))
+            draw_wrapped_text(content,
+                              f"Parallel dialogue requests. Set OLLAMA_NUM_PARALLEL to at least "
+                              f"{self.parallel_limit}, then restart Ollama.",
+                              app.small_font, MUTED, (454, 185, 290, 64))
+
+        content.blit(app.font.render("2. Personalities for random characters", True, INK), (0, 252))
+        descriptions = {
+            "normal": "Typical personalities and speech.",
+            "extreme": "More exaggerated traits and speech.",
+            "both": "A combination of normal and extreme.",
+        }
+        for mode, button in self.trait_mode_buttons.items():
+            self._draw_choice(content, app, button, mode == self.npc_trait_mode, descriptions[mode])
+
+        content.blit(app.font.render("3. Adjust dialogue", True, INK), (0, 362))
+        content.blit(app.font.render("Distinctive character voices", True, INK), (0, 384))
+        content.blit(app.small_font.render("Give each speaker their own speaking style.", True, MUTED), (0, 407))
+        self._draw_toggle(content, app, self.voice_rewrite_button, self.voice_rewrites)
+        content.blit(app.font.render("Base dialogue validation", True, INK), (0, 438))
+        self._draw_toggle(content, app, self.validation_button, self.dialogue_validation)
+        draw_wrapped_text(content, "Off: show validation errors in red; dialogue and outcomes still apply.",
+                          app.small_font, MUTED, (0, 462, 744, 16))
+
+        surface.blit(content, self.content_rect.topleft)
+        pygame.draw.line(surface, (181, 191, 174), (260, 600), (1020, 600))
+        hint = self.error or "Save to apply your changes. Cancel or Escape discards your edits."
+        draw_wrapped_text(surface, hint, app.small_font, INK if self.error else MUTED, (260, 603, 760, 32))
+        self._draw_secondary(surface, app.font, self.cancel_button, content=False)
+        self.save_button.draw(surface, app.font)
