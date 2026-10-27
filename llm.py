@@ -356,7 +356,8 @@ def _corrected_request(state, request, report):
     activity = (f"turn {state['turn_index'] + 1} for {state['speaker']['name']}" if kind == "resident_turn" else
                 f"assessment for {state['speaker']['name']}" if kind == "resident_assessment" else
                 f"opinion direction for {state['owner']}" if kind == "opinion_direction" else
-                {"handoff_thanks": "reserved handoff thanks", "intent": "player intent"}.get(kind, "reply"))
+                f"reserved handoff thanks for {state['speaker']['name']}" if kind == "handoff_thanks" else
+                "player intent" if kind == "intent" else "reply")
     correction = ""
     corrections = []
     last_error = None

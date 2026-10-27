@@ -33,23 +33,30 @@ def interaction_bubble(name):
 
 
 _TURN_STAGE = re.compile(r"^(?:Generating|Correcting|Recovery: rewriting) turn \d+ for (.+)$")
+_THINKING_STAGE = re.compile(
+    r"^(?:Rewriting (.+)'s voice|(?:Correcting looping voice generation|"
+    r"(?:Generating|Correcting|Recovery: rewriting) (?:assessment|opinion direction|reserved handoff thanks)) for (.+))$"
+)
 
 
 def generation_bubbles(conversations, workers):
     """Bubbles for both participants of each conversation being generated, keyed by actor ID.
 
-    The person whose turn is being written talks; any other stage (waiting for the model, assessments,
-    validation, voice rewrites) shows the initiator thinking. The other participant shows nothing.
+    The person whose turn is being written talks. Other targeted stages show that person thinking;
+    stages without a unique participant target show the initiator thinking. The other person shows nothing.
     """
     stages = {worker.request_id: worker.stage for worker in workers}
     bubbles = {}
     for request_id, conversation in conversations.items():
-        match = _TURN_STAGE.match(stages.get(request_id, ""))
-        speaker = next((person for person in (conversation.initiator, conversation.recipient)
-                        if match and person.name == match[1]), None)
+        stage = stages.get(request_id, "")
+        turn = _TURN_STAGE.fullmatch(stage)
+        match = turn or _THINKING_STAGE.fullmatch(stage)
+        targets = [person for person in (conversation.initiator, conversation.recipient)
+                   if match and person.name in match.groups()]
+        target = targets[0] if len(targets) == 1 else conversation.initiator
         bubbles[conversation.initiator.id] = None
         bubbles[conversation.recipient.id] = None
-        bubbles[(speaker or conversation.initiator).id] = "Talking" if speaker else "Thinking"
+        bubbles[target.id] = "Talking" if turn and len(targets) == 1 else "Thinking"
     return bubbles
 
 
