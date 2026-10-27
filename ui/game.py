@@ -1,5 +1,5 @@
 import pygame
-from player import PlayerInteraction
+from player import PlayerInteraction, active_player
 from constants import (DIALOGUE_PANEL_HEIGHT, DIALOGUE_READING_Y, DIALOGUE_READING_HEIGHT, FAILED_CONVERSATION_SELECTED_COLOR, INK, MUTED,
                       ORIGINAL_DIALOGUE_PAPER, PAPER, MAX_LLM_REQUESTS, WINDOW_SIZE,
                       WORLD_HEIGHT, WORLD_WIDTH, APARTMENT_INSPECTOR_CLOSE_RECT, APARTMENT_INSPECTOR_RECT,
@@ -185,7 +185,7 @@ class GameScreen:
         if self.action_menu is not None:
             self.handle_conversation_actions(app, event)
             return
-        if (self.dialogue.open and self.dialogue.conversation is None and active_player(world)
+        if (self.dialogue.open and active_player(world)
                 and self.actions_button.clicked(event)):
             self.action_menu = "actions"
             self.prompt_input.active = self.prompt_input.backspace_held = False
@@ -652,6 +652,7 @@ class GameScreen:
             return
         if self.dialogue.conversation is not None:
             self.draw_conversation(app)
+            self.draw_dialogue_actions(app)
             return
         self.update_player_pages(app)
         responding = self.player_response_ready
@@ -715,18 +716,24 @@ class GameScreen:
         elif not responding:
             progress = app.small_font.render(f"{self.dialogue.index + 1}/{len(self.dialogue.pages)}", True, MUTED)
             app.window.blit(progress, progress.get_rect(topright=(1256, 696)))
-        if active_player(app.simulation):
-            self.actions_button.draw(app.window, app.small_font)
-        if self.action_menu is not None:
-            self.draw_conversation_actions(app)
+        self.draw_dialogue_actions(app)
         if self.dialogue.picker is not None:
             self.draw_action_picker(app)
+
+    def draw_dialogue_actions(self, app):
+        if active_player(app.simulation):
+            self.actions_button.draw(app.window, app.small_font)
+            if self.action_menu is not None:
+                self.draw_conversation_actions(app)
 
     def conversation_actions(self, app):
         from transfers import validate_transfer
         actor = self.dialogue.actor
+        kill = ("Kill", "kill", app.simulation.player_killing_unavailable(actor) or "")
         reason = app.conversations.input_unavailable(actor, active=app.screen == "game")
-        if not self.player_response_ready:
+        if self.dialogue.conversation is not None:
+            reason = "This person is busy in a conversation."
+        elif not self.player_response_ready:
             reason = "Finish reading first"
         elif self.pending_offer:
             reason = "Respond to the gift first"
@@ -741,7 +748,7 @@ class GameScreen:
                    ("Give apple", "apple", apple_reason)]
         if self.pending_invitation(app.simulation):
             actions.append(("Accept invitation", "invitation", reason))
-        actions.append(("Kill", "kill", app.simulation.player_killing_unavailable(actor) or ""))
+        actions.append(kill)
         return actions
 
     def action_menu_layout(self, app):
@@ -1018,8 +1025,9 @@ class GameScreen:
             if conversation.record.dialogue_errors:
                 status = "Validation off: " + conversation.record.dialogue_errors[0]
             status_color = FAILED_CONVERSATION_SELECTED_COLOR if conversation.error or conversation.record.dialogue_errors else MUTED
+            status_left = self.actions_button.rect.right + 8 if active_player(app.simulation) else rect.x
             draw_wrapped_text(app.window, status, app.small_font, status_color,
-                              (rect.x, 696, rect.width - 80, 24))
+                              (status_left, 696, rect.right - status_left - 80, 24))
             progress = app.small_font.render(f"{self.dialogue.index + 1}/{len(self.dialogue.pages)}", True, MUTED)
             app.window.blit(progress, progress.get_rect(topright=(1256, 696)))
 

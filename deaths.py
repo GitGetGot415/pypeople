@@ -29,6 +29,8 @@ class DeathMixin:
             return "The remaining population is protected."
         last_kill = self.last_killing_day_for(attacker.id)
         if last_kill is not None and self.day - last_kill < KILLING_COOLDOWN_DAYS:
+            if attacker is self.player:
+                return "You already killed someone today."
             return "This attacker has already killed someone today. Wait for the next day."
         distance = PLAYER_KILLING_DISTANCE if attacker is self.player else KILLING_DISTANCE
         if math.dist((attacker.x, attacker.y), (victim.x, victim.y)) > distance:
