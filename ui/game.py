@@ -18,7 +18,6 @@ from emotions import portrait_expression
 from conversation_history import uses_original_dialogue
 from .dialogue_view import DialogueView
 from .button import Button
-from .event_feed import EventFeed
 from .request_status import RequestStatus
 from .text import draw_centered_text, draw_wrapped_text, wrap_text, scrollbar_rects, ScrollbarDrag
 from .text_input import TextInput
@@ -88,7 +87,6 @@ class GameScreen:
         self.panning = False
         self.mouse_follow = False
         self.request_status = RequestStatus(max_requests)
-        self.feed = EventFeed()
         self.apartment_open = False
         self.apartment_scroll = 0
         self.apartment_scrollbar = ScrollbarDrag()
@@ -125,7 +123,6 @@ class GameScreen:
         self.mouse_follow = False
         self.save_message = ""
         self.save_message_remaining = 0
-        self.feed = EventFeed()
         self.request_status = RequestStatus(self.request_status.max_requests)
 
     def show_save_message(self, message):
@@ -265,8 +262,6 @@ class GameScreen:
         paused = app.simulation.paused
         if self.arrival_retry.clicked(event, enabled=not paused):
             app.retry_arrival()
-            return
-        if self.feed.handle_event(app, event):
             return
         if self.request_status.handle_event(app, event):
             return
@@ -662,7 +657,6 @@ class GameScreen:
         self.stats_button.draw(app.window, app.small_font)
         self.save_button.draw(app.window, app.small_font)
         self.draw_clock(app)
-        self.feed.draw(app)
         self.request_status.draw(app)
         pending = app.simulation.pending_arrival_days
         error = app.simulation.arrival_error
@@ -1049,7 +1043,7 @@ class GameScreen:
                         if journey.purpose != "doorway":
                             self.mouse_follow = False
                     elif (self.world_viewport.collidepoint(pos) and not any(rect.collidepoint(pos) for rect in (
-                            self.toolbar_rect(), self.clock_layout(app)[1], self.feed.rect, self.request_status.rect))):
+                            self.toolbar_rect(), self.clock_layout(app)[1], self.request_status.rect))):
                         point = clamp_point(self.location, self.screen_to_world(pos))
                         start_journey(world.player, self.location, point, purpose="walk")
                 move_player(world, dx, dy, dt, running=world.player_running)
