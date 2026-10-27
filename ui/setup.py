@@ -178,9 +178,9 @@ class SetupScreen:
             surface.blit(app.small_font.render(description, True, MUTED), (button.rect.x + 36, button.rect.y + 32))
 
         surface.blit(app.font.render("2. Starting characters", True, INK), (260, 218))
-        surface.blit(app.small_font.render("Number of NPCs", True, INK), (260, 253))
+        surface.blit(app.small_font.render("Number of characters", True, INK), (260, 253))
         self.draw_secondary(surface, app.font, self.remove_button, len(self.sources) > STARTING_SPECTATOR_MIN_NPCS)
-        count = app.font.render(str(len(self.sources)), True, INK)
+        count = app.font.render(str(len(self.sources) + int(self.mode == "player")), True, INK)
         surface.blit(count, count.get_rect(center=(621, 262)))
         self.draw_secondary(surface, app.font, self.add_button, len(self.sources) < self.max_npcs)
         used = len(self.sources) + int(self.mode == "player")
