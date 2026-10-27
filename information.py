@@ -158,6 +158,10 @@ def witnessed_harvests(world, beliefs):
 
 def believed_harvest(world, beliefs, fact):
     """One harvest told as this person believes it: the collector's total over the distinct pickups they believe that day."""
+    return harvest_summary(world.participant_by_id(fact.subject_id).name, believed_harvest_total(world, beliefs, fact))
+
+
+def believed_harvest_total(world, beliefs, fact):
     pickups = {fact.id: fact}
     for belief in beliefs:
         claim = claim_by_id(world, belief.claim_id)
@@ -165,7 +169,7 @@ def believed_harvest(world, beliefs, fact):
         if (belief.stance == "believed" and claim.affirmed and other.kind == "harvest"
                 and (other.subject_id, other.day) == (fact.subject_id, fact.day)):
             pickups[other.id] = other
-    return harvest_summary(world.participant_by_id(fact.subject_id).name, sum(p.quantity for p in pickups.values()))
+    return sum(p.quantity for p in pickups.values())
 
 
 def harvest_account_view(account, *, tree_stock=None, current_time=None):
@@ -296,11 +300,25 @@ def prepare_information(conversation):
                             and claim_by_id(world, b.claim_id).affirmed and claim_by_id(world, b.claim_id).fact_id == grievance), None)
                 if own:
                     bases = [own, *[base for base in bases if base.fact_id != grievance]]
-            for index, base in enumerate(bases[:2]):
+            if role == "initiator" and conversation.focus_claim_id:
+                # Raising an accusation to seek help or warn someone is no occasion to deny it;
+                # a sabotage goal may still deny a favorable account it focuses on.
+                focus = fact_by_id(world, claim_by_id(world, conversation.focus_claim_id).fact_id)
+                if focus.kind in ACCUSATION_FACT_KINDS:
+                    bases = [base for base in bases if base.fact_id != focus.id]
+            denials = {}
+            for base in bases:
                 fact = fact_by_id(world, base.fact_id)
+                # A harvest is denied as the whole collection this speaker believes; one pickup's count contradicts their witnessed total.
+                quantity = believed_harvest_total(world, npc.beliefs, fact) if fact.kind == "harvest" else fact.quantity
+                denied = (f"It is not true that {harvest_summary(world.participant_by_id(fact.subject_id).name, quantity)}"
+                          if fact.kind == "harvest" else account_content(world, fact, False))
+                # A witness who also heard it retold, or one harvest's several pickups, needs only one denial.
+                denials.setdefault(denied, (base, fact, quantity))
+            for index, (denied, (base, fact, quantity)) in enumerate(list(denials.items())[:2]):
                 option_id = f"{conversation.id}:deny_{role}_{index}"
                 options[option_id] = ClaimOption(option_id, fact.id, fact.subject_id, npc.id, False,
-                                                base.id, npc.id, fact.kind, account_content(world, fact, False), quantity=fact.quantity)
+                                                base.id, npc.id, fact.kind, denied, quantity=quantity)
                 allowed[role].append(option_id)
         if npc.goal and npc.goal.kind == "sabotage_relationship" and npc.goal.status == "active":
             allowed[role].sort(key=lambda claim_id: options[claim_id].creator_id is None)
@@ -366,6 +384,11 @@ def information_views(context, world):
                 if belief and belief.direct:
                     view["permitted_use"] = ("report the named collector's actions you witnessed; witnessing is not collecting"
                                              if fact.kind == "harvest" else "share personal experience; its truth needs no confirmation")
+            if option.creator_id:
+                # A denial keeps the wording it was offered with; for a harvest, the speaker's believed total.
+                view.update(assertion=option.assertion, quantity=option.quantity)
+                if fact.kind == "harvest" and "firsthand_evidence" in view:
+                    view["firsthand_evidence"] = believed_harvest(world, beliefs.values(), fact)
             views.append(harvest_account_view(view, tree_stock=world.tree.fruit,
                          current_time={"day": world.day}))
         result[role] = views

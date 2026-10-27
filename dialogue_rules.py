@@ -1445,7 +1445,9 @@ def validate_killing_roles(text, account, speaker_id, listener_id, catalog):
             return r"you"
         actor = catalog.get(identity, {})
         name = actor.get("name", "")
-        return "(?:" + "|".join(name_pattern(form) for form in (name, name.split()[0] if name else "") if form) + ")" if name else None
+        # References such as "the player" are how speech usually names that actor.
+        forms = (name, name.split()[0] if name else "", *actor.get("references", []))
+        return "(?:" + "|".join(name_pattern(form) for form in forms if form) + ")" if name else None
     killer, victim = references(account.get("subject_id")), references(account.get("object_id"))
     if not killer or not victim:
         return

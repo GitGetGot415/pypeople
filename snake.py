@@ -162,7 +162,7 @@ class Snake(SnakeValues, ConversationActor):
 
     def update(self, dt):
         from social_records import claim_by_id, fact_by_id, ConversationConcern
-        from information import witnessed_harvests
+        from information import witnessed_harvests, believed_harvest, account_content
         from social import apply_opinion_effects, repeat_partner_paused
         from player import owns_resident
         if dt <= 0:
@@ -211,11 +211,15 @@ class Snake(SnakeValues, ConversationActor):
             if choices:
                 *_, human, claim = max(choices, key=lambda row: row[:-2])
                 subject = self.world.participant_by_id(claim.subject_id)
+                fact = fact_by_id(self.world, claim.fact_id)
+                # Name the act itself; left unnamed, a model told a harvest it knew instead of the chosen killing.
+                seen = (believed_harvest(self.world, self.beliefs, fact) if fact.kind == "harvest"
+                        else account_content(self.world, fact))
                 self.current_concern = ConversationConcern("news", claim.id, DECISION_SECONDS)
                 # Worded as Nachash's own plan: "you" here was read as the listener, and the steps were read aloud.
                 self.world.start_conversation(self, human,
-                    f"Turn {human.name} against {subject.name}: tell {human.name} what I saw {subject.name} do, "
-                    f"and press my view that it was selfish and shows {subject.name} cares nothing for {human.name}.",
+                    f"Turn {human.name} against {subject.name}: tell {human.name} what I saw: {seen} "
+                    f"Press my view that it was selfish and shows {subject.name} cares nothing for {human.name}.",
                     origin="autonomous", opening_kind="news", focus_claim_id=claim.id)
                 return
             humans = [n for n in self.world.npcs if n.location == "garden" and self.world.company_available(n)

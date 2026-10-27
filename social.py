@@ -713,7 +713,8 @@ def pair_objective(world, npc, other):
             if not discussed(topic):
                 return 2, topic
     danger = undisclosed_danger(npc)
-    if danger:
+    # Seeking safety from the killer themself confuses who did it; their opinion of the killer may even be warm.
+    if danger and claim_by_id(world, danger).subject_id != other.id:
         return 2, danger_topic(npc, danger)
     goal = npc.goal
     if goal and goal.status == "active" and goal.target_id == other.id:
