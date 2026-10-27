@@ -68,7 +68,6 @@ class Simulation(DeathMixin):
         self.roster_revision = 0
         self.day = STARTING_DAY
         self.paused = STARTING_PAUSED
-        self.day_pending = False
         self.pending_actions = []
         self.history = []
         self.events = []
@@ -132,27 +131,13 @@ class Simulation(DeathMixin):
     def last_killing_day_for(self, actor_id):
         return max((fact.day for fact in self.facts if fact.kind == "killing" and fact.subject_id == actor_id), default=None)
 
-    @property
-    def player_attention_pending(self):
-        return bool(self.player_interaction and self.player_interaction.kind in ("resident", "snake"))
-
     def next_day(self):
-        if self.paused or self.day_pending or self.player_attention_pending:
-            return
-        self.day_pending = True
-        self.finish_day_change()
-
-    def finish_day_change(self):
-        """Commit one clock request only after existing speech and handoffs finish."""
+        """End every conversation at once; physical work such as creating carries on."""
         from social import advance_social_day
-        from autonomy import next_arrival_to_greet
-        if (not self.day_pending or self.paused or self.player_attention_pending or self.snake.conversation is not None
-                or self.snake.interaction_blocked or self.pending_actions
-                or next_arrival_to_greet(self) is not None
-                or any(npc.interaction is not None or npc.interaction_blocked
-                       or npc.selected and npc.player_reply.closing for npc in self.npcs)):
+        if self.paused:
             return
-        self.day_pending = False
+        for conversation in {actor.conversation for actor in [*self.npcs, self.snake] if actor.conversation}:
+            conversation.cancel("The day ended before this conversation finished.")
         self.day += 1
         from locations import npc_capacity
         if (len(self.npcs) < npc_capacity(self) and self.day not in self.pending_arrival_days
@@ -186,8 +171,6 @@ class Simulation(DeathMixin):
                    and opening_kind == "orientation")
         if not welcome and any(arrival_greeting_reserved(p, self) for p in (initiator, recipient)):
             raise ValueError("The new arrival must speak with Judy first.")
-        if self.day_pending and origin == "autonomous" and not welcome:
-            raise ValueError("Waiting for the pending time change before starting another automatic conversation.")
         if not colocated(initiator, recipient) or any(self.actor_by_id(p.id) is not p or not available_outdoors(p) for p in (initiator, recipient)):
             raise ValueError("Only living residents can begin this conversation.")
         interaction = Conversation(initiator, recipient, topic, self.tree, spacing, origin=origin, purpose=purpose,
@@ -354,10 +337,6 @@ class Simulation(DeathMixin):
             reconsider(npc, self)
             npc.update(dt, self.tree)
         observe_active_conversations(self)
-        # Keep the pending flag through this tick's decision pass, so automatic
-        # work cannot reserve a fresh partner before the requested day applies.
-        # Dawn arrivals then run before pairing on the following tick as usual.
-        self.finish_day_change()
         from player import update_calls
         update_calls(self, dt)
 

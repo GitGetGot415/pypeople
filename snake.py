@@ -173,7 +173,7 @@ class Snake(SnakeValues, ConversationActor):
             return
         if self.resume_pending:
             self.resume_pending = False
-        if not self.world.day_pending and not self.conversation_pause_remaining and self.decision_remaining == 0:
+        if not self.conversation_pause_remaining and self.decision_remaining == 0:
             self.decision_remaining = DECISION_SECONDS
             choices = []
             harvests = witnessed_harvests(self.world, self.beliefs)

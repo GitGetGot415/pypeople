@@ -478,7 +478,7 @@ def update_calls(world, dt):
             if owns_resident(world, npc):
                 end_interaction(world, "The reason for this call is no longer available.")
     world.player_call_check -= dt
-    if world.player_call_check > 0 or world.day_pending or not can_claim(world):
+    if world.player_call_check > 0 or not can_claim(world):
         return
     world.player_call_check = PLAYER_CALL_CHECK_SECONDS
     from locations import colocated

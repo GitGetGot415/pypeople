@@ -96,7 +96,7 @@ def reconsider(npc, world, *, pressing_only=False):
         return
     if owns_resident(world, npc) or npc.journey or world.visit and world.visit.host_id == npc.id:
         return
-    if (world.day_pending or npc.interaction is not None or npc.resume_pending or npc.player_call or npc.behavior in HOME_BEHAVIORS):
+    if (npc.interaction is not None or npc.resume_pending or npc.player_call or npc.behavior in HOME_BEHAVIORS):
         return
     if not target_valid(npc, world):
         npc.finish_activity(world, failed=True)
@@ -210,8 +210,6 @@ def actionable_obligation(npc, world):
 
 def social_pair(world, *, due=None):
     """Reserve through the caller immediately; rotate initiators and vary partners."""
-    if world.day_pending:
-        return None
     ordered = world.npcs[world.social_rotation:] + world.npcs[:world.social_rotation]
     available = [npc for npc in ordered if world.company_available(npc)
                  and not npc.conversation_pause_remaining and not actionable_obligation(npc, world)]

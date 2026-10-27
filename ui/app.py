@@ -470,8 +470,6 @@ class Application:
         paused = self.simulation is not None and self.simulation.paused
         simulation_active = self.screen in ("game", "stats") and not paused and not self.game.confirm_menu
         session_active = self.screen in ("game", "stats", "save_sim")
-        if simulation_active:
-            self.conversations.wrap_up_for_day_change()
         active_session = self.session_id if session_active else None
         # Live dialogue and Stats share the version toggle and reading hold.
         viewed = self.game.dialogue.conversation if self.screen in ("game", "stats") and self.game.dialogue.open else None
@@ -534,7 +532,7 @@ class Application:
                 conversations.append(self.simulation.snake.conversation)
             # Player conversations get the first free slot. While composing,
             # leave one slot free and let other conversations use the rest.
-            composing = self.screen == "game" and self.game.prompt_input.active and not self.simulation.day_pending
+            composing = self.screen == "game" and self.game.prompt_input.active
             for conversation in sorted(conversations, key=lambda interaction: interaction.origin != "player"):
                 self._sync_conversation_view()
                 self.conversations.request_conversation_dialogue(conversation,

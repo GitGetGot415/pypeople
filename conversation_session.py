@@ -491,29 +491,14 @@ class ConversationSession:
             self.accept_result(request_id, prepared, None, [], [], session_id=self.session_id)
 
     def next_day(self):
+        if self.simulation.paused:
+            return
+        for request_id in self.conversation_requests:
+            self.requests.cancel(self.session_id, request_id)
+        self.conversation_requests.clear()
         self.simulation.next_day()
-        self.wrap_up_for_day_change()
-
-    def wrap_up_for_day_change(self):
-        if not self.simulation.day_pending or self.simulation.paused:
-            return
-        conversations = {npc.conversation for npc in [*self.npcs, self.simulation.snake]
-                         if npc.conversation is not None}
-        for conversation in conversations:
-            self.wrap_up_conversation(conversation)
-
-    def wrap_up_conversation(self, conversation):
-        if not conversation.accepts_response:
-            return
-        conversation.day_skip_requested = True
-        if not self.requests.wrap_up_conversation(self.session_id, conversation.id):
-            self.requests.cancel(self.session_id, conversation.id)
-            self.conversation_requests.pop(conversation.id, None)
-            conversation.cancel("The day ended before this conversation was ready.")
 
     def request_conversation_dialogue(self, conversation, *, start=True):
-        if self.simulation.day_pending:
-            self.wrap_up_conversation(conversation)
         if not conversation.accepts_response or not conversation.arrived:
             return
         if conversation.dialogue.dialogue_state != "waiting":

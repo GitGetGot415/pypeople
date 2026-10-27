@@ -667,9 +667,8 @@ def _validate_response(raw, snapshot, model):
                     or bool(result.handoff_thanks) != (outcome == "accepted")):
                 raise ValueError("Dialogue must respect the food decision and reserve thanks for a successful handoff.")
         else:
-            minimum = 2 if snapshot.get("_day_skip_requested") else RESIDENT_TURN_COUNT
-            if len(result.turns) < minimum or result.food_outcome or (result.handoff_thanks and not (result.gift and result.gift.accept_turn is not None)):
-                raise ValueError(f"Chats need at least {minimum} turns and cannot include a food outcome or handoff thanks.")
+            if len(result.turns) < RESIDENT_TURN_COUNT or result.food_outcome or (result.handoff_thanks and not (result.gift and result.gift.accept_turn is not None)):
+                raise ValueError(f"Chats need at least {RESIDENT_TURN_COUNT} turns and cannot include a food outcome or handoff thanks.")
         for entry, partner in (
             (result.initiator_opinion, snapshot["recipient"]),
             (result.recipient_opinion, snapshot["initiator"]),

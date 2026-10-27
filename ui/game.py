@@ -1,7 +1,7 @@
 import pygame
 from player import PlayerInteraction
 from constants import (DIALOGUE_PANEL_HEIGHT, DIALOGUE_READING_Y, DIALOGUE_READING_HEIGHT, FAILED_CONVERSATION_SELECTED_COLOR, INK, MUTED,
-                      ORIGINAL_DIALOGUE_PAPER, PAPER, MAX_LLM_REQUESTS, DAY_PENDING_RECT, WINDOW_SIZE,
+                      ORIGINAL_DIALOGUE_PAPER, PAPER, MAX_LLM_REQUESTS, WINDOW_SIZE,
                       WORLD_HEIGHT, WORLD_WIDTH, APARTMENT_INSPECTOR_CLOSE_RECT, APARTMENT_INSPECTOR_RECT,
                       APARTMENT_INSPECTOR_ROW_HEIGHT, APARTMENT_INSPECTOR_CONTENT_INSET,
                       APARTMENT_INSPECTOR_CONTENT_TOP, APARTMENT_INSPECTOR_TITLE_OFFSET, MODAL_OVERLAY_COLOR,
@@ -413,8 +413,7 @@ class GameScreen:
             self.panning = False
             return True
         if not active_player(app.simulation) and self.clock_button.clicked(event):
-            if not app.simulation.paused and not app.simulation.day_pending and not app.simulation.player_attention_pending:
-                app.conversations.next_day()
+            app.conversations.next_day()
             return True
         return False
 
@@ -425,8 +424,7 @@ class GameScreen:
                 and not (world.visit and world.visit.stage == "travel"))
 
     def can_advance_from_bed(self, world):
-        return (self.can_use_bed(world) and not world.paused
-                and not world.day_pending and not world.player_attention_pending)
+        return self.can_use_bed(world) and not world.paused
 
     def handle_bed_event(self, app, event):
         if self.bed_cancel_button.clicked(event) or event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
@@ -445,8 +443,7 @@ class GameScreen:
         pygame.draw.rect(app.window, PAPER, BED_POPUP_RECT, border_radius=BORDER_RADIUS)
         draw_centered_text(app.window, "Rest in your bed", app.heading_font, BED_POPUP_TITLE_Y)
         message = ("Resume the game before passing time." if world.paused else
-                   "Time will change after conversations wrap up and handoffs finish." if world.day_pending else
-                   "Advance to the next day? Short chats end; longer chats wrap up. Handoffs finish first. A new resident arrives if there is room.")
+                   "Advance to the next day? All conversations end immediately. A new resident arrives if there is room.")
         draw_wrapped_text(app.window, message, app.font, INK, BED_POPUP_MESSAGE_RECT)
         self.bed_advance_button.label = f"Advance to {world.day + 1}"
         self.bed_advance_button.draw(app.window, app.small_font, enabled=self.can_advance_from_bed(world))
@@ -504,19 +501,11 @@ class GameScreen:
         if active_player(app.simulation):
             self.inventory_button.draw(app.window, app.small_font)
         else:
-            self.clock_button.draw(app.window, app.small_font, enabled=not paused and not app.simulation.day_pending
-                                   and not app.simulation.player_attention_pending)
-        color = INK
+            self.clock_button.draw(app.window, app.small_font, enabled=not paused)
         day_label = app.small_font.render(f"Day {app.simulation.day}", True, GAME_DAY_TEXT_COLOR)
         pygame.draw.rect(app.window, GAME_DAY_BACKGROUND, day_rect.inflate(*GAME_DAY_PADDING),
                          border_radius=BORDER_RADIUS)
         app.window.blit(day_label, day_rect)
-        if app.simulation.player_attention_pending:
-            draw_wrapped_text(app.window, "Address the waiting NPCs before changing the time.",
-                              app.small_font, color, DAY_PENDING_RECT)
-        elif app.simulation.day_pending:
-            draw_wrapped_text(app.window, f"{app.simulation.next_day_label} pending: finishing conversations.",
-                              app.small_font, color, DAY_PENDING_RECT)
 
     def advance_conversation(self, app):
         conversation = self.dialogue.conversation

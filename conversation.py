@@ -387,7 +387,6 @@ class Conversation(ResidentProgress):
         self.request_participants = deepcopy((initiator, recipient))
         return {
             "request_kind": "conversation",
-            "_day_skip_requested": getattr(self, "day_skip_requested", False),
             "_name_actors": self.name_actors,
             "interaction_id": self.id,
             "origin": self.origin,
