@@ -78,10 +78,12 @@ class CharacterScreen:
                 )
                 for channel, label in enumerate(("R", "G", "B"))
             ]
-        self.back_button = Button((240, 585, 150, 48), "Back")
-        self.random_button = Button((410, 585, 150, 48), "Random")
-        self.import_button = Button((730, 585, 130, 48), "Import JSON")
-        self.export_button = Button((880, 585, 130, 48), "Export JSON")
+        self.back_button = Button((230, 585, 110, 48), "Back")
+        self.random_button = Button((360, 585, 110, 48), "Random")
+        self.extreme_personalities_button = Button((490, 585, 224, 48), "Extreme personalities")
+        self.extreme_personalities = False
+        self.import_button = Button((810, 585, 110, 48), "Import JSON")
+        self.export_button = Button((940, 585, 110, 48), "Export JSON")
         self.turn_left_button = Button((256, 513, 120, 30), "Turn left")
         self.turn_right_button = Button((404, 513, 120, 30), "Turn right")
         self.preview_area = pygame.Rect(256, 246, 268, 260)
@@ -207,7 +209,9 @@ class CharacterScreen:
     def _randomize(self):
         self._clear_focus()
         try:
-            values = random_character(self.random_config_path)
+            values = random_character(
+                self.random_config_path, trait_mode="extreme" if self.extreme_personalities else "normal",
+            )
             for name in self.FIELDS:
                 self.inputs[name].set_value(values[name])
             for name, sliders in self.color_sliders.items():
@@ -299,6 +303,9 @@ class CharacterScreen:
             app.screen = "menu"
         elif self.random_button.clicked(event):
             self._randomize()
+        elif self.extreme_personalities_button.clicked(event):
+            self._clear_focus()
+            self.extreme_personalities = not self.extreme_personalities
         elif self.import_button.clicked(event):
             self._clear_focus()
             self._import()
@@ -428,6 +435,19 @@ class CharacterScreen:
 
         self.back_button.draw(surface, app.font)
         self.random_button.draw(surface, app.font)
+        toggle = self.extreme_personalities_button.rect
+        checkbox = pygame.Rect(toggle.x, toggle.centery - 11, 22, 22)
+        hovered = toggle.collidepoint(pygame.mouse.get_pos())
+        pygame.draw.rect(surface, GRASS if hovered else PAPER, checkbox)
+        pygame.draw.rect(surface, ACCENT if hovered or self.extreme_personalities else MUTED, checkbox, 2)
+        if self.extreme_personalities:
+            pygame.draw.lines(surface, ACCENT, False, (
+                (checkbox.x + 4, checkbox.y + 11),
+                (checkbox.x + 9, checkbox.y + 16),
+                (checkbox.x + 18, checkbox.y + 5),
+            ), 3)
+        label = app.small_font.render(self.extreme_personalities_button.label, True, INK)
+        surface.blit(label, label.get_rect(midleft=(checkbox.right + 10, toggle.centery)))
         self.import_button.draw(surface, app.small_font)
         self.export_button.draw(surface, app.small_font)
         if self.message:
