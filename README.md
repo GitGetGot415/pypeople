@@ -8,7 +8,7 @@
 - `main.py` - checks Python and dependency availability, then starts the application
 - `constants.py` - shared game rules, timing, distances, tuning values, window settings, and UI styling; has no project imports
 - `paths.py` - anchors asset, character, save, log, and settings paths to the project folder
-- `app_settings.py` - loads and saves application preferences
+- `app_settings.py` - loads and saves application preferences, including the chosen provider and Ollama model
 
 - `application/` - coordinates the running application and applies generated results on the main thread
   - `app.py` - owns the game loop, screen switching, simulation sessions, saving/loading, and request scheduling
@@ -68,7 +68,7 @@
   - `transport.py` - provider I/O, streaming, and response parsing for Gemini, Claude, OpenAI-compatible services, and Ollama
   - `requests.py` - background workers, request queues, concurrency limits, cancellation, and result polling
   - `debug.py` - request control, provider admission, captured output, and request logs
-  - `ollama.py` - Ollama availability checks, model selection, settings, and setup helpers
+  - `ollama.py` - Ollama availability checks, installed model listing, and setup helpers
   - `online.py` - online provider profiles (Gemini, OpenAI, Claude, custom), default models, and API key names
   - `voice_rewrite.py` - voice briefs, rewrite parsing, and diagnostic-only rewrite validation
 
