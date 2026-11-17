@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from time import monotonic
 from pydantic import ValidationError
 from constants import CREATIVE_REQUEST_SECONDS, DIALOGUE_TIMEOUT_SECONDS, MAX_LLM_REQUESTS
-from ai.transport import MODEL
+from ai.online import OnlineConfig
 from dialogue.errors import InvalidResponseError, RequestError
 from ai.generation import request_response, request_voice_rewrite, validate_response
 from ai.voice_rewrite import VoiceRewriteValidationError, validate_voice_rewrite, voice_rewrite_snapshot
@@ -46,7 +46,8 @@ def _request_description(snapshot):
     return f"You & {name}", "Player conversation"
 
 
-def _request_worker(session_id, request_id, provider, api_key, message, snapshot, results, progress, ollama_model, log=None, control=None):
+def _request_worker(session_id, request_id, provider, api_key, message, snapshot, results, progress, ollama_model,
+                    log=None, control=None, online_config=OnlineConfig()):
     """Queue simulation results; diagnostics have their own synchronized log."""
     creative = snapshot.get("request_kind") in ("create_art", "create_music")
     deadline = monotonic() + (CREATIVE_REQUEST_SECONDS if creative else DIALOGUE_TIMEOUT_SECONDS)
@@ -68,13 +69,14 @@ def _request_worker(session_id, request_id, provider, api_key, message, snapshot
         try:
             record_output("status", "waiting_for_ollama" if provider == "ollama" else "running")
             report("Starting request")
-            result = request_response(provider, api_key, message, snapshot, ollama_model=ollama_model, progress=report)
+            result = request_response(provider, api_key, message, snapshot, ollama_model=ollama_model, progress=report,
+                                      online_config=online_config)
             control.check()
             rewritten = []
             if not creative and snapshot.get("_voice_rewrites", True):
                 rewritten = request_voice_rewrite(provider, api_key, result, snapshot,
                                                   deadline=deadline + control.wait_seconds - wait_at_progress,
-                                                  ollama_model=ollama_model, progress=report)
+                                                  ollama_model=ollama_model, progress=report, online_config=online_config)
             else:
                 record_output("stage", "Creation data ready." if creative else "Voice rewrites disabled; using original dialogue.")
             control.check()
@@ -125,12 +127,14 @@ class RequestManager:
     def max_requests(self, value):
         self.admission.resize(value)
 
-    def prepare(self, session_id, provider, snapshot, *, request_id=None, ollama_model=DEFAULT_OLLAMA_MODEL):
+    def prepare(self, session_id, provider, snapshot, *, request_id=None, ollama_model=DEFAULT_OLLAMA_MODEL,
+                online_config=OnlineConfig()):
         key = (session_id, request_id)
         if key not in self.logs:
             participants, topic = _request_description(snapshot)
             log = self.debug_logs.create(session_id=session_id, request_id=request_id, slot=None,
-                                         provider=provider, model=ollama_model if provider == "ollama" else MODEL,
+                                         provider="ollama" if provider == "ollama" else online_config.provider,
+                                         model=ollama_model if provider == "ollama" else online_config.model,
                                          participants=participants, topic=topic)
             self.logs[key] = log
             log.record("status", "queued")
@@ -179,7 +183,7 @@ class RequestManager:
 
     def submit(self, session_id, provider, api_key, message, snapshot, *, request_id=None,
                ollama_model=DEFAULT_OLLAMA_MODEL, voice_rewrites=True, dialogue_validation=True,
-               queue_if_busy=False):
+               queue_if_busy=False, online_config=OnlineConfig()):
         key = (session_id, request_id)
         if key in self.workers or (self.busy and not queue_if_busy):
             return False
@@ -191,13 +195,15 @@ class RequestManager:
         participants, topic = _request_description(snapshot)
         occupied = {worker.slot for worker in self.workers.values()}
         slot = next(slot for slot in range(1, len(occupied) + 2) if slot not in occupied)
-        log = self.prepare(session_id, provider, snapshot, request_id=request_id, ollama_model=ollama_model)
+        log = self.prepare(session_id, provider, snapshot, request_id=request_id, ollama_model=ollama_model,
+                           online_config=online_config)
         log.record("slot", str(slot))
         control = RequestControl(self.admission, priority=0 if snapshot.get("player_id") or snapshot.get("_player_priority") else 1)
         self.admission.register(control)
         worker = threading.Thread(
             target=_request_worker,
-            args=(session_id, request_id, provider, api_key, message, snapshot, self.results, self.progress, ollama_model, log, control),
+            args=(session_id, request_id, provider, api_key, message, snapshot, self.results, self.progress,
+                  ollama_model, log, control, online_config),
             daemon=True,
             name=f"NPC-model-request-{slot}",
         )

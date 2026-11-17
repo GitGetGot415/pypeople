@@ -14,6 +14,7 @@ from application.conversation_results import apply_pending_action
 from simulation.npc import NPC, assign_npc_names
 from simulation.maps import active_player
 from ai.ollama import load_model
+from ai.online import PROVIDERS
 from persistence.store import InvalidSaveName, SaveStore
 from persistence.snapshots import capture_simulation, restore_simulation
 from simulation.world import Simulation
@@ -55,15 +56,18 @@ class Application:
         self.original_dialogue = False
         self.condensed_dialogue = False
 
-        # Load the Gemini API key from the project's .env
+        # Keys stay in memory; only nonsecret connection preferences are persisted.
         load_dotenv(
             PROJECT_ROOT / ".env"
         )
 
-        self.api_key = os.getenv("GEMINI_API_KEY", "").strip()
-        self.provider = "gemini"
         self.ollama_model = load_model()
         settings = load_settings()
+        self.provider = settings["provider"]
+        self.online_provider = settings["online_provider"]
+        self.online_profiles = settings["online_profiles"]
+        self.online_keys = {provider: os.getenv(env, "").strip() if env else ""
+                            for provider, (_, _, _, env) in PROVIDERS.items()}
         self.npc_trait_mode = settings["npc_trait_mode"]
         self.voice_rewrites = settings["voice_rewrites"]
         self.dialogue_validation = settings["dialogue_validation"]
@@ -96,6 +100,14 @@ class Application:
             "stats": self.stats,
             "ollama_setup": self.ollama_setup,
         }
+
+    @property
+    def online_config(self):
+        return self.online_profiles[self.online_provider]
+
+    @property
+    def api_key(self):
+        return self.online_keys[self.online_provider]
 
     @property
     def npcs(self):
@@ -133,7 +145,8 @@ class Application:
         self.simulation = simulation
         self.conversations = ConversationSession(simulation, self.requests, session_id=self.session_id,
             provider=self.provider, api_key=self.api_key, ollama_model=self.ollama_model,
-            voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation)
+            voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation,
+            online_config=self.online_config)
         self.game.app = self
         self.game.location = simulation.player.location if simulation.mode == "player" else "garden"
         self.save_id, self.save_identity = save_id, save_identity
@@ -149,7 +162,8 @@ class Application:
 
     def _sync_conversation_view(self):
         self.conversations.configure(provider=self.provider, api_key=self.api_key, ollama_model=self.ollama_model,
-            voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation)
+            voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation,
+            online_config=self.online_config)
         self.conversations.set_view(actor=self.game.dialogue.actor,
             reply_open=self.game.dialogue.open, viewed_conversation=self.game.dialogue.conversation,
             menu_open=self.screen != "game",
@@ -316,9 +330,7 @@ class Application:
 
     def open_settings(self):
         self.screen = "settings"
-        self.settings.open(self.provider, self.api_key, self.ollama_model, self.npc_trait_mode,
-                           voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation,
-                           max_requests=self.requests.max_requests)
+        self.settings.open(self)
 
     def open_stats(self):
         self.game.prompt_input.active = False
@@ -445,17 +457,19 @@ class Application:
             snapshot = {"request_kind": "create_" + job.kind,
                         "author": {key: value for key, value in npc.character.items()
                                    if key in ("Name", "Personality", "Background")}}
-            self.requests.prepare(self.session_id, self.provider, snapshot, request_id=job.id, ollama_model=self.ollama_model)
+            self.requests.prepare(self.session_id, self.provider, snapshot, request_id=job.id,
+                                  ollama_model=self.ollama_model, online_config=self.online_config)
             queued.add(job.id)
             reserve = 1 if self.requests.max_requests > 1 or composing else 0
             if self.creative_requests or self.requests.available_slots <= reserve:
                 continue
-            if self.provider == "gemini" and not self.api_key:
+            if self.provider == "online" and not self.api_key:
                 self.requests.finish(self.session_id, job.id, "No API key is configured for creation generation.")
                 relax(npc)
                 continue
             if self.requests.submit(self.session_id, self.provider, self.api_key, "Create a private work.", snapshot,
-                    request_id=job.id, ollama_model=self.ollama_model, voice_rewrites=False):
+                    request_id=job.id, ollama_model=self.ollama_model, voice_rewrites=False,
+                    online_config=self.online_config):
                 self.creative_requests[job.id] = (npc.id, job.revision, monotonic())
             else:
                 self.requests.finish(self.session_id, job.id, "Could not start creative generation.")
@@ -496,8 +510,7 @@ class Application:
             self.conversations.schedule_acknowledgments(paused=paused, simulation_active=simulation_active)
             self._present_conversation_events()
         self.game.prompt_input.update(dt)
-        self.settings.key_input.update(dt)
-        self.settings.update()
+        self.settings.update(dt)
         if self.screen == "load_sim":
             self.load_sim.name_input.update(dt)
         if self.screen == "save_sim":

@@ -1,5 +1,4 @@
 import pygame
-from ai.transport import MODEL
 from ai.ollama import check_ollama
 from ui.widgets.button import Button
 from ui.text import draw_centered_text, draw_wrapped_text
@@ -43,8 +42,13 @@ class MenuScreen:
 
         if self.start_button.clicked(event) or self.load_button.clicked(event):
             self.pending_screen = "load_sim" if self.load_button.clicked(event) else "setup"
-            if app.provider == "gemini":
-                self.ai_warning = "" if app.api_key.strip() else "No Gemini API key is configured."
+            if app.provider == "online":
+                self.ai_warning = "" if app.api_key.strip() else f"No {app.online_config.label} API key is configured."
+                if not self.ai_warning:
+                    try:
+                        app.online_config.validate()
+                    except ValueError as exc:
+                        self.ai_warning = str(exc)
             elif app.provider == "ollama":
                 self.ai_warning = "" if check_ollama() else "Ollama is not running or could not be reached."
             else:
@@ -73,8 +77,8 @@ class MenuScreen:
     def draw(self, app):
         app.window.fill(GRASS)
         pygame.draw.rect(app.window, PAPER, self.panel_rect, border_radius=BORDER_RADIUS)
-        if app.provider == "gemini":
-            model_name = f"Gemini ({MODEL})"
+        if app.provider == "online":
+            model_name = f"{app.online_config.label} ({app.online_config.model})"
         elif app.provider == "ollama":
             model_name = f"Ollama ({app.ollama_model})"
         else:

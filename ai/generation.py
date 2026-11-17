@@ -26,7 +26,8 @@ from dialogue.text import contains_question
 from dialogue.errors import InvalidResponseError, RecoveryKind, RequestError, StreamRepetitionError
 from ai.contracts import intent_snapshot, prepare_request, response_model
 from ai.debug import admitted_provider, check_cancelled, provider_wait_seconds, record_output
-from ai.transport import TransportSettings, provider_errors, request_gemini, request_ollama
+from ai.transport import TransportSettings, provider_errors, request_online, request_ollama
+from ai.online import OnlineConfig
 from ai.ollama import DEFAULT_OLLAMA_MODEL, mark_ollama_ready
 from simulation.social.information import resident_information
 from ai.voice_rewrite import (
@@ -38,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 def request_voice_rewrite(provider, api_key, response, snapshot, *, deadline,
-                          ollama_model=DEFAULT_OLLAMA_MODEL, progress=None):
+                          ollama_model=DEFAULT_OLLAMA_MODEL, progress=None, online_config=OnlineConfig()):
     """Interpret every full voice brief through the same bounded optional model pass."""
     rewritten = []
     wait_before = provider_wait_seconds()
@@ -63,12 +64,12 @@ def request_voice_rewrite(provider, api_key, response, snapshot, *, deadline,
             name = next(iter(batch["speakers"].values()))["name"]
             if progress is not None:
                 progress(f"Rewriting {name}'s voice")
-            if provider not in ("gemini", "ollama"):
+            if provider not in ("online", "ollama"):
                 return available_rewrites()
 
             def generate(correction=""):
                 return _provider_request(provider, api_key, "Rewrite the supplied speech.", batch, ollama_model,
-                                         correction=correction)
+                                         correction=correction, online_config=online_config)
             try:
                 try:
                     result = generate()
@@ -257,16 +258,16 @@ def transport_settings(snapshot, *, correction=""):
 
 
 @admitted_provider
-def _provider_request(provider, api_key, message, snapshot, ollama_model, *, correction=""):
-    if provider not in ("gemini", "ollama"):
+def _provider_request(provider, api_key, message, snapshot, ollama_model, *, correction="", online_config=OnlineConfig()):
+    if provider not in ("online", "ollama"):
         raise RequestError("Choose an AI provider in Settings.")
     prepared = prepare_request(message, snapshot, correction=correction)
     settings = transport_settings(snapshot, correction=correction)
     record_output("call", snapshot.get("request_kind", "reply"))
     if correction:
         record_output("validation", correction)
-    with provider_errors(provider, ollama_model):
-        raw = (request_gemini(api_key, prepared, settings) if provider == "gemini" else
+    with provider_errors(provider, ollama_model, online_config):
+        raw = (request_online(api_key, prepared, settings, online_config) if provider == "online" else
                request_ollama(prepared, settings, ollama_model))
         result = validate_response(raw, snapshot)
         if provider == "ollama":
@@ -575,7 +576,8 @@ def _individual_reply(snapshot, request):
     return request(snapshot)
 
 
-def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAULT_OLLAMA_MODEL, progress=None):
+def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAULT_OLLAMA_MODEL, progress=None,
+                     online_config=OnlineConfig()):
     """One worker owns every sequential stage; drafts have no live effects."""
     if snapshot.get("request_kind") in ("create_art", "create_music"):
         from constants import CREATIVE_ATTEMPTS, CREATIVE_REQUEST_SECONDS
@@ -590,7 +592,8 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
                 progress("Creating" if attempt == 0 else "Correcting creation data")
             state = {**snapshot, "_timeout": remaining}
             try:
-                result = _provider_request(provider, api_key, message, state, ollama_model, correction=correction)
+                result = _provider_request(provider, api_key, message, state, ollama_model, correction=correction,
+                                           online_config=online_config)
                 check_cancelled()
                 if monotonic() > deadline:
                     raise RequestError("Creation generation timed out.")
@@ -619,7 +622,8 @@ def request_response(provider, api_key, message, snapshot, *, ollama_model=DEFAU
         prompt = ("Perform only the current speaker's task in world_state." if "speaker_role" in state else
                   message)
         try:
-            result = _provider_request(provider, api_key, prompt, state, ollama_model, correction=correction)
+            result = _provider_request(provider, api_key, prompt, state, ollama_model, correction=correction,
+                                       online_config=online_config)
             check_cancelled()
         except InvalidResponseError as exc:
             retain(exc.failed_turns, state)

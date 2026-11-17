@@ -16,17 +16,17 @@ from constants import (
     MODEL_STREAM_REPEAT_MAX_BLOCK_CHARACTERS, MODEL_STREAM_REPEAT_MIN_CHARACTERS,
     MODEL_STREAM_REPEAT_PUNCTUATION_CHARACTERS, MODEL_STREAM_REPEAT_SYMBOL_CHARACTERS,
 )
-from ai.debug import cancellable_stream, disconnect_response, record_output, streaming_output, watch_response
+from ai.debug import check_cancelled, cancellable_stream, disconnect_response, record_output, streaming_output, watch_response
+from ai.online import OnlineConfig
 
 
-MODEL = "gemini-2.5-flash"
 OLLAMA_URL = "http://localhost:11434/api/chat"
 
 
 @dataclass(frozen=True)
 class TransportSettings:
     timeout: float
-    gemini_temperature: float | None
+    online_temperature: float | None
     ollama_options: dict
 
 
@@ -86,7 +86,7 @@ class _StreamRepetitionGuard:
         self.tails[kind], self.unchecked[kind] = tail, unchecked
 
 
-def _api_error_message(exc):
+def _api_error_message(exc, model):
     # Inspect provider text only to classify it; never display or log it.
     message = (exc.message or "").lower()
     if exc.code == 429:
@@ -96,7 +96,7 @@ def _api_error_message(exc):
     if exc.code == 404 or (
         exc.code in (400, 403) and "model" in message
     ):
-        return f"Model {MODEL} is unavailable for this key. Check Gemini model access."
+        return f"Model {model} is unavailable for this key. Check Gemini model access."
     if exc.code == 403:
         return "Gemini access denied. Check your API key and Google AI Studio access."
     if exc.code in (408, 504):
@@ -136,9 +136,9 @@ def _gemini_contents(messages):
 
 
 @contextmanager
-def provider_errors(provider, model):
+def provider_errors(provider, model, online_config=OnlineConfig()):
     """Keep provider-specific error wording around I/O and shared validation."""
-    if provider == "gemini":
+    if provider == "online" and online_config.provider == "gemini":
         try:
             yield
         except (RequestError, InvalidResponseError):
@@ -146,13 +146,27 @@ def provider_errors(provider, model):
         except (ValidationError, ValueError):
             raise RequestError("Gemini returned an invalid action or reply. Try again.") from None
         except errors.APIError as exc:
-            raise RequestError(_api_error_message(exc)) from None
+            raise RequestError(_api_error_message(exc, online_config.model)) from None
         except (TimeoutError, httpx.TimeoutException):
             raise RequestError("Gemini timed out. Check your connection and try again.") from None
         except (OSError, httpx.HTTPError):
             raise RequestError("Cannot reach Gemini. Check your connection and try again.") from None
         except Exception:
             raise RequestError("Could not get a reply from Gemini. Check your connection or try again.") from None
+    elif provider == "online":
+        label = online_config.label
+        try:
+            yield
+        except (RequestError, InvalidResponseError):
+            raise
+        except (TimeoutError, httpx.TimeoutException):
+            raise RequestError(f"{label} timed out. Check your connection and try again.") from None
+        except (OSError, httpx.HTTPError):
+            raise RequestError(f"Cannot reach {label}. Check your connection and endpoint in Settings.") from None
+        except (ValidationError, ValueError, KeyError, TypeError, AttributeError):
+            raise RequestError(f"{label} returned an invalid action or reply. Try again.") from None
+        except Exception:
+            raise RequestError(f"Could not get a reply from {label}. Check Settings or try again.") from None
     else:
         try:
             yield
@@ -168,7 +182,7 @@ def provider_errors(provider, model):
             raise RequestError("Ollama returned an invalid action or reply. Try again.") from None
 
 
-def request_gemini(api_key, prepared, settings):
+def request_gemini(api_key, prepared, settings, model):
     contents = _gemini_contents(_transport_messages(prepared))
     with genai.Client(
         api_key=api_key,
@@ -181,7 +195,7 @@ def request_gemini(api_key, prepared, settings):
     ) as client, cancellable_stream(client.close):
         config = types.GenerateContentConfig(
             system_instruction=prepared.system_instruction,
-            temperature=settings.gemini_temperature,
+            temperature=settings.online_temperature,
             response_mime_type="application/json",
             response_schema=prepared.response_schema,
             candidate_count=1,
@@ -190,9 +204,9 @@ def request_gemini(api_key, prepared, settings):
         live = streaming_output()
         if live:
             config.thinking_config = types.ThinkingConfig(include_thoughts=True)
-            responses = client.models.generate_content_stream(model=MODEL, contents=contents, config=config)
+            responses = client.models.generate_content_stream(model=model, contents=contents, config=config)
         else:
-            responses = [client.models.generate_content(model=MODEL, contents=contents, config=config)]
+            responses = [client.models.generate_content(model=model, contents=contents, config=config)]
         chunks, reason = [], None
         repetition = _StreamRepetitionGuard()
         deadline = monotonic() + settings.timeout
@@ -226,6 +240,146 @@ def request_gemini(api_key, prepared, settings):
         if not text or not text.strip():
             raise RequestError("Gemini returned an empty reply. Try again.")
         return text
+
+
+def request_online(api_key, prepared, settings, config):
+    try:
+        config.validate()
+    except ValueError as exc:
+        raise RequestError(str(exc)) from None
+    if not api_key.strip():
+        raise RequestError(f"Add a {config.label} API key in Settings.")
+    if config.provider == "gemini":
+        return request_gemini(api_key, prepared, settings, config.model)
+    return request_openai_compatible(api_key, prepared, settings, config)
+
+
+def _online_http_error(status, config):
+    label = config.label
+    if status == 401:
+        return f"{label} rejected your API key. Check it in Settings."
+    if status == 403:
+        return f"{label} denied access. Check your key and model permissions."
+    if status == 404:
+        return f"{label} could not find the endpoint or model. Check Settings."
+    if status == 429:
+        return f"{label} rate or quota limit reached. Try later or check your account limits."
+    if status in (408, 504):
+        return f"{label} timed out. Try again."
+    if status >= 500:
+        return f"{label} is temporarily unavailable. Try again later."
+    return (f"{label} rejected the request. Check the model and base URL; "
+            "the model must support Chat Completions with JSON output.")
+
+
+def _sse_data(response, deadline, label):
+    """SSE events can span multiple data lines; comments are keepalives."""
+    data = []
+    for line in response.iter_lines():
+        check_cancelled()
+        if monotonic() > deadline:
+            raise RequestError(f"{label} timed out. Try again.")
+        if not line:
+            if data:
+                yield "\n".join(data)
+                data.clear()
+        elif line.startswith("data:"):
+            data.append(line[5:].lstrip(" "))
+    if data:
+        yield "\n".join(data)
+
+
+def request_openai_compatible(api_key, prepared, settings, config):
+    live = streaming_output()
+    payload = {
+        "model": config.model,
+        "messages": [
+            {"role": "system", "content": prepared.system_instruction
+             + "\nReturn only JSON matching this schema: "
+             + json.dumps(prepared.response_schema, ensure_ascii=False, separators=(",", ":"))},
+            *_transport_messages(prepared),
+        ],
+        "response_format": {"type": "json_object"},
+        "stream": live,
+    }
+    # Leave sampling defaults to the service: some reasoning models reject temperature.
+    deadline = monotonic() + settings.timeout
+    chunks, reason = [], None
+    repetition = _StreamRepetitionGuard()
+
+    def consume(data, streaming):
+        nonlocal reason
+        if data.get("error"):
+            raise RequestError(f"{config.label} could not complete the reply. Check model access or try again.")
+        choices = data.get("choices", [])
+        if not choices:
+            return
+        choice = choices[0]
+        if choice.get("finish_reason") is not None:
+            reason = choice["finish_reason"]
+        message = choice.get("delta" if streaming else "message", {})
+        if message.get("refusal"):
+            raise RequestError(f"{config.label} declined this request. Try another message.")
+        text = message.get("content") or ""
+        if not isinstance(text, str):
+            raise RequestError(f"{config.label} returned an unsupported reply format.")
+        if live:
+            record_output("output", text)
+            repetition.add("output", text)
+            thinking = message.get("reasoning_content")
+            if isinstance(thinking, str):
+                record_output("reasoning", thinking)
+                repetition.add("reasoning", thinking)
+        chunks.append(text)
+
+    with httpx.stream(
+        "POST", config.base_url.rstrip("/") + "/chat/completions",
+        headers={"Authorization": f"Bearer {api_key.strip()}"}, json=payload,
+        timeout=settings.timeout,
+    ) as response, cancellable_stream(lambda: disconnect_response(response)):
+        if response.is_error or response.is_redirect:
+            # Never expose provider error bodies, headers, or URLs containing secrets.
+            raise RequestError(_online_http_error(response.status_code, config))
+        if live:
+            for event in _sse_data(response, deadline, config.label):
+                if event.strip() == "[DONE]":
+                    break
+                consume(json.loads(event), True)
+        else:
+            response.read()
+            consume(response.json(), False)
+    if monotonic() > deadline:
+        raise RequestError(f"{config.label} timed out. Try again.")
+    if reason == "length":
+        raise RequestError(f"{config.label} returned an incomplete reply. Try again.")
+    if reason != "stop":
+        raise RequestError(f"{config.label} could not finish a reply. Try another message.")
+    text = "".join(chunks)
+    if not text.strip():
+        raise RequestError(f"{config.label} returned an empty reply. Try again.")
+    return text
+
+
+def check_online_connection(api_key, config):
+    """Generate a small structured dialogue reply without touching simulation state."""
+    from pydantic import BaseModel, Field
+    from ai.contracts import PreparedRequest, structured_schema
+    from constants import ONLINE_CONNECTION_TIMEOUT_SECONDS
+
+    class ConnectionReply(BaseModel):
+        reply: str = Field(min_length=1)
+
+    prepared = PreparedRequest(
+        "Write a single short, original greeting as a friendly fictional character. Return JSON with a reply field.",
+        [{"role": "user", "content": "Greet someone you have just met."}],
+        structured_schema(ConnectionReply), ConnectionReply,
+    )
+    with provider_errors("online", config.model, config):
+        raw = request_online(api_key, prepared, TransportSettings(ONLINE_CONNECTION_TIMEOUT_SECONDS, None, {}), config)
+        reply = ConnectionReply.model_validate_json(raw).reply
+        if not reply.strip():
+            raise RequestError("The connection returned an empty dialogue reply.")
+    return "Connected. Received a JSON dialogue reply."
 
 
 def request_ollama(prepared, settings, model):

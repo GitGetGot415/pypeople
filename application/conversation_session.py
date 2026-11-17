@@ -14,14 +14,16 @@ from application.conversation_results import accept_generated_dialogue, accept_r
 from simulation.npc import NPC
 from simulation.social.concerns import concern_description
 from simulation.transfer_records import transfer_payload
+from ai.online import OnlineConfig
 
 
 class ConversationSession:
     def __init__(self, world, requests, *, session_id, provider, api_key, ollama_model,
-                 voice_rewrites=True, dialogue_validation=True):
+                 voice_rewrites=True, dialogue_validation=True, online_config=OnlineConfig()):
         self.simulation, self.requests, self.session_id = world, requests, session_id
         self.configure(provider=provider, api_key=api_key, ollama_model=ollama_model,
-                       voice_rewrites=voice_rewrites, dialogue_validation=dialogue_validation)
+                       voice_rewrites=voice_rewrites, dialogue_validation=dialogue_validation,
+                       online_config=online_config)
         self.player_requests, self.conversation_requests = {}, {}
         self.pending_offer = None
         self.events = []
@@ -29,8 +31,10 @@ class ConversationSession:
         self.view_interaction_id = None
         self.menu_open = False
 
-    def configure(self, *, provider, api_key, ollama_model, voice_rewrites, dialogue_validation):
+    def configure(self, *, provider, api_key, ollama_model, voice_rewrites, dialogue_validation,
+                  online_config=OnlineConfig()):
         self.provider, self.api_key, self.ollama_model = provider, api_key, ollama_model
+        self.online_config = online_config
         self.voice_rewrites, self.dialogue_validation = voice_rewrites, dialogue_validation
 
     @property
@@ -121,7 +125,7 @@ class ConversationSession:
             return
         if self.input_unavailable(npc, active=active) or not message and command is None:
             return
-        if self.provider == "gemini" and not self.api_key:
+        if self.provider == "online" and not self.api_key:
             self.show_reply("Add an API key in Settings to generate a reply.")
             return
         snapshot = self.player_snapshot(npc, message)
@@ -341,7 +345,7 @@ class ConversationSession:
             from simulation.player_story import starting_player_opening
             from dialogue.models import ActionResponse
             opening = starting_player_opening(self.simulation, npc) if call["kind"] == "introduction" else ""
-            if not opening and self.provider == "gemini" and not self.api_key:
+            if not opening and self.provider == "online" and not self.api_key:
                 self.notice("Add an API key in Settings so residents can prepare conversations.")
                 self.end_player_conversation("No provider is available for the opening.")
                 self.close_view()
@@ -457,7 +461,7 @@ class ConversationSession:
         request_id = uuid4().hex
         if prepared is None and not self.requests.submit(
             self.session_id, self.provider, self.api_key, message, snapshot,
-            request_id=request_id, ollama_model=self.ollama_model,
+            request_id=request_id, ollama_model=self.ollama_model, online_config=self.online_config,
             voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation,
             queue_if_busy=True,
         ):
@@ -520,19 +524,20 @@ class ConversationSession:
             return
         if conversation.dialogue.dialogue_state != "waiting":
             return
-        if self.provider == "gemini" and not self.api_key:
+        if self.provider == "online" and not self.api_key:
             conversation.fail_dialogue("Add an API key in Settings to generate this conversation.")
             return
         if (self.session_id, conversation.id) not in self.requests.logs:
             self.requests.prepare(self.session_id, self.provider, conversation.snapshot(self.tree, self.npcs),
-                                  request_id=conversation.id, ollama_model=self.ollama_model)
+                                  request_id=conversation.id, ollama_model=self.ollama_model,
+                                  online_config=self.online_config)
         if self.requests.busy or not start:
             return
         snapshot = conversation.snapshot(self.tree, self.npcs)
         if not self.requests.submit(
             self.session_id, self.provider, self.api_key,
             f"Write what {conversation.initiator.name} and {conversation.recipient.name} say directly to each other.", snapshot,
-            request_id=conversation.id, ollama_model=self.ollama_model,
+            request_id=conversation.id, ollama_model=self.ollama_model, online_config=self.online_config,
             voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation,
         ):
             # A running exchange can queue its next call while the snapshot is built; wait for the next free slot.
