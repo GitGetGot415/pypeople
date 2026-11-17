@@ -62,7 +62,7 @@ class StatsScreen:
         self.selected_conversation = None
         self.selected_log = None
         self.follow_log = True
-        self._log_cache = None
+        self.log_cache = None
         self.tab = "Statistics"
         self.list_scroll = 0
         self.detail_scroll = 0
@@ -136,19 +136,19 @@ class StatsScreen:
             self._creation_order = current_ids
         return rows, max(0, top - 8)
 
-    def _link(self, top, bottom, action):
+    def link(self, top, bottom, action):
         """Make a span of the detail pane clickable."""
         self.hits.append((top, bottom, action))
 
-    def _open_conversation(self, app, record_id):
+    def open_conversation(self, app, record_id):
         record = next((entry for entry in app.conversation_history if entry.id == record_id), None)
         if record is not None:
             self.open_record(record)
 
-    def _toggle(self, app, add, height, key, label):
+    def toggle(self, app, add, height, key, label):
         top = height()
         add(label, app.small_font, ACCENT)
-        self._link(top, height(), lambda: self.expanded.symmetric_difference_update({key}))
+        self.link(top, height(), lambda: self.expanded.symmetric_difference_update({key}))
 
     def _scroll_limits(self, app):
         _, list_height = self._list_rows(app)

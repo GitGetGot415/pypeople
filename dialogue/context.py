@@ -8,7 +8,7 @@ from dialogue.text import split_sentences, contains_question
 from simulation.social.information import (
     NPC_ARRIVAL_MEMORY, resident_turn_choices, retold_accusation, snake_verdict, confrontation_verdict,
 )
-from dialogue.identity import actor_id, own_name, forms, speech_only, _actor_name, _validate_speaker
+from dialogue.identity import actor_id, own_name, forms, speech_only, actor_name, validate_speaker
 
 
 NAME_TAG_INSTRUCTION = f"""Every character has a readable name tag floating above their head.
@@ -168,7 +168,7 @@ def _orientation_world_context(snapshot, *, correction=False):
     return context
 
 
-def _catalog_for_prompt(catalog):
+def catalog_for_prompt(catalog):
     return {actor_id: {key: value for key, value in actor.items() if not key.startswith("_")}
             for actor_id, actor in catalog.items() if actor.get("_visible", False)}
 
@@ -182,12 +182,12 @@ def world_context(snapshot, *, correction=False):
         context["environment"] = local_environment(snapshot.get("location", "garden"))
         if snapshot.get("location", "garden") == "garden":
             context["environment"].update(snapshot.get("environment", {}))
-        names = (_actor_name(snapshot["speaker"]), _actor_name(snapshot["listener"]), SNAKE_NAME)
+        names = (actor_name(snapshot["speaker"]), actor_name(snapshot["listener"]), SNAKE_NAME)
         context["preceding_turns"] = _base_preceding_turns(context.get("preceding_turns", []), names)
         if correction and context.get("shared_history"):
             context["shared_history"] = {key: value for key, value in context["shared_history"].items()
                                          if key != "recent_dialogue"}
-        context["engine_identities"] = _catalog_for_prompt(snapshot.get("_name_actors", {}))
+        context["engine_identities"] = catalog_for_prompt(snapshot.get("_name_actors", {}))
         return named_context(context)
     conversation = snapshot.get("request_kind") == "conversation"
     info = snapshot.get("_information_validation") or {}
@@ -273,7 +273,7 @@ def world_context(snapshot, *, correction=False):
             for entry in history.get("recent_dialogue", []):
                 try:
                     for name, text in entry["excerpts"]:
-                        _validate_speaker(text, name, next(other for other in names if other != name))
+                        validate_speaker(text, name, next(other for other in names if other != name))
                         validate_base_prose(text, (*names, SNAKE_NAME))
                 except ValueError:
                     continue  # Keep saved words intact, but do not teach new speech a known role swap.
@@ -303,7 +303,7 @@ def world_context(snapshot, *, correction=False):
         context["player_dialogue"] = dialogue
     catalog = snapshot.get("_name_actors", {})
     if catalog:
-        context["engine_identities"] = _catalog_for_prompt(catalog)
+        context["engine_identities"] = catalog_for_prompt(catalog)
         context["name_tags"] = "Names are visible on floating tags. Names reveal no private facts or prior meetings."
     return named_context(context)
 
@@ -312,7 +312,7 @@ def _last_question(text):
     return next((sentence for sentence in reversed(split_sentences(text)) if contains_question(sentence)), text)
 
 
-def _reply_context(snapshot):
+def reply_context(snapshot):
     role = snapshot.get("speaker_role", "initiator")
     preceding = snapshot.get("_preceding_turns", snapshot.get("preceding_turns", []))
     heard = preceding[-1]["text"] if preceding and preceding[-1]["role"] != role else ""
@@ -320,7 +320,7 @@ def _reply_context(snapshot):
             "questions_to_answer": [sentence for sentence in split_sentences(heard) if contains_question(sentence)]}
 
 
-def _resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, thanks=False, closing=False):
+def resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, thanks=False, closing=False):
     """Build a provider view from one actor's projected knowledge, never the partner's private view."""
     index = len(draft["turns"])
     role = role or ("initiator" if index % 2 == 0 else "recipient")

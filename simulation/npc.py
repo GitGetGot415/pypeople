@@ -495,7 +495,7 @@ class NPC(ResidentValues, ConversationActor):
         self.check_gift(recipient, item, quantity)
         return Handoff(self, recipient, item, quantity, record, spacing)
 
-    def _move(self, dt):
+    def move(self, dt):
         return move_toward(self, self.destination, dt, MOVEMENT_SPEED)
 
     def update(self, dt, tree):
@@ -531,13 +531,13 @@ class NPC(ResidentValues, ConversationActor):
                     from simulation.maps import clamp_point
                     self.destination = clamp_point(self.location, (self.rng.uniform(left, right),
                                                                   self.rng.uniform(max(FOOT_MARGIN, top), bottom)))
-                if self._move(movement_dt):
+                if self.move(movement_dt):
                     self.destination = None
                     self.pause_remaining = WANDER_PAUSE
         elif behavior == Behavior.GO_TO_TREE:
             if self.destination is None:
                 self.destination = tree.interaction_point
-            if self._move(dt):
+            if self.move(dt):
                 self.finish_activity(world)
         elif behavior == Behavior.HARVEST:
             try:
@@ -562,7 +562,7 @@ class NPC(ResidentValues, ConversationActor):
                     self.finish_activity(world, failed=True)
         elif behavior == Behavior.WAIT:
             # A waiting resident only moves when an errand gave them a spot beside someone.
-            if self.destination is not None and self._move(dt):
+            if self.destination is not None and self.move(dt):
                 self.destination = None
             self.activity_elapsed += dt
             if self.activity_elapsed >= DECISION_SECONDS:

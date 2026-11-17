@@ -127,9 +127,9 @@ class InventoryPanel:
                 self.status = "Select an available resident; the earlier recipient may now be occupied."
                 return
             try:
-                app._sync_conversation_view()
+                app.sync_conversation_view()
                 app.conversations.offer_player_item(recipient, self.selected_id, self.quantity if self.selected_id == "fruit" else 1)
-                app._present_conversation_events()
+                app.present_conversation_events()
                 self.close()
             except ValueError as exc:
                 self.status = str(exc)

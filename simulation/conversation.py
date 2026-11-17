@@ -352,7 +352,7 @@ class Conversation(ResidentProgress):
         self.arrived = True
         for npc in (self.initiator, self.recipient):
             if npc.destination is not None:
-                if npc._move(max(0.0, dt)):
+                if npc.move(max(0.0, dt)):
                     npc.destination = None
                 else:
                     self.arrived = False

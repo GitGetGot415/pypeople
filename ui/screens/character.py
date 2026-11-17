@@ -111,9 +111,7 @@ class CharacterScreen:
         self.stats_dragging = False
         for text_input in self.inputs.values():
             text_input.scrollbar.cancel()
-            text_input.active = False
-            text_input.backspace_held = False
-            text_input._navigation_key = None
+            text_input.blur()
         for sliders in self.color_sliders.values():
             for slider in sliders:
                 slider.active = False
@@ -133,8 +131,7 @@ class CharacterScreen:
             field = self.inputs[name]
             field.rect.y = self.stats_input_tops[name] - self.stats_scroll
             if not field.rect.colliderect(self.stats_viewport):
-                field.active = False
-                field.backspace_held = False
+                field.blur()
             elif field.active:
                 pygame.key.set_text_input_rect(field.rect.clip(self.stats_viewport))
 

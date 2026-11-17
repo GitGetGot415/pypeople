@@ -44,9 +44,9 @@ def account_references(catalog):
     return {actor["name"]: actor.get("references", []) for actor in catalog.values()}
 
 
-def _actor_name(actor):
+def actor_name(actor):
     return actor if isinstance(actor, str) else actor.get("name", "")
 
 
-def _validate_speaker(text, speaker, listener):
-    validate_speaker_identity(text, _actor_name(speaker), _actor_name(listener))
+def validate_speaker(text, speaker, listener):
+    validate_speaker_identity(text, actor_name(speaker), actor_name(listener))

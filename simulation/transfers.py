@@ -228,7 +228,7 @@ class Handoff(HandoffProgress):
             self.finish("The resident is no longer available." if self.player_exchange else "A participant is no longer outdoors.")
             return
         if not self.arrived:
-            self.arrived = giver._move(max(0.0, dt))
+            self.arrived = giver.move(max(0.0, dt))
             if self.arrived:
                 giver.destination = None
                 self.record.status = CONVERSATION_GIVING_ITEMS

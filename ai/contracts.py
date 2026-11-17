@@ -637,9 +637,9 @@ def _request_context(message, snapshot, correction):
     if not opening:
         instruction += "\n" + AREA_KNOWLEDGE_INSTRUCTION
     if snapshot.get("_name_actors") and not opening:
-        context["engine_identities"] = dialogue_context._catalog_for_prompt(snapshot["_name_actors"])
+        context["engine_identities"] = dialogue_context.catalog_for_prompt(snapshot["_name_actors"])
     if snapshot.get("request_kind") == "resident_turn":
-        context["reply_context"] = dialogue_context._reply_context(snapshot)
+        context["reply_context"] = dialogue_context.reply_context(snapshot)
         instruction += ("\nConversation messages contain actual accepted speech: assistant/model messages are your earlier "
                         "words; user messages after the context are the listener's words. Write your reply to the last "
                         "listener message. Answer their questions before moving the topic forward; do not summarize "

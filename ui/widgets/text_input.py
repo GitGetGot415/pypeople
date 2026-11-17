@@ -52,6 +52,12 @@ class TextInput:
         self._show_cursor = True
         pygame.key.set_text_input_rect(self.rect)
 
+    def blur(self):
+        """Stop typing and any held-key repeat."""
+        self.active = False
+        self.backspace_held = False
+        self._navigation_key = None
+
     def _insert(self, value):
         value = value.replace("\r\n", "\n").replace("\r", "\n")
         value = "".join(char for char in value if char.isprintable() or (self.multiline and char == "\n"))

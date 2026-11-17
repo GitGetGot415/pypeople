@@ -142,7 +142,7 @@ class Snake(SnakeValues, ConversationActor):
     def contains(self, point):
         return self.x - 32 <= point[0] <= self.x + 32 and self.y - 58 <= point[1] <= self.y
 
-    def _move(self, dt):
+    def move(self, dt):
         moving = move_toward(self, self.destination, dt, SNAKE_SPEED)
         self.animation_elapsed = (self.animation_elapsed + dt) % (2 * SNAKE_FRAME_SECONDS)
         return moving
@@ -236,5 +236,5 @@ class Snake(SnakeValues, ConversationActor):
             from simulation.maps import clamp_point
             left, right, top, bottom = self.movement_bounds
             self.destination = clamp_point("garden", (self.rng.uniform(left, right), self.rng.uniform(6, bottom)))
-        if self._move(dt):
+        if self.move(dt):
             self.destination = None

@@ -128,19 +128,18 @@ class GameScreen:
         self.dialogue_scrollbar.cancel()
         self.dialogue.scroll_limit = 0
         if notify and self.app and self.app.conversations:
-            self.app._sync_conversation_view()
+            self.app.sync_conversation_view()
             self.app.conversations.view_closed(terminate=terminate)
-            self.app._present_conversation_events()
+            self.app.present_conversation_events()
         self.dialogue.reset()
         self.actions.menu = None
-        self.prompt_input.active = False
-        self.prompt_input.backspace_held = False
+        self.prompt_input.blur()
 
     def set_reply(self, text):
         normalized = " ".join(text.split())
         self.dialogue.status = "".join(char for char in normalized if char.isprintable())
         self.dialogue.scroll = 0
-        self.prompt_input.active = self.prompt_input.backspace_held = False
+        self.prompt_input.blur()
         if self.dialogue.actor is not None:
             if self.dialogue.actor.player_reply.closing:
                 self.prompt_input.set_value("")
@@ -185,7 +184,7 @@ class GameScreen:
         if (self.dialogue.open and active_player(world)
                 and self.actions_button.clicked(event)):
             self.actions.menu = "actions"
-            self.prompt_input.active = self.prompt_input.backspace_held = False
+            self.prompt_input.blur()
             return
         if self.can_harvest(world):
             self.harvest_amount.handle_event(event)
@@ -204,19 +203,19 @@ class GameScreen:
             return
         if active_player(world) and self.inventory_button.clicked(event):
             self.pan_start = self.pan_last = None
-            self.prompt_input.active = self.prompt_input.backspace_held = False
+            self.prompt_input.blur()
             self.inventory.open(app.simulation.player)
             return
         if self.pending_offer and self.dialogue.open and self.player_response_ready:
             if self.accept_offer_button.clicked(event, enabled=not app.simulation.paused):
-                app._sync_conversation_view()
+                app.sync_conversation_view()
                 app.conversations.accept_gift_offer()
-                app._present_conversation_events()
+                app.present_conversation_events()
                 return
             if self.decline_offer_button.clicked(event, enabled=not app.simulation.paused):
-                app._sync_conversation_view()
+                app.sync_conversation_view()
                 app.conversations.decline_gift_offer()
-                app._present_conversation_events()
+                app.present_conversation_events()
                 return
         if self.apartment_open:
             _, content, height = self.apartment_rows(app)
@@ -325,7 +324,7 @@ class GameScreen:
                 return
             if self.back_button.clicked(event, enabled=self.dialogue.index > 0):
                 self.dialogue.move(-1)
-                self.prompt_input.active = self.prompt_input.backspace_held = False
+                self.prompt_input.blur()
                 return
             if not self.player_response_ready:
                 if self.next_button.clicked(event) or (event.type == pygame.KEYDOWN and event.key in (
@@ -345,14 +344,14 @@ class GameScreen:
             if paused:
                 return
             if self.send_button.clicked(event):
-                app._sync_conversation_view()
+                app.sync_conversation_view()
                 app.conversations.submit(app.game.dialogue.actor, app.game.prompt_input.text, active=app.screen == "game")
-                app._present_conversation_events()
+                app.present_conversation_events()
                 self.focus_player_reply(app)
             elif self.prompt_input.handle_event(event):
-                app._sync_conversation_view()
+                app.sync_conversation_view()
                 app.conversations.submit(app.game.dialogue.actor, app.game.prompt_input.text, active=app.screen == "game")
-                app._present_conversation_events()
+                app.present_conversation_events()
 
     @property
     def player_response_ready(self):
@@ -362,7 +361,7 @@ class GameScreen:
         changed = self.dialogue.refresh(self.player_record, app.font, self.reply_rect.width - 12,
             original=app.original_dialogue, condensed=getattr(app, "condensed_dialogue", False), player_reply=True)
         if changed:
-            self.prompt_input.active = self.prompt_input.backspace_held = False
+            self.prompt_input.blur()
         if self.player_response_ready and not self.dialogue.actor.player_reply.closing and not self.pending_offer:
             if changed:
                 self.prompt_input.focus()
@@ -424,7 +423,7 @@ class GameScreen:
     def open_menu_confirmation(self):
         self.confirm_menu = True
         self.menu_restore_focus = self.prompt_input.active
-        self.prompt_input.active = self.prompt_input.backspace_held = False
+        self.prompt_input.blur()
         self.pan_start = self.pan_last = None
         self.panning = False
 
@@ -875,9 +874,9 @@ class GameScreen:
                         and self.dialogue.interaction_id != interaction.id):
                     self.close_dialogue()
                 if interaction.stage == "conversation" and not self.dialogue.open:
-                    app._sync_conversation_view()
+                    app.sync_conversation_view()
                     app.conversations.open_player_dialogue(world.actor_by_id(interaction.npc_id))
-                    app._present_conversation_events()
+                    app.present_conversation_events()
             elif interaction and interaction.kind == "door" and not world.player.journey:
                 target = interaction.target
                 world.player_interaction = None

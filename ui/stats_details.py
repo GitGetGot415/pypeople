@@ -86,8 +86,8 @@ class StatsDetails:
             revision, events, save_error = log.snapshot()
             cache_key = (log, revision, save_error, log.status)
             now = monotonic()
-            if self.screen._log_cache is not None:
-                previous_key, previous_lines, refreshed_at = self.screen._log_cache
+            if self.screen.log_cache is not None:
+                previous_key, previous_lines, refreshed_at = self.screen.log_cache
                 if previous_key == cache_key or (previous_key[0] is log and previous_key[2] == save_error
                                                 and now - refreshed_at < MODEL_LOG_REFRESH_SECONDS):
                     return previous_lines
@@ -116,7 +116,7 @@ class StatsDetails:
                 gap()
             if not any(event["kind"] in ("output", "reasoning", "finished", "error") for event in events):
                 add("Waiting for provider output; model loading and prompt evaluation may take time.", app.small_font, MUTED)
-            self.screen._log_cache = (cache_key, lines, now)
+            self.screen.log_cache = (cache_key, lines, now)
             return lines
 
         if self.screen.tab == "Conversations":
@@ -142,7 +142,7 @@ class StatsDetails:
                         opened = key in self.screen.expanded
                         top = height()
                         add(f"{'-' if opened else '+'} {name}", color=ACCENT)
-                        self.screen._link(top, height(), lambda key=key: self.screen.expanded.symmetric_difference_update({key}))
+                        self.screen.link(top, height(), lambda key=key: self.screen.expanded.symmetric_difference_update({key}))
                         if opened:
                             add(record.intended_subjects[name])
                         gap()
@@ -184,7 +184,7 @@ class StatsDetails:
                 top = height()
                 add(f"{'-' if opened else '+'} {summary}",
                     color=OPINION_POSITIVE_COLOR if direction > 0 else OPINION_NEGATIVE_COLOR if direction < 0 else INK)
-                self.screen._link(top, height(), lambda key=key: self.screen.expanded.symmetric_difference_update({key}))
+                self.screen.link(top, height(), lambda key=key: self.screen.expanded.symmetric_difference_update({key}))
                 if opened:
                     add(reason, app.small_font, MUTED, 16)
                 gap()
@@ -266,7 +266,7 @@ class StatsDetails:
         if death.conversation_id:
             top = height()
             add("View confrontation", app.small_font, ACCENT)
-            self.screen._link(top, height(), lambda: self.screen._open_conversation(app, death.conversation_id))
+            self.screen.link(top, height(), lambda: self.screen.open_conversation(app, death.conversation_id))
         rule()
         if isinstance(actor, NPC):
             add("Last on their mind", app.heading_font)
@@ -333,12 +333,12 @@ class StatsDetails:
                 recipient = sim.participant_by_id(promise.recipient_id)
                 top = height()
                 add(f"{giver.name} -> {recipient.name}: one apple / {promise.status} [view]", app.small_font, ACCENT)
-                self.screen._link(top, height(), lambda cid=promise.conversation_id: self.screen._open_conversation(app, cid))
+                self.screen.link(top, height(), lambda cid=promise.conversation_id: self.screen.open_conversation(app, cid))
                 add(f"Due {promise.deadline}", app.small_font, MUTED)
                 if promise.outcome:
                     add(promise.outcome, app.small_font)
             if len(promises) > STATS_COLLAPSED_ROWS:
-                self.screen._toggle(app, add, height, "promises",
+                self.screen.toggle(app, add, height, "promises",
                              "Show fewer promises" if "promises" in self.screen.expanded else f"Show all {len(promises)} promises")
             if npc.pending_social_opinions:
                 add("An opinion could not be saved; the simulation will retry.", app.small_font, MUTED)
@@ -351,7 +351,7 @@ class StatsDetails:
                 add(f"{memory.day}: {memory.summary}")
                 add(f"Influence: {memory.weight:+g}", app.small_font, MUTED)
             if len(memories) > STATS_COLLAPSED_ROWS:
-                self.screen._toggle(app, add, height, "memories",
+                self.screen.toggle(app, add, height, "memories",
                              "Show fewer memories" if "memories" in self.screen.expanded else f"Show all {len(memories)} memories")
         else:
             add("Observer view", app.heading_font)
@@ -381,7 +381,7 @@ class StatsDetails:
                 top = height()
                 add(f"{'-' if opened else '+'} {assertion_text(sim, fact, claim.affirmed)}", app.small_font)
                 add(f"{belief.stance.title()} / {'firsthand' if belief.direct else 'personal assertion' if belief.source_id == npc.id else 'hearsay'}", app.small_font, MUTED)
-                self.screen._link(top, height(), lambda key=key: self.screen.expanded.symmetric_difference_update({key}))
+                self.screen.link(top, height(), lambda key=key: self.screen.expanded.symmetric_difference_update({key}))
                 if opened:
                     source = sim.participant_by_id(belief.source_id)
                     originator = sim.participant_by_id(claim.originator_id)
@@ -393,7 +393,7 @@ class StatsDetails:
                         disclosure = next(d for d in sim.disclosures if d.id == belief.disclosure_id)
                         link = height()
                         add("View source conversation", app.small_font, ACCENT, 16)
-                        self.screen._link(link, height(), lambda cid=disclosure.conversation_id: self.screen._open_conversation(app, cid))
+                        self.screen.link(link, height(), lambda cid=disclosure.conversation_id: self.screen.open_conversation(app, cid))
                 gap()
 
     @staticmethod
@@ -489,7 +489,7 @@ class StatsDetails:
                     self.screen.dialogue_backgrounds.append((top, height()))
             if dead:
                 self.screen.dead_backgrounds.append((top, height(), self.screen.selected_opinion == person))
-            self.screen._link(top, height(), lambda person=person: setattr(
+            self.screen.link(top, height(), lambda person=person: setattr(
                 self.screen, "selected_opinion", None if self.screen.selected_opinion == person else person))
             gap()
 

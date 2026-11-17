@@ -79,26 +79,26 @@ class ConversationActions:
             elif value == "confirm":
                 self.menu = None
                 if not app.simulation.player_killing_unavailable(self.game.dialogue.actor):
-                    app._sync_conversation_view()
+                    app.sync_conversation_view()
                     app.conversations.kill_resident(self.game.dialogue.actor)
-                    app._present_conversation_events()
+                    app.present_conversation_events()
             elif value == "apple":
                 self.menu = None
                 if self.game.can_give_apple(app):
-                    app._sync_conversation_view()
+                    app.sync_conversation_view()
                     try:
                         app.conversations.give_player_apple(self.game.dialogue.actor)
                     except ValueError as exc:
                         self.game.show_save_message(str(exc))
-                    app._present_conversation_events()
+                    app.present_conversation_events()
                 self.game.focus_player_reply(app)
             elif value == "invitation":
                 self.menu = None
                 offer = self.game.pending_invitation(app.simulation)
                 if offer:
-                    app._sync_conversation_view()
+                    app.sync_conversation_view()
                     app.conversations.accept_player_invitation(offer.id)
-                    app._present_conversation_events()
+                    app.present_conversation_events()
                 self.game.focus_player_reply(app)
             return
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -178,9 +178,9 @@ class ConversationActions:
                         (value["item"] != "fruit" or picker["command"].get("item") == "fruit"))
             if complete:
                 self.game.dialogue.picker = None
-                app._sync_conversation_view()
+                app.sync_conversation_view()
                 app.conversations.submit(self.game.dialogue.actor, "", command=value, active=app.screen == "game")
-                app._present_conversation_events()
+                app.present_conversation_events()
             else:
                 picker["command"], picker["page"], picker["buttons"] = value, 0, []
             return

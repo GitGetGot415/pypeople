@@ -46,7 +46,7 @@ from simulation.social.information import (
 )
 from simulation.social.promises import validate_agreements, proposals_from_snapshot
 from dialogue.identity import (
-    account_references, actor_id, forms, own_name, speech_only, _actor_name, _validate_speaker,
+    account_references, actor_id, forms, own_name, speech_only, actor_name, validate_speaker,
 )
 from simulation.transfers import validate_player_transfer, validate_resident_gift
 
@@ -55,7 +55,7 @@ def validate_dialogue_speakers(turns, names, *, start_index=0):
     errors, indices = [], []
     for index, turn in enumerate(turns, start_index):
         try:
-            _validate_speaker(turn.text, names[turn.speaker], names["recipient" if turn.speaker == "initiator" else "initiator"])
+            validate_speaker(turn.text, names[turn.speaker], names["recipient" if turn.speaker == "initiator" else "initiator"])
         except ValueError as exc:
             errors.append(str(exc))
             indices.append(index)
@@ -63,14 +63,14 @@ def validate_dialogue_speakers(turns, names, *, start_index=0):
         raise DialogueSpeakerError(" ".join(dict.fromkeys(errors)), indices)
 
 
-def _speech_words(text):
+def speech_words(text):
     text = unicodedata.normalize("NFKC", text).replace("\u2019", "'").casefold()
     return re.findall(r"\w+(?:'\w+)*", text)
 
 
 def _speech_phrases(text):
     # Match copied speech despite punctuation, casing, or display part breaks.
-    words = _speech_words(text)
+    words = speech_words(text)
     size = DIALOGUE_REPEAT_PHRASE_WORDS
     return (tuple(words[index:index + size]) for index in range(len(words) - size + 1))
 
@@ -96,7 +96,7 @@ def validate_dialogue_repetition(turns, recent_dialogue=(), *, factual_context=(
     factual = {phrase for text in factual_context for phrase in _speech_phrases(text)}
     current, signatures, repeated, sentences_by_speaker, own_turns = {}, [], set(), set(), set()
     echoed_sentences = set()
-    factual_sentences = {tuple(_speech_words(sentence)) for text in factual_context for sentence in split_sentences(text)}
+    factual_sentences = {tuple(speech_words(sentence)) for text in factual_context for sentence in split_sentences(text)}
     aliases = {}
     for actor, names in (actor_references or {}).items():
         for name in names:
@@ -112,7 +112,7 @@ def validate_dialogue_repetition(turns, recent_dialogue=(), *, factual_context=(
         if reference_pattern:
             text = re.sub(reference_pattern,
                 lambda match: "person" if is_name_reference(match, text) else match[0], text, flags=re.I)
-        return tuple(_speech_words(unquoted_speech(text)))
+        return tuple(speech_words(unquoted_speech(text)))
 
     def fact_tokens(text, role=None):
         text = unicodedata.normalize("NFKC", text).replace("\u2019", "'").casefold()
@@ -155,7 +155,7 @@ def validate_dialogue_repetition(turns, recent_dialogue=(), *, factual_context=(
         # Joining parts catches loops split across multiple display pages too.
         phrases = list(_speech_phrases(turn.text))
         normalized = fact_tokens(turn.text, turn.speaker) if factual_context else []
-        signature = tuple(_speech_words(turn.text))
+        signature = tuple(speech_words(turn.text))
         if (len(phrases) != len(set(phrases))
                 or len(signature) >= DIALOGUE_REPEAT_PHRASE_WORDS and signature in signatures):
             repeated.add(index)
@@ -165,7 +165,7 @@ def validate_dialogue_repetition(turns, recent_dialogue=(), *, factual_context=(
         own_turns.add((turn.speaker, signature))
         current_sentences = set()
         for sentence in split_sentences(turn.text):
-            words = tuple(_speech_words(unquoted_speech(sentence)))
+            words = tuple(speech_words(unquoted_speech(sentence)))
             factual_sentence = words in factual_sentences or bool(factual_context and any(
                 same_fact_words(tuple(word for word in fact_tokens(sentence, turn.speaker) if word), sequence)
                 for sequence in fact_sentence_sequences))
@@ -192,7 +192,7 @@ def validate_dialogue_repetition(turns, recent_dialogue=(), *, factual_context=(
             current[phrase] = current.get(phrase, 0) + 1
         signatures.append(signature)
     if sum(map(len, signatures)) >= 2 * DIALOGUE_REPEAT_PHRASE_WORDS and any(
-            tuple(signatures) == tuple(tuple(_speech_words(text)) for _, text in entry["excerpts"])
+            tuple(signatures) == tuple(tuple(speech_words(text)) for _, text in entry["excerpts"])
             for entry in recent_dialogue):
         repeated.update(range(len(turns)))
         copied = True
@@ -246,7 +246,7 @@ def validate_player_reply_repetition(text, snapshot):
 def dialogue_validation_errors(response, snapshot):
     """Diagnose accepted originals without another provider call or any effects."""
     try:
-        _validate_response(response.model_dump_json(), {**snapshot, "_dialogue_validation": True}, type(response))
+        validate_raw_response(response.model_dump_json(), {**snapshot, "_dialogue_validation": True}, type(response))
     except ValueError as exc:
         return [str(exc)]
     return []
@@ -280,13 +280,13 @@ def validate_speech_grounding(text, snapshot):
     preceding = snapshot.get("preceding_turns", [])
     question = snapshot.get("_player_message", preceding[-1]["text"] if preceding else "")
     validate_area_speech(text, speaker.get("area_knowledge", {}), question=question)
-    listener_name = snapshot.get("_listener_identity", _actor_name(listener))
+    listener_name = snapshot.get("_listener_identity", actor_name(listener))
     from dialogue.rules import validate_python_harvest
-    snake_role = ("speaker" if speaker.get("kind") == "python" or _actor_name(speaker) == SNAKE_NAME else
+    snake_role = ("speaker" if speaker.get("kind") == "python" or actor_name(speaker) == SNAKE_NAME else
                   "listener" if listener_name == SNAKE_NAME else None)
     validate_python_harvest(text, snake_role=snake_role)
     validate_tree_permanence(text)
-    names = [_actor_name(speaker), listener_name, SNAKE_NAME, *snapshot.get("known_actor_names", [])]
+    names = [actor_name(speaker), listener_name, SNAKE_NAME, *snapshot.get("known_actor_names", [])]
     validate_english(text, names)
     situation = speaker.get("situation", {})
     firsthand = [*speaker.get("firsthand_events_with_listener", []),
@@ -309,13 +309,13 @@ def validate_speech_grounding(text, snapshot):
     validate_continuity(text, day=snapshot.get("day"), situation=situation, knows_claims=knows_claims,
                         listener_is_snake=listener_name == SNAKE_NAME)
     if knows_claims:
-        validate_claim_source(text, names=names, speaker=_actor_name(speaker), listener=listener_name,
+        validate_claim_source(text, names=names, speaker=actor_name(speaker), listener=listener_name,
                               actor_references=account_references(snapshot.get("_name_actors", {})))
     if snapshot.get("request_kind") == "handoff_thanks":
         gift = snapshot.get("_draft", {}).get("gift")
         if gift is None or gift.item == "fruit":
-            validate_apple_roles(text, giver=listener_name, receiver=_actor_name(speaker),
-                                 speaker=_actor_name(speaker), apple_received=True)
+            validate_apple_roles(text, giver=listener_name, receiver=actor_name(speaker),
+                                 speaker=actor_name(speaker), apple_received=True)
     from dialogue.rules import validate_killing_roles
     for account in firsthand:
         if account.get("kind") == "killing":
@@ -329,7 +329,7 @@ def validate_speech_grounding(text, snapshot):
     if account:
         account_names = [value for key, value in account.items() if key.endswith("_name") and value]
         validate_account_speech(text, account["assertion"], names=(*names, *account_names),
-                                speaker=_actor_name(speaker), listener=listener_name, kind=account.get("kind"),
+                                speaker=actor_name(speaker), listener=listener_name, kind=account.get("kind"),
                                 firsthand=account.get("basis") == "firsthand",
                                 actor_references=account_references(snapshot.get("_name_actors", {})),
                                 known_events=[event for event in firsthand if event.get("basis") == "firsthand"])
@@ -547,7 +547,7 @@ def _validate_named_recipient(reply, target_id, snapshot):
                          f"Name {target['name']} as the person and do not substitute anyone else.")
 
 
-def _validate_response(raw, snapshot, model):
+def validate_raw_response(raw, snapshot, model):
     result = model.model_validate_json(raw)
     check_dialogue = snapshot.get("_dialogue_validation", True)
     if isinstance(result, OpinionDirection):
@@ -561,13 +561,13 @@ def _validate_response(raw, snapshot, model):
     if check_dialogue and not isinstance(result, ConversationResponse):
         _validate_base_presentation(result, snapshot)
     if isinstance(result, ResidentAssessment):
-        _apply_resident_candidate(snapshot["_baseline"], snapshot["_draft"], result, snapshot)
+        apply_resident_candidate(snapshot["_baseline"], snapshot["_draft"], result, snapshot)
         return result
     if isinstance(result, DialoguePartsResponse):
         current = ConversationTurn(speaker=snapshot.get("speaker_role", "initiator"), parts=result.parts)
         if not check_dialogue:
             if isinstance(result, ResidentTurnResponse):
-                _apply_resident_candidate(snapshot["_baseline"], snapshot["_draft"], result, snapshot)
+                apply_resident_candidate(snapshot["_baseline"], snapshot["_draft"], result, snapshot)
             return result
         validate_dialogue_format([current])
         if isinstance(result, ResidentTurnResponse) and result.disclosures:
@@ -585,8 +585,8 @@ def _validate_response(raw, snapshot, model):
             if not draft.get("gift"):
                 validate_resident_grounding(SimpleNamespace(**draft), snapshot["_baseline"])
         validate_dialogue_completion([current], start_index=snapshot.get("turn_index", 0))
-        names = {current.speaker: _actor_name(snapshot["speaker"]),
-                 "recipient" if current.speaker == "initiator" else "initiator": snapshot.get("_listener_identity", _actor_name(snapshot["listener"]))}
+        names = {current.speaker: actor_name(snapshot["speaker"]),
+                 "recipient" if current.speaker == "initiator" else "initiator": snapshot.get("_listener_identity", actor_name(snapshot["listener"]))}
         validate_dialogue_speakers([current], names, start_index=snapshot.get("turn_index", 0))
         for role in ("speaker", "listener"):
             actor = snapshot.get(role)
@@ -596,7 +596,7 @@ def _validate_response(raw, snapshot, model):
                 contains_question(part.text) for part in result.parts):
             raise ValueError("Answer the last question and close without asking another question.")
         if isinstance(result, ResidentTurnResponse):
-            projected = _apply_resident_candidate(snapshot["_baseline"], snapshot["_draft"], result, snapshot)
+            projected = apply_resident_candidate(snapshot["_baseline"], snapshot["_draft"], result, snapshot)
             facts = _resident_repetition_facts(snapshot["_baseline"], SimpleNamespace(**projected))
         else:
             account = snapshot.get("account_to_share")
@@ -743,7 +743,7 @@ def validate_reason_originality(reason, state):
                              motives=[goal.get(field, "") for field in ("motive", "approach", "boundary")])
 
 
-def _reason_people(snapshot, role):
+def reason_people(snapshot, role):
     """Everyone a reason might judge besides its owner, for attributing each judgment."""
     owner = snapshot[role]["name"]
     names = [snapshot[r]["name"] for r in ("initiator", "recipient")]
@@ -862,7 +862,7 @@ def apply_opinion_directions(snapshot, draft, state, change, gossip_changes):
     return projected
 
 
-def _apply_resident_candidate(snapshot, draft, candidate, state):
+def apply_resident_candidate(snapshot, draft, candidate, state):
     """Return a validated copy; a rejected attempt cannot alter accepted state."""
     projected = deepcopy(draft)
     role, index = state["speaker_role"], state["turn_index"]
@@ -894,18 +894,18 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
             validate_base_prose(reason, (own_name(snapshot[role]), own_name(snapshot[other])))
             validate_opinion_reason(reason, snapshot[role]["name"], snapshot[other]["name"])
             validate_reason_voice(reason, snapshot[role]["name"])
-            validate_reason_subject(reason, target=snapshot[other]["name"], people=_reason_people(snapshot, role))
+            validate_reason_subject(reason, target=snapshot[other]["name"], people=reason_people(snapshot, role))
             validate_reason_originality(reason, state)
             validate_memory_firm(reason)
             if believed:
                 validate_reason_belief(reason, firsthand=any(believed.values()))
             if settled:
                 validate_opinion_direction(reason, OPINION_CHANGES[settled["change"]][0], target=snapshot[other]["name"],
-                                           people=_reason_people(snapshot, role))
+                                           people=reason_people(snapshot, role))
             if verdict and verdict["accused"]:
-                validate_snake_conviction(reason, verdict["accused"], target=snapshot[other]["name"], people=_reason_people(snapshot, role))
+                validate_snake_conviction(reason, verdict["accused"], target=snapshot[other]["name"], people=reason_people(snapshot, role))
                 validate_opinion_direction(reason, OPINION_CHANGES[verdict["change"]][0], target=snapshot[other]["name"],
-                                           people=_reason_people(snapshot, role))
+                                           people=reason_people(snapshot, role))
         choices = state["choices"]["third_party_opinions"]
         if choices and not candidate.third_party_opinions:
             raise ValueError("Give your changed view of each absent person in an account you believed in this exchange.")
@@ -922,12 +922,12 @@ def _apply_resident_candidate(snapshot, draft, candidate, state):
                 validate_memory_firm(entry.reason)
                 if subject:
                     # Here "you" is the partner who told the account, not the absent person it is about.
-                    validate_reason_subject(entry.reason, target=subject, people=_reason_people(snapshot, role),
+                    validate_reason_subject(entry.reason, target=subject, people=reason_people(snapshot, role),
                                             you=snapshot[other]["name"])
                     labels = gossip_labels(snapshot, projected, role, entry.claim_id)
                     if labels in (["worse"], ["terrible"]):
                         validate_opinion_direction(entry.reason, OPINION_CHANGES[labels[0]][0], target=subject,
-                                                   people=_reason_people(snapshot, role), you=snapshot[other]["name"])
+                                                   people=reason_people(snapshot, role), you=snapshot[other]["name"])
         projected["assessments"][role] = dict(person=candidate.opinion.person, reason=reason,
                                                              gossip=list(candidate.third_party_opinions))
         resident_information(snapshot, projected)

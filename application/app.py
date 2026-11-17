@@ -129,9 +129,9 @@ class Application:
         """Switch sessions only after the new world is fully prepared."""
         self.requests.cancel_all()
         if self.simulation:
-            self._sync_conversation_view()
+            self.sync_conversation_view()
             self.conversations.end_player_conversation("The session changed.")
-            self._present_conversation_events()
+            self.present_conversation_events()
             self.simulation.cancel_gifts("The session changed before the handoff finished.")
             self.conversations.shutdown()
         from simulation.apartments import discard_work
@@ -160,7 +160,7 @@ class Application:
     def conversation_requests(self):
         return self.conversations.conversation_requests if self.conversations else {}
 
-    def _sync_conversation_view(self):
+    def sync_conversation_view(self):
         self.conversations.configure(provider=self.provider, api_key=self.api_key, ollama_model=self.ollama_model,
             voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation,
             online_config=self.online_config)
@@ -169,7 +169,7 @@ class Application:
             menu_open=self.screen != "game",
             interaction_id=self.game.dialogue.interaction_id)
 
-    def _present_conversation_events(self):
+    def present_conversation_events(self):
         events, self.conversations.events = self.conversations.events, []
         for kind, value in events:
             if kind == "reply": self.game.set_reply(value)
@@ -239,8 +239,7 @@ class Application:
         except OSError:
             self.game.show_save_message("Could not read saves. Check folder permissions and try again.")
             return
-        self.game.prompt_input.active = False
-        self.game.prompt_input.backspace_held = False
+        self.game.prompt_input.blur()
         self.save_sim.open(name)
         self.screen = "save_sim"
 
@@ -305,9 +304,9 @@ class Application:
         return True
 
     def leave_game(self):
-        self._sync_conversation_view()
+        self.sync_conversation_view()
         self.conversations.end_player_conversation("Left the game.")
-        self._present_conversation_events()
+        self.present_conversation_events()
         self.game.inventory.close()
         self.simulation.cancel_gifts("Left the game before the handoff finished.")
         self.requests.cancel_all()
@@ -333,8 +332,7 @@ class Application:
         self.settings.open(self)
 
     def open_stats(self):
-        self.game.prompt_input.active = False
-        self.game.prompt_input.backspace_held = False
+        self.game.prompt_input.blur()
         self.stats.open()
         self.screen = "stats"
 
@@ -364,9 +362,9 @@ class Application:
                 from simulation.player import start_approach
                 try:
                     start_approach(world, host, knock_room=room)
-                    self._sync_conversation_view()
+                    self.sync_conversation_view()
                     self.conversations.open_player_dialogue(host)
-                    self._present_conversation_events()
+                    self.present_conversation_events()
                     self.game.show_save_message("Knocking. Ask the resident for an invitation.")
                 except ValueError as exc:
                     self.game.show_save_message(str(exc))
@@ -407,9 +405,9 @@ class Application:
                 from simulation.apartments import relax
                 relax(npc)
                 return
-        self._sync_conversation_view()
+        self.sync_conversation_view()
         self.conversations.cancel_request(request_id, "Model request cancelled by player.")
-        self._present_conversation_events()
+        self.present_conversation_events()
 
     def handle_event(self, event):
         if event.type == pygame.QUIT:
@@ -482,7 +480,7 @@ class Application:
         self.stats.gallery.update()
         if self.simulation:
             self.game.update_physical(self, min(dt, 0.1) if not self.simulation.paused else 0.0)
-            self._sync_conversation_view()
+            self.sync_conversation_view()
             self.conversations.cancel_unowned()
         paused = self.simulation is not None and self.simulation.paused
         simulation_active = self.screen in ("game", "stats") and not paused and not self.game.confirm_menu
@@ -503,12 +501,12 @@ class Application:
                 continue
             self.conversations.accept_result(request_id, result, error, failed_turns, rewritten,
                 session_id=active_session, viewed=viewed)
-            self._present_conversation_events()
+            self.present_conversation_events()
         if self.conversations:
             if simulation_active:
                 self.conversations.prepare_player_opening()
             self.conversations.schedule_acknowledgments(paused=paused, simulation_active=simulation_active)
-            self._present_conversation_events()
+            self.present_conversation_events()
         self.game.prompt_input.update(dt)
         self.settings.update(dt)
         if self.screen == "load_sim":
@@ -550,10 +548,10 @@ class Application:
             # leave one slot free and let other conversations use the rest.
             composing = self.screen == "game" and self.game.prompt_input.active
             for conversation in sorted(conversations, key=lambda interaction: interaction.origin != "player"):
-                self._sync_conversation_view()
+                self.sync_conversation_view()
                 self.conversations.request_conversation_dialogue(conversation,
                     start=not composing or self.requests.available_slots > 1)
-                self._present_conversation_events()
+                self.present_conversation_events()
             from constants import MAX_SIMULATION_STEP_SECONDS
             queued_creations = self.schedule_creations(min(MAX_SIMULATION_STEP_SECONDS, max(0.0, dt)), composing=composing)
             self.requests.expire_queued(self.session_id, queued_creations | {

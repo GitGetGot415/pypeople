@@ -113,7 +113,7 @@ def validate_response(raw, snapshot):
         return parse_voice_rewrite(raw, snapshot["turns"], speakers=snapshot["speakers"])
     model = response_model(snapshot)
     try:
-        result = dialogue_validation._validate_response(raw, snapshot, model)
+        result = dialogue_validation.validate_raw_response(raw, snapshot, model)
         if not snapshot.get("_dialogue_validation", True):
             result._dialogue_errors = dialogue_validation.dialogue_validation_errors(result, snapshot)
             for error in result._dialogue_errors:
@@ -189,13 +189,13 @@ def _deduplicate_dialogue_parts(turn):
     """Keep generated words while dropping exact repeated parts or long sentences."""
     parts, seen_parts, seen_sentences = [], set(), set()
     for part in turn.parts:
-        signature = tuple(dialogue_validation._speech_words(part.text))
+        signature = tuple(dialogue_validation.speech_words(part.text))
         if signature in seen_parts:
             continue
         seen_parts.add(signature)
         sentences = []
         for sentence in re.split(r"(?<=[.!?])\s+", part.text.strip()):
-            signature = tuple(dialogue_validation._speech_words(sentence))
+            signature = tuple(dialogue_validation.speech_words(sentence))
             if len(signature) >= DIALOGUE_REPEAT_PHRASE_WORDS:
                 if signature in seen_sentences:
                     continue
@@ -493,7 +493,7 @@ def _resident_exchange(snapshot, validated_request, retain, report):
     if snapshot.get("arrival_welcome"):
         limit = budget
     def turn(index, closing):
-        state = dialogue_context._resident_turn_snapshot(snapshot, draft, closing=closing)
+        state = dialogue_context.resident_turn_snapshot(snapshot, draft, closing=closing)
         if index == 0 and snapshot.get("arrival_welcome"):
             from simulation.autonomy import JUDY_ARRIVAL_OPENING
             opening = ResidentTurnResponse(parts=[dict(
@@ -502,7 +502,7 @@ def _resident_exchange(snapshot, validated_request, retain, report):
             speech = validate_response(opening.model_dump_json(), state)
         else:
             speech = request(state)
-        accepted = dialogue_validation._apply_resident_candidate(snapshot, draft, speech, state)
+        accepted = dialogue_validation.apply_resident_candidate(snapshot, draft, speech, state)
         draft.update(accepted)
 
     _exchange_turns(snapshot, draft, turn, retain, budget=budget, limit=limit)
@@ -514,26 +514,26 @@ def _resident_exchange(snapshot, validated_request, retain, report):
             return "unchanged"
         try:
             return request(dialogue_context.opinion_direction_snapshot(
-                state, target, reason, labels=labels, people=dialogue_validation._reason_people(snapshot, role), you=you)).change
+                state, target, reason, labels=labels, people=dialogue_validation.reason_people(snapshot, role), you=you)).change
         except RequestError:
             return None  # No direction could be found; recorded as unchanged.
 
     # The python's view of its partner follows the partner's verdict on its accusation, so it is assessed last.
     roles = ("recipient", "initiator") if snapshot["initiator"].get("kind") == "python" else ("initiator", "recipient")
     for role in roles:
-        state = dialogue_context._resident_turn_snapshot(snapshot, draft, role=role, assessment=True)
+        state = dialogue_context.resident_turn_snapshot(snapshot, draft, role=role, assessment=True)
         try:
             assessment = request(state)
         except RequestError:
             # A verdict whose written reason never passed its checks must not discard the whole accepted exchange.
             assessment = dialogue_validation.fallback_assessment(snapshot, state)
-            draft = dialogue_validation._apply_resident_candidate({**snapshot, "_dialogue_validation": False}, draft, assessment, state)
+            draft = dialogue_validation.apply_resident_candidate({**snapshot, "_dialogue_validation": False}, draft, assessment, state)
             verdict = state.get("snake_verdict") or state.get("confrontation_verdict")
             settled = [dialogue_validation.gossip_labels(snapshot, draft, role, entry.claim_id) for entry in assessment.third_party_opinions]
             draft = dialogue_validation.apply_opinion_directions(snapshot, draft, state, verdict["change"] if verdict else "unchanged",
                                                                  [labels[0] if len(labels) == 1 else "unchanged" for labels in settled])
             continue
-        draft = dialogue_validation._apply_resident_candidate(snapshot, draft, assessment, state)
+        draft = dialogue_validation.apply_resident_candidate(snapshot, draft, assessment, state)
         stored = (state["speaker"].get("opinion_of_listener") or {}).get("reason", "")
         # The python's and a confronter's changes are settled by the partner's answer, not read from the reason.
         verdict = state.get("snake_verdict") or state.get("confrontation_verdict")
@@ -548,11 +548,11 @@ def _resident_exchange(snapshot, validated_request, retain, report):
         draft = dialogue_validation.apply_opinion_directions(snapshot, draft, state, change, gossip)
     thanks = []
     if snapshot.get("purpose") == "food_request" and snapshot["food_request"]["outcome"] == "accepted":
-        state = dialogue_context._resident_turn_snapshot(snapshot, draft, role="initiator", thanks=True)
+        state = dialogue_context.resident_turn_snapshot(snapshot, draft, role="initiator", thanks=True)
         thanks = request(state).parts
     elif draft.get("gift") and draft["gift"].accept_turn is not None:
         role = "recipient" if draft["gift"].recipient_id == actor_id(snapshot["recipient"]) else "initiator"
-        state = dialogue_context._resident_turn_snapshot(snapshot, draft, role=role, thanks=True)
+        state = dialogue_context.resident_turn_snapshot(snapshot, draft, role=role, thanks=True)
         state["task"] = "Generate a brief acknowledgment reserved for AFTER the accepted possession is actually handed over. Preserve giver, recipient and creator roles."
         thanks = request(state).parts
     result = _assemble_resident(snapshot, draft, thanks)
