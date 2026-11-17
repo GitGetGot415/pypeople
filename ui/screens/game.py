@@ -54,7 +54,7 @@ class GameScreen:
         self.pause_button = Button(GAME_PAUSE_RECT, "Pause", icon="pause")
         self.arrival_retry = Button((476, 72, 120, 32), "Retry arrival")
         self.clock_button = Button(GAME_CLOCK_RECT, "Next day", icon="clock")
-        self.bed_open = False
+        self.day_popup = None  # None, "bed" or "clock"
         self.bed_advance_button = Button(BED_ADVANCE_RECT, "")
         self.bed_cancel_button = Button(BED_CANCEL_RECT, "Cancel")
         self.save_message = ""
@@ -102,7 +102,7 @@ class GameScreen:
 
     def reset(self):
         self.apartment_scrollbar.cancel()
-        self.bed_open = False
+        self.day_popup = None
         self.confirm_menu = False
         self.menu_restore_focus = False
         self.inventory.close()
@@ -164,7 +164,7 @@ class GameScreen:
             self.mouse_follow = False
         if self.dialogue.open and self.dialogue.conversation is None and self.dialogue.actor is not None:
             self.update_player_pages(app)
-        if self.bed_open:
+        if self.day_popup:
             self.handle_bed_event(app, event)
             return
         if self.confirm_menu:
@@ -387,8 +387,10 @@ class GameScreen:
             self.pan_start = self.pan_last = None
             self.panning = False
             return True
-        if not active_player(app.simulation) and self.clock_button.clicked(event):
-            app.conversations.next_day()
+        if not active_player(app.simulation) and self.clock_button.clicked(event, enabled=not app.simulation.paused):
+            self.day_popup = "clock"
+            self.pan_start = self.pan_last = None
+            self.panning = False
             return True
         return False
 
@@ -398,21 +400,26 @@ class GameScreen:
                 and not world.player_interaction and not world.player.journey
                 and not (world.visit and world.visit.stage == "travel"))
 
+    def day_popup_valid(self, world):
+        from simulation.maps import active_player
+        return self.can_use_bed(world) if self.day_popup == "bed" else not active_player(world)
+
     def can_advance_from_bed(self, world):
-        return self.can_use_bed(world) and not world.paused
+        return self.day_popup_valid(world) and not world.paused
 
     def handle_bed_event(self, app, event):
         if self.bed_cancel_button.clicked(event) or event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-            self.bed_open = False
+            self.day_popup = None
         elif self.bed_advance_button.clicked(event, enabled=self.can_advance_from_bed(app.simulation)):
-            self.bed_open = False
+            self.day_popup = None
             app.conversations.next_day()
 
     def draw_bed_popup(self, app):
-        if not self.bed_open:
+        if not self.day_popup:
             return
         world = app.simulation
-        draw_modal(app.window, POPUP_RECT, "Rest in your bed", app.heading_font, POPUP_TITLE_Y)
+        title = "Rest in your bed" if self.day_popup == "bed" else "Skip to the next day?"
+        draw_modal(app.window, POPUP_RECT, title, app.heading_font, POPUP_TITLE_Y)
         message = ("Resume the game before passing time." if world.paused else
                    "Advance to the next day? All conversations end immediately. A new resident arrives if there is room.")
         draw_wrapped_text(app.window, message, app.font, INK, BED_POPUP_MESSAGE_RECT)
@@ -541,7 +548,7 @@ class GameScreen:
         point = self.screen_to_world(screen_pos)
         if self.can_use_bed(world) and pygame.Rect(ROOM_BED_RECT).collidepoint(point):
             self.close_dialogue()
-            self.bed_open = True
+            self.day_popup = "bed"
             self.pan_start = self.pan_last = None
             self.panning = False
             return
@@ -857,10 +864,10 @@ class GameScreen:
         world.player_running = False
         if not active_player(world) and self.inventory.visible and self.inventory.owner is world.player:
             self.inventory.close()
-        if self.bed_open and not self.can_use_bed(world):
-            self.bed_open = False
+        if self.day_popup and not self.day_popup_valid(world):
+            self.day_popup = None
         world.player_menu_blocked = bool(self.inventory.visible or self.apartment_open
-            or self.confirm_menu or self.bed_open or app.screen != "game")
+            or self.confirm_menu or self.day_popup or app.screen != "game")
         if (world.paused or world.player_menu_blocked or not active_player(world)
                 or not pygame.display.get_init() or not pygame.mouse.get_pressed()[0]):
             self.mouse_follow = False
