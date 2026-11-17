@@ -407,6 +407,8 @@ class SettingsScreen:
                 hint = "Keys are used for this session only. Type the model ID to choose another model."
                 if self.online_provider == "gemini":
                     hint += " Get a key at aistudio.google.com/apikey."
+                elif self.online_provider == "anthropic":
+                    hint += " Get a key at platform.claude.com."
                 else:
                     hint += " Get a key from your OpenAI API account."
                 hint_rect = (0, 196, 744, 48)

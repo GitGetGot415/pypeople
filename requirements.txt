@@ -1,5 +1,6 @@
 pygame>=2.6.1
 google-genai>=1.73.1
+anthropic>=2.9,<3
 httpx>=0.28,<1
 pydantic>=2.0,<3
 pyperclip>=1.9

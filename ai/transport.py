@@ -3,6 +3,7 @@
 import json
 import re
 import unicodedata
+import anthropic
 import httpx
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -21,6 +22,15 @@ from ai.online import OnlineConfig
 
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
+# Dialogue replies are short JSON objects; this also leaves room for thinking.
+ANTHROPIC_MAX_TOKENS = 16000
+# Claude structured outputs reject these keywords; pydantic still enforces them.
+ANTHROPIC_UNSUPPORTED_SCHEMA_KEYS = {
+    "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+    "minLength", "maxLength", "maxItems", "uniqueItems", "pattern",
+}
+# Models that accept server-side refusal fallbacks; others reject the parameter.
+ANTHROPIC_FALLBACK_MODELS = ("claude-fable-5", "claude-mythos-5", "claude-opus-5", "claude-sonnet-5-5")
 
 
 @dataclass(frozen=True)
@@ -106,6 +116,47 @@ def _api_error_message(exc, model):
     return "Gemini could not process this request. Check model access or try another message."
 
 
+def _anthropic_error_message(exc):
+    # Classify by exception type only; never display or log provider text.
+    if isinstance(exc, anthropic.APITimeoutError):
+        return "Claude timed out. Check your connection and try again."
+    if isinstance(exc, anthropic.APIConnectionError):
+        return "Cannot reach Claude. Check your connection and try again."
+    if isinstance(exc, anthropic.AuthenticationError):
+        return "Claude rejected your API key. Check it in Settings."
+    if isinstance(exc, anthropic.PermissionDeniedError):
+        return "Claude denied access. Check your API key and model permissions."
+    if isinstance(exc, anthropic.NotFoundError):
+        return "That Claude model is unavailable for this key. Check the model ID in Settings."
+    if isinstance(exc, anthropic.RateLimitError):
+        return "Claude rate or usage limit reached. Try later or check your account limits."
+    if isinstance(exc, anthropic.BadRequestError):
+        return "Claude rejected the request. Check the model ID in Settings or try another model."
+    if isinstance(exc, anthropic.APIStatusError) and exc.status_code >= 500:
+        return "Claude is temporarily unavailable. Try again later."
+    return "Claude could not process this request. Check model access or try another message."
+
+
+def _anthropic_schema(value):
+    """Adapt a request schema to Claude structured outputs: closed objects, no
+    numeric/string limits. Property names are kept even if they match keywords."""
+    if isinstance(value, list):
+        return [_anthropic_schema(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    schema = {}
+    for key, item in value.items():
+        if key == "properties":
+            schema[key] = {name: _anthropic_schema(prop) for name, prop in item.items()}
+        elif key == "minItems" and item > 1 or key in ANTHROPIC_UNSUPPORTED_SCHEMA_KEYS:
+            continue
+        else:
+            schema[key] = _anthropic_schema(item)
+    if schema.get("type") == "object" or "properties" in schema:
+        schema["additionalProperties"] = False
+    return schema
+
+
 def _transport_messages(request):
     """Serialize structured context only at the provider boundary."""
     messages = []
@@ -153,6 +204,21 @@ def provider_errors(provider, model, online_config=OnlineConfig()):
             raise RequestError("Cannot reach Gemini. Check your connection and try again.") from None
         except Exception:
             raise RequestError("Could not get a reply from Gemini. Check your connection or try again.") from None
+    elif provider == "online" and online_config.provider == "anthropic":
+        try:
+            yield
+        except (RequestError, InvalidResponseError):
+            raise
+        except anthropic.APIError as exc:
+            raise RequestError(_anthropic_error_message(exc)) from None
+        except (ValidationError, ValueError):
+            raise RequestError("Claude returned an invalid action or reply. Try again.") from None
+        except (TimeoutError, httpx.TimeoutException):
+            raise RequestError("Claude timed out. Check your connection and try again.") from None
+        except OSError:
+            raise RequestError("Cannot reach Claude. Check your connection and try again.") from None
+        except Exception:
+            raise RequestError("Could not get a reply from Claude. Check your connection or try again.") from None
     elif provider == "online":
         label = online_config.label
         try:
@@ -251,7 +317,70 @@ def request_online(api_key, prepared, settings, config):
         raise RequestError(f"Add a {config.label} API key in Settings.")
     if config.provider == "gemini":
         return request_gemini(api_key, prepared, settings, config.model)
+    if config.provider == "anthropic":
+        return request_anthropic(api_key, prepared, settings, config.model)
     return request_openai_compatible(api_key, prepared, settings, config)
+
+
+def request_anthropic(api_key, prepared, settings, model):
+    messages = _transport_messages(prepared)
+    if messages and messages[-1]["role"] == "assistant":
+        # Current Claude models reject a trailing assistant turn (prefill).
+        messages.append({"role": "user", "content": "Write your next reply now. Return the required JSON."})
+    # The full schema keeps limits that structured outputs cannot enforce visible to the model.
+    system = (prepared.system_instruction + "\nReturn only JSON matching this schema: "
+              + json.dumps(prepared.response_schema, ensure_ascii=False, separators=(",", ":")))
+    options = {}
+    if model.startswith(ANTHROPIC_FALLBACK_MODELS):
+        # A safety decline is re-run server-side on Anthropic's recommended model.
+        options = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
+    live = streaming_output()
+    deadline = monotonic() + settings.timeout
+    repetition = _StreamRepetitionGuard()
+    with anthropic.Anthropic(
+        api_key=api_key.strip(),
+        timeout=settings.timeout,
+        max_retries=0,
+        http_client=anthropic.DefaultHttpxClient(event_hooks={"response": [watch_response]}),
+    ) as client, cancellable_stream(client.close):
+        with client.beta.messages.stream(
+            model=model,
+            max_tokens=ANTHROPIC_MAX_TOKENS,
+            system=system,
+            messages=messages,
+            output_config={"format": {"type": "json_schema",
+                                      "schema": _anthropic_schema(prepared.response_schema)}},
+            # Caches the shared prefix so later turns of a conversation are cheaper.
+            cache_control={"type": "ephemeral"},
+            **options,
+        ) as stream:
+            for event in stream:
+                check_cancelled()
+                if monotonic() > deadline:
+                    raise RequestError("Claude timed out. Check your connection and try again.")
+                if live and event.type == "content_block_delta":
+                    if event.delta.type == "thinking_delta" and event.delta.thinking:
+                        record_output("reasoning", event.delta.thinking)
+                        repetition.add("reasoning", event.delta.thinking)
+                    elif event.delta.type == "text_delta" and event.delta.text:
+                        record_output("output", event.delta.text)
+                        repetition.add("output", event.delta.text)
+            message = stream.get_final_message()
+    if message.stop_reason == "refusal":
+        raise RequestError("Claude declined this request. Try another message.")
+    if message.stop_reason == "max_tokens":
+        raise RequestError("Claude returned an incomplete reply. Try again.")
+    if message.stop_reason not in ("end_turn", "stop_sequence"):
+        raise RequestError("Claude could not finish a reply. Try another message.")
+    # After a mid-stream fallback, only text following the last switch belongs to the reply.
+    blocks = list(message.content)
+    switches = [index for index, block in enumerate(blocks) if block.type == "fallback"]
+    if switches:
+        blocks = blocks[switches[-1] + 1:]
+    text = "".join(block.text for block in blocks if block.type == "text")
+    if not text.strip():
+        raise RequestError("Claude returned an empty reply. Try again.")
+    return text
 
 
 def _online_http_error(status, config):

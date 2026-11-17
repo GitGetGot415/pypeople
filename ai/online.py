@@ -4,9 +4,12 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 
+# Providers with a native SDK connect to their own service and take no base URL.
+NATIVE_PROVIDERS = ("gemini", "anthropic")
 PROVIDERS = {
     "gemini": ("Google Gemini", "gemini-2.5-flash", "", "GEMINI_API_KEY"),
     "openai": ("OpenAI", "gpt-4.1-mini", "https://api.openai.com/v1", "OPENAI_API_KEY"),
+    "anthropic": ("Anthropic Claude", "claude-opus-5-5", "", "ANTHROPIC_API_KEY"),
     "custom": ("Custom / OpenAI-compatible", "", "", ""),
 }
 
@@ -26,7 +29,7 @@ class OnlineConfig:
             raise ValueError("Choose an online provider in Settings.")
         if not self.model.strip():
             raise ValueError("Enter a model name for the online provider.")
-        if self.provider != "gemini":
+        if self.provider not in NATIVE_PROVIDERS:
             try:
                 url = urlsplit(self.base_url)
                 valid = (url.scheme == "https" and url.hostname and not url.username

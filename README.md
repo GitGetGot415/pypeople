@@ -64,7 +64,7 @@
   - `generation.py` - generation stages, response validation, bounded correction, and optional voice rewrite requests
   - `contracts.py` - response schemas, request-specific constraints, and model message assembly
   - `prompts.py` - instruction text sent to the model
-  - `transport.py` - provider I/O, streaming, and response parsing for Gemini and Ollama
+  - `transport.py` - provider I/O, streaming, and response parsing for Gemini, Claude, OpenAI-compatible services, and Ollama
   - `requests.py` - background workers, request queues, concurrency limits, cancellation, and result polling
   - `debug.py` - request control, provider admission, captured output, and request logs
   - `ollama.py` - Ollama availability checks, model selection, settings, and setup helpers
