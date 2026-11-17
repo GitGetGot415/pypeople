@@ -25,7 +25,7 @@ class SetupScreen:
         self.message = ""
         self.remove_button = Button((555, 245, 38, 34), "-")
         self.add_button = Button((650, 245, 38, 34), "+")
-        self.load_npcs_button = Button((260, 553, 220, 34), "Import multiple NPCs")
+        self.load_npcs_button = Button((260, 553, 220, 34), "Import NPCs")
         self.previous_button = Button((720, 553, 90, 34), "Previous")
         self.next_button = Button((930, 553, 90, 34), "Next")
         self.back_button = Button((260, 620, 140, 42), "Back")
