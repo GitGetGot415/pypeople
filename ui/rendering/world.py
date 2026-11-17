@@ -178,17 +178,9 @@ def garden_floor_art():
     return pygame.image.load(str(PROJECT_ROOT / GARDEN_FLOOR_ART)).convert()
 
 
-@lru_cache(maxsize=1)
-def colored_garden_floor():
-    floor = garden_floor_art().copy()
-    mask = pygame.mask.from_threshold(floor, (255, 0, 0), (1, 1, 1, 255))
-    overlay = mask.to_surface(setcolor=(*WORLD_COLORS[1], 255), unsetcolor=(0, 0, 0, 0))
-    floor.blit(overlay, (0, 0))
-    return floor
-
-
 def _draw_scene(surface, tree):
-    floor = colored_garden_floor()
+    # Drawn with the artwork's own colors.
+    floor = garden_floor_art()
     if floor.get_size() != surface.get_size():
         floor = pygame.transform.scale(floor, surface.get_size())
     surface.blit(floor, (0, 0))
