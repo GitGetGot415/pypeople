@@ -15,7 +15,7 @@ class PlayerOpinion:
 @dataclass
 class PlayerCallReason:
     key: Annotated[str, Field(min_length=1)]
-    kind: Literal["gift", "news", "followup", "introduction"]
+    kind: Literal["gift", "news", "followup", "introduction", "food", "food_confrontation"]
     reference: Annotated[str, Field(min_length=1)]
     reason: Annotated[str, Field(min_length=1)]
 
@@ -23,6 +23,17 @@ class PlayerCallReason:
 @dataclass
 class PlayerCall(PlayerCallReason):
     event_id: Annotated[str, Field(min_length=1)]
+
+
+@dataclass
+class PlayerFoodRequest:
+    day: Annotated[int, Field(ge=1)]
+    status: Literal["approaching", "asked", "offered", "refused", "unable", "deferred", "resolved"] = "approaching"
+    conversation_id: str | None = None
+    refusal_claim_id: str | None = None
+    evidence: str = ""
+    pursuing: bool = False
+    attack_resolved: bool = False
 
 
 @dataclass

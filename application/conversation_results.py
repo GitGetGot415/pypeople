@@ -186,6 +186,9 @@ def accept_resident_reply(world, request, result, error, rewritten, *, visible, 
                 "text": npc.reply,
                 "emotion": {"name": npc.emotion, "intensity": npc.emotion_intensity},
             }], rewritten[0] if rewritten else (), speaker_id=npc.id)
+            if snapshot.get("request_kind") == "player_opening" and not npc.speech_only:
+                from simulation.player_food import record_food_opening
+                record_food_opening(world, npc, record)
             from simulation.interactions import observe_conversation
             observe_conversation(world, record, world.player, npc, accepted=True)
         record.error = error or ""

@@ -26,7 +26,7 @@ from simulation.social.information import NPC_ARRIVAL_MEMORY
 from dialogue.identity import actor_catalog
 from simulation.transfers import Handoff
 from simulation.locations import Journey
-from simulation.player_records import PlayerOpinion, PlayerCall, PlayerReplyCall
+from simulation.player_records import PlayerOpinion, PlayerCall, PlayerReplyCall, PlayerFoodRequest
 
 
 @dataclass
@@ -58,6 +58,7 @@ class ResidentValues(ActivitySnapshot):
     conversation_return_remaining: Annotated[float, Field(ge=0, le=CONVERSATION_RETURN_PAUSE)] = 0.0
     player_opinion: PlayerOpinion = field(default_factory=PlayerOpinion)
     player_call: PlayerCall | PlayerReplyCall | None = None
+    player_food_request: PlayerFoodRequest | None = None
     player_call_cooldown: Annotated[float, Field(ge=0, le=PLAYER_CALL_COOLDOWN)] = 0.0
     resolved_player_calls: list[str] = field(default_factory=list)
     command_revision: Annotated[int, Field(ge=0)] = 0

@@ -18,7 +18,7 @@ from simulation.apartments import Invitation, HostedVisit
 from simulation.locations import Journey, RouteStep
 from simulation.maps import validate_destination, validate_feet
 from simulation.player_records import (
-    PlayerOpinion, PlayerCall, PlayerReplyCall, PlayerReport, PlayerPromiseOffer, PlayerAcknowledgment,
+    PlayerOpinion, PlayerCall, PlayerReplyCall, PlayerReport, PlayerPromiseOffer, PlayerAcknowledgment, PlayerFoodRequest,
 )
 from dialogue.history import RecordedTurn, ConversationRecord, Memory, WorldEvent, validate_history_turns
 from dialogue.models import ConversationTurn, EmotionReaction, EscalationChoice
@@ -109,6 +109,15 @@ PlayerOpinionState = saved_record(PlayerOpinion)
 
 
 PlayerCallState = saved_record(PlayerCall)
+
+class PlayerFoodRequestState(saved_record(PlayerFoodRequest)):
+    @model_validator(mode="after")
+    def validate_food_request(self):
+        if self.status in ("refused", "deferred") and (not self.refusal_claim_id or not self.evidence.strip()):
+            raise ValueError("A refused or deferred food request needs its actual answer and sourced account.")
+        if self.pursuing and (not self.refusal_claim_id or self.attack_resolved or self.status == "resolved"):
+            raise ValueError("A food pursuit requires an unresolved refusal and an unused arrival attempt.")
+        return self
 
 
 PlayerReplyCallState = saved_record(PlayerReplyCall)
@@ -241,6 +250,7 @@ class NPCState(saved_record(ResidentValues, exclude={"emotion_intensity"}), Acti
     current_concern: ConcernState | None
     player_opinion: PlayerOpinionState
     player_call: Annotated[PlayerCallState | PlayerReplyCallState, Field(discriminator="kind")] | None
+    player_food_request: PlayerFoodRequestState | None
     departure: DepartureState | None
 
     @field_validator("opinions")
@@ -453,6 +463,23 @@ class SimulationState(SaveModel):
         for npc in residents:
             references.extend([npc.goal is None or npc.goal.claim_id in (None, *claims),
                                npc.player_call is None or npc.player_call.kind != "reply" or npc.player_call.reference in history])
+            if npc.player_food_request:
+                food = npc.player_food_request
+                references.extend([food.day <= self.day, food.conversation_id in (None, *history),
+                                   food.refusal_claim_id in (None, *claims)])
+                if food.refusal_claim_id:
+                    claim = next((c for c in self.claims if c.id == food.refusal_claim_id), None)
+                    fact = next((f for f in self.facts if claim and f.id == claim.fact_id), None)
+                    references.append(fact is not None and fact.kind == "apple_refused"
+                                      and fact.subject_id == self.player.id and fact.object_id == npc.id)
+                    if food.status in ("refused", "deferred"):
+                        source = next((record for record in self.history if fact and record.id == fact.conversation_id), None)
+                        references.append(source is not None and any(
+                            0 <= index < len(source.turns) and source.turns[index].speaker_id == self.player.id
+                            and source.turns[index].text == food.evidence for index in source.accepted_player_turns))
+                if npc.player_call and npc.player_call.kind in ("food", "food_confrontation"):
+                    references.append(npc.player_call.reference == (str(food.day) if npc.player_call.kind == "food"
+                                                                    else food.refusal_claim_id))
             if npc.departure:
                 departure = npc.departure
                 source = next((event for event in self.events if event.id == departure.event_id), None)

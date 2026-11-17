@@ -11,7 +11,7 @@ from simulation.apartments import Invitation, HostedVisit
 from simulation.locations import Journey, RouteStep
 from simulation.maps import clamp_point
 from simulation.player_records import (
-    PlayerOpinion, PlayerCall, PlayerReplyCall, PlayerReport, PlayerAcknowledgment,
+    PlayerOpinion, PlayerCall, PlayerReplyCall, PlayerReport, PlayerAcknowledgment, PlayerFoodRequest,
 )
 from dialogue.history import Memory, WorldEvent
 from dialogue.models import EmotionReaction
@@ -154,6 +154,7 @@ def restore_simulation(state):
             beliefs=[restore_record(Belief, belief) for belief in saved.beliefs],
             current_concern=restore_record(ConversationConcern, saved.current_concern) if saved.current_concern else None,
             player_opinion=restore_record(PlayerOpinion, saved.player_opinion),
+            player_food_request=restore_record(PlayerFoodRequest, saved.player_food_request) if saved.player_food_request else None,
             player_call=(restore_record(PlayerReplyCall if saved.player_call.kind == "reply" else PlayerCall,
                                         saved.player_call) if saved.player_call else None))
         npc = NPC(**vars(values))

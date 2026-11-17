@@ -400,9 +400,20 @@ def accept_player_promises(world, npc, record, response, message, *, opening=Fal
 
 def call_reason(world, npc):
     """Select only concrete records that this resident actually owns or knows."""
+    if npc is not world.snake:
+        from simulation.player_food import food_call_reason
+        food = food_call_reason(world, npc)
+        if food:
+            return food
     from simulation.social.relationships import grievance_against, confrontation_topic
     grievance = grievance_against(npc, world.player)
     if grievance:
+        from simulation.social.records import claim_by_id, fact_by_id
+        from simulation.player_food import current_request
+        request = current_request(world, npc) if npc is not world.snake else None
+        fact = fact_by_id(world, claim_by_id(world, grievance).fact_id)
+        if request and fact.kind in ("apple_refused", "harvest"):
+            return None  # Food grievances use the explicit request and desperate-return rules.
         return PlayerCallReason(key=f"confrontation:{grievance}:{world.day}", kind="news", reference=grievance,
                                 reason=confrontation_topic(npc, grievance))
     errand = world.errand_for(npc.id, "done")
@@ -448,6 +459,12 @@ def call_valid(world, npc, call):
     if not active_player(world) or not available(npc) or not (colocated(world.player, npc) or knocking):
         return False
     ref = call.reference
+    if call.kind in ("food", "food_confrontation"):
+        from simulation.player_food import current_request
+        from simulation.nutrition import urgent_food
+        request = current_request(world, npc)
+        return bool(request and urgent_food(npc) and not npc.inventory.get("fruit", 0)
+                    and request.status != "resolved" and (call.kind == "food" or request.refusal_claim_id == ref))
     if call.kind == "introduction":
         from simulation.player_story import valid_introduction_call
         return valid_introduction_call(world, npc, call, interaction=world.player_interaction)
@@ -480,18 +497,62 @@ def start_call(world, npc, reason, *, knock_room=None):
     start_approach(world, npc, incoming=True, knock_room=knock_room)
     npc.reason = "Knocking on the player's door" if knock_room else "Walking to the player to talk"
     npc.player_call = PlayerCall(**asdict(reason), event_id="")
+    if reason.kind in ("food", "food_confrontation"):
+        from simulation.player_food import begin_food_call
+        request = begin_food_call(world, npc, reason)
+        if reason.kind == "food_confrontation":
+            record = world.player_confrontation_record(npc, world.player_interaction, reason.reference,
+                                                       approaching=True, food=True)
+        else:
+            from dialogue.history import ConversationRecord
+            from constants import CONVERSATION_WALKING_TO_MEET, PLAYER_LABEL
+            record = ConversationRecord((npc.name, PLAYER_LABEL), "Ask the player for an apple", CONVERSATION_WALKING_TO_MEET,
+                purpose="food_request", origin="autonomous", participant_ids=[npc.id, world.player.id])
+            record.intended_subjects = {npc.name: reason.reason, PLAYER_LABEL: "Responding to a resident's request for food."}
+            world.history.append(record)
+            world.player_interaction.record_id = record.id
+        request.conversation_id = record.id
     text = f"{npc.name} is knocking on your door." if knock_room else f"{npc.name} would like to talk to you."
     event = world.publish("player_call", (npc,), text)
     npc.player_call.event_id = event.id
 
 
+def try_food_call(world):
+    """Reserve urgent callers before optional NPC conversations; pursuit outlives panel cancellation."""
+    if not can_claim(world):
+        return
+    from simulation.player_food import food_call_reason, current_request
+    from simulation.maps import colocated
+    from simulation.nutrition import urgent_food, starves_next_day
+    for npc in sorted(world.npcs, key=lambda person: (not starves_next_day(person), person.social)):
+        if not urgent_food(npc) or npc.player_call or not world.company_available(npc) or not colocated(world.player, npc):
+            continue
+        reason = food_call_reason(world, npc)
+        if reason is None:
+            continue
+        request = current_request(world, npc)
+        continuing = bool(request and request.pursuing and not request.attack_resolved)
+        if not continuing and npc.player_call_cooldown and not starves_next_day(npc):
+            continue
+        if not continuing and reason.key in npc.resolved_player_calls:
+            continue
+        try:
+            start_call(world, npc, reason)
+        except ValueError:
+            continue
+        break
+
+
 def update_calls(world, dt):
     for npc in world.npcs:
+        from simulation.player_food import resolve_food
+        resolve_food(world, npc)
         npc.player_call_cooldown = max(0.0, npc.player_call_cooldown - dt)
         if npc.player_call and not call_valid(world, npc, npc.player_call):
             clear_call(npc)
             if owns_resident(world, npc):
                 end_interaction(world, "The reason for this call is no longer available.")
+    try_food_call(world)
     world.player_call_check -= dt
     if world.player_call_check > 0 or not can_claim(world):
         return

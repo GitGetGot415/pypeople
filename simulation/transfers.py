@@ -117,6 +117,9 @@ def commit_transfer(world, interaction):
     if item == "fruit":
         from simulation.social.lifecycle import on_transfer
         on_transfer(world, giver, recipient, quantity, event, record)
+        if recipient is not world.player:
+            from simulation.player_food import resolve_food
+            resolve_food(world, recipient)
     record.outcomes[0:1] = [f"Gave {description} to {recipient.name}."]
     if item == "fruit" and recipient is not world.player:
         from simulation.social.information import opinion_change
@@ -361,6 +364,13 @@ def validate_gift_offer_speech(text, item, quantity, stock):
 
 def validate_player_transfer(result, snapshot):
     """Effect authorization is independent of optional dialogue coherence checks."""
+    food = snapshot.get("player_food_request")
+    if (snapshot.get("request_kind") == "player_opening" and food and food["status"] == "approaching"):
+        from dialogue.text import unquoted_speech
+        speech = unquoted_speech(result.reply)
+        if not re.search(r"\b(?:apple|apples|fruit)\b", speech, re.I) or not re.search(
+                r"\b(?:can|could|would|please|give|share|spare|need)\b", speech, re.I):
+            raise ValueError("A food opening must actually ask for an apple or express that immediate need.")
     if snapshot.get("request_kind") == "player_command" and (result.invitation_acceptance
             or result.invitation_resolution == "declined" or result.apple_promise
             and result.apple_promise.giver_id == snapshot.get("player_id")):

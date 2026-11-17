@@ -513,6 +513,19 @@ def response_contract(snapshot, *, correction=False):
                         "player_interaction.call reason immediately, without asking permission to talk. "
                         "The player has said nothing yet. Leave room for their response: end_conversation false.")
         schema["properties"]["end_conversation"] = {"type": "boolean", "enum": [False]}
+    if snapshot.get("player_food_request"):
+        instruction += (
+            " This resident's player_food_request describes their own actual food request. If its status is approaching, "
+            "ask the player for one apple now, naturally expressing your own hunger and starvation risk. "
+            "The first request leaves room for an answer. A desperate return refers to the recorded earlier answer, "
+            "not an invented refusal or secret player inventory. An offered apple or future promise is not delivery. "
+            "Only a committed handoff supplies food; the resident must still eat it. "
+            "When urgently hungry, prefer accepting a genuine immediate apple offer through gift_acceptance. "
+            "Unable means the player said they had no apples; it is not proof they secretly kept any. "
+            "Unclear speech, questions and closing the panel are not refusals. Never narrate an attack or demand that "
+            "the player confirm an attack: any arrival-time attack has already been resolved by the game. "
+            "Acknowledge an existing request without restarting it on every reply."
+        )
     if snapshot.get("request_intent"):
         intent = snapshot["request_intent"]
         instruction += "\n" + _player_command_brief(intent, snapshot)
@@ -634,7 +647,8 @@ def _request_context(message, snapshot, correction):
     if opening:
         context = {key: value for key, value in context.items() if key in (
             "name", "actor_id", "player_relationship", "player_interaction", "opening_account",
-            "earlier_player_conversations", "inventory", "owned_works")}
+            "earlier_player_conversations", "inventory", "owned_works", "player_food_request",
+            "satisfaction", "daily_satisfaction_loss", "starves_next_day", "food_urgent")}
         context["personality"] = dialogue_context.character_context(snapshot["character"]).get("personality", "")
         context["environment"] = dialogue_context.local_environment(snapshot.get("location", "garden"))["description"]
     focused_account = snapshot.get("account_to_share") or snapshot.get("speaker", {}).get("account_focus")

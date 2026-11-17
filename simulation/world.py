@@ -315,6 +315,8 @@ class Simulation(DeathMixin):
             if npc.resume_pending and npc.interaction is None and not npc.player_call:
                 npc.resume_activity(self)
             reconsider(npc, self, pressing_only=True)
+        from simulation.player import try_food_call
+        try_food_call(self)
         due = {npc.id for npc in self.npcs if npc.decision_remaining == 0 and self.company_available(npc)}
         for npc in self.npcs:
             if npc.id in due:

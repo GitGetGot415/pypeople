@@ -625,6 +625,9 @@ def trim_information(world):
             keep.add(npc.goal.claim_id)
         if npc.current_concern and npc.current_concern.claim_id:
             keep.add(npc.current_concern.claim_id)
+        food = getattr(npc, "player_food_request", None)
+        if food and food.refusal_claim_id:
+            keep.add(food.refusal_claim_id)
         if npc.conversation:
             role = "initiator" if npc.conversation.initiator is npc else "recipient"
             concern = npc.conversation.concerns[role]

@@ -60,19 +60,22 @@ class DeathMixin:
         self.history.append(record)
         return self._finish_killing(self.player, victim, record)
 
-    def player_confrontation_record(self, npc, interaction, grievance, *, approaching=False):
+    def player_confrontation_record(self, npc, interaction, grievance, *, approaching=False, food=False):
         from constants import CONVERSATION_COMPLETED, CONVERSATION_WALKING_TO_MEET, PLAYER_LABEL
         from dialogue.history import ConversationRecord
         from simulation.social.relationships import confrontation_topic
         topic = confrontation_topic(npc, grievance)
+        if food:
+            topic += " Seek an apple now because I cannot survive the next day without eating; a later promise has not supplied food."
         if npc.player_call:
-            npc.player_call.kind, npc.player_call.reference = "news", grievance
-            npc.player_call.key = f"confrontation:{grievance}:{self.day}"
+            npc.player_call.kind, npc.player_call.reference = "food_confrontation" if food else "news", grievance
+            npc.player_call.key = f"food_confrontation:{self.day}" if food else f"confrontation:{grievance}:{self.day}"
             npc.player_call.reason = topic
         record = ConversationRecord((npc.name, PLAYER_LABEL), topic,
                                     CONVERSATION_WALKING_TO_MEET if approaching else CONVERSATION_COMPLETED,
                                     origin="autonomous", purpose="confrontation",
                                     participant_ids=[npc.id, self.player.id], grievance_id=grievance)
+        record.food_confrontation_day = self.day if food else None
         record.intended_subjects = {npc.name: topic, PLAYER_LABEL: "Responding to the resident's accusation."}
         self.history.append(record)
         interaction.record_id = record.id
@@ -86,6 +89,10 @@ class DeathMixin:
                 or interaction.stage != "conversation"
                 or not (npc is self.snake or self.npc_by_id(npc.id) is npc)):
             return
+        if npc is not self.snake:
+            from simulation.player_food import food_arrival
+            if food_arrival(self, npc, interaction):
+                return
         record = self.record_by_id(interaction.record_id)
         if record:
             if record.purpose != "confrontation" or record.status != CONVERSATION_WALKING_TO_MEET:
@@ -264,6 +271,8 @@ class DeathMixin:
             if offer.status == "offered":
                 offer.status = "withdrawn"
         for npc in self.npcs:
+            if npc.player_food_request:
+                npc.player_food_request.pursuing = False
             if npc.gift and self.player in (npc.gift.initiator, npc.gift.recipient):
                 npc.gift.finish(reason)
             clear_call(npc)
@@ -332,6 +341,8 @@ class DeathMixin:
             if invitation.speaker_id == target.id and invitation.status == "offered":
                 invitation.status = "withdrawn"
         target.home_remaining = 0.0
+        if target.player_food_request:
+            target.player_food_request.pursuing = False
         self.npcs[:] = [p for p in self.npcs if p is not target]
         self.archived.append(target)
         self.roster_revision += 1

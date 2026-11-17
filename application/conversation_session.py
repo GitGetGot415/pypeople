@@ -245,6 +245,10 @@ class ConversationSession:
     def player_snapshot(self, npc, message=""):
         from simulation.player import work_choices, requested_work_id
         snapshot = npc.snapshot(self.tree, self.simulation.player.id)
+        if isinstance(npc, NPC):
+            from simulation.player_food import current_request
+            food = current_request(self.simulation, npc)
+            snapshot["player_food_request"] = asdict(food) if food else None
         from simulation.apartments import invitation_choices, pending_invitation
         snapshot["invitation_choices"] = invitation_choices(self.simulation, npc) if not npc.speech_only else []
         invitation = pending_invitation(self.simulation)
@@ -254,7 +258,7 @@ class ConversationSession:
         snapshot["closed_door_knock"] = interaction.knock_room if interaction and not interaction.incoming else None
         pending = interaction.pending_request if interaction else None
         call = asdict(npc.player_call) if npc.player_call else (pending or {}).get("context", {}).get("call")
-        if call and call["kind"] == "news":
+        if call and call["kind"] in ("news", "food_confrontation"):
             from simulation.social.information import account_view
             from simulation.social.records import claim_by_id
             belief = next(b for b in npc.beliefs if b.claim_id == call["reference"])
@@ -506,6 +510,9 @@ class ConversationSession:
         if said and not (record.turns and record.turns[-1].speech == ("You", said)
                 and len(record.turns) - 1 not in record.accepted_player_turns):
             record.add_turn("You", said, speaker_id=self.simulation.player.id)
+        if message and kind not in ("player_command", "player_opening", "player_gift", "player_acknowledgment") and isinstance(npc, NPC):
+            from simulation.player_food import record_food_answer
+            record_food_answer(self.simulation, npc, record, message)
         if snapshot.get("request_kind") != "player_acknowledgment":
             self.emit("clear_input")
         if prepared is not None:
