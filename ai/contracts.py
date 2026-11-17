@@ -122,6 +122,8 @@ def _available_speech_fields(schema):
 
 def _possession_offer_schema(person, recipient_id):
     stock = person.get("inventory", {}).get("fruit", 0)
+    if person.get("starves_next_day"):
+        stock = max(0, stock - 1)
     items = [("fruit", stock)] if stock else []
     items.extend((w["id"], 1) for w in person.get("owned_works", []))
     choices = [{"type": "object", "properties": {
@@ -189,8 +191,16 @@ def _resident_contract(snapshot, *, correction=False):
         pending = draft.get("gift")
         if not pending or pending.recipient_id != actor_id(snapshot["speaker"]) or pending.accept_turn is not None:
             properties.pop("accept_gift", None)
-        # A confrontation is made right with a promised apple (offers), never an unasked gift.
-        if (snapshot.get("arrival_focus") or snapshot.get("purpose") in ("food_request", "confrontation")
+        # Survival confrontations can instead arrange a real apple handoff now.
+        if snapshot.get("food_confrontation"):
+            if snapshot["speaker_role"] == "recipient":
+                apples_only = {**snapshot["speaker"], "owned_works": []}
+                properties["gift_offer"] = (_possession_offer_schema(apples_only, snapshot.get("gift_recipient_id", ""))
+                                            if not draft.get("gift") else {"type": "null"})
+            else:
+                properties.pop("gift_offer", None)
+        if (snapshot.get("arrival_focus") or snapshot.get("purpose") == "food_request"
+                or snapshot.get("purpose") == "confrontation" and not snapshot.get("food_confrontation")
                 or snapshot.get("social_only")):
             properties.pop("gift_offer", None)
             properties.pop("accept_gift", None)
@@ -261,7 +271,12 @@ def _resident_contract(snapshot, *, correction=False):
         "Respond to what the partner actually said; do not invent transfers, events, discoveries or shared experiences.\n"
         + CONVERSATION_HISTORY_INSTRUCTION + "\n" + DIALOGUE_VARIETY_INSTRUCTION + "\n"
         + snapshot["speaker"].get("personality", "") + "\nCurrent task: " + snapshot["task"])
-    if (not assessment and not thanks and not orientation and snapshot.get("purpose") not in ("food_request", "confrontation")
+    if not assessment and not thanks and snapshot.get("food_confrontation"):
+        instruction += (" The confronted resident may offer carried fruit using gift_offer; no creative work can resolve this shortage. "
+                        "The hungry resident may use accept_gift true only after an explicit apple offer to them. "
+                        "The handoff happens after the conversation; do not claim it already occurred.")
+    elif (not assessment and not thanks and not orientation
+            and snapshot.get("purpose") not in ("food_request", "confrontation")
             and not snapshot.get("social_only")):
         instruction += (" You may offer one actual possession using gift_offer with recipient_id for this listener, item fruit or an exact owned_works ID, and quantity. "
             "Say clearly what you offer; name the work title if creative. Only one gift offer per conversation. "
@@ -302,7 +317,11 @@ def _resident_contract(snapshot, *, correction=False):
         settled = snapshot.get("confrontation_verdict")
         if settled:
             accused = settled["accused"]
-            instruction += (f" {accused} promised to make this right, so your view of them is no different for now. "
+            instruction += (f" You accepted an immediate apple handoff from {accused}, so your view is no different for now. The handoff has not happened yet. "
+                            if settled.get("immediate") else
+                            f" {accused} has not arranged an accepted apple handoff now. Even a later promise leaves your immediate food shortage unresolved, so you think worse of them. "
+                            if snapshot.get("food_confrontation") else
+                            f" {accused} promised to make this right, so your view of them is no different for now. "
                             if settled["promised"] else
                             f" {accused} made no promise to make this right; an apology or explanation alone does not repair it, "
                             "so you think " + ("far " if settled["change"] == "terrible" else "") + "worse of them. ") + "Say why in your own words."

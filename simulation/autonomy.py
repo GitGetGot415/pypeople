@@ -14,6 +14,7 @@ from simulation.social.concerns import concern_topic, undisclosed_danger, danger
 from simulation.social.goals import goal_attempt_cooling_down
 from simulation.social.relationships import (
     last_conversation_partner, repeat_partner_paused, regards_as_dangerous,
+    food_grievance, food_refusal, confrontation_topic,
 )
 from simulation.social.context import pair_objective
 from simulation.social.promises import pending_promises
@@ -273,6 +274,16 @@ def actionable_obligation(npc, world):
             and tree.id not in npc.cooldowns and npc.can_reach(tree.interaction_point))
 
 
+def food_alternative(npc, world):
+    """Food available without revisiting a known refusal; the current opponent stays reserved."""
+    if npc.inventory.get("fruit", 0) or world.available_fruit > 0 and npc.can_reach(world.tree.interaction_point):
+        return True
+    return any(other is not npc and world.company_available(other)
+               and other.inventory.get("fruit", 0) > 0 and not food_refusal(npc, other)
+               and not (starves_next_day(other) and other.inventory["fruit"] == 1)
+               and company_point(npc, other, allow_vertical=True) is not None for other in world.npcs)
+
+
 def social_pair(world, *, due=None):
     """Reserve through the caller immediately; rotate initiators and vary partners."""
     ordered = world.npcs[world.social_rotation:] + world.npcs[:world.social_rotation]
@@ -297,6 +308,7 @@ def social_pair(world, *, due=None):
             return None
         donors = [other for other in partners(npc) if other.inventory.get("fruit", 0) > 0
                   and not (urgent_food(other) and other.inventory.get("fruit", 0) == 1)
+                  and not (urgent and food_refusal(npc, other))
                   and (urgent or not repeat_partner_paused(npc, other))]
         if not donors:
             return None
@@ -316,10 +328,20 @@ def social_pair(world, *, due=None):
             choice = request_food(npc, urgent=True)
             if choice:
                 return choice
+            if starves_next_day(npc) and not food_alternative(npc, world):
+                # A demand after refusal is distinct from repeating the same polite request.
+                # The record limits it to once per target per day, including cancelled attempts.
+                targets = [(other, food_grievance(npc, other)) for other in available if other is not npc
+                           and company_point(npc, other, allow_vertical=True) is not None]
+                targets = [(other, claim) for other, claim in targets if claim]
+                if targets:
+                    target, claim = max(targets, key=lambda entry: rank(npc, entry[0]))
+                    topic = confrontation_topic(npc, claim) + " Seek an apple now because I cannot survive the next day without eating."
+                    return npc, target, "confrontation", topic, f"Confronting {target.name} for urgently needed food", "news", claim, None
     # An urgent resident waits for food rather than filling the gap with optional talk.
     available = [npc for npc in available if not urgent_food(npc)]
 
-    from simulation.social.relationships import grievance_against, confrontation_topic
+    from simulation.social.relationships import grievance_against
     for npc in available:
         if due is not None and npc.id not in due:
             continue

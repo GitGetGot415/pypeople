@@ -120,6 +120,11 @@ class DeathMixin:
                 or not meeting.grievance_id):
             return None
         actions = ["leave"]
+        if meeting.food_confrontation:
+            from simulation.nutrition import starves_next_day
+            from simulation.autonomy import food_alternative
+            if not starves_next_day(first) or food_alternative(first, self):
+                return {"target_id": target.id, "grievance_id": meeting.grievance_id, "actions": actions}
         belief = next((b for b in first.beliefs if b.claim_id == meeting.grievance_id), None)
         claim = claim_by_id(self, meeting.grievance_id)
         fact = fact_by_id(self, claim.fact_id)
@@ -156,6 +161,8 @@ class DeathMixin:
 
     def _finish_killing(self, attacker, victim, record, *, meeting=None):
         """Commit one authorised death, preserving the same witnesses and consequences for either killer."""
+        if not victim.alive or (victim is not self.player and self.npc_by_id(victim.id) is not victim):
+            return False
         from constants import KILLING_WITNESS_PENALTY
         from simulation.maps import observers
         from simulation.social.records import claim_by_id
@@ -193,11 +200,33 @@ class DeathMixin:
             self.publish("reputation_changed", (witness, attacker), change, record)
         if victim is self.player:
             self.depart_player()
+            self._take_killed_apples(attacker, victim, record, witnesses)
             return True
         departed = self.depart_resident(victim, event, record, attacker, meeting=meeting)
+        if departed:
+            self._take_killed_apples(attacker, victim, record, witnesses)
         if departed and partner is not None:
             self.confront_interrupted_partner(partner, fact)
         return departed
+
+    def _take_killed_apples(self, attacker, victim, record, witnesses):
+        """A killing can seize carried fruit, without consent or gift/promise rewards."""
+        quantity = victim.inventory.get("fruit", 0)
+        if not quantity:
+            return
+        victim.inventory["fruit"] = 0
+        attacker.inventory["fruit"] = attacker.inventory.get("fruit", 0) + quantity
+        record.seized_apples = quantity
+        text = f"{attacker.name} took {quantity} apple{'s' if quantity != 1 else ''} from {victim.name} after killing them."
+        record.outcomes.append(text)
+        event = self.publish("apples_taken", (attacker, victim), text, record)
+        from simulation.social.information import add_fact
+        from dialogue.history import remember
+        witnesses = [person for person in witnesses if person is not victim and person.alive]
+        add_fact(self, "apples_taken", attacker, victim, event.id, record, text, witnesses,
+                 quantity=quantity, location=victim.location)
+        for witness in witnesses:
+            remember(witness, victim if witness is attacker else attacker, event, "apples_taken", text, 0)
 
     def confront_interrupted_partner(self, partner, fact):
         from simulation.player import start_approach

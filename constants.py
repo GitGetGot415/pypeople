@@ -454,6 +454,8 @@ HARVEST_DISTANCE = 90.0
 # The tree restocks one apple per resident each day. Each witnessed apple beyond these costs
 # the collector one more opinion point than the previous one: 4 apples cost 0 + 1 + 2 + 3.
 HARVEST_FREE_APPLES = 1
+URGENT_HARVEST_PENALTY_MULTIPLIER = 2
+STARVING_HARVEST_PENALTY_MULTIPLIER = 3
 TREE_SHAKE_SECONDS = 0.4
 TREE_SHAKE_OFFSET = 3.0
 CONFRONTATION_OPINION = VERY_HOSTILE_OPINION

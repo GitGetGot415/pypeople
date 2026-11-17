@@ -304,6 +304,10 @@ def validate_resident_gift(gift, turns, snapshot):
         return
     if snapshot.get("purpose") == "food_request" or snapshot.get("arrival_focus"):
         raise ValueError("This exchange uses its existing food or orientation rules, without a separate gift offer.")
+    if snapshot.get("purpose") == "confrontation":
+        if (not snapshot.get("food_confrontation") or gift.giver_id != actor_id(snapshot["recipient"])
+                or gift.recipient_id != actor_id(snapshot["initiator"]) or gift.item != "fruit"):
+            raise ValueError("Only a survival confrontation can offer apples from its target to the hungry resident.")
     from dialogue.text import unquoted_speech
     roles = {actor_id(snapshot[role]): role for role in ("initiator", "recipient")}
     if gift.giver_id not in roles or gift.recipient_id not in roles or gift.giver_id == gift.recipient_id:

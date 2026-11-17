@@ -131,6 +131,34 @@ def grievance_against(npc, target):
     return None
 
 
+def food_refusal(npc, target):
+    """A believed refusal of this resident's request today, without inspecting the donor's stock."""
+    return next((belief.claim_id for belief in reversed(npc.beliefs)
+                 if belief.stance == "believed"
+                 and (claim := claim_by_id(npc.world, belief.claim_id)).affirmed
+                 and (fact := fact_by_id(npc.world, claim.fact_id)).kind == "apple_refused"
+                 and fact.subject_id == target.id and fact.object_id == npc.id and fact.day == npc.world.day), None)
+
+
+def food_grievance(npc, target):
+    """One desperate confrontation per target per day, after an actual known refusal."""
+    from simulation.nutrition import starves_next_day
+    if (not starves_next_day(npc) or npc.inventory.get("fruit", 0) or not food_refusal(npc, target)
+            or any(record.food_confrontation_day == npc.world.day and record.between(npc, target)
+                   for record in npc.world.history)):
+        return None
+    from constants import HARVEST_FREE_APPLES
+    from simulation.social.information import believed_harvest_total
+    for belief in reversed(npc.beliefs):
+        claim = claim_by_id(npc.world, belief.claim_id)
+        fact = fact_by_id(npc.world, claim.fact_id)
+        if (belief.stance == "believed" and claim.affirmed and fact.kind == "harvest"
+                and fact.subject_id == target.id and fact.day == npc.world.day
+                and believed_harvest_total(npc.world, npc.beliefs, fact) > HARVEST_FREE_APPLES):
+            return claim.id
+    return food_refusal(npc, target)
+
+
 def confrontation_topic(npc, claim_id):
     belief = next(b for b in npc.beliefs if b.claim_id == claim_id)
     claim = claim_by_id(npc.world, claim_id)
@@ -179,18 +207,22 @@ def roll_escalation(conversation, response, opinion):
     """The confronter's leave or attack, rolled by the game rather than chosen by the model.
 
     opinion is the view the exchange commits. Each point it falls past CONFRONTATION_OPINION adds
-    KILLING_CHANCE_PER_POINT; an accepted promise from the accused to make it right rules an attack out.
+    KILLING_CHANCE_PER_POINT; an accepted promise resolves ordinary confrontations, while a survival
+    confrontation needs an accepted immediate apple handoff instead.
     The accused's last answer is the evidence the attack rests on."""
     decision = response.escalation
     choices = conversation.initiator.world.escalation_choices(conversation, opinion=opinion)
     if decision is None or not choices:
         return decision
     accused = conversation.recipient.id
-    promised = any(p.id == a.proposal_id and p.promisor_id == accused
+    promised = not conversation.food_confrontation and any(p.id == a.proposal_id and p.promisor_id == accused
                    for a in response.accepted_proposals for p in conversation.proposals)
+    immediate = (response.gift is not None and response.gift.accept_turn is not None
+                 and response.gift.giver_id == accused and response.gift.recipient_id == conversation.initiator.id
+                 and response.gift.item == "fruit")
     answer = next((t.text for t in reversed(response.turns) if t.speaker == "recipient"), "")[:400]
     chance = killing_chance(opinion)
-    attack = ("attack" in choices["actions"] and not promised and bool(answer.strip())
+    attack = ("attack" in choices["actions"] and not promised and not immediate and bool(answer.strip())
               and conversation.initiator.rng.random() < chance)
     return decision.model_copy(update={"action": "attack", "evidence": answer} if attack else {"action": "leave"})
 

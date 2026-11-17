@@ -82,10 +82,15 @@ class Conversation(ResidentProgress):
             raise ValueError("Choose another NPC who is free to talk.")
         if purpose not in ("chat", "food_request", "confrontation"):
             raise ValueError("Resident meetings use chat or food_request.")
+        food_confrontation = False
         if purpose == "confrontation":
-            from simulation.social.relationships import grievance_against
+            from simulation.social.relationships import grievance_against, food_grievance
+            from simulation.autonomy import food_alternative
+            food_confrontation = (isinstance(initiator, NPC) and isinstance(recipient, NPC)
+                                  and bool(focus_claim_id) and food_grievance(initiator, recipient) == focus_claim_id
+                                  and not food_alternative(initiator, initiator.world))
             if (not isinstance(initiator, NPC) or not isinstance(recipient, NPC)
-                    or not focus_claim_id or grievance_against(initiator, recipient) != focus_claim_id):
+                    or not focus_claim_id or not food_confrontation and grievance_against(initiator, recipient) != focus_claim_id):
                 raise ValueError("A confrontation requires two human residents and a specific retained, unresolved grievance.")
         if focus_claim_id and not any(b.claim_id == focus_claim_id for b in initiator.beliefs):
             raise ValueError("The initiator does not know the required account.")
@@ -113,6 +118,7 @@ class Conversation(ResidentProgress):
         self.record = ConversationRecord((initiator.name, recipient.name), topic, CONVERSATION_WALKING_TO_MEET,
                                          origin=origin, purpose=purpose, id=self.id,
                                          participant_ids=[initiator.id, recipient.id],
+                                         food_confrontation_day=initiator.world.day if food_confrontation else None,
                                          grievance_id=focus_claim_id if purpose == "confrontation" else None)
         self.record.intended_subjects = {
             npc.name: concern_description(npc, self.concerns[role])
@@ -162,6 +168,10 @@ class Conversation(ResidentProgress):
     def grievance_id(self):
         return self.record.grievance_id
 
+    @property
+    def food_confrontation(self):
+        return self.record.food_confrontation_day is not None
+
     def other(self, npc):
         return self.recipient if npc is self.initiator else self.initiator
 
@@ -198,6 +208,7 @@ class Conversation(ResidentProgress):
         from simulation.transfers import validate_resident_gift
         validate_resident_gift(response.gift, response.turns, {
             "purpose": self.purpose, "arrival_focus": self.opening_kind == "orientation",
+            "food_confrontation": self.food_confrontation,
             "initiator": self.initiator.snapshot(self.initiator.world.tree),
             "recipient": self.recipient.snapshot(self.initiator.world.tree)})
         if response.gift and response.gift.accept_turn is not None:
@@ -402,6 +413,7 @@ class Conversation(ResidentProgress):
             "interaction_id": self.id,
             "origin": self.origin,
             "purpose": self.purpose,
+            "food_confrontation": self.food_confrontation,
             "opening_kind": self.opening_kind,
             "arrival_focus": self.opening_kind == "orientation",
             "arrival_welcome": (self.opening_kind == "orientation" and self.initiator is arrival_greeter(self.initiator.world)

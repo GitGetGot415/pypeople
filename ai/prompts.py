@@ -125,6 +125,9 @@ not a destination, eating, or transfer command.
 KILLING_INSTRUCTION = f"""{KILLING_INDOOR_REASON}
 Killings can occur only in the garden. {SNAKE_NAME} cannot be killed.
 Each person can kill at most once per day. Killing does not use another person's allowance.
+When a killing commits, the killer takes the victim's actual carried apples. Taking them is separate
+from eating, is not a voluntary gift, and does not fulfill apple promises. Witnesses can know
+the killing and the taking, but neither establishes the killer's private motive.
 """
 
 GARDEN_INSTRUCTION = TREE_INSTRUCTION + """Current physical surroundings are authoritative: one grassy garden,

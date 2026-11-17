@@ -404,7 +404,8 @@ class Simulation(DeathMixin):
 
     def harvest_impressions(self, actor, quantity, witnesses):
         """Each resident watching minds every apple past a fair share that they saw this collector take this day."""
-        from constants import HARVEST_FREE_APPLES
+        from constants import HARVEST_FREE_APPLES, URGENT_HARVEST_PENALTY_MULTIPLIER, STARVING_HARVEST_PENALTY_MULTIPLIER
+        from simulation.nutrition import urgent_food, starves_next_day
         from simulation.player import update_player_opinion
         for witness in witnesses:
             if witness is actor or self.npc_by_id(witness.id) is not witness:
@@ -416,6 +417,12 @@ class Simulation(DeathMixin):
             if not delta:
                 continue
             text = f"Saw {actor.name} take {seen} apples from the tree, more than a fair share."
+            if starves_next_day(witness):
+                delta *= STARVING_HARVEST_PENALTY_MULTIPLIER
+                text += " I need food to survive the next day."
+            elif urgent_food(witness):
+                delta *= URGENT_HARVEST_PENALTY_MULTIPLIER
+                text += " I urgently need food myself."
             if actor is self.player:
                 update_player_opinion(witness, delta, text, scaled=False)
                 continue

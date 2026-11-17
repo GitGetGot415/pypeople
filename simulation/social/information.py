@@ -202,8 +202,8 @@ def harvest_account_view(account, *, tree_stock=None, current_time=None):
 def add_fact(world, kind, subject, target, source_id, record, summary, witnesses, *, quantity=None, location=None):
     # Callers own audience selection: direct participants can speak through a door,
     # and an observer may have left before accepted speech establishes the exchange.
-    if (kind == "harvest") != (type(quantity) is int and quantity > 0) or kind != "harvest" and quantity is not None:
-        raise ValueError("Only harvesting facts require an exact positive integer quantity.")
+    if (kind in ("harvest", "apples_taken")) != (type(quantity) is int and quantity > 0) or kind not in ("harvest", "apples_taken") and quantity is not None:
+        raise ValueError("Harvesting and taking apples require an exact positive integer quantity.")
     if kind == "harvest":
         summary = harvest_summary(subject.name, quantity)
     witnesses = list({p.id: p for p in witnesses if p is not None and p is not world.player}.values())
@@ -659,7 +659,7 @@ def trim_information(world):
     if world.player_interaction and world.player_interaction.record_id:
         active_records.add(world.player_interaction.record_id)
     fact_ids.update(f.id for f in world.facts if f.kind == "conversation_seen" and f.conversation_id in active_records)
-    fact_ids.update(fact.id for fact in world.facts if fact.source_id in current_goals or fact.kind in ("killing", "death"))
+    fact_ids.update(fact.id for fact in world.facts if fact.source_id in current_goals or fact.kind in ("killing", "death", "apples_taken"))
     for npc in residents:
         if npc.conversation and npc.conversation.information_context:
             disclosure_ids.update(b.disclosure_id for entries in npc.conversation.information_context.beliefs.values()
@@ -868,12 +868,17 @@ def confrontation_verdict(snapshot, draft, role):
         return None
     accused = snapshot["recipient"]
     promisors = {row["id"]: row["promisor_id"] for row in snapshot.get("permitted_proposals", [])}
-    promised = any(promisors.get(a.proposal_id) == actor_id(accused) for a in draft["accepted_proposals"])
+    promised = not snapshot.get("food_confrontation") and any(
+        promisors.get(a.proposal_id) == actor_id(accused) for a in draft["accepted_proposals"])
+    gift = draft.get("gift")
+    immediate = bool(snapshot.get("food_confrontation") and gift and gift.accept_turn is not None
+                     and gift.giver_id == actor_id(accused) and gift.recipient_id == actor_id(snapshot["initiator"])
+                     and gift.item == "fruit")
     info = snapshot.get("_information_validation")
     kind = next((o.kind for o in information_from_dict(info).options if o.id == info.get("focus_claim_id")), None) if info else None
     # An unanswered killing is too grave for an ordinary worse view.
-    change = "unchanged" if promised else "terrible" if kind == "killing" else "worse"
-    return dict(change=change, accused=accused["name"], promised=promised)
+    change = "unchanged" if promised or immediate else "terrible" if kind == "killing" else "worse"
+    return dict(change=change, accused=accused["name"], promised=promised, immediate=immediate)
 
 
 def retold_accusation(option):

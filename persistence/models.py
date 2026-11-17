@@ -287,6 +287,10 @@ class HistoryState(saved_record(ConversationRecord)):
     @model_validator(mode="after")
     def validate_turns(self):
         validate_history_turns(self.turns)
+        if self.food_confrontation_day is not None and (self.purpose != "confrontation" or not self.grievance_id):
+            raise ValueError("A food confrontation requires its sourced grievance.")
+        if self.seized_apples and self.purpose not in ("confrontation", "killing"):
+            raise ValueError("Apples can only be seized by a committed killing.")
         return self
 
 
@@ -461,6 +465,13 @@ class SimulationState(SaveModel):
                 references.extend([departure.attacker_id in (None, *owner_ids),
                                    departure.conversation_id in (None, *history), death is not None,
                                    source is None or source.kind == ("starvation" if departure.cause == "starvation" else "killing")])
+        for record in self.history:
+            if record.seized_apples:
+                seizure = next((fact for fact in self.facts if fact.kind == "apples_taken"
+                                and fact.conversation_id == record.id and fact.quantity == record.seized_apples), None)
+                killing = next((fact for fact in self.facts if fact.kind == "killing" and fact.conversation_id == record.id), None)
+                references.append(seizure is not None and killing is not None
+                                  and seizure.subject_id == killing.subject_id and seizure.object_id == killing.object_id)
         if any(npc.departure is not None for npc in self.npcs) or any(npc.departure is None for npc in self.archived):
             raise ValueError("Only deceased residents belong in the archive.")
         if not all(references):

@@ -365,6 +365,7 @@ def resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, than
     preceding = [dict(name=own_name(snapshot[t.speaker]), role=t.speaker, text=t.text) for t in draft["turns"]]
     state = dict(request_kind="resident_assessment" if assessment else "handoff_thanks" if thanks else "resident_turn",
                  speaker_role=role, turn_index=index, purpose=snapshot.get("purpose", "chat"),
+                 food_confrontation=snapshot.get("food_confrontation", False),
                  interaction_id=snapshot.get("interaction_id"), arrival_focus=orientation, speaker=speaker, listener=listener,
                  social_only=any(speech_only(snapshot[r]) for r in ("initiator", "recipient")),
                  opinion_target=partner["name"], pending_reactions=pending, choices=choices,
@@ -407,6 +408,17 @@ def resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, than
                          if index == 0 else
                          "Answer the partner's actual point about arrival or surroundings and respond to their practical suggestion. "
                          "Use visible name tags without requiring introductions.")
+    elif snapshot.get("food_confrontation"):
+        state["task"] = ("Raise the specific sourced grievance in account_focus and ask for an apple now. "
+                         "Explain your own immediate starvation risk. A promise for tomorrow cannot feed you before the day changes. "
+                         "Accept a genuine offered apple if you want it; the actual handoff comes after this conversation. "
+                         "Respond to the answer without changing subjects; peaceful resolution remains possible. "
+                         "Threats are speech only: do not narrate an attack, killing, or completed transfer."
+                         if role == "initiator" else
+                         "Answer the actual grievance and urgent food request honestly, guided by your personality. "
+                         "You may offer carried apples now using gift_offer, or decline and explain why. "
+                         "Keep an apple needed for your own survival. A promise for a later day does not resolve the immediate shortage. "
+                         "Do not claim a handoff or attack has happened; only the game can commit it.")
     elif snapshot.get("purpose") == "confrontation":
         state["task"] = ("Ask the listener to answer the specific sourced grievance in account_focus. "
                          "Keep hearsay uncertain and allow explanation, apology and reconciliation. "

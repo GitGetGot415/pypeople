@@ -69,6 +69,8 @@ class ConversationRecord:
     transfer_intent: TransferIntent | None = None
     player_promise_offers: list[PlayerPromiseOffer] = field(default_factory=list)
     grievance_id: str | None = None
+    food_confrontation_day: Annotated[int, Field(ge=1)] | None = None
+    seized_apples: Annotated[int, Field(strict=True, ge=0)] = 0
     pending_witness_ids: list[str] = field(default_factory=list)
     notes: list[ConversationNote] = field(default_factory=list)
 
@@ -185,7 +187,7 @@ class Memory:
     partner_id: str
     kind: Literal["gave_fruit", "received_fruit", "refused", "kept_fruit", "conversation",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
-                  "claim_shared", "heard_claim", "claim_opinion", "leverage", "arrival", "departure", "apple_eaten", "harvest", "killing", "death", "snake_claim", "goal_cancelled", "gave_work", "received_work", "visit"]
+                  "claim_shared", "heard_claim", "claim_opinion", "leverage", "arrival", "departure", "apple_eaten", "harvest", "killing", "death", "apples_taken", "snake_claim", "goal_cancelled", "gave_work", "received_work", "visit"]
     summary: Annotated[str, Field(max_length=400)]
     weight: Annotated[float, Field(ge=-12, le=12)]
 
@@ -195,7 +197,7 @@ class WorldEvent:
     day: Annotated[int, Field(ge=1)]
     kind: Literal["new_day", "food_requested", "food_refused", "fruit_shared", "conversation_completed", "interaction_failed",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
-                  "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "departure", "apple_eaten", "conversation_seen", "harvest", "killing", "starvation", "survival_meal", "snake_claim", "goal_cancelled", "promise_cancelled", "work_shared", "player_call", "player_conversation", "travel_failed", "visit"]
+                  "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "departure", "apple_eaten", "conversation_seen", "harvest", "killing", "starvation", "survival_meal", "apples_taken", "snake_claim", "goal_cancelled", "promise_cancelled", "work_shared", "player_call", "player_conversation", "travel_failed", "visit"]
     participants: list[str]
     text: str
     history: str | None = None

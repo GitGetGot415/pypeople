@@ -995,6 +995,7 @@ def apply_resident_candidate(snapshot, draft, candidate, state):
         from dialogue.rules import validate_food_answer
         validate_food_answer(turn.text, accepted=snapshot["food_request"]["outcome"] == "accepted")
     if (index in (1, 2) and snapshot.get("purpose") == "confrontation" and snapshot.get("_dialogue_validation", True)
+            and not (snapshot.get("food_confrontation") and projected.get("gift"))
             and (snapshot.get("_information_validation") or {}).get("focus_claim_id")):
         # The accused answers the grievance, and until they have, the accuser keeps pressing it.
         from dialogue.rules import answers_grievance, validate_grievance_answer, validate_grievance_pressed
