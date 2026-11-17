@@ -304,8 +304,8 @@ class StatsDetails:
                 add(f"Next day: -{daily_satisfaction_loss(npc.social)} satisfaction", app.small_font, MUTED)
                 if starves_next_day(npc):
                     add("Will die of starvation next day unless they eat.", app.small_font, INK)
-            add(f"Carrying: {npc.inventory.get('fruit', 0)} apples (unlimited storage)")
-            add(f"Owned works: {len(sim.owned_works(npc.id))} (unlimited storage) / creations made: {sum(work.creator_id == npc.id for work in sim.creations)}")
+            add(f"Carrying: {npc.inventory.get('fruit', 0)} apples")
+            add(f"Owned works: {len(sim.owned_works(npc.id))} / creations made: {sum(work.creator_id == npc.id for work in sim.creations)}")
             add(f"Opinion of player: {npc.player_opinion.opinion:+d}. {npc.player_opinion.reason}")
             add(f"Sociability: {npc.preferences['sociability']:.0%}; generosity: {npc.preferences['generosity']:.0%}", app.small_font, MUTED)
             rule()

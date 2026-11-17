@@ -171,8 +171,7 @@ class InventoryPanel:
         x, y = INVENTORY_DETAIL_POSITION
         work = next((w for w in app.simulation.creations if w.id == self.selected_id and w.owner_id == self.owner.id), None)
         if self.selected_id == "fruit":
-            text = self.apple_label() + ". Creative works use no apple space."
-            text += " Apple storage is unlimited."
+            text = self.apple_label() + "."
             if self.owner.inventory["fruit"] == 0:
                 text += " No apples to give."
             draw_wrapped_text(surface, text, app.font, INK, (x, y, INVENTORY_DETAIL_WIDTH, 110))
@@ -212,7 +211,7 @@ class InventoryPanel:
                     rect = pygame.Rect(self.recipient_rect.x, self.recipient_rect.y + i * INVENTORY_ROW_HEIGHT - self.recipient_scroll,
                                        self.recipient_rect.width, INVENTORY_ROW_HEIGHT)
                     pygame.draw.rect(surface, ACCENT if npc.id == self.recipient_id else PAPER, rect)
-                    surface.blit(app.small_font.render(f'{npc.name} / unlimited apple storage', True,
+                    surface.blit(app.small_font.render(npc.name, True,
                                  PAPER if npc.id == self.recipient_id else INK), (rect.x + 4, rect.y + 6))
                 if not people:
                     surface.blit(app.small_font.render("No available recipients here.", True, MUTED), self.recipient_rect.topleft)

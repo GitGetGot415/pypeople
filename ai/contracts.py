@@ -282,7 +282,7 @@ def _resident_contract(snapshot, *, correction=False):
             "Say clearly what you offer; name the work title if creative. Only one gift offer per conversation. "
             "Use accept_gift true only when you explicitly accept an earlier pending_gift directed to you. "
             "You may decline without penalty. Gifts occur after this conversation, never claim delivery already happened. "
-            "Collections are unlimited and separate from apple capacity. You know your own works; do not infer the listener's private collection.")
+            "You know your own works; do not infer the listener's private collection.")
     feeling = (snapshot["speaker"].get("opinion_of_listener") or {}).get("feeling")
     if not thanks and feeling and snapshot["speaker"].get("kind") != "python":
         instruction += (" opinion_of_listener.feeling is how you feel about the listener; "

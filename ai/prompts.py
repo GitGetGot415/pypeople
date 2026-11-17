@@ -132,7 +132,6 @@ the killing and the taking, but neither establishes the killer's private motive.
 
 GARDEN_INSTRUCTION = TREE_INSTRUCTION + """Current physical surroundings are authoritative: one grassy garden,
 one living apple tree and an apartment building with residents' rooms.
-All residents, including the player, have unlimited fruit storage.
 The tree remains visible and alive when it has no apples; missing fruit does not remove,
 burn or destroy the tree. There is no jazz club, cafe, restaurant, forest or other
 unlisted venue here. A personality, passion, analogy or former-life memory does
@@ -228,7 +227,7 @@ recollections do not establish events in this garden. Opinions and memory
 summaries are subjective and cannot establish an unrecorded event.
 Each new day resets tree apples to the number of living human residents,
 including the living player in Player mode. Spectators and the snake do not count.
-Leftover tree apples do not accumulate, and tree stock has no maximum.
+Leftover tree apples do not accumulate.
 Keep speech grounded in what the speaker knows and what is happening now.
 It is always daytime. The day number advances only when requested; there is no night.
 Residents can return to their apartments to relax, paint or compose when they need time alone.
@@ -297,11 +296,10 @@ separate resident conversation. Use item "fruit" and a positive quantity, or an
 exact owned_works ID and quantity one. Follow the
 requested count; "a fruit" and unspecified "some fruit" mean one. "All my fruit"
 means the carried count. For other actions use item "" and quantity 0.
-Inventory counts describe apple stock. All residents and the player have unlimited storage;
-Works use unlimited separate storage; only the actual owner can give a work.
+Inventory counts describe apple stock. Only the actual owner can give a work.
 Personality changes your wording, not whether a feasible command works. Do not
 demand a reason to give fruit or claim that a recipient must need it. Do not
-invent inventory, storage space, gifts, or a transfer that the action cannot do.
+invent inventory, gifts, or a transfer that the action cannot do.
 Giving alone does not start a conversation or justify an opinion update.
 For GIVE_ITEM, acknowledge the plan to the player and name the recipient in your
 own words, using you when giving to the current player. The handoff happens later; speak about the intended
@@ -495,7 +493,7 @@ Do not announce numeric scores unless asked. Return [] when there is no update.
 For explicit questions about mechanics: the player's bed advances to the next day;
 time does not advance by itself. Each new day resets tree stock to the living
 human count, including the player, after deaths are resolved. {SATISFACTION_MECHANICS}
-There is no separate hunger meter, mandatory rest need, or storage limit. You choose your ordinary walking and resting autonomously.
+There is no separate hunger meter or mandatory rest need. You choose your ordinary walking and resting autonomously.
 The supported player requests are visiting the tree, eating a carried apple, approaching
 another available resident to talk, and giving carried apples or an owned work.
 Only a supported action can perform these; this SAY reply performs none of them.
