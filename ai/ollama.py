@@ -1,35 +1,13 @@
-from paths import OLLAMA_SETTINGS_PATH
 import httpx
 import webbrowser
 import subprocess
 import platform
 import shutil
-import json
 
 
 DEFAULT_OLLAMA_MODEL = "llama3"
-SETTINGS_PATH = OLLAMA_SETTINGS_PATH
 
 _ollama_ready = False
-
-
-def load_model():
-    """Keep the default when preferences are missing or invalid."""
-    try:
-        data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-        model = data.get("model") if isinstance(data, dict) else None
-        if isinstance(model, str) and model.strip():
-            return model.strip()
-    except (OSError, ValueError):
-        pass
-    return DEFAULT_OLLAMA_MODEL
-
-
-def save_model(model):
-    """Replace preferences atomically so an interrupted save keeps the old choice."""
-    temporary = SETTINGS_PATH.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps({"model": model}, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(SETTINGS_PATH)
 
 
 def mark_ollama_ready():

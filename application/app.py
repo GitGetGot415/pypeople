@@ -13,7 +13,6 @@ from application.conversation_session import ConversationSession
 from application.conversation_results import apply_pending_action
 from simulation.npc import NPC, assign_npc_names
 from simulation.maps import active_player
-from ai.ollama import load_model
 from ai.online import PROVIDERS
 from persistence.store import InvalidSaveName, SaveStore
 from persistence.snapshots import capture_simulation, restore_simulation
@@ -61,8 +60,8 @@ class Application:
             PROJECT_ROOT / ".env"
         )
 
-        self.ollama_model = load_model()
         settings = load_settings()
+        self.ollama_model = settings["ollama_model"]
         self.provider = settings["provider"]
         self.online_provider = settings["online_provider"]
         self.online_profiles = settings["online_profiles"]

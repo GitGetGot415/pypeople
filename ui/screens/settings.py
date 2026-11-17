@@ -3,7 +3,7 @@ import threading
 import pygame
 from app_settings import save_settings
 from persistence.characters import NPC_TRAIT_MODES
-from ai.ollama import DEFAULT_OLLAMA_MODEL, list_models, save_model
+from ai.ollama import DEFAULT_OLLAMA_MODEL, list_models
 from ai.online import OnlineConfig, PROVIDERS, load_profiles
 from ai.transport import check_online_connection
 from dialogue.errors import RequestError
@@ -310,15 +310,9 @@ class SettingsScreen:
             except ValueError as exc:
                 self.error = str(exc)
                 return
-        if self.ollama_model != app.ollama_model:
-            try:
-                save_model(self.ollama_model)
-            except OSError:
-                self.error = "Could not save your model choice. Check folder permissions and try again."
-                return
         try:
             save_settings(self.npc_trait_mode, self.voice_rewrites, self.dialogue_validation,
-                          max_llm_requests=self.parallel_limit, provider=self.provider,
+                          max_llm_requests=self.parallel_limit, provider=self.provider, ollama_model=self.ollama_model,
                           online_provider=self.online_provider, online_profiles=self.online_profiles)
         except OSError:
             self.error = "Could not save your settings. Check folder permissions and try again."
