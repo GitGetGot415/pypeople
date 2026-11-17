@@ -1,7 +1,7 @@
 """Transient panel presentation; recorded speech belongs to conversation history."""
 
 from dataclasses import dataclass, field
-from .text import paginate_turn
+from ui.text import paginate_turn
 
 
 @dataclass

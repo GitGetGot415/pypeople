@@ -1,17 +1,18 @@
 """Player possessions and read-only resident inventories."""
 
 import pygame
-from constants import (INVENTORY_RECT, INVENTORY_ROW_HEIGHT, INVENTORY_PREVIEW_SCALE, MODAL_OVERLAY_COLOR,
-                      PAPER, INK, MUTED, ACCENT, GRASS, INVENTORY_LIST_RECT, INVENTORY_RECIPIENT_RECT,
-                      INVENTORY_CLOSE_RECT, INVENTORY_FILTER_RECTS, INVENTORY_MINUS_RECT,
-                      INVENTORY_PLUS_RECT, INVENTORY_GIVE_RECT, INVENTORY_CONFIRM_RECT, INVENTORY_PLAY_RECT,
-                      INVENTORY_STOP_RECT, INVENTORY_TITLE_POSITION, INVENTORY_DETAIL_POSITION,
-                      INVENTORY_DETAIL_WIDTH, INVENTORY_STATUS_RECT, INVENTORY_TITLE_WIDTH,
-                      INVENTORY_APPLES_POSITION)
-from locations import active_player
-from .button import Button
-from .creations import CreationsGallery
-from .text import draw_wrapped_text, scrollbar_rects, ScrollbarDrag
+from constants import (
+    INVENTORY_RECT, INVENTORY_ROW_HEIGHT, INVENTORY_PREVIEW_SCALE, MODAL_OVERLAY_COLOR, PAPER, INK,
+    MUTED, ACCENT, GRASS, INVENTORY_LIST_RECT, INVENTORY_RECIPIENT_RECT, INVENTORY_CLOSE_RECT,
+    INVENTORY_FILTER_RECTS, INVENTORY_MINUS_RECT, INVENTORY_PLUS_RECT, INVENTORY_GIVE_RECT,
+    INVENTORY_CONFIRM_RECT, INVENTORY_PLAY_RECT, INVENTORY_STOP_RECT, INVENTORY_TITLE_POSITION,
+    INVENTORY_DETAIL_POSITION, INVENTORY_DETAIL_WIDTH, INVENTORY_STATUS_RECT, INVENTORY_TITLE_WIDTH,
+    INVENTORY_APPLES_POSITION,
+)
+from simulation.maps import active_player
+from ui.widgets.button import Button
+from ui.creations import CreationsGallery
+from ui.text import draw_wrapped_text, scrollbar_rects, ScrollbarDrag
 
 
 class InventoryPanel:
@@ -57,7 +58,7 @@ class InventoryPanel:
         return f"Apples: {self.owner.inventory['fruit']}"
 
     def recipients(self, app):
-        from locations import available as available_outdoors
+        from simulation.locations import available as available_outdoors
         if not active_player(app.simulation):
             return []
         return [n for n in app.npcs if n.location == app.simulation.player.location and available_outdoors(n)

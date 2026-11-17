@@ -1,0 +1,691 @@
+"""Main-thread conversation orchestration independent of screens and rendering."""
+
+from dataclasses import asdict
+from simulation.interactions import PlayerRequest, player_request_pending
+from simulation.player import directed_recipient_available
+from uuid import uuid4
+from constants import (
+    PLAYER_CONTEXT_TRANSFER_LIMIT, PLAYER_CONTEXT_TURN_LIMIT, PLAYER_PROMISE_DEADLINE_STEPS,
+    CONVERSATION_COMPLETED, CONVERSATION_ENDED_BEFORE_REPLY, CONVERSATION_FAILED,
+    CONVERSATION_WAITING_FOR_DONE, CONVERSATION_WAITING_FOR_REPLY,
+)
+from dialogue.history import ConversationRecord
+from application.conversation_results import accept_generated_dialogue, accept_resident_reply
+from simulation.npc import NPC
+from simulation.social.concerns import concern_description
+from simulation.transfer_records import transfer_payload
+
+
+class ConversationSession:
+    def __init__(self, world, requests, *, session_id, provider, api_key, ollama_model,
+                 voice_rewrites=True, dialogue_validation=True):
+        self.simulation, self.requests, self.session_id = world, requests, session_id
+        self.configure(provider=provider, api_key=api_key, ollama_model=ollama_model,
+                       voice_rewrites=voice_rewrites, dialogue_validation=dialogue_validation)
+        self.player_requests, self.conversation_requests = {}, {}
+        self.pending_offer = None
+        self.events = []
+        self.view_actor, self.view_open, self.viewed_conversation = None, False, None
+        self.view_interaction_id = None
+        self.menu_open = False
+
+    def configure(self, *, provider, api_key, ollama_model, voice_rewrites, dialogue_validation):
+        self.provider, self.api_key, self.ollama_model = provider, api_key, ollama_model
+        self.voice_rewrites, self.dialogue_validation = voice_rewrites, dialogue_validation
+
+    @property
+    def tree(self):
+        return self.simulation.tree
+
+    @property
+    def npcs(self):
+        return self.simulation.npcs
+
+    @property
+    def conversation_history(self):
+        return self.simulation.history
+
+    @property
+    def record(self):
+        interaction = self.simulation.player_interaction
+        return self.simulation.record_by_id(interaction.record_id) if interaction else None
+
+    def select_record(self, record):
+        interaction = self.simulation.player_interaction
+        if interaction is not None and record is not None:
+            interaction.record_id = record.id
+
+    def set_view(self, *, actor, reply_open, viewed_conversation=None, menu_open=False, interaction_id=None):
+        if interaction_id is None and (actor is not self.view_actor or not self.view_open):
+            interaction = self.simulation.player_interaction
+            interaction_id = interaction.id if interaction and actor and interaction.npc_id == actor.id else None
+        elif interaction_id is None:
+            interaction_id = self.view_interaction_id
+        self.view_actor, self.view_open = actor, reply_open
+        self.viewed_conversation, self.menu_open = viewed_conversation, menu_open
+        self.view_interaction_id = interaction_id if reply_open and viewed_conversation is None else None
+
+    def emit(self, kind, value=None):
+        self.events.append((kind, value))
+
+    def show_reply(self, text):
+        self.emit("reply", text)
+
+    def notice(self, text):
+        self.emit("message", text)
+
+    def open_view(self, npc):
+        self.view_actor, self.view_open, self.viewed_conversation = npc, True, None
+        interaction = self.simulation.player_interaction
+        self.view_interaction_id = interaction.id if interaction and interaction.npc_id == npc.id else None
+        self.emit("open", npc)
+
+    def close_view(self):
+        self.view_closed(terminate=False)
+        self.emit("close")
+
+    def view_closed(self, *, terminate=True):
+        interaction = self.simulation.player_interaction
+        owns_view = bool(interaction and interaction.id == self.view_interaction_id)
+        record = self.record if owns_view else None
+        if terminate and owns_view:
+            self.end_player_conversation()
+        self.pending_offer = None
+        if record:
+            for offer in record.player_promise_offers:
+                if offer.status == "offered":
+                    offer.status = "closed"
+        if self.view_actor is not None:
+            self.view_actor.set_selected(False)
+        self.view_open = False
+        self.view_interaction_id = None
+
+    def input_unavailable(self, npc, *, active=True):
+        from simulation.maps import active_player
+        if self.simulation.paused:
+            return "Resume the simulation first."
+        if not active or not active_player(self.simulation):
+            return "The player is unavailable."
+        if npc is None or not self.player_owns(npc) or npc.busy:
+            return "Meet an available resident first."
+        if npc.player_reply.closing:
+            return "Finish reading this reply first."
+        if npc.interaction_blocked:
+            return "Wait for the current request."
+        return ""
+
+    def submit(self, npc, message, *, active=True, command=None):
+        from simulation.maps import active_player
+        message = message.strip()[:300]
+        if self.simulation.paused or not active_player(self.simulation) or not active:
+            return
+        if self.input_unavailable(npc, active=active) or not message and command is None:
+            return
+        if self.provider == "gemini" and not self.api_key:
+            self.show_reply("Add an API key in Settings to generate a reply.")
+            return
+        snapshot = self.player_snapshot(npc, message)
+        if command is not None:
+            from simulation.player import work_choices
+            snapshot["owned_works"] = work_choices(self.simulation, npc.id, command.get("item", ""))
+            from simulation.player_commands import Unavailable, normalize_action, validate_action
+            try:
+                intent = normalize_action(command, snapshot)
+                if intent.action == "SAY":
+                    raise ValueError("Choose a supported action.")
+                try:
+                    validate_action(self.simulation, npc, intent, accepting=True)
+                except Unavailable:
+                    pass  # Queued once the reply is accepted.
+            except ValueError as exc:
+                self.notice(str(exc))
+                return
+            snapshot.update(request_kind="player_command", player_interaction={"command": intent.model_dump()},
+                            request_intent=intent.model_dump())
+        self._submit_player_message(npc, message, snapshot)
+
+    def player_target(self):
+        player = self.simulation.player
+        return dict(actor_id=player.id, name="You", kind="player", character={"Name": "You"},
+                    inventory=player.inventory.copy(),
+                    available_to_talk=True)
+
+    def player_owns(self, npc, *, stages=("conversation",)):
+        from simulation.player import owns_conversation
+        return owns_conversation(self.simulation, npc, stages=stages)
+
+    def end_player_conversation(self, reason="Conversation ended."):
+        if not self.simulation or not self.simulation.player_interaction:
+            return
+        from simulation.player import end_interaction
+        interaction = self.simulation.player_interaction
+        for request_id, request in tuple(self.player_requests.items()):
+            if request.actor.id == interaction.npc_id:
+                if player_request_pending(request):
+                    self.requests.cancel(self.session_id, request_id)
+                self.player_requests.pop(request_id, None)
+        npc = self.simulation.actor_by_id(interaction.npc_id)
+        if reason == "Conversation ended." and npc and (npc.gift or any(a.npc_id == npc.id and a.action == "GIVE_ITEM"
+                and a.target_id == self.simulation.player.id for a in self.simulation.pending_actions)):
+            interaction.wait_for_handoff()
+            self.pending_offer = None
+            return
+        end_interaction(self.simulation, reason)
+        self.pending_offer = None
+
+    def kill_resident(self, npc):
+        """Apply the player's physical action and retire requests belonging to the victim."""
+        try:
+            self.simulation.commit_player_killing(npc)
+        except ValueError as exc:
+            self.notice(str(exc))
+            return
+        self.cancel_unowned()
+        for request_id, meeting in tuple(self.conversation_requests.items()):
+            if not meeting.active:
+                self.requests.cancel(self.session_id, request_id)
+                self.conversation_requests.pop(request_id)
+        self.pending_offer = None
+        self.close_view()
+        self.notice(f"You killed {npc.name}.")
+
+    def open_player_dialogue(self, npc):
+        if not self.player_owns(npc):
+            return
+        if isinstance(npc, NPC) and npc.unread_player_reply:
+            self.open_unread(npc)
+            return
+        self.open_view(npc)
+        self.emit("clear_input")
+        npc.set_selected(True)
+        interaction = self.simulation.player_interaction
+        record = next((r for r in self.simulation.history if r.id == interaction.record_id), None)
+        if (interaction.incoming and not interaction.pending_request and not (record and record.error)
+                and (npc.player_call or record and record.purpose == "confrontation" and not record.turns)):
+            self.prepare_player_opening()
+            return
+        if record is None:
+            from simulation.player_story import player_question_opening
+            record = player_question_opening(self.simulation, npc)
+        self.select_record(record)
+        gift = interaction.gift
+        if gift:
+            snapshot = self.player_snapshot(npc)
+            work = next((w for w in self.simulation.creations if w.id == gift["item"]), None)
+            incoming = dict(**gift, giver_id=self.simulation.player.id, title=work.title if work else "apples",
+                            creator_id=work.creator_id if work else None)
+            snapshot.update(request_kind="player_gift", player_interaction={"incoming_gift": incoming})
+            self._submit_player_message(npc, "", snapshot)
+            interaction.gift = None
+        record = self.record
+        pending = self.simulation.player_interaction.pending_request
+        if record and pending and not npc.generation_pending and self.player_request(npc) is None:
+            record.status, record.error = CONVERSATION_FAILED, "Generation was interrupted by saving."
+            record.add_note(record.error)
+            interaction.pending_request = None
+        self.show_reply(record.error if record and record.error else "")
+        self.emit("focus")
+
+    def accept_player_invitation(self, offer_id):
+        from simulation.apartments import accept_invitation
+        for request_id, request in tuple(self.player_requests.items()):
+            if player_request_pending(request):
+                self.requests.cancel(self.session_id, request_id)
+            self.player_requests.pop(request_id, None)
+        try:
+            accept_invitation(self.simulation, offer_id)
+            self.close_view()
+        except ValueError as exc:
+            self.notice(str(exc))
+
+    def player_snapshot(self, npc, message=""):
+        from simulation.player import work_choices, requested_work_id
+        snapshot = npc.snapshot(self.tree, self.simulation.player.id)
+        from simulation.apartments import invitation_choices, pending_invitation
+        snapshot["invitation_choices"] = invitation_choices(self.simulation, npc) if not npc.speech_only else []
+        invitation = pending_invitation(self.simulation)
+        snapshot["pending_invitation"] = asdict(invitation) if invitation else None
+        interaction = self.simulation.player_interaction
+        # Only the player's own knock asks this resident for entry; a resident knocking on the player's door does not.
+        snapshot["closed_door_knock"] = interaction.knock_room if interaction and not interaction.incoming else None
+        pending = interaction.pending_request if interaction else None
+        call = asdict(npc.player_call) if npc.player_call else (pending or {}).get("context", {}).get("call")
+        if call and call["kind"] == "news":
+            from simulation.social.information import account_view
+            from simulation.social.records import claim_by_id
+            belief = next(b for b in npc.beliefs if b.claim_id == call["reference"])
+            snapshot["opening_account"] = account_view(self.simulation, claim_by_id(self.simulation, call["reference"]), belief)
+        from simulation.player import relevant_claims
+        snapshot["player_claims"] = relevant_claims(self.simulation, npc.id, message)
+        snapshot.update(player_id=self.simulation.player.id, player_inventory=self.player_target(),
+                        owned_works=work_choices(self.simulation, npc.id, message))
+        snapshot.update(_player_message=message,
+            apple_promise_choices=[dict(deadline=self.simulation.day + step, label=str(self.simulation.day + step))
+                                   for step in PLAYER_PROMISE_DEADLINE_STEPS])
+        if npc.speech_only:
+            snapshot["apple_promise_choices"] = []
+        snapshot["resolved_work_id"] = requested_work_id(self.simulation, npc.id, message)
+        from simulation.locations import available
+        snapshot["other_npcs"] = [{**other.snapshot(self.tree, private=False),
+            "available_to_talk": directed_recipient_available(other) and available(other)}
+            for other in self.npcs if other is not npc and other.location == npc.location] + [self.player_target()]
+        # Residents elsewhere can still be asked about, or sent to; they are never present, so other_npcs excludes them.
+        snapshot["remote_npcs"] = [{**other.snapshot(self.tree, private=False), "available_to_talk": False}
+            for other in self.npcs if other is not npc and other.location != npc.location]
+        record = self.record
+        if record:
+            snapshot["conversation_topic"] = record.intended_subjects.get(npc.name, record.topic)
+            if record.purpose == "confrontation" and record.grievance_id:
+                from simulation.social.information import account_view
+                from simulation.social.records import claim_by_id
+                belief = next(b for b in npc.beliefs if b.claim_id == record.grievance_id)
+                account = account_view(self.simulation, claim_by_id(self.simulation, record.grievance_id), belief)
+                snapshot["conversation_account"] = account
+                if not record.turns:
+                    snapshot["opening_account"] = account
+                known = snapshot["private_context"]["known_accounts"]
+                snapshot["private_context"]["known_accounts"] = [account, *[a for a in known if a["claim_id"] != record.grievance_id]]
+        earlier, remaining = [], PLAYER_CONTEXT_TURN_LIMIT
+        for previous in reversed(self.conversation_history):
+            if previous is record or not previous.between(self.simulation.player, npc):
+                continue
+            turns = [{"speaker": "You" if turn.speaker_id == self.simulation.player.id else npc.name,
+                      "text": turn.text}
+                     for index, turn in enumerate(previous.turns)
+                     if turn.speaker_id in (self.simulation.player.id, npc.id)
+                     and (turn.speaker_id != self.simulation.player.id or index in previous.accepted_player_turns)]
+            if turns:
+                earlier.append({"topic": previous.topic, "turns": turns[-remaining:]})
+                remaining -= len(earlier[-1]["turns"])
+            if not remaining:
+                break
+        snapshot["earlier_player_conversations"] = list(reversed(earlier))
+        offers = record.player_promise_offers if record and npc.id in record.participant_ids else []
+        snapshot["player_apple_offer_count"] = len(offers)
+        snapshot["pending_apple_promise"] = next((asdict(o) for o in offers if o.status == "offered"), None)
+        snapshot["known_player_transfers"] = sorted([transfer_payload(t) for r in self.conversation_history for t in r.transfers
+            if {t.giver_id, t.recipient_id} == {self.simulation.player.id, npc.id}], key=lambda t: t["sequence"])[-PLAYER_CONTEXT_TRANSFER_LIMIT:]
+        return snapshot
+
+    def prepare_player_opening(self):
+        """Generate the opening after the resident reaches the player and the panel is open."""
+        from simulation.player import call_valid
+        interaction = self.simulation.player_interaction
+        if (not interaction or interaction.kind not in ("resident", "snake") or not interaction.incoming
+                or interaction.stage != "conversation" or self.simulation.paused):
+            return
+        npc = self.simulation.actor_by_id(interaction.npc_id)
+        if not self.view_open or self.view_actor is not npc or self.view_interaction_id != interaction.id:
+            return
+        if npc is None:
+            return
+        record = self.record
+        if record and record.error:
+            return
+        if npc.player_call:
+            call = asdict(npc.player_call)
+        elif record and record.purpose == "confrontation" and not record.turns:
+            from simulation.social.records import claim_by_id, fact_by_id
+            fact = fact_by_id(self.simulation, claim_by_id(self.simulation, record.grievance_id).fact_id)
+            call = dict(key=f"confrontation:{record.id}", kind="news", reference=record.grievance_id,
+                        reason=record.intended_subjects[npc.name], event_id=fact.source_id)
+        else:
+            return
+        from simulation.player_records import PlayerCall
+        if not call_valid(self.simulation, npc, PlayerCall(**call)):
+            self.end_player_conversation("The reason for this call is no longer available.")
+            self.close_view()
+            return
+        request = self.player_request(npc)
+        if request is None:
+            from simulation.player_story import starting_player_opening
+            from dialogue.models import ActionResponse
+            opening = starting_player_opening(self.simulation, npc) if call["kind"] == "introduction" else ""
+            if not opening and self.provider == "gemini" and not self.api_key:
+                self.notice("Add an API key in Settings so residents can prepare conversations.")
+                self.end_player_conversation("No provider is available for the opening.")
+                self.close_view()
+                return
+            snapshot = self.player_snapshot(npc)
+            from simulation.player import work_choices
+            snapshot["owned_works"] = work_choices(self.simulation, npc.id, call["reference"])
+            context = {"call": call}
+            if interaction.knock_room:
+                context["setting"] = ("You knocked on the player's closed apartment door and are talking to them "
+                                      "through it from the hallway.")
+            snapshot.update(request_kind="player_opening", player_interaction=context)
+            snapshot["other_npcs"] = [self.player_target()]
+            self._submit_player_message(npc, "", snapshot,
+                prepared=ActionResponse(action="SAY", reply=opening, end_conversation=False) if opening else None)
+            request = self.player_request(npc)
+            if request is None:
+                self.end_player_conversation("The opening could not be prepared.")
+                self.close_view()
+                return
+
+    def give_player_apple(self, recipient):
+        from simulation.transfers import Handoff
+        reason = self.input_unavailable(recipient)
+        if reason:
+            raise ValueError(reason)
+        if self.pending_offer:
+            raise ValueError("Accept or decline the current gift offer first.")
+        record = self.record
+        handoff = Handoff(self.simulation.player, recipient, "fruit", 1, record)
+        if record is None:
+            self.conversation_history.append(handoff.record)
+        self.end_player_conversation()
+        self.close_view()
+
+    def offer_player_item(self, recipient, item, quantity):
+        from simulation.player import start_approach
+        if self.simulation.paused:
+            raise ValueError("Resume time before giving.")
+        if self.player_owns(recipient):
+            from simulation.transfers import validate_transfer
+            reason = self.input_unavailable(recipient)
+            if reason:
+                raise ValueError(reason)
+            if self.pending_offer:
+                raise ValueError("Accept or decline the current gift offer first.")
+            validate_transfer(self.simulation, self.simulation.player, recipient, item, quantity)
+            self.simulation.player_interaction.gift = dict(item=item, quantity=quantity)
+            self.open_player_dialogue(recipient)
+            return
+        if self.menu_open:
+            raise ValueError("Close the current blocking menu before giving.")
+        blocked = self.simulation.player_menu_blocked
+        self.simulation.player_menu_blocked = False
+        try:
+            start_approach(self.simulation, recipient, gift=dict(item=item, quantity=quantity))
+        finally:
+            self.simulation.player_menu_blocked = blocked
+
+    def accept_gift_offer(self):
+        from simulation.transfers import Handoff, validate_transfer
+        offer = self.pending_offer
+        npc = self.view_actor
+        if not offer or not npc or self.simulation.paused:
+            return
+        try:
+            if (offer["npc_id"] != npc.id or offer["revision"] != npc.command_revision
+                    or self.record is None or offer["record_id"] != self.record.id):
+                raise ValueError("The conversation changed. A fresh offer is needed.")
+            validate_transfer(self.simulation, npc, self.simulation.player, offer["item"], offer["quantity"])
+            Handoff(npc, self.simulation.player, offer["item"],
+                          offer["quantity"], self.record)
+            self.pending_offer = None
+            self.notice("Gift accepted; the handoff is in progress.")
+        except ValueError as exc:
+            self.pending_offer = None
+            self.notice(f"Offer unavailable: {exc}")
+
+    def decline_gift_offer(self):
+        npc, offer = self.view_actor, self.pending_offer
+        self.pending_offer = None
+        self.notice("Gift declined; no possessions changed hands.")
+        if npc and offer and not self.pending_player_request(npc):
+            snapshot = self.player_snapshot(npc)
+            snapshot.update(request_kind="player_acknowledgment", player_interaction={"declined_offer": offer})
+            self._submit_player_message(npc, "", snapshot)
+
+    def player_request(self, npc):
+        """Latest direct request for this actor."""
+        return next((request for request in self.player_requests.values() if request.actor is npc), None)
+
+    def pending_player_request(self, npc):
+        request = self.player_request(npc)
+        return request if request and player_request_pending(request) else None
+
+    def _submit_player_message(self, npc, message, snapshot, *, purpose="chat", prepared=None):
+        if not self.player_owns(npc):
+            return
+        previous = self.player_request(npc)
+        if previous and player_request_pending(previous):
+            return
+        snapshot["player_dialogue"] = [{"speaker": t.speaker, "text": t.text}
+                                      for t in self.record.turns[-PLAYER_CONTEXT_TURN_LIMIT:]] if self.record else []
+        kind = snapshot.get("request_kind")
+        description = ""
+        if kind == "player_command":
+            from dialogue.models import ActionIntent
+            from simulation.player_commands import action_description, command_speech
+            snapshot["request_intent"] = snapshot["player_interaction"]["command"].copy()
+            description = action_description(ActionIntent(**snapshot["request_intent"]), snapshot)
+        if kind in ("player_opening", "player_gift", "player_acknowledgment"):
+            snapshot.pop("last_reply", None)
+        request_id = uuid4().hex
+        if prepared is None and not self.requests.submit(
+            self.session_id, self.provider, self.api_key, message, snapshot,
+            request_id=request_id, ollama_model=self.ollama_model,
+            voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation,
+            queue_if_busy=True,
+        ):
+            self.show_reply("Could not start the request.")
+            return
+        npc.player_reply.start(request_id)
+        self.show_reply("")
+        if self.record is None:
+            topic = message or description or ("Player gift offer" if kind == "player_gift" else
+                                "Gift acknowledgment" if kind == "player_acknowledgment" else "Resident initiated conversation")
+            record = ConversationRecord(("You", npc.name), topic, CONVERSATION_WAITING_FOR_REPLY, purpose=purpose,
+                origin="autonomous" if kind == "player_opening" else "player", participant_ids=[self.simulation.player.id, npc.id])
+            record.intended_subjects = {
+                "You": message or "Listening to a resident's generated opening.",
+                npc.name: (snapshot["player_interaction"]["call"]["reason"] if kind == "player_opening" else
+                           concern_description(npc, npc.current_concern) if isinstance(npc, NPC)
+                           else "Responding to the player's message.")}
+            if kind == "player_gift":
+                incoming = snapshot["player_interaction"]["incoming_gift"]
+                record.intended_subjects["You"] = f'Offering {incoming["quantity"]} × {incoming["title"]}.'
+            self.conversation_history.append(record)
+            self.select_record(record)
+        record = self.record
+        if description:
+            record.outcomes.append(f"Player action request: {description}.")
+        self.simulation.player_interaction.record_id = record.id
+        from simulation.interactions import observe_conversation
+        if self.simulation.player_interaction.stage == "conversation":
+            observe_conversation(self.simulation, record, self.simulation.player, npc)
+        self.simulation.player_interaction.pending_request = dict(message=message, kind=snapshot.get("request_kind", ""),
+            context=snapshot.get("player_interaction", {}))
+        snapshot["_ownership_id"] = self.simulation.player_interaction.id
+        if previous:
+            self.player_requests.pop(previous.id)
+        self.player_requests[request_id] = PlayerRequest(id=request_id, actor=npc, snapshot=snapshot, message=message,
+            record=record, actor_revision=npc.command_revision, roster_revision=self.simulation.roster_revision)
+        record.status = CONVERSATION_WAITING_FOR_REPLY
+        record.error = ""
+        # A picked action reads as the player's own line, both in the live panel and in Stats. It is a display line only:
+        # the request still carries the structured command, and no claim or evidence is taken from these words.
+        said = message or (command_speech(ActionIntent(**snapshot["request_intent"]), snapshot) if kind == "player_command" else "")
+        if said and not (record.turns and record.turns[-1].speech == ("You", said)
+                and len(record.turns) - 1 not in record.accepted_player_turns):
+            record.add_turn("You", said, speaker_id=self.simulation.player.id)
+        if snapshot.get("request_kind") != "player_acknowledgment":
+            self.emit("clear_input")
+        if prepared is not None:
+            self.accept_result(request_id, prepared, None, [], [], session_id=self.session_id)
+
+    def next_day(self):
+        if self.simulation.paused:
+            return
+        for request_id in self.conversation_requests:
+            self.requests.cancel(self.session_id, request_id)
+        self.conversation_requests.clear()
+        self.simulation.next_day()
+
+    def request_conversation_dialogue(self, conversation, *, start=True):
+        if not conversation.accepts_response or not conversation.arrived:
+            return
+        if conversation.dialogue.dialogue_state != "waiting":
+            return
+        if self.provider == "gemini" and not self.api_key:
+            conversation.fail_dialogue("Add an API key in Settings to generate this conversation.")
+            return
+        if (self.session_id, conversation.id) not in self.requests.logs:
+            self.requests.prepare(self.session_id, self.provider, conversation.snapshot(self.tree, self.npcs),
+                                  request_id=conversation.id, ollama_model=self.ollama_model)
+        if self.requests.busy or not start:
+            return
+        snapshot = conversation.snapshot(self.tree, self.npcs)
+        if not self.requests.submit(
+            self.session_id, self.provider, self.api_key,
+            f"Write what {conversation.initiator.name} and {conversation.recipient.name} say directly to each other.", snapshot,
+            request_id=conversation.id, ollama_model=self.ollama_model,
+            voice_rewrites=self.voice_rewrites, dialogue_validation=self.dialogue_validation,
+        ):
+            # A running exchange can queue its next call while the snapshot is built; wait for the next free slot.
+            if self.requests.busy:
+                return
+            conversation.fail_dialogue("Could not start dialogue generation.")
+            return
+        conversation.error = ""
+        conversation.dialogue.dialogue_state = "pending"
+        self.conversation_requests[conversation.id] = conversation
+
+    def accept_result(self, request_id, result, error, failed_turns, rewritten, *, session_id, viewed=None):
+        if session_id != self.session_id:
+            self.requests.finish(session_id, request_id, "Request belongs to a previous session.")
+            return
+        conversation = self.conversation_requests.pop(request_id, None)
+        if conversation is not None:
+            error = (accept_generated_dialogue(conversation, result, error, failed_turns, rewritten,
+                        reading=conversation is viewed, dialogue_validation=self.dialogue_validation)
+                     if conversation.id == request_id else "The conversation ended before the reply arrived.")
+            self.requests.finish(self.session_id, request_id, error)
+            return
+        request = self.player_requests.get(request_id)
+        if request is None or not player_request_pending(request):
+            self.requests.finish(self.session_id, request_id, "The player request is no longer active.")
+            return
+        interaction = self.simulation.player_interaction
+        if (not interaction or interaction.id != request.snapshot.get("_ownership_id")
+                or not self.player_owns(request.actor)):
+            request.actor.player_reply.complete()
+            self.player_requests.pop(request_id, None)
+            self.requests.finish(self.session_id, request_id, "The player conversation ended before the reply arrived.")
+            return
+        request.actor.player_reply.complete()
+        npc, record = request.actor, request.record
+        if npc is None or self.simulation.actor_by_id(npc.id) is not npc:
+            self.requests.finish(self.session_id, request_id, "The NPC is no longer available.")
+            return
+        visible = (self.view_open and self.view_actor is npc
+                   and self.viewed_conversation is None and self.view_interaction_id == interaction.id)
+        accepted = accept_resident_reply(self.simulation, request, result, error, rewritten,
+            visible=visible, record_open=self.record is record)
+        interaction.pending_request = None
+        if not accepted.error and record is not None and visible:
+            self.select_record(record)
+            self.pending_offer = accepted.pending_offer
+        if request.snapshot.get("request_kind") == "player_opening":
+            from simulation.player import clear_call
+            if not npc.unread_player_reply:
+                clear_call(npc)
+        if self.view_actor is npc and self.viewed_conversation is None:
+            self.show_reply(npc.reply if accepted.error else "")
+        self.requests.finish(self.session_id, request_id, accepted.error)
+        if accepted.invitation:
+            self.accept_player_invitation(accepted.invitation)
+        elif accepted.error and not visible:
+            self.end_player_conversation(accepted.error)
+
+    def schedule_acknowledgments(self, *, paused, simulation_active):
+        for acknowledgment in list(self.simulation.player_acknowledgments) if self.simulation else []:
+            if self.requests.busy or paused or not simulation_active:
+                break
+            npc = self.simulation.npc_by_id(acknowledgment.npc_id)
+            if npc and (npc.busy or npc.interaction_blocked or npc.unread_player_reply
+                        or self.view_open and self.view_actor is not npc):
+                continue
+            record = next(r for r in self.conversation_history if r.id == acknowledgment.record_id)
+            if npc and self.player_owns(npc):
+                snapshot = self.player_snapshot(npc)
+                snapshot.update(request_kind="player_acknowledgment", player_interaction={
+                    "committed_transfer": transfer_payload(next(t for t in record.transfers if t.id == acknowledgment.transfer_id))})
+                self.select_record(record)
+                self._submit_player_message(npc, "", snapshot)
+                if not npc.interaction_blocked:
+                    continue
+            self.simulation.player_acknowledgments.remove(acknowledgment)
+
+    def open_unread(self, npc):
+        from simulation.player import call_valid, clear_call, player_reply_closes
+        call = npc.unread_player_reply
+        if not call or not call_valid(self.simulation, npc, call):
+            clear_call(npc)
+            return
+        record = self.simulation.record_by_id(call.reference)
+        self.select_record(record)
+        self.open_view(npc)
+        npc.set_selected(True)
+        npc.player_reply.closing = call.closing
+        if not npc.interaction_blocked:
+            npc.player_reply.closing = player_reply_closes(npc.player_reply.closing, npc.reply,
+                (npc.rewritten_reply,) if npc.rewritten_reply else ())
+        self.pending_offer = ({**call.gift_offer.model_dump(), "npc_id": npc.id,
+            "revision": npc.command_revision, "record_id": record.id} if call.gift_offer else None)
+        clear_call(npc)
+        record.status = CONVERSATION_WAITING_FOR_DONE if npc.waiting_for_done else CONVERSATION_COMPLETED
+        self.emit("clear_input")
+        self.show_reply("")
+        if not npc.player_reply.closing:
+            self.emit("focus")
+
+    def cancel_request(self, request_id, reason):
+        conversation = self.conversation_requests.pop(request_id, None)
+        if conversation is not None:
+            conversation.fail_dialogue(reason)
+        elif request_id in self.player_requests:
+            request = self.player_requests[request_id]
+            npc, record = request.actor, request.record
+            npc.player_reply.complete()
+            npc.reply, npc.rewritten_reply = reason, ""
+            if self.view_actor is npc:
+                self.show_reply(reason)
+            if record is not None:
+                record.status, record.error = CONVERSATION_FAILED, reason
+                record.add_note(reason)
+            interaction = self.simulation.player_interaction
+            if self.player_owns(npc):
+                interaction.pending_request = None
+            if (self.player_owns(npc) and not (self.view_open and self.view_actor is npc
+                    and interaction.id == self.view_interaction_id)):
+                self.end_player_conversation(reason)
+
+    def cancel_unowned(self):
+        for request_id, request in tuple(self.player_requests.items()):
+            interaction = self.simulation.player_interaction
+            if (not self.player_owns(request.actor, stages=("approach", "conversation"))
+                    or interaction.id != request.snapshot.get("_ownership_id")):
+                self.requests.cancel(self.session_id, request_id)
+                if player_request_pending(request):
+                    request.actor.player_reply.complete()
+                self.player_requests.pop(request_id)
+
+    def update_progress(self, active_session):
+        for (session_id, request_id), worker in self.requests.workers.items():
+            pending = self.conversation_requests.get(request_id)
+            if pending is not None and worker.control and worker.control.stage == "Waiting for provider admission":
+                pending.dialogue.wait_elapsed = 0.0
+            if (session_id == active_session and pending is not None
+                    and getattr(pending, "request_stage", None) != worker.stage):
+                pending.request_stage = worker.stage
+                pending.dialogue.wait_elapsed = 0.0
+
+    def shutdown(self):
+        for request in self.player_requests.values():
+            if player_request_pending(request):
+                self.requests.cancel(self.session_id, request.id)
+                request.actor.player_reply.complete()
+                request.record.status = CONVERSATION_ENDED_BEFORE_REPLY
+                request.record.outcomes.insert(0, "Left the game before a reply was received.")
+        self.end_player_conversation("Left the game before a reply was received.")
+        for request_id in self.conversation_requests:
+            self.requests.cancel(self.session_id, request_id)
+        for npc in self.npcs:
+            self.simulation.interrupt_resident(npc, "The session ended before the handoff finished.", mode="session")
+        self.player_requests.clear()
+        self.conversation_requests.clear()
+        self.pending_offer = None

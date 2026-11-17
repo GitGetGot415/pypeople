@@ -2,17 +2,17 @@
 
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-
 import pygame
-
-from constants import (ACCENT, ART_PALETTE, ART_PREVIEW_SCALE, ART_SIZE, CREATIONS_FILTER_RECTS,
-                       CREATIONS_CONTENT_PADDING, CREATIONS_PLAY_RECT, CREATIONS_PREVIEW_TOP, CREATIONS_SCORE_TOP,
-                       CREATIONS_STOP_RECT, CREATIONS_TEXT_INSET, INK, MUSIC_CACHE_SIZE, MUSIC_CHANNELS,
-                       MUSIC_SAMPLE_FORMAT, MUSIC_SAMPLE_RATE, MUSIC_SUPPORTED_CHANNELS, MUTED)
-from creations import MusicPayload
-from music import duration, synthesize
-from .button import Button
-from .text import wrap_text
+from constants import (
+    ACCENT, ART_PALETTE, ART_PREVIEW_SCALE, ART_SIZE, CREATIONS_FILTER_RECTS, CREATIONS_CONTENT_PADDING,
+    CREATIONS_PLAY_RECT, CREATIONS_PREVIEW_TOP, CREATIONS_SCORE_TOP, CREATIONS_STOP_RECT,
+    CREATIONS_TEXT_INSET, INK, MUSIC_CACHE_SIZE, MUSIC_CHANNELS, MUSIC_SAMPLE_FORMAT, MUSIC_SAMPLE_RATE,
+    MUSIC_SUPPORTED_CHANNELS, MUTED,
+)
+from simulation.creations import MusicPayload
+from ui.rendering.music import duration, synthesize
+from ui.widgets.button import Button
+from ui.text import wrap_text
 
 
 class CreationsGallery:

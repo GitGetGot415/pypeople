@@ -1,11 +1,12 @@
 import sys
 
+
 def main():
     if sys.version_info < (3, 11):
         print("Pypeople requires Python 3.11 or newer.")
         return 1
     try:
-        from ui.app import run
+        from application.app import run
     except ImportError:
         print("Pypeople needs pygame, google-genai, httpx, pydantic 2, and pyperclip.")
         print("In the project folder, run: python -m pip install --user -r requirements.txt")

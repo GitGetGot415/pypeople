@@ -1,7 +1,7 @@
 import pygame
 from constants import DIALOGUE_PAGE_LINES, DIALOGUE_PAGE_WIDTH, INK, SCROLLBAR_WIDTH, SCROLLBAR_MIN_THUMB
-from dialogue_text import split_sentences
-from .fonts import text_units
+from dialogue.text import split_sentences
+from ui.rendering.fonts import text_units
 
 
 def scrollbar_rects(rect, scroll, limit):

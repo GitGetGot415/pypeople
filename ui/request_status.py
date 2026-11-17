@@ -1,14 +1,13 @@
 """Live model-worker capacity, conversation details, and elapsed time."""
 
 import math
-from time import monotonic
-
 import pygame
-
-from constants import (ACCENT, HUD_HEADER_HEIGHT, INK, LLM_PANEL_WIDTH, LLM_PANEL_POSITION,
-                       LLM_SLOT_HEIGHT, MUTED, PAPER)
-from .button import Button
-from .text import scrollbar_rects, ScrollbarDrag
+from time import monotonic
+from constants import (
+    ACCENT, HUD_HEADER_HEIGHT, INK, LLM_PANEL_WIDTH, LLM_PANEL_POSITION, LLM_SLOT_HEIGHT, MUTED, PAPER,
+)
+from ui.widgets.button import Button
+from ui.text import scrollbar_rects, ScrollbarDrag
 
 
 class RequestStatus:

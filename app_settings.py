@@ -1,13 +1,12 @@
 """Persistent preferences that are independent of model-provider settings."""
 
+from paths import APP_SETTINGS_PATH
 import json
-from pathlib import Path
-
-from character_data import NPC_TRAIT_MODES
+from persistence.characters import NPC_TRAIT_MODES
 from constants import MAX_CONFIGURABLE_LLM_REQUESTS, MAX_LLM_REQUESTS
 
 
-SETTINGS_PATH = Path(__file__).resolve().parent / "app_settings.json"
+SETTINGS_PATH = APP_SETTINGS_PATH
 DEFAULT_NPC_TRAIT_MODE = "normal"
 
 
