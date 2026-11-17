@@ -7,8 +7,8 @@ def main():
         return 1
     try:
         from application.app import run
-    except ImportError:
-        print("Pypeople needs pygame, google-genai, httpx, pydantic 2, and pyperclip.")
+    except ImportError as exc:
+        print(f"Pypeople could not import {exc.name or 'a required package'}.")
         print("In the project folder, run: python -m pip install --user -r requirements.txt")
         return 1
     return run()

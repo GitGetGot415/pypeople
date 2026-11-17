@@ -59,6 +59,7 @@
   - `text.py` - sentence boundaries, quoted speech handling, and dialogue text checks shared by validation and display
   - `emotions.py` - maps recorded emotion and intensity to portrait expressions
   - `errors.py` - model, dialogue, and recovery error types
+  - `snapshot_types.py` - editor-only descriptions of the request snapshot dicts and which keys reach the prompt
 
 - `ai/` - prepares model requests, communicates with providers, and runs background generation
   - `generation.py` - generation stages, response validation, bounded correction, and optional voice rewrite requests
@@ -68,6 +69,7 @@
   - `requests.py` - background workers, request queues, concurrency limits, cancellation, and result polling
   - `debug.py` - request control, provider admission, captured output, and request logs
   - `ollama.py` - Ollama availability checks, model selection, settings, and setup helpers
+  - `online.py` - online provider profiles (Gemini, OpenAI, Claude, custom), default models, and API key names
   - `voice_rewrite.py` - voice briefs, rewrite parsing, and diagnostic-only rewrite validation
 
 - `persistence/` - character files and simulation save validation, capture, restoration, and storage
@@ -98,7 +100,7 @@
   - `conversation_actions.py` - conversation action menu, confirmation, and player command picker
   - `stats_details.py` - builds Stats detail content for dialogue, opinions, social state, and request diagnostics
   - `dialogue_view.py` - transient dialogue panel state and its pages
-  - `text.py` - text wrapping, drawing, sentence-aware pagination, and shared scrollbar helpers
+  - `text.py` - text wrapping, drawing, sentence-aware pagination, and shared scrollbar and popup helpers
   - `creations.py` - resident artwork gallery and music playback
   - `inventory.py` - player possessions and read-only resident inventories
   - `request_status.py` - live model request status and worker capacity
