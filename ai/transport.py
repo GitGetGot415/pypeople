@@ -17,7 +17,7 @@ from constants import (
     MODEL_STREAM_REPEAT_MAX_BLOCK_CHARACTERS, MODEL_STREAM_REPEAT_MIN_CHARACTERS,
     MODEL_STREAM_REPEAT_PUNCTUATION_CHARACTERS, MODEL_STREAM_REPEAT_SYMBOL_CHARACTERS,
 )
-from ai.debug import check_cancelled, cancellable_stream, disconnect_response, record_output, streaming_output, watch_response
+from ai.debug import check_cancelled, cancellable_stream, disconnect_response, record_output, watch_response
 from ai.online import OnlineConfig
 
 
@@ -248,6 +248,29 @@ def provider_errors(provider, model, online_config=OnlineConfig()):
             raise RequestError("Ollama returned an invalid action or reply. Try again.") from None
 
 
+def _schema_instruction(prepared):
+    """System text for providers whose JSON mode does not carry the full schema to the model."""
+    return (prepared.system_instruction + "\nReturn only JSON matching this schema: "
+            + json.dumps(prepared.response_schema, ensure_ascii=False, separators=(",", ":")))
+
+
+def _record_stream(repetition, kind, text):
+    record_output(kind, text)
+    repetition.add(kind, text)
+
+
+def _completed_text(label, chunks, *, incomplete, finished):
+    """Shared end-of-stream checks; the provider decides what counts as incomplete or finished."""
+    if incomplete:
+        raise RequestError(f"{label} returned an incomplete reply. Try again.")
+    if not finished:
+        raise RequestError(f"{label} could not finish a reply. Try another message.")
+    text = "".join(chunks)
+    if not text.strip():
+        raise RequestError(f"{label} returned an empty reply. Try again.")
+    return text
+
+
 def request_gemini(api_key, prepared, settings, model):
     contents = _gemini_contents(_transport_messages(prepared))
     with genai.Client(
@@ -266,13 +289,9 @@ def request_gemini(api_key, prepared, settings, model):
             response_schema=prepared.response_schema,
             candidate_count=1,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+            thinking_config=types.ThinkingConfig(include_thoughts=True),
         )
-        live = streaming_output()
-        if live:
-            config.thinking_config = types.ThinkingConfig(include_thoughts=True)
-            responses = client.models.generate_content_stream(model=model, contents=contents, config=config)
-        else:
-            responses = [client.models.generate_content(model=model, contents=contents, config=config)]
+        responses = client.models.generate_content_stream(model=model, contents=contents, config=config)
         chunks, reason = [], None
         repetition = _StreamRepetitionGuard()
         deadline = monotonic() + settings.timeout
@@ -288,24 +307,13 @@ def request_gemini(api_key, prepared, settings, model):
             candidate = response.candidates[0]
             if candidate.finish_reason is not None:
                 reason = candidate.finish_reason
-            if live:
-                for part in (candidate.content.parts if candidate.content else ()) or ():
-                    if part.text:
-                        kind = "reasoning" if part.thought else "output"
-                        record_output(kind, part.text)
-                        repetition.add(kind, part.text)
-                        if not part.thought:
-                            chunks.append(part.text)
-            elif response.text:
-                chunks.append(response.text)
-        if reason == types.FinishReason.MAX_TOKENS:
-            raise RequestError("Gemini returned an incomplete reply. Try again.")
-        if reason != types.FinishReason.STOP:
-            raise RequestError("Gemini could not finish a reply. Try another message.")
-        text = "".join(chunks)
-        if not text or not text.strip():
-            raise RequestError("Gemini returned an empty reply. Try again.")
-        return text
+            for part in (candidate.content.parts if candidate.content else ()) or ():
+                if part.text:
+                    _record_stream(repetition, "reasoning" if part.thought else "output", part.text)
+                    if not part.thought:
+                        chunks.append(part.text)
+        return _completed_text("Gemini", chunks, incomplete=reason == types.FinishReason.MAX_TOKENS,
+                               finished=reason == types.FinishReason.STOP)
 
 
 def request_online(api_key, prepared, settings, config):
@@ -328,13 +336,11 @@ def request_anthropic(api_key, prepared, settings, model):
         # Current Claude models reject a trailing assistant turn (prefill).
         messages.append({"role": "user", "content": "Write your next reply now. Return the required JSON."})
     # The full schema keeps limits that structured outputs cannot enforce visible to the model.
-    system = (prepared.system_instruction + "\nReturn only JSON matching this schema: "
-              + json.dumps(prepared.response_schema, ensure_ascii=False, separators=(",", ":")))
+    system = _schema_instruction(prepared)
     options = {}
     if model.startswith(ANTHROPIC_FALLBACK_MODELS):
         # A safety decline is re-run server-side on Anthropic's recommended model.
         options = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
-    live = streaming_output()
     deadline = monotonic() + settings.timeout
     repetition = _StreamRepetitionGuard()
     with anthropic.Anthropic(
@@ -358,29 +364,22 @@ def request_anthropic(api_key, prepared, settings, model):
                 check_cancelled()
                 if monotonic() > deadline:
                     raise RequestError("Claude timed out. Check your connection and try again.")
-                if live and event.type == "content_block_delta":
+                if event.type == "content_block_delta":
                     if event.delta.type == "thinking_delta" and event.delta.thinking:
-                        record_output("reasoning", event.delta.thinking)
-                        repetition.add("reasoning", event.delta.thinking)
+                        _record_stream(repetition, "reasoning", event.delta.thinking)
                     elif event.delta.type == "text_delta" and event.delta.text:
-                        record_output("output", event.delta.text)
-                        repetition.add("output", event.delta.text)
+                        _record_stream(repetition, "output", event.delta.text)
             message = stream.get_final_message()
     if message.stop_reason == "refusal":
         raise RequestError("Claude declined this request. Try another message.")
-    if message.stop_reason == "max_tokens":
-        raise RequestError("Claude returned an incomplete reply. Try again.")
-    if message.stop_reason not in ("end_turn", "stop_sequence"):
-        raise RequestError("Claude could not finish a reply. Try another message.")
     # After a mid-stream fallback, only text following the last switch belongs to the reply.
     blocks = list(message.content)
     switches = [index for index, block in enumerate(blocks) if block.type == "fallback"]
     if switches:
         blocks = blocks[switches[-1] + 1:]
-    text = "".join(block.text for block in blocks if block.type == "text")
-    if not text.strip():
-        raise RequestError("Claude returned an empty reply. Try again.")
-    return text
+    return _completed_text("Claude", [block.text for block in blocks if block.type == "text"],
+                           incomplete=message.stop_reason == "max_tokens",
+                           finished=message.stop_reason in ("end_turn", "stop_sequence"))
 
 
 def _online_http_error(status, config):
@@ -419,48 +418,16 @@ def _sse_data(response, deadline, label):
 
 
 def request_openai_compatible(api_key, prepared, settings, config):
-    live = streaming_output()
     payload = {
         "model": config.model,
-        "messages": [
-            {"role": "system", "content": prepared.system_instruction
-             + "\nReturn only JSON matching this schema: "
-             + json.dumps(prepared.response_schema, ensure_ascii=False, separators=(",", ":"))},
-            *_transport_messages(prepared),
-        ],
+        "messages": [{"role": "system", "content": _schema_instruction(prepared)}, *_transport_messages(prepared)],
         "response_format": {"type": "json_object"},
-        "stream": live,
+        "stream": True,
     }
     # Leave sampling defaults to the service: some reasoning models reject temperature.
     deadline = monotonic() + settings.timeout
     chunks, reason = [], None
     repetition = _StreamRepetitionGuard()
-
-    def consume(data, streaming):
-        nonlocal reason
-        if data.get("error"):
-            raise RequestError(f"{config.label} could not complete the reply. Check model access or try again.")
-        choices = data.get("choices", [])
-        if not choices:
-            return
-        choice = choices[0]
-        if choice.get("finish_reason") is not None:
-            reason = choice["finish_reason"]
-        message = choice.get("delta" if streaming else "message", {})
-        if message.get("refusal"):
-            raise RequestError(f"{config.label} declined this request. Try another message.")
-        text = message.get("content") or ""
-        if not isinstance(text, str):
-            raise RequestError(f"{config.label} returned an unsupported reply format.")
-        if live:
-            record_output("output", text)
-            repetition.add("output", text)
-            thinking = message.get("reasoning_content")
-            if isinstance(thinking, str):
-                record_output("reasoning", thinking)
-                repetition.add("reasoning", thinking)
-        chunks.append(text)
-
     with httpx.stream(
         "POST", config.base_url.rstrip("/") + "/chat/completions",
         headers={"Authorization": f"Bearer {api_key.strip()}"}, json=payload,
@@ -469,24 +436,32 @@ def request_openai_compatible(api_key, prepared, settings, config):
         if response.is_error or response.is_redirect:
             # Never expose provider error bodies, headers, or URLs containing secrets.
             raise RequestError(_online_http_error(response.status_code, config))
-        if live:
-            for event in _sse_data(response, deadline, config.label):
-                if event.strip() == "[DONE]":
-                    break
-                consume(json.loads(event), True)
-        else:
-            response.read()
-            consume(response.json(), False)
+        for event in _sse_data(response, deadline, config.label):
+            if event.strip() == "[DONE]":
+                break
+            data = json.loads(event)
+            if data.get("error"):
+                raise RequestError(f"{config.label} could not complete the reply. Check model access or try again.")
+            choices = data.get("choices", [])
+            if not choices:
+                continue
+            choice = choices[0]
+            if choice.get("finish_reason") is not None:
+                reason = choice["finish_reason"]
+            delta = choice.get("delta", {})
+            if delta.get("refusal"):
+                raise RequestError(f"{config.label} declined this request. Try another message.")
+            text = delta.get("content") or ""
+            if not isinstance(text, str):
+                raise RequestError(f"{config.label} returned an unsupported reply format.")
+            _record_stream(repetition, "output", text)
+            thinking = delta.get("reasoning_content")
+            if isinstance(thinking, str):
+                _record_stream(repetition, "reasoning", thinking)
+            chunks.append(text)
     if monotonic() > deadline:
         raise RequestError(f"{config.label} timed out. Try again.")
-    if reason == "length":
-        raise RequestError(f"{config.label} returned an incomplete reply. Try again.")
-    if reason != "stop":
-        raise RequestError(f"{config.label} could not finish a reply. Try another message.")
-    text = "".join(chunks)
-    if not text.strip():
-        raise RequestError(f"{config.label} returned an empty reply. Try again.")
-    return text
+    return _completed_text(config.label, chunks, incomplete=reason == "length", finished=reason == "stop")
 
 
 def check_online_connection(api_key, config):
@@ -514,16 +489,9 @@ def check_online_connection(api_key, config):
 def request_ollama(prepared, settings, model):
     payload = {
         "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": prepared.system_instruction + "\nReturn only JSON matching this schema: "
-                + json.dumps(prepared.response_schema, ensure_ascii=False, separators=(",", ":")),
-            },
-            *_transport_messages(prepared),
-        ],
+        "messages": [{"role": "system", "content": _schema_instruction(prepared)}, *_transport_messages(prepared)],
         "format": prepared.response_schema,
-        "stream": streaming_output(),
+        "stream": True,
         "keep_alive": "15m",
         # The profiles, rules, schema, and dialogue exceed Ollama's
         # default context. Truncation can remove the speaker rules.
@@ -539,40 +507,30 @@ def request_ollama(prepared, settings, model):
     # Each call (including rewrites and repairs) may wait in Ollama again.
     # The chat API confirms generation only once it streams actual tokens.
     record_output("status", "waiting_for_ollama")
-    if streaming_output():
-        deadline = monotonic() + settings.timeout
-        chunks, data = [], {}
-        repetition = _StreamRepetitionGuard()
-        receiving = False
-        with httpx.stream("POST", OLLAMA_URL, json=payload, timeout=settings.timeout) as response, cancellable_stream(lambda: disconnect_response(response)):
-            check_response(response)
-            for line in response.iter_lines():
-                if monotonic() > deadline:
-                    raise RequestError(f"Ollama timed out. Try again after {model} finishes loading.")
-                if not line.strip():
-                    continue
-                data = json.loads(line)
-                if data.get("error"):
-                    raise RequestError(f"Ollama could not process this request. Check that {model} is available.")
-                part = data.get("message", {})
-                if not receiving and (part.get("thinking") or part.get("content")):
-                    receiving = True
-                    record_output("status", "running")
-                record_output("reasoning", part.get("thinking", ""))
-                repetition.add("reasoning", part.get("thinking", ""))
-                text = part.get("content", "")
-                record_output("output", text)
-                repetition.add("output", text)
-                chunks.append(text)
-                if data.get("done"):
-                    break
-        content = "".join(chunks)
-    else:
-        response = httpx.post(OLLAMA_URL, json=payload, timeout=settings.timeout)
+    deadline = monotonic() + settings.timeout
+    chunks, data = [], {}
+    repetition = _StreamRepetitionGuard()
+    receiving = False
+    with httpx.stream("POST", OLLAMA_URL, json=payload, timeout=settings.timeout) as response, cancellable_stream(lambda: disconnect_response(response)):
         check_response(response)
-        data = response.json()
-        content = data["message"]["content"]
-        record_output("status", "running")
+        for line in response.iter_lines():
+            if monotonic() > deadline:
+                raise RequestError(f"Ollama timed out. Try again after {model} finishes loading.")
+            if not line.strip():
+                continue
+            data = json.loads(line)
+            if data.get("error"):
+                raise RequestError(f"Ollama could not process this request. Check that {model} is available.")
+            part = data.get("message", {})
+            if not receiving and (part.get("thinking") or part.get("content")):
+                receiving = True
+                record_output("status", "running")
+            _record_stream(repetition, "reasoning", part.get("thinking", ""))
+            text = part.get("content", "")
+            _record_stream(repetition, "output", text)
+            chunks.append(text)
+            if data.get("done"):
+                break
     if not data.get("done", False) or data.get("done_reason") not in (None, "stop"):
         raise RequestError("Ollama returned an incomplete reply. Try again.")
-    return content
+    return "".join(chunks)

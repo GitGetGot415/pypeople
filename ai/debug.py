@@ -179,10 +179,6 @@ def cancellable_stream(close):
             control._close = None
 
 
-def streaming_output():
-    return _current_log.get() is not None
-
-
 def check_cancelled():
     control = _current_control.get()
     if control is not None:

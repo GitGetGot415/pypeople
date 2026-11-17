@@ -1,8 +1,8 @@
 import pygame
 from ui.widgets.button import Button
-from ui.text import draw_centered_text, draw_wrapped_text
+from ui.text import draw_centered_text, draw_modal, draw_wrapped_text
 from ui.widgets.text_input import TextInput
-from constants import ACCENT, GRASS, INK, MODAL_OVERLAY_COLOR, MUTED, PAPER
+from constants import ACCENT, GRASS, INK, MUTED, PAPER
 
 
 class LoadSimScreen:
@@ -162,11 +162,7 @@ class LoadSimScreen:
         hint = self.message or (entry.error if entry else "") or "Edit the name above, then choose Rename save."
         draw_wrapped_text(surface, hint, app.small_font, INK, (260, 650, 760, 28))
         if self.confirm_delete:
-            overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-            overlay.fill(MODAL_OVERLAY_COLOR)
-            surface.blit(overlay, (0, 0))
-            pygame.draw.rect(surface, PAPER, (395, 260, 490, 205))
-            draw_centered_text(surface, "Delete this simulation?", app.heading_font, 280)
+            draw_modal(surface, (395, 260, 490, 205), "Delete this simulation?", app.heading_font, 280)
             draw_wrapped_text(surface, entry.name, app.font, INK, (425, 320, 430, 48))
             draw_centered_text(surface, "This permanently removes the save.", app.small_font, 370, MUTED)
             self.confirm_button.draw(surface, app.font)

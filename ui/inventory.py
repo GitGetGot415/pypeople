@@ -2,7 +2,7 @@
 
 import pygame
 from constants import (
-    INVENTORY_RECT, INVENTORY_ROW_HEIGHT, INVENTORY_PREVIEW_SCALE, MODAL_OVERLAY_COLOR, PAPER, INK,
+    INVENTORY_RECT, INVENTORY_ROW_HEIGHT, INVENTORY_PREVIEW_SCALE, PAPER, INK,
     MUTED, ACCENT, GRASS, INVENTORY_LIST_RECT, INVENTORY_RECIPIENT_RECT, INVENTORY_CLOSE_RECT,
     INVENTORY_FILTER_RECTS, INVENTORY_MINUS_RECT, INVENTORY_PLUS_RECT, INVENTORY_GIVE_RECT,
     INVENTORY_CONFIRM_RECT, INVENTORY_PLAY_RECT, INVENTORY_STOP_RECT, INVENTORY_TITLE_POSITION,
@@ -12,7 +12,7 @@ from constants import (
 from simulation.maps import active_player
 from ui.widgets.button import Button
 from ui.creations import CreationsGallery
-from ui.text import draw_wrapped_text, scrollbar_rects, ScrollbarDrag
+from ui.text import draw_modal, draw_wrapped_text, scrollbar_rects, ScrollbarDrag
 
 
 class InventoryPanel:
@@ -137,10 +137,7 @@ class InventoryPanel:
     def draw(self, app):
         self.media.update()
         surface = app.window
-        shade = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-        shade.fill(MODAL_OVERLAY_COLOR)
-        surface.blit(shade, (0, 0))
-        pygame.draw.rect(surface, PAPER, self.rect)
+        draw_modal(surface, self.rect)
         title = "Player inventory" if self.owner is app.simulation.player else f"{self.owner.name}'s inventory (read only)"
         if getattr(self.owner, "departure", None):
             title += " / Departed"

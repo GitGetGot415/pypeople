@@ -7,13 +7,13 @@ from constants import (
     FAILED_CONVERSATION_SELECTED_COLOR, INK, MUTED, ORIGINAL_DIALOGUE_PAPER, PAPER, MAX_LLM_REQUESTS,
     WINDOW_SIZE, WORLD_HEIGHT, WORLD_WIDTH, APARTMENT_INSPECTOR_CLOSE_RECT, APARTMENT_INSPECTOR_RECT,
     APARTMENT_INSPECTOR_ROW_HEIGHT, APARTMENT_INSPECTOR_CONTENT_INSET, APARTMENT_INSPECTOR_CONTENT_TOP,
-    APARTMENT_INSPECTOR_TITLE_OFFSET, MODAL_OVERLAY_COLOR, INVENTORY_BUTTON_RECT, GAME_PAUSE_RECT,
+    APARTMENT_INSPECTOR_TITLE_OFFSET, INVENTORY_BUTTON_RECT, GAME_PAUSE_RECT,
     GAME_CLOCK_RECT, GAME_SAVE_RECT, GAME_STATS_RECT, GAME_DAY_POSITION, GAME_MENU_RECT,
     GAME_TOOLBAR_PADDING, GAME_DAY_BACKGROUND, GAME_DAY_TEXT_COLOR, GAME_DAY_PADDING,
     GAME_TOOLBAR_BORDER_COLOR, GAME_TOOLBAR_BORDER_WIDTH, GIFT_ACCEPT_RECT, GIFT_DECLINE_RECT,
-    DIALOGUE_ORIGINAL_TOGGLE_RECT, BORDER_RADIUS, GAME_MENU_CONFIRM_RECT, GAME_MENU_CONFIRM_TITLE_Y,
+    DIALOGUE_ORIGINAL_TOGGLE_RECT, BORDER_RADIUS, POPUP_RECT, POPUP_TITLE_Y,
     GAME_MENU_CONFIRM_MESSAGE_RECT, GAME_MENU_KEEP_PLAYING_RECT, GAME_MENU_LEAVE_RECT,
-    PLAYER_ROOM_LOCATION, ROOM_BED_RECT, BED_POPUP_RECT, BED_POPUP_TITLE_Y, BED_POPUP_MESSAGE_RECT,
+    PLAYER_ROOM_LOCATION, ROOM_BED_RECT, BED_POPUP_MESSAGE_RECT,
     BED_ADVANCE_RECT, BED_CANCEL_RECT, GAME_PORTRAIT_BACKGROUND, GAME_PORTRAIT_PADDING,
     GAME_PORTRAIT_BORDER_WIDTH,
 )
@@ -22,7 +22,7 @@ from dialogue.history import uses_original_dialogue
 from ui.dialogue_view import DialogueView
 from ui.widgets.button import Button
 from ui.request_status import RequestStatus
-from ui.text import draw_centered_text, draw_wrapped_text, wrap_text, scrollbar_rects, ScrollbarDrag
+from ui.text import draw_modal, draw_wrapped_text, wrap_text, scrollbar_rects, ScrollbarDrag
 from ui.widgets.text_input import TextInput
 from ui.rendering.world import CHARACTER_SCALE, draw_world, generation_bubbles
 from ui.rendering.character_sprite import draw_actor_portrait
@@ -413,11 +413,7 @@ class GameScreen:
         if not self.bed_open:
             return
         world = app.simulation
-        overlay = pygame.Surface(app.window.get_size(), pygame.SRCALPHA)
-        overlay.fill(MODAL_OVERLAY_COLOR)
-        app.window.blit(overlay, (0, 0))
-        pygame.draw.rect(app.window, PAPER, BED_POPUP_RECT, border_radius=BORDER_RADIUS)
-        draw_centered_text(app.window, "Rest in your bed", app.heading_font, BED_POPUP_TITLE_Y)
+        draw_modal(app.window, POPUP_RECT, "Rest in your bed", app.heading_font, POPUP_TITLE_Y)
         message = ("Resume the game before passing time." if world.paused else
                    "Advance to the next day? All conversations end immediately. A new resident arrives if there is room.")
         draw_wrapped_text(app.window, message, app.font, INK, BED_POPUP_MESSAGE_RECT)
@@ -435,11 +431,7 @@ class GameScreen:
     def draw_menu_confirmation(self, app):
         if not self.confirm_menu:
             return
-        overlay = pygame.Surface(app.window.get_size(), pygame.SRCALPHA)
-        overlay.fill(MODAL_OVERLAY_COLOR)
-        app.window.blit(overlay, (0, 0))
-        pygame.draw.rect(app.window, PAPER, GAME_MENU_CONFIRM_RECT, border_radius=BORDER_RADIUS)
-        draw_centered_text(app.window, "Return to main menu?", app.heading_font, GAME_MENU_CONFIRM_TITLE_Y)
+        draw_modal(app.window, POPUP_RECT, "Return to main menu?", app.heading_font, POPUP_TITLE_Y)
         draw_wrapped_text(app.window, "Progress since your last save will be lost.", app.font, INK,
                           GAME_MENU_CONFIRM_MESSAGE_RECT)
         self.keep_playing_button.draw(app.window, app.small_font)
@@ -739,11 +731,8 @@ class GameScreen:
         return rows, content, top
 
     def draw_apartments(self, app):
-        overlay = pygame.Surface(app.window.get_size(), pygame.SRCALPHA)
-        overlay.fill(MODAL_OVERLAY_COLOR)
-        app.window.blit(overlay, (0, 0))
         rect = pygame.Rect(APARTMENT_INSPECTOR_RECT)
-        pygame.draw.rect(app.window, PAPER, rect)
+        draw_modal(app.window, rect)
         app.window.blit(app.heading_font.render("Apartments", True, INK),
                         (rect.x + APARTMENT_INSPECTOR_TITLE_OFFSET[0], rect.y + APARTMENT_INSPECTOR_TITLE_OFFSET[1]))
         self.apartment_close.draw(app.window, app.small_font)

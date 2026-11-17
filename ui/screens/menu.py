@@ -1,9 +1,9 @@
 import pygame
 from ai.ollama import check_ollama
 from ui.widgets.button import Button
-from ui.text import draw_centered_text, draw_wrapped_text
+from ui.text import draw_centered_text, draw_modal, draw_wrapped_text
 from constants import (
-    BORDER_RADIUS, GRASS, MUTED, PAPER, INK, MODAL_OVERLAY_COLOR, MENU_PANEL_RECT, MENU_CONTENT_PADDING,
+    BORDER_RADIUS, GRASS, MUTED, PAPER, INK, MENU_PANEL_RECT, MENU_CONTENT_PADDING,
     MENU_BUTTON_GAP,
 )
 
@@ -102,11 +102,7 @@ class MenuScreen:
             draw_wrapped_text(app.window, self.message, app.small_font, MUTED,
                               (self.content_rect.x, 580, self.content_rect.width, 40))
         if self.ai_warning:
-            overlay = pygame.Surface(app.window.get_size(), pygame.SRCALPHA)
-            overlay.fill(MODAL_OVERLAY_COLOR)
-            app.window.blit(overlay, (0, 0))
-            pygame.draw.rect(app.window, PAPER, (315, 240, 650, 240), border_radius=BORDER_RADIUS)
-            draw_centered_text(app.window, "AI setup needed", app.heading_font, 265, INK)
+            draw_modal(app.window, (315, 240, 650, 240), "AI setup needed", app.heading_font, 265)
             draw_wrapped_text(
                 app.window,
                 self.ai_warning + " Open Settings to configure AI, or continue without generated dialogue.",

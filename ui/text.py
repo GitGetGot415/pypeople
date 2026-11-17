@@ -1,5 +1,8 @@
 import pygame
-from constants import DIALOGUE_PAGE_LINES, DIALOGUE_PAGE_WIDTH, INK, SCROLLBAR_WIDTH, SCROLLBAR_MIN_THUMB
+from constants import (
+    BORDER_RADIUS, DIALOGUE_PAGE_LINES, DIALOGUE_PAGE_WIDTH, INK, MODAL_OVERLAY_COLOR, PAPER, SCROLLBAR_WIDTH,
+    SCROLLBAR_MIN_THUMB,
+)
 from dialogue.text import split_sentences
 from ui.rendering.fonts import text_units
 
@@ -59,6 +62,16 @@ class ScrollbarDrag:
 def draw_centered_text(surface, text, font, y, color=INK):
     rendered = font.render(text, True, color)
     surface.blit(rendered, rendered.get_rect(midtop=(surface.get_width() // 2, y)))
+
+
+def draw_modal(surface, rect, title=None, font=None, title_y=None):
+    """Dim everything behind a paper panel; an optional heading is centered on the window."""
+    overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+    overlay.fill(MODAL_OVERLAY_COLOR)
+    surface.blit(overlay, (0, 0))
+    pygame.draw.rect(surface, PAPER, rect, border_radius=BORDER_RADIUS)
+    if title:
+        draw_centered_text(surface, title, font, title_y)
 
 
 def wrap_text(text, font, width):
