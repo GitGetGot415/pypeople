@@ -185,7 +185,7 @@ class Memory:
     partner_id: str
     kind: Literal["gave_fruit", "received_fruit", "refused", "kept_fruit", "conversation",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
-                  "claim_shared", "heard_claim", "claim_opinion", "leverage", "arrival", "departure", "apple_eaten", "harvest", "killing", "snake_claim", "goal_cancelled", "gave_work", "received_work", "visit"]
+                  "claim_shared", "heard_claim", "claim_opinion", "leverage", "arrival", "departure", "apple_eaten", "harvest", "killing", "death", "snake_claim", "goal_cancelled", "gave_work", "received_work", "visit"]
     summary: Annotated[str, Field(max_length=400)]
     weight: Annotated[float, Field(ge=-12, le=12)]
 
@@ -195,7 +195,7 @@ class WorldEvent:
     day: Annotated[int, Field(ge=1)]
     kind: Literal["new_day", "food_requested", "food_refused", "fruit_shared", "conversation_completed", "interaction_failed",
                   "promise_created", "promise_fulfilled", "promise_broken", "goal_completed", "goal_failed",
-                  "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "departure", "apple_eaten", "conversation_seen", "harvest", "killing", "snake_claim", "goal_cancelled", "promise_cancelled", "work_shared", "player_call", "player_conversation", "travel_failed", "visit"]
+                  "claim_shared", "claim_assessed", "reputation_changed", "leverage_used", "arrival", "departure", "apple_eaten", "conversation_seen", "harvest", "killing", "starvation", "survival_meal", "snake_claim", "goal_cancelled", "promise_cancelled", "work_shared", "player_call", "player_conversation", "travel_failed", "visit"]
     participants: list[str]
     text: str
     history: str | None = None
@@ -228,11 +228,11 @@ def relevant_memories(npc, partner_id=None):
         from simulation.social.records import claim_by_id, fact_by_id
         for belief in npc.beliefs:
             fact = fact_by_id(npc.world, claim_by_id(npc.world, belief.claim_id).fact_id)
-            if fact.kind in ("killing",):
+            if fact.kind in ("killing", "death"):
                 danger_ids.add(fact.source_id)
                 danger_ids.update(d.event_id for d in npc.world.disclosures if d.id == belief.disclosure_id)
     ranked = sorted(enumerate(npc.memories), key=lambda entry: (
-        entry[1].kind in ("killing",) or entry[1].id in danger_ids,
+        entry[1].kind in ("killing", "death") or entry[1].id in danger_ids,
         entry[1].partner_id in partners and entry[1].kind in ("promise_created", "promise_broken"),
         entry[1].kind in ("heard_claim", "claim_opinion", "leverage"),
         entry[1].partner_id == partner_id, entry[1].partner_id == goal_target,

@@ -72,7 +72,7 @@ def undisclosed_danger(npc):
     discussed = {claim_by_id(world, d.claim_id).fact_id for d in world.disclosures if d.speaker_id == npc.id}
     return next((b.claim_id for b in reversed(npc.beliefs) if b.stance != "disbelieved"
                  and claim_by_id(world, b.claim_id).fact_id not in discussed
-                 and fact_by_id(world, claim_by_id(world, b.claim_id).fact_id).kind in ("killing",)
+                 and fact_by_id(world, claim_by_id(world, b.claim_id).fact_id).kind in ("killing", "death")
                  and not any(r.turns and r.topic == danger_topic(npc, b.claim_id) and npc.name in r.participants
                              for r in world.history)), None)
 

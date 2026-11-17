@@ -4,8 +4,25 @@ import json
 from dialogue import context as dialogue_context
 from simulation.area_knowledge import known_layout
 from constants import (
-    EMOTION_THRESHOLD, FURIOUS_THRESHOLD, SNAKE_NAME, KILLING_INDOOR_REASON, SATISFACTION_DAILY_LOSS,
-    APPLE_SATISFACTION,
+    EMOTION_THRESHOLD, FURIOUS_THRESHOLD, SNAKE_NAME, KILLING_INDOOR_REASON, SATISFACTION_DAILY_LOSSES,
+    APPLE_SATISFACTION, URGENT_FOOD_SATISFACTION,
+)
+
+
+SATISFACTION_MECHANICS = (
+    "Satisfaction measures residents' food needs. Each new day deducts "
+    + "; ".join(f"{loss} points when satisfaction is above {lower} and at most {upper}"
+                for (lower, loss), upper in zip(SATISFACTION_DAILY_LOSSES,
+                                                (100, *(lower for lower, _ in SATISFACTION_DAILY_LOSSES[:-1]))))
+    + f". Use satisfaction before the deduction. Time passing within a day never lowers it. "
+      f"Eating a carried apple adds {APPLE_SATISFACTION}, capped at 100; carrying or receiving one does not. "
+      "A resident reaching zero dies of starvation, including indoors. The player and snake have no satisfaction meter. "
+      f"At {URGENT_FOOD_SATISFACTION} or below, residents prioritize food over optional work and ordinary chats. "
+      "Use your own food_urgent, daily_satisfaction_loss and starves_next_day state when supplied. "
+      "Express urgent hunger naturally; do not claim another person's private condition unless they disclose it. "
+      "Keep your last apple if eating it is necessary to survive the next day. A survival meal does not by itself "
+      "break an apple promise: the promise remains pending until delivered or its deadline passes. "
+      "Seeing someone collapse and die establishes death, not its cause, a killer, guilt, or an afterlife destination."
 )
 from dialogue.context import NAME_TAG_INSTRUCTION, NPC_ARRIVAL_INSTRUCTION, PLAYER_TAG_INSTRUCTION
 
@@ -124,7 +141,7 @@ an invented venue or a vanished tree just because earlier dialogue mentioned it.
 """
 
 
-SPEAKING_BRIEF = NAME_TAG_INSTRUCTION + NPC_ARRIVAL_INSTRUCTION + KILLING_INSTRUCTION + f"""Write all dialogue in English. Name the garden python {SNAKE_NAME} consistently;
+SPEAKING_BRIEF = NAME_TAG_INSTRUCTION + NPC_ARRIVAL_INSTRUCTION + KILLING_INSTRUCTION + SATISFACTION_MECHANICS + "\n" + f"""Write all dialogue in English. Name the garden python {SNAKE_NAME} consistently;
 use I/my for the speaker and you/your for the listener in direct conversation.
 Write base speech and all opinion reasons in ordinary capitalization and plain prose.
 Personality controls behavior; presentation is applied separately. Never imitate historical delivery.
@@ -249,11 +266,9 @@ do not discuss Pygame, UI controls, action identifiers or numeric satisfaction u
 World state includes the day number,
 satisfaction, carried fruit, an activity, and its reason. The player
 advances to the next day using the bed in their own room; it never advances on its own.
-Use these facts when asked what you are doing or how you feel. Satisfaction drops
-by {SATISFACTION_DAILY_LOSS} each time a new day begins. Time passing alone never lowers it.
-Only eating carried apples raises satisfaction, by {APPLE_SATISFACTION} per apple, up to 100.
+Use these facts when asked what you are doing or how you feel.
 Autonomous collecting and eating use local simulation rules.
-Apples are stored as "fruit" in inventory. There are no hunger or rest needs.
+Apples are stored as "fruit" in inventory. There is no separate hunger meter or mandatory rest need.
 The tree's fruit count is real. You choose your own ordinary activities autonomously.
 There is no command to stay still or hold position; respond with SAY to such a
 request without changing activity. Ending a conversation releases its temporary pause.
@@ -476,9 +491,8 @@ Do not announce numeric scores unless asked. Return [] when there is no update.
 
 For explicit questions about mechanics: the player's bed advances to the next day;
 time does not advance by itself. Each new day resets tree stock to the living
-human count, including the player. Satisfaction loses {SATISFACTION_DAILY_LOSS} per day, not over time.
-Only eating carried apples raises satisfaction, by {APPLE_SATISFACTION} per apple, up to 100. There are no
-hunger/rest needs or storage limits. You choose your ordinary walking and resting autonomously.
+human count, including the player, after deaths are resolved. {SATISFACTION_MECHANICS}
+There is no separate hunger meter, mandatory rest need, or storage limit. You choose your ordinary walking and resting autonomously.
 The supported player requests are visiting the tree, eating a carried apple, approaching
 another available resident to talk, and giving carried apples or an owned work.
 Only a supported action can perform these; this SAY reply performs none of them.

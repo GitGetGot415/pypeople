@@ -7,7 +7,7 @@ from constants import CONVERSATION_MAX_TURNS, REPUTATION_FACT_LIMIT
 
 
 GoalKind = Literal["obtain_apple", "help_with_apple", "repair_relationship", "sabotage_relationship"]
-FactKind = Literal["apple_given", "work_given", "apple_refused", "promise_kept", "promise_broken", "private_motive", "former_life", "arrival", "departure", "apple_eaten", "conversation_seen", "harvest", "killing", "snake_claim", "visit", "report"]
+FactKind = Literal["apple_given", "work_given", "apple_refused", "promise_kept", "promise_broken", "private_motive", "former_life", "arrival", "departure", "apple_eaten", "conversation_seen", "harvest", "killing", "death", "snake_claim", "visit", "report"]
 Stance = Literal["uncertain", "believed", "disbelieved"]
 ConcernKind = Literal["recollection", "news", "surroundings", "plans"]
 

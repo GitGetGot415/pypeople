@@ -471,6 +471,13 @@ class Conversation(ResidentProgress):
             npc.pause_after_conversation(completed)
             if not completed:
                 npc.cooldowns[self.other(npc).id] = dialogue_failure_cooldown(npc, self.other(npc))
+            if (self.purpose == "food_request" and self.food_outcome in ("need", "refused", "unavailable")
+                    and npc is self.initiator):
+                from constants import FOOD_REQUEST_RETRY_SECONDS
+                # Apply after restoring the suspended activity, so the retry survives release.
+                npc.cooldowns[self.other(npc).id] = max(npc.cooldowns.get(self.other(npc).id, 0), FOOD_REQUEST_RETRY_SECONDS)
+                npc.conversation_pause_remaining = 0.0
+                npc.decision_remaining = 0.0
             if revise:
                 npc.command_revision += 1
 

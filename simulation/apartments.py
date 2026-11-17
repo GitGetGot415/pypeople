@@ -139,6 +139,9 @@ def enter(npc, world):
 def home_priority(npc, world, dt):
     """Run after existing interactions finish and before anyone reserves partners."""
     npc.outdoor_remaining = max(0.0, npc.outdoor_remaining - dt)
+    from simulation.nutrition import urgent_food
+    if urgent_food(npc):
+        return
     from simulation.player import owns_resident
     from simulation.autonomy import arrival_greeting_reserved
     if arrival_greeting_reserved(npc, world):

@@ -90,10 +90,19 @@ class InformationState(saved_record(InformationContext)):
 
 class DepartureState(SaveModel):
     day: int = Field(ge=1)
-    cause: Literal["killed by resident", "killed by player"]
-    attacker_id: str = Field(min_length=1)
-    conversation_id: str = Field(min_length=1)
+    cause: Literal["killed by resident", "killed by player", "starvation"]
+    attacker_id: str | None = Field(min_length=1)
+    conversation_id: str | None = Field(min_length=1)
     event_id: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_cause(self):
+        if self.cause == "starvation":
+            if self.attacker_id is not None or self.conversation_id is not None:
+                raise ValueError("Starvation has no attacker or killing conversation.")
+        elif self.attacker_id is None or self.conversation_id is None:
+            raise ValueError("A killing requires an attacker and its conversation.")
+        return self
 
 
 PlayerOpinionState = saved_record(PlayerOpinion)
@@ -440,6 +449,20 @@ class SimulationState(SaveModel):
         for npc in residents:
             references.extend([npc.goal is None or npc.goal.claim_id in (None, *claims),
                                npc.player_call is None or npc.player_call.kind != "reply" or npc.player_call.reference in history])
+            if npc.departure:
+                departure = npc.departure
+                source = next((event for event in self.events if event.id == departure.event_id), None)
+                # Old world events can leave the bounded event log; durable facts retain the death.
+                death = next((fact for fact in self.facts if fact.source_id == departure.event_id
+                              and (fact.kind == "death" and fact.subject_id == npc.id
+                                   if departure.cause == "starvation" else
+                                   fact.kind == "killing" and fact.subject_id == departure.attacker_id
+                                   and fact.object_id == npc.id)), None)
+                references.extend([departure.attacker_id in (None, *owner_ids),
+                                   departure.conversation_id in (None, *history), death is not None,
+                                   source is None or source.kind == ("starvation" if departure.cause == "starvation" else "killing")])
+        if any(npc.departure is not None for npc in self.npcs) or any(npc.departure is None for npc in self.archived):
+            raise ValueError("Only deceased residents belong in the archive.")
         if not all(references):
             raise ValueError("A saved reference names a missing record.")
         return self

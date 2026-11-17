@@ -259,8 +259,8 @@ def selected_beliefs(npc, partner_id=None, *, pinned=()):
         fact = fact_by_id(world, claim.fact_id)
         return (claim.id in pinned or bool(npc.current_concern and npc.current_concern.claim_id == claim.id),
                 bool(goal and goal.claim_id == claim.id),
-                fact.kind in ("killing",),
-                fact.kind in ("killing", "snake_claim", "harvest"),
+                fact.kind in ("killing", "death"),
+                fact.kind in ("killing", "death", "snake_claim", "harvest"),
                 fact.kind not in ROUTINE_FACT_KINDS,
                 partner_id in (fact.subject_id, fact.object_id, belief.source_id),
                 bool(goal and fact.subject_id == goal.third_npc_id),
@@ -659,7 +659,7 @@ def trim_information(world):
     if world.player_interaction and world.player_interaction.record_id:
         active_records.add(world.player_interaction.record_id)
     fact_ids.update(f.id for f in world.facts if f.kind == "conversation_seen" and f.conversation_id in active_records)
-    fact_ids.update(fact.id for fact in world.facts if fact.source_id in current_goals or fact.kind == "killing")
+    fact_ids.update(fact.id for fact in world.facts if fact.source_id in current_goals or fact.kind in ("killing", "death"))
     for npc in residents:
         if npc.conversation and npc.conversation.information_context:
             disclosure_ids.update(b.disclosure_id for entries in npc.conversation.information_context.beliefs.values()

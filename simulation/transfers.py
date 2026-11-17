@@ -64,6 +64,9 @@ def validate_transfer(world, giver, recipient, item, quantity, *, interaction=No
     if item == "fruit":
         if giver.inventory["fruit"] < quantity:
             raise ValueError("The giver no longer has enough apples.")
+        from simulation.nutrition import starves_next_day
+        if giver is not world.player and starves_next_day(giver) and giver.inventory["fruit"] == quantity:
+            raise ValueError("The giver needs their last apple to survive the next day.")
     else:
         work = next((w for w in world.creations if w.id == item), None)
         if quantity != 1 or work is None or work.owner_id != giver.id:

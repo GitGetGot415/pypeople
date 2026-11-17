@@ -518,6 +518,7 @@ class ConversationSession:
             self.requests.cancel(self.session_id, request_id)
         self.conversation_requests.clear()
         self.simulation.next_day()
+        self.cancel_unowned()
 
     def request_conversation_dialogue(self, conversation, *, start=True):
         if not conversation.accepts_response or not conversation.arrived:

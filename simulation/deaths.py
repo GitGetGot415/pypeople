@@ -256,16 +256,36 @@ class DeathMixin:
 
     def depart_resident(self, target, event, record, attacker, *, meeting=None):
         """Archive a committed victim and release unfinished work through its owners."""
-        from copy import deepcopy
-        from simulation.social.goals import resolve_goal
         if (self.npc_by_id(target.id) is not target or not target.alive or event.kind != "killing"
                 or event.history != record.id or record.purpose not in ("confrontation", "killing")
                 or not any(f.kind == "killing" and f.source_id == event.id and f.subject_id == attacker.id
                            and f.object_id == target.id for f in self.facts)):
             return False
-        target.departure = {"day": self.day,
-                            "cause": "killed by player" if attacker is self.player else "killed by resident",
-                            "event_id": event.id, "attacker_id": attacker.id, "conversation_id": record.id}
+        return self._archive_dead_resident(target, event,
+            "killed by player" if attacker is self.player else "killed by resident",
+            record=record, attacker=attacker, meeting=meeting)
+
+    def starve_resident(self, target):
+        """Record natural death without inventing an attacker or a witnessed cause."""
+        if self.npc_by_id(target.id) is not target or not target.alive or target.social > 0:
+            return False
+        from simulation.maps import observers
+        from simulation.social.information import add_fact
+        from dialogue.history import remember
+        witnesses = [person for person in observers(self, target) if person is not target]
+        event = self.publish("starvation", (target,), f"{target.name} died of starvation.")
+        visible = f"{target.name} collapsed and died. The cause was not established by seeing the collapse."
+        add_fact(self, "death", target, None, event.id, None, visible, witnesses, location=target.location)
+        for witness in witnesses:
+            remember(witness, target, event, "death", visible, 0)
+        return self._archive_dead_resident(target, event, "starvation")
+
+    def _archive_dead_resident(self, target, event, cause, *, record=None, attacker=None, meeting=None):
+        from copy import deepcopy
+        from simulation.social.goals import resolve_goal
+        target.departure = {"day": self.day, "cause": cause, "event_id": event.id,
+                            "attacker_id": attacker.id if attacker else None,
+                            "conversation_id": record.id if record else None}
         self.bodies.append({"appearance": deepcopy(target.character), "x": target.x, "y": target.y,
                             "location": target.location, "facing": target.facing, "elapsed": 0.0})
         # The source is accepted and complete; mark death before any release can re-enter.

@@ -6,7 +6,9 @@ from dialogue.history import memory_bias
 from constants import (
     APPLE_SATISFACTION, DECISION_SECONDS, MOVEMENT_SPEED, SOCIAL_PARTNER_RANDOMNESS, SOCIAL_START,
     STARTING_DAY, JUDY_ROOM_NUMBER, SOCIAL_RADIUS,
+    URGENT_FOOD_DONOR_BONUS,
 )
+from simulation.nutrition import starves_next_day, urgent_food
 from simulation.interactions import company_point
 from simulation.social.concerns import concern_topic, undisclosed_danger, danger_topic
 from simulation.social.goals import goal_attempt_cooling_down
@@ -98,6 +100,45 @@ def target_valid(npc, world):
     return True
 
 
+def food_priority(npc, world):
+    """Interrupt optional autonomous work for a meal or a route to food."""
+    from simulation.player import owns_resident
+    if (not urgent_food(npc) or arrival_greeting_reserved(npc, world)
+            or owns_resident(world, npc) or npc.interaction or npc.player_call
+            or npc.selected or npc.interaction_blocked or npc.player_reply.closing
+            or npc.owner != "autonomous" or world.visit and world.visit.host_id == npc.id
+            or any(npc.id in (action.npc_id, action.target_id) for action in world.pending_actions)):
+        return
+    if npc.behavior == Behavior.EAT:
+        return
+    if npc.behavior in (Behavior.GO_TO_TREE, Behavior.HARVEST) and target_valid(npc, world):
+        return
+    if npc.journey and npc.journey.purpose in ("tree", "food"):
+        return
+    from simulation.errands import cancel
+    reason = "Seeking food urgently before returning to other work"
+    cancel(world, npc.id, reason)
+    if npc.journey or npc.creative_job or npc.behavior not in (Behavior.WANDER, Behavior.WAIT):
+        world.interrupt_resident(npc, reason, mode="action")
+        npc.home_remaining = 0.0
+        npc.begin_activity(Behavior.WAIT, world, reason=reason)
+        npc.decision_remaining = 0.0
+    if npc.inventory.get("fruit", 0):
+        npc.command_revision += 1
+        npc.begin_activity(Behavior.EAT, world, reason="Eating an apple because food is urgently needed")
+    elif world.available_fruit > 0 and world.tree.id not in npc.cooldowns:
+        from constants import HARVEST_DISTANCE
+        behavior = (Behavior.HARVEST if npc.location == "garden" and
+            math.dist((npc.x, npc.y), world.tree.interaction_point) <= HARVEST_DISTANCE else Behavior.GO_TO_TREE)
+        npc.command_revision += 1
+        npc.begin_activity(behavior, world, world.tree.id, reason)
+    elif npc.location != "garden":
+        from constants import GARDEN_BUILDING_ARRIVAL
+        from simulation.locations import start_journey
+        npc.begin_activity(Behavior.WAIT, world, reason="Going outside to ask for urgently needed food")
+        start_journey(npc, "garden", GARDEN_BUILDING_ARRIVAL, purpose="food")
+
+
 def reconsider(npc, world, *, pressing_only=False):
     from simulation.apartments import HOME_BEHAVIORS
     from simulation.player import owns_resident
@@ -129,6 +170,8 @@ def reconsider(npc, world, *, pressing_only=False):
         return
     if npc.behavior in (Behavior.GO_TO_TREE, Behavior.HARVEST, Behavior.EAT):
         return
+    if urgent_food(npc):
+        return  # The food priority and urgent request paths own this decision.
 
     obligations = sorted(pending_promises(world, npc.id), key=lambda promise: (promise.deadline, promise.created_day))
     goal = npc.goal if npc.goal and npc.goal.status == "active" else None
@@ -185,12 +228,16 @@ def donor_choice(donor, requester):
     fruit = donor.inventory.get("fruit", 0)
     if fruit < 1:
         return "unavailable", "Sharing is no longer possible because the inventories changed."
+    if fruit == 1 and starves_next_day(donor):
+        return "need", "The donor needs their last apple to survive the next day."
     opinion = donor.opinion_score(requester.id)
     from constants import DANGEROUS_GIFT_PENALTY
     score = ((donor.social - 50) * 0.12 + (fruit - 1) * 6
              + (donor.preferences["generosity"] - 0.5) * 10
              + opinion * 0.12 + memory_bias(donor, requester.id)
              - DANGEROUS_GIFT_PENALTY * regards_as_dangerous(donor, requester))
+    if urgent_food(requester):
+        score += URGENT_FOOD_DONOR_BONUS
     if fruit == 1 and donor.social <= SOCIAL_START:
         score -= 8
     if score >= 0:
@@ -201,6 +248,8 @@ def donor_choice(donor, requester):
 
 
 def actionable_obligation(npc, world):
+    if urgent_food(npc):
+        return False
     from simulation.locations import available as available_outdoors
     if not available_outdoors(npc):
         return False
@@ -228,7 +277,8 @@ def social_pair(world, *, due=None):
     """Reserve through the caller immediately; rotate initiators and vary partners."""
     ordered = world.npcs[world.social_rotation:] + world.npcs[:world.social_rotation]
     available = [npc for npc in ordered if world.company_available(npc)
-                 and not npc.conversation_pause_remaining and not actionable_obligation(npc, world)]
+                 and (not npc.conversation_pause_remaining or urgent_food(npc))
+                 and not actionable_obligation(npc, world)]
 
     def partners(npc):
         return [other for other in available if other is not npc
@@ -241,6 +291,33 @@ def social_pair(world, *, due=None):
         return (-DANGEROUS_COMPANY_PENALTY * regards_as_dangerous(npc, other) + npc.opinion_score(other.id) * 0.08
                 + memory_bias(npc, other.id) - math.dist((npc.x, npc.y), (other.x, other.y)) / MOVEMENT_SPEED
                 + npc.rng.uniform(0, SOCIAL_PARTNER_RANDOMNESS))
+
+    def request_food(npc, *, urgent=False):
+        if npc.inventory.get("fruit", 0) or npc.social > SOCIAL_START:
+            return None
+        donors = [other for other in partners(npc) if other.inventory.get("fruit", 0) > 0
+                  and not (urgent_food(other) and other.inventory.get("fruit", 0) == 1)
+                  and (urgent or not repeat_partner_paused(npc, other))]
+        if not donors:
+            return None
+        donor = max(donors, key=lambda other: rank(npc, other))
+        tree = world.tree
+        if (world.available_fruit > 0 and tree.id not in npc.cooldowns and npc.can_reach(tree.interaction_point)
+                and (urgent or math.dist((npc.x, npc.y), tree.interaction_point)
+                     < math.dist((npc.x, npc.y), (donor.x, donor.y)))):
+            return None
+        objective = ("Ask for an apple and explain that I need food to survive the next day"
+                     if starves_next_day(npc) else "Ask for an apple because I urgently need food"
+                     if urgent else "An apple")
+        return npc, donor, "food_request", objective, f"Asking {donor.name} for an apple", None, None, None
+
+    for npc in sorted(available, key=lambda person: person.social):
+        if urgent_food(npc) and (due is None or npc.id in due):
+            choice = request_food(npc, urgent=True)
+            if choice:
+                return choice
+    # An urgent resident waits for food rather than filling the gap with optional talk.
+    available = [npc for npc in available if not urgent_food(npc)]
 
     from simulation.social.relationships import grievance_against, confrontation_topic
     for npc in available:
@@ -278,16 +355,9 @@ def social_pair(world, *, due=None):
         others = [other for other in partners(npc) if not repeat_partner_paused(npc, other)]
         if not others:
             continue
-        # Keep the existing fixed food-request eligibility and donor decision.
-        if npc.social <= SOCIAL_START and not npc.inventory.get("fruit", 0):
-            donors = [other for other in others if other.inventory.get("fruit", 0) > 0]
-            if donors:
-                donor = max(donors, key=lambda other: rank(npc, other))
-                tree = world.tree
-                if not (world.available_fruit > 0 and npc.can_reach(tree.interaction_point)
-                        and math.dist((npc.x, npc.y), tree.interaction_point)
-                        < math.dist((npc.x, npc.y), (donor.x, donor.y))):
-                    return npc, donor, "food_request", "An apple", f"Asking {donor.name} for an apple", None, None, None
+        choice = request_food(npc)
+        if choice:
+            return choice
         partner = max(others, key=lambda other: (
             last_conversation_partner(npc) != other.id and last_conversation_partner(other) != npc.id,
             rank(npc, other)))

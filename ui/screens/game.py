@@ -14,7 +14,7 @@ from constants import (
     DIALOGUE_ORIGINAL_TOGGLE_RECT, BORDER_RADIUS, POPUP_RECT, POPUP_TITLE_Y,
     GAME_MENU_CONFIRM_MESSAGE_RECT, GAME_MENU_KEEP_PLAYING_RECT, GAME_MENU_LEAVE_RECT,
     PLAYER_ROOM_LOCATION, ROOM_BED_RECT, BED_POPUP_MESSAGE_RECT,
-    BED_ADVANCE_RECT, BED_CANCEL_RECT, GAME_PORTRAIT_BACKGROUND, GAME_PORTRAIT_PADDING,
+    BED_ADVANCE_RECT, BED_CANCEL_RECT, BED_STARVATION_WARNING_RECT, GAME_PORTRAIT_BACKGROUND, GAME_PORTRAIT_PADDING,
     GAME_PORTRAIT_BORDER_WIDTH,
 )
 from dialogue.emotions import portrait_expression
@@ -421,8 +421,15 @@ class GameScreen:
         title = "Rest in your bed" if self.day_popup == "bed" else "Skip to the next day?"
         draw_modal(app.window, POPUP_RECT, title, app.heading_font, POPUP_TITLE_Y)
         message = ("Resume the game before passing time." if world.paused else
-                   "Advance to the next day? All conversations end immediately. A new resident arrives if there is room.")
+                   "Advance to the next day? Conversations end. A new resident arrives if there is room.")
         draw_wrapped_text(app.window, message, app.font, INK, BED_POPUP_MESSAGE_RECT)
+        from simulation.nutrition import starves_next_day
+        at_risk = [npc for npc in world.npcs if starves_next_day(npc)]
+        if at_risk:
+            count = len(at_risk)
+            warning = (f"Warning: {count} resident{'s' if count != 1 else ''} will die of starvation. "
+                       "They must eat before you advance. Check Stats.")
+            draw_wrapped_text(app.window, warning, app.small_font, INK, BED_STARVATION_WARNING_RECT)
         self.bed_advance_button.label = f"Advance to {world.day + 1}"
         self.bed_advance_button.draw(app.window, app.small_font, enabled=self.can_advance_from_bed(world))
         self.bed_cancel_button.draw(app.window, app.small_font)

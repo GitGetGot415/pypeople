@@ -3,7 +3,7 @@ from uuid import uuid4
 from simulation.deaths import DeathMixin
 from simulation.maps import active_player
 from constants import (
-    DECISION_SECONDS, MAX_SIMULATION_STEP_SECONDS, SATISFACTION_DAILY_LOSS, STARTING_DAY,
+    DECISION_SECONDS, MAX_SIMULATION_STEP_SECONDS, STARTING_DAY,
     STARTING_PAUSED, CONVERSATION_CANCELLED, CONVERSATION_PENDING_REPLY_STATUSES,
 )
 
@@ -129,12 +129,16 @@ class Simulation(DeathMixin):
         from simulation.errands import expire
         expire(self)
         self.day += 1
+        from simulation.nutrition import daily_satisfaction_loss
+        for npc in self.npcs:
+            npc.social = max(0.0, npc.social - daily_satisfaction_loss(npc.social))
+        for npc in tuple(self.npcs):
+            if npc.social == 0:
+                self.starve_resident(npc)
         from simulation.maps import npc_capacity
         if (len(self.npcs) < npc_capacity(self) and self.day not in self.pending_arrival_days
                 and self.day not in self.processed_arrival_days):
             self.pending_arrival_days.append(self.day)
-        for npc in self.npcs:
-            npc.social = max(0.0, npc.social - SATISFACTION_DAILY_LOSS)
         self.tree.fruit = self.population
         advance_social_day(self)
         self.publish("new_day", [], f"Day advanced to {self.day}.")
@@ -267,7 +271,7 @@ class Simulation(DeathMixin):
                 and npc.behavior in (Behavior.WANDER, Behavior.WAIT))
 
     def step(self, dt, *, viewed_conversation=None):
-        from simulation.autonomy import greet_arrivals, reconsider, social_pair
+        from simulation.autonomy import food_priority, greet_arrivals, reconsider, social_pair
         from simulation.social.concerns import refresh_concern
         from simulation.interactions import observe_active_conversations
 
@@ -299,6 +303,8 @@ class Simulation(DeathMixin):
                 interaction.update(dt, reading=True)
             else:
                 interaction.update(dt)
+        for npc in self.npcs:
+            food_priority(npc, self)
         greet_arrivals(self)
         from simulation.apartments import home_priority
         for npc in self.npcs:
@@ -447,7 +453,7 @@ class Simulation(DeathMixin):
         if mode not in ("cancel", "departure", "arrival", "approach", "action", "session"):
             raise ValueError("Unknown resident interruption reason.")
         from simulation.autonomy import arrival_greeting_reserved
-        if mode not in ("arrival", "session") and arrival_greeting_reserved(target, self):
+        if mode not in ("arrival", "session", "departure") and arrival_greeting_reserved(target, self):
             raise ValueError("Judy's welcome must finish before either resident can be interrupted.")
         if mode == "action":
             if self.visit and self.visit.host_id == target.id:

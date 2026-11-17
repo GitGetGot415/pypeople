@@ -341,6 +341,7 @@ class NPC(ResidentValues, ConversationActor):
 
     def snapshot(self, tree, partner_id=None, *, private=True):
         from simulation.maps import environment
+        from simulation.nutrition import daily_satisfaction_loss, starves_next_day, urgent_food
         state = {
             "location": self.location,
             "environment": environment(self.location),
@@ -356,6 +357,9 @@ class NPC(ResidentValues, ConversationActor):
             "activity_reason": self.decision_reason,
             "activity_owner": self.owner,
             "satisfaction": round(self.social, 1),
+            "daily_satisfaction_loss": daily_satisfaction_loss(self.social),
+            "starves_next_day": starves_next_day(self),
+            "food_urgent": urgent_food(self),
             "inventory": self.inventory.copy(),
             "tree_interaction_point": list(tree.interaction_point),
             "tree_fruit": tree.fruit,
@@ -553,6 +557,18 @@ class NPC(ResidentValues, ConversationActor):
             self.activity_elapsed += dt
             if self.activity_elapsed + 1e-9 >= EAT_SECONDS:
                 if self.inventory.get("fruit", 0) > 0:
+                    from simulation.nutrition import starves_next_day
+                    from simulation.social.promises import pending_promises
+                    promises = pending_promises(world, self.id)
+                    if starves_next_day(self) and self.inventory["fruit"] <= len({p.recipient_id for p in promises}):
+                        reason = f"{self.name} ate an apple needed for survival; apple promises remain pending until fulfilled or their deadline passes."
+                        event = world.publish("survival_meal", (self,), reason)
+                        from dialogue.history import remember
+                        remember(self, self, event, "apple_eaten", reason, 0)
+                        for promise in promises:
+                            source = world.record_by_id(promise.conversation_id)
+                            if source:
+                                source.outcomes.append(reason)
                     self.inventory["fruit"] -= 1
                     self.social = min(100.0, self.social + APPLE_SATISFACTION)
                     world.observed_event("apple_eaten", self, None, f"{self.name} ate an apple.",

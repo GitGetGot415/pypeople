@@ -215,6 +215,7 @@ def world_context(snapshot, *, correction=False):
         if conversation :
             # Rendering and movement bookkeeping do not help write a conversation.
             fields = {"actor_id", "name", "character", "activity", "satisfaction", "inventory",
+                      "daily_satisfaction_loss", "starves_next_day", "food_urgent",
                       "memories", "private_context", "arrival_day", "location", "area_knowledge",
                       "tree_fruit", "tree_available_fruit", "living_count"}
             person = {key: value for key, value in person.items() if key in fields}
@@ -338,6 +339,9 @@ def resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, than
                    situation=private.get("situation", {}), concern=deepcopy(private.get("concern")),
                    opinion_of_listener=private.get("opinions", {}).get(partner["name"]))
     speaker["area_knowledge"] = deepcopy(person.get("area_knowledge", {}))
+    for field in ("satisfaction", "daily_satisfaction_loss", "starves_next_day", "food_urgent"):
+        if field in person:
+            speaker[field] = person[field]
     familiarity = speaker["area_knowledge"].get("familiarity", {})
     if familiarity.get("source") == "unguided_arrival" and any(t.speaker == role for t in draft["turns"]):
         from simulation.area_knowledge import unguided_familiarity
@@ -420,7 +424,9 @@ def resident_turn_snapshot(snapshot, draft, *, role=None, assessment=False, than
                          "Allow peaceful resolution and never narrate an uncommitted killing.")
     elif snapshot.get("purpose") == "food_request":
         state["food_request"] = deepcopy(snapshot["food_request"])
-        state["task"] = ("Request one carried apple; no handoff has happened." if role == "initiator" else
+        state["task"] = ("Request one carried apple; no handoff has happened. Express your own urgency if food_urgent, "
+                         "and explain the risk before the next day if starves_next_day. Do not recite numeric scores unasked."
+                         if role == "initiator" else
                          "Express the fixed food_request.outcome and reason. Acceptance reserves a later handoff, not a future apple promise.")
     else:
         state["task"] = ("Begin with your immediate_objective, using your own words to ask or propose something relevant. "
